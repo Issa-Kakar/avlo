@@ -17,6 +17,7 @@ import {
 } from '@/components/icons';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import * as A from './actions';
+import { ConnectorInspector } from './ConnectorInspector';
 import { PenInspector } from './PenInspector';
 import './Toolbar.css';
 
@@ -51,7 +52,8 @@ const clickEraser = () => A.selectTool('eraser');
 export function Toolbar() {
   const activeTool = useDeviceUIStore((s) => s.activeTool);
   const shapeVariant = useDeviceUIStore((s) => s.shapeVariant);
-  const showInspector = activeTool === 'pen' || activeTool === 'highlighter';
+  const isPen = activeTool === 'pen' || activeTool === 'highlighter';
+  const isConnector = activeTool === 'connector';
 
   return (
     <div className="toolbar-wrap">
@@ -80,10 +82,10 @@ export function Toolbar() {
         <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'diamond'} tooltip="Diamond (D)" onClick={clickDiamond}>
           <IconDiamond className="icon" />
         </ToolButton>
-        <ToolButton isActive={activeTool === 'connector'} tooltip="Connector (A)" onClick={clickConnector}>
+        <ToolButton isActive={isConnector} tooltip="Connector (A)" onClick={clickConnector}>
           <IconArrow className="icon" />
         </ToolButton>
-        <ToolButton isActive={showInspector} tooltip="Pen (P)" onClick={clickPen}>
+        <ToolButton isActive={isPen} tooltip="Pen (P)" onClick={clickPen}>
           <IconPen className="icon" />
         </ToolButton>
         <ToolButton isActive={activeTool === 'code'} tooltip="Code" onClick={clickCode}>
@@ -96,7 +98,8 @@ export function Toolbar() {
           <IconEraser className="icon" />
         </ToolButton>
 
-        {showInspector && <PenInspector />}
+        {isPen && <PenInspector />}
+        {isConnector && <ConnectorInspector />}
       </div>
 
       <div className="toolbar-actions">

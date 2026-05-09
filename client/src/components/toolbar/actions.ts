@@ -1,7 +1,15 @@
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { getActiveRoomDoc, hasActiveRoom } from '@/runtime/room-runtime';
-import { type ShapeVariant, type SizePreset, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
+import {
+  type ConnectorVariant,
+  type ShapeVariant,
+  type SizePreset,
+  type SlotIndex,
+  type Tool,
+  useDeviceUIStore,
+} from '@/stores/device-ui-store';
 
+// Tool selection ------------------------------------------------------------
 export const selectTool = (tool: Tool) => useDeviceUIStore.getState().setActiveTool(tool);
 
 export const selectShape = (variant: ShapeVariant) => {
@@ -12,6 +20,7 @@ export const selectShape = (variant: ShapeVariant) => {
 
 export const pickImage = () => openImageFilePicker();
 
+// History -------------------------------------------------------------------
 export const undo = () => {
   if (hasActiveRoom()) getActiveRoomDoc().undo();
 };
@@ -20,20 +29,29 @@ export const redo = () => {
   if (hasActiveRoom()) getActiveRoomDoc().redo();
 };
 
+// Pen / highlighter ---------------------------------------------------------
 export const setStrokeSize = (size: SizePreset) => useDeviceUIStore.getState().setDrawingSize(size);
 
-export const setColor = (color: string) => useDeviceUIStore.getState().setDrawingColor(color);
+export const selectSlot = (slot: number) => useDeviceUIStore.getState().setActiveSlot(slot as SlotIndex);
 
-export const pickCustomColor = (color: string) => {
+// Picking a color (slot OR connector) commits the color AND closes the picker.
+// Centralized here so every entry point — palette swatch, hex submit — gets
+// the close-on-pick behavior without each callsite having to remember it.
+export const setActiveSlotColor = (color: string) => {
   const s = useDeviceUIStore.getState();
-  s.setDrawingColor(color);
-  s.addRecentColor(color);
-  if (s.isColorPopoverOpen) s.setColorPopoverOpen(false);
+  s.setActiveSlotColor(color);
+  s.setColorPickerOpen(false);
 };
 
-export const toggleColorPopover = () => {
+// Connector -----------------------------------------------------------------
+export const setConnectorVariant = (variant: ConnectorVariant) => useDeviceUIStore.getState().setConnectorVariant(variant);
+
+export const setConnectorColor = (color: string) => {
   const s = useDeviceUIStore.getState();
-  s.setColorPopoverOpen(!s.isColorPopoverOpen);
+  s.setConnectorColor(color);
+  s.setColorPickerOpen(false);
 };
 
-export const closeColorPopover = () => useDeviceUIStore.getState().setColorPopoverOpen(false);
+// Color picker visibility ---------------------------------------------------
+export const toggleColorPicker = () => useDeviceUIStore.getState().toggleColorPicker();
+export const closeColorPicker = () => useDeviceUIStore.getState().setColorPickerOpen(false);

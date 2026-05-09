@@ -1,0 +1,131 @@
+.color-picker {
+  position: absolute;
+  left: calc(100% + 12px);
+  top: -8px;
+  background: var(--dock-bg, #101720);
+  border: 1px solid var(--dock-border, #4a4a4a);
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: picker-pop 140ms ease-out;
+  z-index: 1;
+}
+
+@keyframes picker-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateX(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateX(0);
+  }
+}
+
+.picker-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.picker-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform 100ms ease;
+}
+
+.picker-swatch:hover {
+  transform: scale(1.08);
+}
+
+/* Dark swatches need a brighter border to remain visible on the dock. */
+.picker-swatch[data-dark] {
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.picker-swatch.is-active {
+  outline: 1.5px solid #fff;
+  outline-offset: -1.5px;
+}
+
+.picker-swatch:focus-visible {
+  outline: 2px solid var(--ring, #1d4ed8);
+  outline-offset: 2px;
+}
+
+.picker-actions {
+  display: flex;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.picker-action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--icon-muted, #f5f5f5);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 120ms ease;
+}
+
+.picker-action-btn:hover:not(:disabled) {
+  background: var(--dock-hover, #383838);
+}
+
+.picker-action-btn[aria-pressed="true"] {
+  background: var(--dock-hover, #383838);
+}
+
+.picker-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.picker-hex {
+  display: flex;
+  gap: 4px;
+}
+
+.picker-hex input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
+  outline: none;
+}
+
+.picker-hex input:focus {
+  border-color: var(--accent, #1f51ff);
+}
+
+.picker-hex-apply {
+  width: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--icon-muted, #f5f5f5);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.picker-hex-apply:hover {
+  background: var(--dock-hover, #383838);
+}

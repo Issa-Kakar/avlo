@@ -59,6 +59,15 @@ export interface DrawingSettings {
   fill: boolean;
 }
 
+// Slot-based color storage — pen and highlighter each persist 3 colors
+// and an "active slot" pointer; the active slot's color flows into
+// drawingSettings.color whenever the active tool / slot changes.
+export type ColorSlots = readonly [string, string, string];
+export type SlotIndex = 0 | 1 | 2;
+
+// Connector variant = (type, startCap, endCap) preset triple
+export type ConnectorVariant = 'straight' | 'doubleArrow' | 'elbow';
+
 interface DeviceUIState {
   // User identity (persisted)
   userId: string;
@@ -70,6 +79,19 @@ interface DeviceUIState {
 
   // UNIFIED drawing settings
   drawingSettings: DrawingSettings;
+
+  // Per-tool color slots (3 each) — selected slot flows into drawingSettings.color
+  penColorSlots: ColorSlots;
+  penActiveSlot: SlotIndex;
+  highlighterColorSlots: ColorSlots;
+  highlighterActiveSlot: SlotIndex;
+
+  // Connector inspector state
+  connectorColor: string;
+  connectorVariant: ConnectorVariant;
+
+  // Inspector picker visibility (single-flag — only one picker open at a time)
+  isColorPickerOpen: boolean;
 
   // Tool-specific settings
   highlighterOpacity: number;
@@ -108,10 +130,6 @@ interface DeviceUIState {
   // Placeholder tools
   image: { enabled: boolean };
 
-  // Color system
-  recentColors: string[];
-  isColorPopoverOpen: boolean;
-
   // Cursor override
   cursorOverride: string | null;
 
@@ -124,6 +142,14 @@ interface DeviceUIState {
   setDrawingColor: (color: string) => void;
   setDrawingOpacity: (opacity: number) => void;
   setFillEnabled: (enabled: boolean) => void;
+
+  // Slot actions — picker visibility + per-slot setters
+  setColorPickerOpen: (open: boolean) => void;
+  toggleColorPicker: () => void;
+  setActiveSlot: (slot: SlotIndex) => void;
+  setActiveSlotColor: (color: string) => void;
+  setConnectorColor: (color: string) => void;
+  setConnectorVariant: (variant: ConnectorVariant) => void;
 
   setHighlighterOpacity: (opacity: number) => void;
   setTextSize: (size: number) => void;
@@ -148,9 +174,6 @@ interface DeviceUIState {
   setFillColor: (color: string) => void;
 
   getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
-
-  addRecentColor: (hex: string) => void;
-  setColorPopoverOpen: (open: boolean) => void;
 }
 
 export const useDeviceUIStore = create<DeviceUIState>()(
@@ -164,10 +187,20 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       drawingSettings: {
         size: 4,
-        color: '#262626',
+        color: '#131619',
         opacity: 1.0,
         fill: false,
       },
+
+      penColorSlots: ['#131619', '#2196F3', '#F44336'] as const,
+      penActiveSlot: 0,
+      highlighterColorSlots: ['#FFC73B', '#FF8FB1', '#B5D9F2'] as const,
+      highlighterActiveSlot: 0,
+
+      connectorColor: '#131619',
+      connectorVariant: 'elbow' as ConnectorVariant,
+
+      isColorPickerOpen: false,
 
       highlighterOpacity: 0.45,
       textSize: 24,
@@ -176,7 +209,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       codeHeaderVisible: true,
       connectorStartCap: 'none' as ConnectorCap,
       connectorEndCap: 'arrow' as ConnectorCap,
-      connectorType: 'straight' as ConnectorType,
+      connectorType: 'elbow' as ConnectorType,
       shapeVariant: 'rectangle',
       shapeAlign: 'center' as TextAlign,
       shapeAlignV: 'middle' as TextAlignV,
@@ -194,13 +227,29 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       image: { enabled: false },
 
-      recentColors: [],
-      isColorPopoverOpen: false,
-
       cursorOverride: null,
 
-      // Actions
-      setActiveTool: (tool) => set({ activeTool: tool }),
+      // Actions — when activeTool flips between pen/highlighter, push the
+      // new tool's active-slot color into drawingSettings.color so that
+      // DrawingTool (which freezes settings.color at begin()) picks it up.
+      setActiveTool: (tool) => {
+        const s = get();
+        if (tool === 'pen' && s.activeTool !== 'pen') {
+          set({
+            activeTool: tool,
+            drawingSettings: { ...s.drawingSettings, color: s.penColorSlots[s.penActiveSlot] },
+            isColorPickerOpen: false,
+          });
+        } else if (tool === 'highlighter' && s.activeTool !== 'highlighter') {
+          set({
+            activeTool: tool,
+            drawingSettings: { ...s.drawingSettings, color: s.highlighterColorSlots[s.highlighterActiveSlot] },
+            isColorPickerOpen: false,
+          });
+        } else {
+          set({ activeTool: tool, isColorPickerOpen: false });
+        }
+      },
       setCursorOverride: (cursor) => {
         // Idempotent: bail if value unchanged. Eliminates per-frame state churn
         // from callers that re-emit the same cursor (e.g., SelectTool's hover
@@ -288,24 +337,73 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         return settings;
       },
 
-      addRecentColor: (hex) =>
-        set((state) => {
-          const h = hex.trim().toLowerCase();
-          if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(h)) return {};
-          const fixed = new Set(TEXT_COLOR_PALETTE.map((c) => c.toLowerCase()));
-          if (fixed.has(h)) return {};
-          const next = [h, ...state.recentColors.filter((c) => c.toLowerCase() !== h)].slice(0, 5);
-          return { recentColors: next };
-        }),
+      setColorPickerOpen: (open) => set({ isColorPickerOpen: open }),
+      toggleColorPicker: () => set((s) => ({ isColorPickerOpen: !s.isColorPickerOpen })),
 
-      setColorPopoverOpen: (open) => set({ isColorPopoverOpen: open }),
+      setActiveSlot: (slot) => {
+        const s = get();
+        if (s.activeTool === 'pen') {
+          if (s.penActiveSlot === slot) return;
+          set({
+            penActiveSlot: slot,
+            drawingSettings: { ...s.drawingSettings, color: s.penColorSlots[slot] },
+            isColorPickerOpen: false,
+          });
+        } else if (s.activeTool === 'highlighter') {
+          if (s.highlighterActiveSlot === slot) return;
+          set({
+            highlighterActiveSlot: slot,
+            drawingSettings: { ...s.drawingSettings, color: s.highlighterColorSlots[slot] },
+            isColorPickerOpen: false,
+          });
+        }
+      },
+
+      setActiveSlotColor: (color) => {
+        const s = get();
+        if (s.activeTool === 'pen') {
+          const next = [...s.penColorSlots] as unknown as [string, string, string];
+          next[s.penActiveSlot] = color;
+          set({
+            penColorSlots: next as ColorSlots,
+            drawingSettings: { ...s.drawingSettings, color },
+          });
+        } else if (s.activeTool === 'highlighter') {
+          const next = [...s.highlighterColorSlots] as unknown as [string, string, string];
+          next[s.highlighterActiveSlot] = color;
+          set({
+            highlighterColorSlots: next as ColorSlots,
+            drawingSettings: { ...s.drawingSettings, color },
+          });
+        }
+      },
+
+      setConnectorColor: (color) => set({ connectorColor: color }),
+      setConnectorVariant: (variant) => {
+        // Variant is the source of truth; (type, startCap, endCap) are derived.
+        const preset = CONNECTOR_VARIANT_PRESETS[variant];
+        set({
+          connectorVariant: variant,
+          connectorType: preset.type,
+          connectorStartCap: preset.startCap,
+          connectorEndCap: preset.endCap,
+        });
+      },
     }),
     {
-      name: 'avlo.toolbar.v4',
-      version: 2,
+      name: 'avlo.toolbar.v5',
+      version: 3,
     },
   ),
 );
+
+// Connector variant → (type, caps) preset table.
+// Keep this co-located with the store so setConnectorVariant stays a one-liner.
+const CONNECTOR_VARIANT_PRESETS: Record<ConnectorVariant, { type: ConnectorType; startCap: ConnectorCap; endCap: ConnectorCap }> = {
+  straight: { type: 'straight', startCap: 'none', endCap: 'none' },
+  doubleArrow: { type: 'straight', startCap: 'arrow', endCap: 'arrow' },
+  elbow: { type: 'elbow', startCap: 'none', endCap: 'arrow' },
+};
 
 // ============================================
 // USER IDENTITY INITIALIZATION

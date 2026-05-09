@@ -1,0 +1,56 @@
+.color-slots {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0 4px;
+}
+
+.color-slot {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    transform 100ms ease,
+    box-shadow 140ms ease;
+  flex-shrink: 0;
+  margin: 0;
+  position: relative;
+}
+
+.color-slot:hover {
+  transform: scale(1.06);
+}
+
+/* Dark slots get a thin white inset stroke so the rect edge reads against
+ * the near-black dock background. */
+.color-slot[data-dark] {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+}
+
+/* Active slot: offset outline in the slot's own color, gapped from the
+ * fill by a dock-bg ring. --slot-tint is set inline by ColorSlot.tsx. */
+.color-slot.is-active {
+  box-shadow:
+    0 0 0 2px var(--dock-bg, #101720),
+    0 0 0 4px var(--slot-tint);
+}
+
+/* Active + dark: keep the colored offset ring AND the white inset stroke. */
+.color-slot.is-active[data-dark] {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 0 0 2px var(--dock-bg, #101720),
+    0 0 0 4px var(--slot-tint);
+}
+
+.color-slot:focus-visible {
+  outline: 2px solid var(--ring, #1d4ed8);
+  outline-offset: 3px;
+}

@@ -1,3 +1,15 @@
+/* Dock design tokens — moved here from the deleted ToolPanel.css. */
+:root {
+  --dock-bg: #101720;
+  --dock-border: #4a4a4a;
+  --dock-hover: #383838;
+  --accent: #1f51ff;
+  --icon-muted: #f5f5f5;
+  --icon-selected: #f5f5f5;
+  --divider: #4a4a4a;
+  --ring: #1d4ed8;
+}
+
 .toolbar-wrap {
   position: fixed;
   left: 12px;
@@ -22,6 +34,13 @@
   border: 1px solid var(--dock-border, #4a4a4a);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(6px);
+}
+
+/* Make .toolbar-main the positioning ancestor for the inspector child so
+ * `top: 50%` on the inspector centers against the main pill (not the
+ * taller .toolbar-wrap, which stacks main + actions). */
+.toolbar-main {
+  position: relative;
 }
 
 .toolbar-actions .tool-btn,
@@ -104,8 +123,8 @@
   transform: translateY(-50%) scale(1);
 }
 
-/* Hide tool-btn tooltips while the inspector is open (would overlap). */
-.toolbar-wrap:has(.pen-inspector) .toolbar-main .tool-btn::after {
+/* Hide tool-btn tooltips while any inspector is open (would overlap). */
+.toolbar-wrap:has(.inspector) .toolbar-main .tool-btn::after {
   display: none;
 }
 
