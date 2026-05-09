@@ -1,128 +1,109 @@
-import * as Y from 'yjs';
 import type { CodeLanguage, FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
-import {
-  getAlign,
-  getContent,
-  getFontSize,
-  getHeaderVisible,
-  getLineNumbers,
-  getOrigin,
-  getOutputVisible,
-  hasLabel,
-} from '@/core/accessors';
-import { anchorFactor, getTextFrame } from '@/core/text/text-system';
 import { detachConnectorFromShape, getAttachedConnectors, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
-import { textTool } from '@/runtime/tool-registry';
-import { type ConnectorSizePreset, type SizePreset, TEXT_FONT_SIZE_PRESETS, useDeviceUIStore } from '@/stores/device-ui-store';
+import { TEXT_FONT_SIZE_PRESETS, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { computeUniformInlineStyles } from './selection-utils';
+import {
+  adjustByPresets,
+  applyField,
+  BOLD,
+  CODE_FONT_SIZE,
+  CODE_LANGUAGE,
+  COLOR,
+  FILL_COLOR,
+  FONT_FAMILY,
+  FONT_SIZE,
+  HEADER_VISIBLE,
+  HIGHLIGHT,
+  ITALIC,
+  LINE_NUMBERS,
+  OUTPUT_VISIBLE,
+  SHAPE_TYPE,
+  TEXT_ALIGN,
+  TEXT_ALIGN_V,
+  TEXT_COLOR,
+  toggleField,
+  WIDTH,
+  withEditorOr,
+} from './selection-field-table';
 
-// === Helpers ===
+// === Source-of-ids selection ===
+//
+// Three id sources for actions, picked by the action (not the descriptor) —
+// it's "who's calling," not "what the field is."
 
-function getSelectedHandles() {
-  const { selectedIds } = useSelectionStore.getState();
-  if (selectedIds.length === 0) return null;
-  const objectsById = getObjectsById();
-  return { selectedIds, objectsById };
-}
+const getSelectedIds = (): string[] => useSelectionStore.getState().selectedIds;
 
-/** Resolve text IDs: prefer textEditingId, fall back to selectedIds. */
-function getTextIds(): string[] {
+const getTextSelectionIds = (): string[] => {
   const { textEditingId, selectedIds } = useSelectionStore.getState();
   return textEditingId ? [textEditingId] : selectedIds;
-}
+};
 
-// === Color ===
+const getCodeIds = (): string[] => {
+  const { codeEditingId, selectedIds } = useSelectionStore.getState();
+  return codeEditingId ? [codeEditingId] : selectedIds;
+};
 
-export function setSelectedColor(color: string): void {
-  const ctx = getSelectedHandles();
-  if (!ctx) return;
+const clampInt = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, Math.round(n)));
 
-  transact(() => {
-    for (const id of ctx.selectedIds) {
-      ctx.objectsById.get(id)?.y.set('color', color);
-    }
-  });
+const currentTextFontSize = (): number => useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
 
-  useDeviceUIStore.getState().setDrawingColor(color);
-  useSelectionStore.getState().refreshStyles();
-}
+const currentCodeFontSize = (): number => useSelectionStore.getState().selectedStyles.fontSize ?? 14;
 
-// === Fill Color ===
+// === Property Actions ===
 
-export function setSelectedFillColor(fillColor: string | null): void {
-  const { selectedIds, selectionKind, textEditingId } = useSelectionStore.getState();
-  const isNote = selectionKind === 'note';
-  const isText = !isNote && (textEditingId !== null || selectionKind === 'text');
-  const ids = isText || isNote ? getTextIds() : selectedIds;
-  if (ids.length === 0) return;
+export const setSelectedColor = (color: string): void => applyField(getSelectedIds(), COLOR, color);
+export const setSelectedWidth = (width: number): void => applyField(getSelectedIds(), WIDTH, width);
+export const setSelectedShapeType = (shapeType: string): void => applyField(getSelectedIds(), SHAPE_TYPE, shapeType);
+export const setSelectedFillColor = (fillColor: string | null): void => applyField(getTextSelectionIds(), FILL_COLOR, fillColor);
+export const setSelectedTextColor = (color: string): void => applyField(getTextSelectionIds(), TEXT_COLOR, color);
+export const setSelectedFontSize = (size: number): void => applyField(getTextSelectionIds(), FONT_SIZE, clampInt(size, 1, 999));
+export const setSelectedFontFamily = (family: FontFamily): void => applyField(getTextSelectionIds(), FONT_FAMILY, family);
+export const setSelectedTextAlign = (align: TextAlign): void => applyField(getTextSelectionIds(), TEXT_ALIGN, align);
+export const setSelectedTextAlignV = (alignV: TextAlignV): void => applyField(getTextSelectionIds(), TEXT_ALIGN_V, alignV);
 
-  const objectsById = getObjectsById();
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note')) continue;
-      if (fillColor === null) handle.y.delete('fillColor');
-      else handle.y.set('fillColor', fillColor);
-    }
-  });
+export const incrementFontSize = (): void =>
+  adjustByPresets(getTextSelectionIds(), FONT_SIZE, TEXT_FONT_SIZE_PRESETS, 'up', currentTextFontSize(), 10, 144);
+export const decrementFontSize = (): void =>
+  adjustByPresets(getTextSelectionIds(), FONT_SIZE, TEXT_FONT_SIZE_PRESETS, 'down', currentTextFontSize(), 10, 144);
 
-  // Note fill is per-object, not a device default — skip device-ui persist
-  if (!isNote) {
-    const ui = useDeviceUIStore.getState();
-    if (isText) {
-      ui.setTextFillColor(fillColor);
-    } else {
-      if (fillColor === null) {
-        ui.setFillEnabled(false);
-      } else {
-        ui.setFillColor(fillColor);
-        ui.setFillEnabled(true);
-      }
-    }
-  }
-  useSelectionStore.getState().refreshStyles();
-}
+export const toggleSelectedBold = (): void =>
+  withEditorOr(
+    (e) => {
+      e.chain().focus().toggleBold().run();
+    },
+    () => toggleField(getTextSelectionIds(), BOLD, false),
+  );
 
-// === Width ===
+export const toggleSelectedItalic = (): void =>
+  withEditorOr(
+    (e) => {
+      e.chain().focus().toggleItalic().run();
+    },
+    () => toggleField(getTextSelectionIds(), ITALIC, false),
+  );
 
-export function setSelectedWidth(width: number): void {
-  const ctx = getSelectedHandles();
-  if (!ctx) return;
+export const setSelectedHighlight = (color: string | null): void =>
+  withEditorOr(
+    (e) => {
+      if (color === null) e.chain().focus().unsetHighlight().run();
+      else e.chain().focus().setHighlight({ color }).run();
+    },
+    () => applyField(getTextSelectionIds(), HIGHLIGHT, color),
+  );
 
-  transact(() => {
-    for (const id of ctx.selectedIds) {
-      ctx.objectsById.get(id)?.y.set('width', width);
-    }
-  });
+// === Code Block Actions ===
 
-  const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'connector') {
-    useDeviceUIStore.getState().setConnectorSize(width as ConnectorSizePreset);
-  } else {
-    useDeviceUIStore.getState().setDrawingSize(width as SizePreset);
-  }
-  useSelectionStore.getState().refreshStyles();
-}
+export const setSelectedCodeLanguage = (language: CodeLanguage): void => applyField(getCodeIds(), CODE_LANGUAGE, language);
+export const setSelectedCodeFontSize = (size: number): void => applyField(getCodeIds(), CODE_FONT_SIZE, clampInt(size, 1, 999));
+export const incrementCodeFontSize = (): void =>
+  adjustByPresets(getCodeIds(), CODE_FONT_SIZE, TEXT_FONT_SIZE_PRESETS, 'up', currentCodeFontSize(), 10, 144);
+export const decrementCodeFontSize = (): void =>
+  adjustByPresets(getCodeIds(), CODE_FONT_SIZE, TEXT_FONT_SIZE_PRESETS, 'down', currentCodeFontSize(), 10, 144);
+export const toggleCodeLineNumbers = (): void => toggleField(getCodeIds(), LINE_NUMBERS, true);
+export const toggleCodeHeader = (): void => toggleField(getCodeIds(), HEADER_VISIBLE, true);
+export const toggleCodeOutput = (): void => toggleField(getCodeIds(), OUTPUT_VISIBLE, false);
 
-// === Shape Type ===
-
-export function setSelectedShapeType(shapeType: string): void {
-  const ctx = getSelectedHandles();
-  if (!ctx) return;
-
-  transact(() => {
-    for (const id of ctx.selectedIds) {
-      const handle = ctx.objectsById.get(id);
-      if (handle?.kind !== 'shape') continue;
-      handle.y.set('shapeType', shapeType);
-    }
-  });
-
-  useSelectionStore.getState().refreshStyles();
-}
-
-// === Delete ===
+// === Delete (structural — connector-detach prelude, not a property write) ===
 
 export function deleteSelected(): void {
   const { selectedIds } = useSelectionStore.getState();
@@ -154,400 +135,4 @@ export function deleteSelected(): void {
   });
 
   useSelectionStore.getState().clearSelection();
-}
-
-// === Text Color ===
-
-export function setSelectedTextColor(color: string): void {
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-
-  const objectsById = getObjectsById();
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle) continue;
-      if (handle.kind === 'text') {
-        handle.y.set('color', color);
-      } else if (handle.kind === 'shape' && hasLabel(handle.y)) {
-        handle.y.set('labelColor', color);
-      }
-    }
-  });
-
-  useDeviceUIStore.getState().setTextColor(color);
-  useSelectionStore.getState().refreshStyles();
-}
-
-// === Font Size ===
-
-export function setSelectedFontSize(size: number): void {
-  const clamped = Math.max(1, Math.min(999, Math.round(size)));
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-
-  const objectsById = getObjectsById();
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle) continue;
-      if (handle.kind === 'note') continue; // Notes derive fontSize from scale — skip
-      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
-        handle.y.set('fontSize', clamped);
-      }
-    }
-  });
-
-  useDeviceUIStore.getState().setTextSize(clamped);
-  useSelectionStore.getState().refreshStyles();
-}
-
-export function incrementFontSize(): void {
-  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
-  const current = Math.round(fontSize);
-  if (current < 10) {
-    setSelectedFontSize(10);
-    return;
-  }
-  const next = TEXT_FONT_SIZE_PRESETS.find((p) => p > current);
-  if (next !== undefined) setSelectedFontSize(next);
-}
-
-export function decrementFontSize(): void {
-  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
-  const current = Math.round(fontSize);
-  if (current > 144) {
-    setSelectedFontSize(144);
-    return;
-  }
-  let prev: number | undefined;
-  for (const p of TEXT_FONT_SIZE_PRESETS) {
-    if (p >= current) break;
-    prev = p;
-  }
-  if (prev !== undefined) setSelectedFontSize(prev);
-}
-
-// === Font Family ===
-
-export function setSelectedFontFamily(family: FontFamily): void {
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle) continue;
-      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
-        handle.y.set('fontFamily', family);
-      }
-    }
-  });
-  const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'note') {
-    useDeviceUIStore.getState().setNoteFontFamily(family);
-  } else {
-    useDeviceUIStore.getState().setFontFamily(family);
-  }
-  useSelectionStore.getState().refreshStyles();
-}
-
-// === Text Alignment ===
-
-export function setSelectedTextAlign(align: TextAlign): void {
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-
-  const objectsById = getObjectsById();
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle) continue;
-
-      // Notes: top-left origin, no anchor math
-      if (handle.kind === 'note') {
-        handle.y.set('align', align);
-        continue;
-      }
-
-      // Shapes: frame-based positioning, no anchor math needed
-      if (handle.kind === 'shape') {
-        handle.y.set('align', align);
-        continue;
-      }
-
-      if (handle.kind !== 'text') continue;
-
-      const oldAlign = getAlign(handle.y);
-      if (oldAlign === align) continue;
-
-      const origin = getOrigin(handle.y);
-      const frame = getTextFrame(id);
-      if (!origin || !frame) continue;
-
-      const W = frame[2];
-      const leftX = origin[0] - anchorFactor(oldAlign) * W;
-      handle.y.set('origin', [leftX + anchorFactor(align) * W, origin[1]]);
-      handle.y.set('align', align);
-    }
-  });
-
-  const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'note') {
-    useDeviceUIStore.getState().setNoteAlign(align);
-  } else if (selectionKind === 'shape') {
-    useDeviceUIStore.getState().setShapeAlign(align);
-  } else {
-    useDeviceUIStore.getState().setTextAlign(align);
-  }
-  useSelectionStore.getState().refreshStyles();
-}
-
-export function setSelectedTextAlignV(alignV: TextAlignV): void {
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-
-  const objectsById = getObjectsById();
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle || (handle.kind !== 'note' && handle.kind !== 'shape')) continue;
-      handle.y.set('alignV', alignV);
-    }
-  });
-
-  const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'note') {
-    useDeviceUIStore.getState().setNoteAlignV(alignV);
-  } else if (selectionKind === 'shape') {
-    useDeviceUIStore.getState().setShapeAlignV(alignV);
-  }
-  useSelectionStore.getState().refreshStyles();
-}
-
-// === Inline Formatting (Bold / Italic / Highlight) ===
-
-function formatFragment(fragment: Y.XmlFragment, attrs: Record<string, unknown>): void {
-  fragment.forEach((para) => {
-    if (!(para instanceof Y.XmlElement)) return;
-    para.forEach((child) => {
-      if (child instanceof Y.XmlText && child.length > 0) {
-        child.format(0, child.length, attrs);
-      }
-    });
-  });
-}
-
-export function toggleSelectedBold(): void {
-  const editor = textTool.getEditor();
-  if (editor) {
-    editor.chain().focus().toggleBold().run();
-    return;
-  }
-
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-  const { bold: allBold } = computeUniformInlineStyles(ids);
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
-      const content = getContent(handle.y);
-      if (content) formatFragment(content, { bold: allBold ? null : true });
-    }
-  });
-}
-
-export function toggleSelectedItalic(): void {
-  const editor = textTool.getEditor();
-  if (editor) {
-    editor.chain().focus().toggleItalic().run();
-    return;
-  }
-
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-  const { italic: allItalic } = computeUniformInlineStyles(ids);
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
-      const content = getContent(handle.y);
-      if (content) formatFragment(content, { italic: allItalic ? null : true });
-    }
-  });
-}
-
-export function setSelectedHighlight(color: string | null): void {
-  const editor = textTool.getEditor();
-  if (editor) {
-    if (color === null) editor.chain().focus().unsetHighlight().run();
-    else editor.chain().focus().setHighlight({ color }).run();
-    return;
-  }
-
-  const ids = getTextIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
-      const content = getContent(handle.y);
-      if (content) formatFragment(content, { highlight: color ? { color } : null });
-    }
-  });
-}
-
-// === Code Block Actions ===
-
-/** Resolve code IDs: prefer codeEditingId, fall back to selectedIds. */
-function getCodeIds(): string[] {
-  const { codeEditingId, selectedIds } = useSelectionStore.getState();
-  return codeEditingId ? [codeEditingId] : selectedIds;
-}
-
-export function setSelectedCodeLanguage(language: CodeLanguage): void {
-  const ids = getCodeIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'code') continue;
-      handle.y.set('language', language);
-    }
-  });
-
-  useSelectionStore.getState().refreshStyles();
-}
-
-export function incrementCodeFontSize(): void {
-  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? 14;
-  const current = Math.round(fontSize);
-  if (current < 10) {
-    setSelectedCodeFontSize(10);
-    return;
-  }
-  const next = TEXT_FONT_SIZE_PRESETS.find((p) => p > current);
-  if (next !== undefined) setSelectedCodeFontSize(next);
-}
-
-export function decrementCodeFontSize(): void {
-  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? 14;
-  const current = Math.round(fontSize);
-  if (current > 144) {
-    setSelectedCodeFontSize(144);
-    return;
-  }
-  let prev: number | undefined;
-  for (const p of TEXT_FONT_SIZE_PRESETS) {
-    if (p >= current) break;
-    prev = p;
-  }
-  if (prev !== undefined) setSelectedCodeFontSize(prev);
-}
-
-export function setSelectedCodeFontSize(size: number): void {
-  const clamped = Math.max(1, Math.min(999, Math.round(size)));
-  const ids = getCodeIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'code') continue;
-      const curFs = getFontSize(handle.y, 14);
-      const curW = (handle.y.get('width') as number) ?? 570;
-      handle.y.set('fontSize', clamped);
-      handle.y.set('width', Math.round(curW * (clamped / curFs)));
-    }
-  });
-
-  useSelectionStore.getState().refreshStyles();
-}
-
-export function toggleCodeLineNumbers(): void {
-  const ids = getCodeIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-
-  // Read current value from first code object
-  let current = true;
-  for (const id of ids) {
-    const handle = objectsById.get(id);
-    if (handle?.kind === 'code') {
-      current = getLineNumbers(handle.y);
-      break;
-    }
-  }
-  const newValue = !current;
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'code') continue;
-      handle.y.set('lineNumbers', newValue);
-    }
-  });
-
-  useDeviceUIStore.getState().setCodeLineNumbers(newValue);
-  useSelectionStore.getState().refreshStyles();
-}
-
-export function toggleCodeHeader(): void {
-  const ids = getCodeIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-
-  let current = true;
-  for (const id of ids) {
-    const handle = objectsById.get(id);
-    if (handle?.kind === 'code') {
-      current = getHeaderVisible(handle.y);
-      break;
-    }
-  }
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'code') continue;
-      handle.y.set('headerVisible', !current);
-    }
-  });
-
-  useSelectionStore.getState().refreshStyles();
-}
-
-export function toggleCodeOutput(): void {
-  const ids = getCodeIds();
-  if (ids.length === 0) return;
-  const objectsById = getObjectsById();
-
-  let current = false;
-  for (const id of ids) {
-    const handle = objectsById.get(id);
-    if (handle?.kind === 'code') {
-      current = getOutputVisible(handle.y);
-      break;
-    }
-  }
-
-  transact(() => {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (handle?.kind !== 'code') continue;
-      handle.y.set('outputVisible', !current);
-    }
-  });
-
-  useSelectionStore.getState().refreshStyles();
 }

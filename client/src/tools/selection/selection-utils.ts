@@ -1,23 +1,25 @@
-import type { FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
-import {
-  getAlign,
-  getAlignV,
-  getColor,
-  getFillColor,
-  getFontFamily,
-  getFontSize,
-  getHeaderVisible,
-  getLabelColor,
-  getLanguage,
-  getOutputVisible,
-  getShapeType,
-  getWidth,
-  hasLabel,
-} from '@/core/accessors';
+import { hasLabel } from '@/core/accessors';
 import { getInlineStyles } from '@/core/text/text-system';
 import type { ObjectKind } from '@/core/types/objects';
 import { OBJECT_KINDS } from '@/core/types/objects';
 import { getObjectsById } from '@/runtime/room-runtime';
+import {
+  CODE_FONT_SIZE,
+  CODE_LANGUAGE,
+  COLOR,
+  collectHandles,
+  FILL_COLOR,
+  FONT_FAMILY,
+  FONT_SIZE,
+  foldField,
+  HEADER_VISIBLE,
+  OUTPUT_VISIBLE,
+  SHAPE_TYPE,
+  TEXT_ALIGN,
+  TEXT_ALIGN_V,
+  TEXT_COLOR,
+  WIDTH,
+} from './selection-field-table';
 import type { InlineStyles, KindCounts, SelectedStyles, SelectionKind } from './types';
 import { EMPTY_STYLES } from './types';
 
@@ -76,166 +78,49 @@ export function computeSelectionComposition(ids: string[]) {
 // === Style Computation ===
 
 /**
- * Compute unified style snapshot for a homogeneous selection.
- * Mixed selections → EMPTY_STYLES immediately (zero parsing).
- * Single-pass with early break once all fields are resolved.
+ * Unified style snapshot via declarative `foldField` composition over the field
+ * table. Each named aggregate handles "first observed value, mixed flag, second
+ * for split UI". Code-only fields gate on `kind === 'code'` so non-code selections
+ * don't surface stale values.
  */
 export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyles {
-  if (kind === 'none' || kind === 'mixed' || kind === 'image' || kind === 'bookmark' || ids.length === 0) return EMPTY_STYLES;
-  const objectsById = getObjectsById();
-
-  // Code blocks: track fontSize + language + chrome visibility
-  if (kind === 'code') {
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle || handle.kind !== 'code') continue;
-      return {
-        ...EMPTY_STYLES,
-        fontSize: Math.round(getFontSize(handle.y, 14)),
-        codeLanguage: getLanguage(handle.y),
-        codeHeaderVisible: getHeaderVisible(handle.y),
-        codeOutputVisible: getOutputVisible(handle.y),
-      };
-    }
+  if (kind === 'none' || kind === 'mixed' || kind === 'image' || kind === 'bookmark' || ids.length === 0) {
     return EMPTY_STYLES;
   }
+  const handles = collectHandles(ids);
+  if (handles.length === 0) return EMPTY_STYLES;
 
-  // Notes: track fillColor, fontFamily, textAlign, textAlignV (fontSize is derived, not stored)
-  if (kind === 'note') {
-    let firstFill: string | null = null;
-    let firstFontFamily: FontFamily | null = null;
-    let firstAlign: TextAlign | null = null;
-    let firstAlignV: TextAlignV | null = null;
-    let alignMixed = false;
-    let alignVMixed = false;
-    let first = true;
-
-    for (const id of ids) {
-      const handle = objectsById.get(id);
-      if (!handle || handle.kind !== 'note') continue;
-      if (first) {
-        firstFill = getFillColor(handle.y) ?? null;
-        firstFontFamily = getFontFamily(handle.y);
-        firstAlign = getAlign(handle.y);
-        firstAlignV = getAlignV(handle.y);
-        first = false;
-      } else {
-        if (!alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
-        if (!alignVMixed && getAlignV(handle.y) !== firstAlignV) alignVMixed = true;
-        if (alignMixed && alignVMixed) break;
-      }
-    }
-    if (first) return EMPTY_STYLES;
-    return {
-      ...EMPTY_STYLES,
-      fillColor: firstFill,
-      fontFamily: firstFontFamily,
-      textAlign: alignMixed ? null : firstAlign,
-      textAlignV: alignVMixed ? null : firstAlignV,
-    };
-  }
-
-  const trackWidth = kind !== 'text';
-  const trackFill = kind === 'shape' || kind === 'text';
-  const trackShapeType = kind === 'shape';
-  const trackTextAlign = kind === 'text' || kind === 'shape';
-  const needsTextFields = kind === 'text' || kind === 'shape';
-
-  let firstColor: string | null = null;
-  let colorMixed = false;
-  let colorSecond: string | null = null;
-  let firstWidth: number | null = null;
-  let widthMixed = false;
-  let firstFill: string | null = null;
-  let fillMixed = false;
-  let fillSecond: string | null = null;
-  let firstShapeType: string | null = null;
-  let shapeTypeMixed = false;
-  let firstFontSize: number | null = null;
-  let firstAlign: TextAlign | null = null;
-  let alignMixed = false;
-  let firstAlignV: TextAlignV | null = null;
-  let alignVMixed = false;
-  let firstFontFamily: FontFamily | null = null;
-  let firstLabelColor: string | null = null;
-  let textFieldsSet = false;
-  let first = true;
-
-  for (const id of ids) {
-    const handle = objectsById.get(id);
-    if (!handle) continue;
-
-    if (first) {
-      firstColor = getColor(handle.y);
-      if (trackWidth) firstWidth = getWidth(handle.y);
-      if (trackFill) firstFill = getFillColor(handle.y) ?? null;
-      if (trackShapeType) firstShapeType = getShapeType(handle.y);
-      first = false;
-    } else {
-      if (!colorMixed && getColor(handle.y) !== firstColor) {
-        colorMixed = true;
-        colorSecond = getColor(handle.y);
-      }
-      if (trackWidth && !widthMixed && getWidth(handle.y) !== firstWidth) widthMixed = true;
-      if (trackFill && !fillMixed && (getFillColor(handle.y) ?? null) !== firstFill) {
-        fillMixed = true;
-        fillSecond = getFillColor(handle.y) ?? null;
-      }
-      if (trackShapeType && !shapeTypeMixed && getShapeType(handle.y) !== firstShapeType) shapeTypeMixed = true;
-      if (trackTextAlign && !alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
-    }
-
-    // Text fields: first object with text data wins (text objects always, shapes only if labeled)
-    if (needsTextFields && !textFieldsSet) {
-      if (handle.kind === 'text') {
-        firstLabelColor = getColor(handle.y);
-        firstFontSize = Math.round(getFontSize(handle.y));
-        firstFontFamily = getFontFamily(handle.y);
-        if (trackTextAlign) firstAlign = getAlign(handle.y);
-        textFieldsSet = true;
-      } else if (handle.kind === 'shape' && hasLabel(handle.y)) {
-        firstLabelColor = getLabelColor(handle.y);
-        firstFontSize = Math.round(getFontSize(handle.y));
-        firstFontFamily = getFontFamily(handle.y);
-        if (trackTextAlign) {
-          firstAlign = getAlign(handle.y, 'center');
-          firstAlignV = getAlignV(handle.y);
-        }
-        textFieldsSet = true;
-      }
-    } else if (kind === 'shape' && handle.kind === 'shape' && hasLabel(handle.y)) {
-      // Track alignment mismatch across labeled shapes
-      if (!alignMixed && getAlign(handle.y, 'center') !== firstAlign) alignMixed = true;
-      if (!alignVMixed && getAlignV(handle.y) !== firstAlignV) alignVMixed = true;
-    }
-
-    if (
-      colorMixed &&
-      (!trackWidth || widthMixed) &&
-      (!trackFill || fillMixed) &&
-      (!trackShapeType || shapeTypeMixed) &&
-      (!trackTextAlign || alignMixed)
-    )
-      break;
-  }
+  const color = foldField(handles, COLOR);
+  const width = foldField(handles, WIDTH);
+  const fill = foldField(handles, FILL_COLOR);
+  const shape = foldField(handles, SHAPE_TYPE);
+  const fontSize = foldField(handles, FONT_SIZE);
+  const codeFs = foldField(handles, CODE_FONT_SIZE);
+  const align = foldField(handles, TEXT_ALIGN);
+  const alignV = foldField(handles, TEXT_ALIGN_V);
+  const family = foldField(handles, FONT_FAMILY);
+  const label = foldField(handles, TEXT_COLOR);
+  const lang = foldField(handles, CODE_LANGUAGE);
+  const header = foldField(handles, HEADER_VISIBLE);
+  const output = foldField(handles, OUTPUT_VISIBLE);
 
   return {
-    color: firstColor ?? '#262626',
-    colorMixed,
-    colorSecond: colorMixed ? colorSecond : null,
-    width: trackWidth ? (widthMixed ? null : firstWidth) : null,
-    fillColor: trackFill ? (firstFill ?? null) : null,
-    fillColorMixed: trackFill && fillMixed,
-    fillColorSecond: trackFill && fillMixed ? fillSecond : null,
-    shapeType: trackShapeType ? (shapeTypeMixed ? null : firstShapeType) : kind === 'text' ? 'text' : null,
-    fontSize: needsTextFields ? firstFontSize : null,
-    textAlign: trackTextAlign ? (alignMixed ? null : firstAlign) : null,
-    textAlignV: kind === 'shape' ? (alignVMixed ? null : firstAlignV) : null,
-    fontFamily: needsTextFields ? firstFontFamily : null,
-    labelColor: needsTextFields ? firstLabelColor : null,
-    codeLanguage: null,
-    codeHeaderVisible: null,
-    codeOutputVisible: null,
+    color: color.value ?? '#262626',
+    colorMixed: color.mixed,
+    colorSecond: color.mixed ? color.second : null,
+    width: width.mixed ? null : width.value,
+    fillColor: fill.value,
+    fillColorMixed: fill.mixed,
+    fillColorSecond: fill.mixed ? fill.second : null,
+    shapeType: shape.mixed ? null : (shape.value ?? (kind === 'text' ? 'text' : null)),
+    fontSize: kind === 'code' ? codeFs.value : fontSize.value,
+    textAlign: align.mixed ? null : align.value,
+    textAlignV: alignV.mixed ? null : alignV.value,
+    fontFamily: family.value,
+    labelColor: label.value,
+    codeLanguage: kind === 'code' ? (lang.mixed ? null : lang.value) : null,
+    codeHeaderVisible: kind === 'code' ? (header.mixed ? null : header.value) : null,
+    codeOutputVisible: kind === 'code' ? (output.mixed ? null : output.value) : null,
   };
 }
 
@@ -268,6 +153,9 @@ export function inlineStylesEqual(a: InlineStyles, b: InlineStyles): boolean {
  * Aggregate inline styles from text-system cache across all text IDs.
  * All must be bold for bold:true, same for italic.
  * Highlight must be identical non-null across all for highlightColor to be non-null.
+ *
+ * Stays standalone — its bool-AND-fold over `allBold`/`allItalic` doesn't fit
+ * `Aggregate<V>`'s "first-or-mixed" shape.
  */
 export function computeUniformInlineStyles(ids: string[]): InlineStyles {
   const objectsById = getObjectsById();

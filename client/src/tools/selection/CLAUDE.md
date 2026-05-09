@@ -14,8 +14,9 @@ SelectTool + transform engine + selection store + hit testing + transform render
 | `tools/selection/transform.ts` | `TransformController` — owns scale + translate + **endpoint drag** modes, structural traits, mapped types (incl. `KindWithBBoxGeo`), dispatch tables, apply/commit/freeze, `getEndpointDragEntry()` accessor, controller-owned `injectIds` buffer, module getters |
 | `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState`, `ScaleCtx`, `SelectedStyles`, `InlineStyles`. `EndpointDragTransform` carries renderer/UI fields only. |
 | `tools/selection/connector-topology.ts` | `ConnectorEntry` discriminated union (static / translate / reroute / endpoint-drag synthetic), per-pipeline Side types, `newTopologyBuilder`, `runTopologyScale/Translate`, `commitTopology`, `cancelTopology`, `fillFrameFromBind` |
-| `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeStyles`, `computeUniformInlineStyles` |
-| `tools/selection/selection-actions.ts` | Mutation functions for context menu (see `components/context-menu/CLAUDE.md`) |
+| `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeStyles` (declarative `foldField` composition), `computeUniformInlineStyles` |
+| `tools/selection/selection-actions.ts` | 22 mutation wrappers for context menu — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` call (see `components/context-menu/CLAUDE.md`) |
+| `tools/selection/selection-field-table.ts` | `FieldDescriptor<V>` type + `Aggregate<V>` + `foldField`/`applyField`/`toggleField`/`adjustByPresets`/`withEditorOr` primitives + ~17 typed descriptors (one per property). Single source of truth for read/write/persist/accept per kind |
 | `stores/selection-store.ts` | Zustand store, orchestrates `TransformController`, `computeSelectionBounds()` |
 | `core/geometry/scale-system.ts` | Pure math atoms: `scaleAround`, `uniformFactor`, `preservePosition[Mut]`, `edgePinPosition1D`, `computeReflowWidth`, `scaleBBoxUniform/Edges`, `derivePaddedFrame` |
 | `core/geometry/bounds.ts` | Bbox/frame helpers + mutating offset primitives (`offsetBBox`, `offsetFrame`, `offsetPoint`, `setBBoxXYWH`) |
@@ -504,11 +505,48 @@ Only in connector mode (single connector selected). **Owned by `TransformControl
 
 ---
 
-## Selection Utils (`selection-utils.ts`)
+## Selection Utils + Field Table
 
-- `computeSelectionComposition(ids)` — single-pass `counts[handle.kind]++` → `KindCounts = Record<ObjectKind, number> & { total }`. Derive `selectionKind` by counting non-zero buckets.
-- `computeStyles(ids, kind)` — returns `EMPTY_STYLES` for `none`/`mixed`/`image`/`bookmark`.
-- `computeUniformInlineStyles(ids)` — aggregates bold/italic/highlight across text/labeled-shape/note.
+Two collaborating files:
+
+- **`selection-utils.ts`** — composition + style aggregation:
+  - `computeSelectionComposition(ids)` — single-pass `counts[handle.kind]++` → `KindCounts = Record<ObjectKind, number> & { total }`. Derive `selectionKind` by counting non-zero buckets.
+  - `computeStyles(ids, kind)` — declarative `foldField` composition over the field table. Returns `EMPTY_STYLES` for `none`/`mixed`/`image`/`bookmark`. Code-only fields gate on `kind === 'code'` so non-code selections don't surface stale values.
+  - `computeUniformInlineStyles(ids)` — bold/italic/highlight across text/labeled-shape/note. Stays standalone (its bool-AND-fold doesn't fit `Aggregate<V>`'s "first-or-mixed" shape).
+
+- **`selection-field-table.ts`** — single source of truth for "what fields exist, how they're read/written/persisted per kind". Adding a property = appending one `FieldDescriptor` entry.
+
+```ts
+interface FieldDescriptor<V> {
+  read:    { [K in ObjectKind]?: (h: ObjectHandle) => V | undefined };
+  write:   { [K in ObjectKind]?: (h: ObjectHandle, v: V) => void };
+  accepts?: { [K in ObjectKind]?: (h: ObjectHandle) => boolean };
+  persist?: { [K in SelectionKind]?: (v: V) => void };
+  equals?:  (a: V, b: V) => boolean;
+}
+interface Aggregate<V> { value: V | null; mixed: boolean; second: V | null }
+```
+
+**Primitives:**
+- `foldField(handles, f) → Aggregate<V>` — first-or-mixed read aggregation.
+- `applyField(ids, f, value)` — opens one `transact()`, dispatches per-kind writes, persists by `SelectionKind` (skipped on `mixed`/`none`), refreshes styles. Multi-key writes (e.g. `TEXT_ALIGN`'s origin recompute, `CODE_FONT_SIZE`'s proportional width) live inside the writer closure — atomic inside the open transact.
+- `toggleField(ids, f, fallback)` — first-applicable read → `applyField(!current)`. Replaces the 3 byte-identical code-toggle clones (line-numbers / header / output) and bold/italic.
+- `adjustByPresets(ids, f, presets, dir, current, min, max)` — clamp or step through preset list. Replaces both inc/dec preset pairs (text + code).
+- `withEditorOr(whenEditor, otherwise)` — Tiptap fast-path for bold/italic/highlight. The field layer never depends on Tiptap.
+
+**Descriptors** (~17): `COLOR`, `WIDTH`, `FILL_COLOR`, `SHAPE_TYPE`, `TEXT_COLOR`, `FONT_SIZE`, `FONT_FAMILY`, `TEXT_ALIGN`, `TEXT_ALIGN_V`, `BOLD`, `ITALIC`, `HIGHLIGHT`, `CODE_LANGUAGE`, `CODE_FONT_SIZE`, `LINE_NUMBERS`, `HEADER_VISIBLE`, `OUTPUT_VISIBLE`. All reuse existing accessors and persist sinks.
+
+**Source-of-ids selection** (`getSelectedIds()` / `getTextSelectionIds()` / `getCodeIds()`) lives at the action layer in `selection-actions.ts`. It's "who's calling," not "what the field is." Trying to model it on the descriptor adds the wrong axis.
+
+**Correlated-union cast** at the dispatch boundary (`(f as AnyDescriptor).write[h.kind]`) — one cast per loop with `// biome-ignore` mirroring `transform.ts:714` and `object-query.ts:83`. The mapped table proves correctness at definition.
+
+**Adding a property** is now five mechanical edits, no control-flow change:
+1. Append one `FieldDescriptor` entry to `selection-field-table.ts`.
+2. Add one line to `selection-actions.ts`: `export const setSelectedX = (v) => applyField(getSelectedIds(), X, v);`.
+3. Add one `foldField` call + one record field to `computeStyles` in `selection-utils.ts`.
+4. Add the field to `SelectedStyles` + `EMPTY_STYLES` + `stylesEqual` in `types.ts`.
+
+`deleteSelected` stays imperative — it's a structural op with a connector-detach prelude, not a property write. Uniformity for its own sake is anti-leverage.
 
 ---
 

@@ -79,8 +79,9 @@ All paths relative to `client/src/` unless noted.
 | `tools/selection/SelectTool.ts` | Selection state machine, translate, scale, connector endpoints, code/text editing entry |
 | `tools/selection/transform.ts` | TransformController, entry system, mapped per-kind dispatch tables |
 | `tools/selection/types.ts` | Shared selection types (TransformState, entry/dispatch helpers) |
-| `tools/selection/selection-utils.ts` | Selection composition, bounds, style computation |
-| `tools/selection/selection-actions.ts` | Selection mutations (color, fill, width, shape, text formatting, code language/fontSize) |
+| `tools/selection/selection-utils.ts` | Selection composition, bounds, style computation (declarative `foldField` over the field table) |
+| `tools/selection/selection-actions.ts` | 22 mutation wrappers — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` call |
+| `tools/selection/selection-field-table.ts` | `FieldDescriptor<V>` typed table (~17 entries) + `foldField`/`applyField`/`toggleField`/`adjustByPresets`/`withEditorOr` primitives |
 | `tools/selection/connector-topology.ts` | Builds the connector topology graph (attached connectors per selected shape) |
 | `tools/DrawingTool.ts` | Pen, highlighter, shape drawing. `core/geometry/recognizer/hold-detector.ts` (550ms) fires the $P recognizer on dwell. |
 | `tools/EraserTool.ts` | Geometry-aware hit testing + deletion |
