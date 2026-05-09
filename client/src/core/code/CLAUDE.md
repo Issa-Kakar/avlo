@@ -47,7 +47,7 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 - No `color`/`fillColor` — dark theme is fixed chrome
 - Empty blocks are NOT deleted on close (unlike text) — visible dark bg + line numbers
 
-**Title semantics:** `undefined` → show `"Untitled.{ext}"` fallback (via `CODE_EXTENSIONS` map). `''` → user deliberately cleared, show nothing. `'Foo'` → show "Foo". Stored via `saveTitle()` on blur; `??` (not `||`) used everywhere for fallback to preserve empty string.
+**Title semantics:** `undefined` → show literal `"Untitled"` fallback (legacy/back-compat — newly created blocks always commit `title: 'Untitled'` directly). `''` → user deliberately cleared, show nothing. `'Foo'` → show "Foo". Stored via `saveTitle()` on blur; `??` (not `||`) used everywhere for fallback to preserve empty string. The fallback no longer references the language extension — title and language are independent.
 
 **Typed accessor:** `getCodeProps(y)` → `CodeProps | null` (in `core/accessors.ts`). Returns `{ content: Y.Text, origin, fontSize, width, language, lineNumbers, title, headerVisible, outputVisible, output }`. Also: `getLineNumbers(y, fallback = true)`, `getHeaderVisible(y, fallback = true)`, `getOutputVisible(y, fallback = false)`, `getCodeOutput(y)`.
 
@@ -62,15 +62,19 @@ Four pooled buffers per id (`CacheEntry`), allocation-free hot paths:
 | Tier | Type | Slots | Owner |
 |------|------|-------|-------|
 | Source | `CodeSource` | `fullText: string` + `lineStart: Uint32Array` (sentinel `text.length+1`) | `buildCodeSourceInto` |
-| Spans  | `CodeSpans`  | flat `spanData: Uint16Array` of triples + `spanLineStart: Uint32Array` half-open ranges | `syncTokenizeInto` (main) / worker (transfer-swap) |
-| Layout | `CodeLayout` | parallel `vlSrcIdx` / `vlFrom` / `vlLen` `Uint32Array`s — no `vlText` slot | `layoutCodeSourceInto` |
+| Spans  | `CodeSpans`  | flat `spanData: Uint16Array` of triples + `spanLineStart: Uint32Array` half-open ranges + `spanWhitespace: Uint8Array` (one byte per triple) | `syncTokenizeInto` (main) / worker (transfer-swap) |
+| Layout | `CodeLayout` | parallel `vlSrcIdx` / `vlFrom` / `vlLen` `Uint32Array`s + cached `normalFont`/`boldFont`/`chromeFont` strings | `layoutCodeSourceInto` |
 | Output | `CodeOutput` | `text: string \| null` + `lineStart: Uint32Array` | `ensureOutputCache` (identity-checked rebuild) |
+
+**Whitespace flag pre-computation.** Every emitted span triple gets a parallel `1`/`0` byte in `spanWhitespace` (indexed by `i / 3`): `1 = entire run is space/tab, 0 = has ink`. Computed once during tokenization (`writePackedTriples` scans `lineText` per emitted run) so the renderer can skip non-ink triples without a per-frame `charCodeAt` loop. Worker transfers a third ArrayBuffer alongside `spanData` and `spanLineStart`.
+
+**Cached font strings.** `CodeLayout` caches `${weight} ${px}px ${family}` template strings — recomputed only when `fontSize` changes (gated inside `layoutCodeSourceInto`). The renderer reads from the layout instead of allocating three template strings per call.
 
 All buffers grow but never shrink (capacity-doubling). `out?` parameters mirror text-system's `parseAndTokenize` / `measureTokenizedContent` / `layoutMeasuredContent` — reused across content edits, font/width changes, and reflow gestures. Per-pointermove allocations during E/W reflow: zero.
 
 **Style enum (`S`):** 13 values (DEFAULT=0 through INVALID=12), `const enum` for zero-cost inlining. Colors looked up via `PALETTE[style]`, bold via `isBold(style)` (true for indices 1-3: KEYWORD, DEF_KW, MODIFIER).
 
-**`packRunSpansInto(out, lineLen, buf, count, runOffset)`:** Pre-counts gap-filled triples (`countPackedTriples`), grows `out.spanData` if needed, and writes via `writePackedTriples`. Returns the new write offset. The worker uses `writePackedTriples` directly against its own growing buffer to bypass the CodeSpans struct.
+**`packRunSpansInto(out, lineLen, buf, count, runOffset, lineText, lineFromAbs)`:** Pre-counts gap-filled triples (`countPackedTriples`), grows `out.spanData` (and parallel `out.spanWhitespace`) if needed, and writes via `writePackedTriples`. Each emitted triple's whitespace flag is computed by scanning `lineText[lineFromAbs + from .. lineFromAbs + from + len)`. Returns the new write offset. The worker uses `writePackedTriples` directly against its own growing buffers (`_workerSpanData` + `_workerSpanWhitespace`) to bypass the CodeSpans struct.
 
 **Memory:** Per visual line is 12 bytes (3 × Uint32) vs ~40+ bytes for the prior `VisualLine` object (V8 header + 3 slots + retained substring). Spans dropped a `Uint16Array[]` outer container and N per-line ArrayBuffers in favor of a single flat `Uint16Array` + `Uint32Array` index.
 
@@ -164,6 +168,10 @@ Continuation lines have `vlFrom > 0` (no gutter number). The renderer clips flat
 ## Theme — CoolGlow Palette
 
 Single fixed dark theme (no user-selectable themes). All constants in `code-tokens.ts`, consumed by sync tokenizer, Lezer worker, CM theme, and canvas renderer.
+
+### Run Button — Geometry Helper
+
+`playButtonGeom(fontSize) → { btnR, triW, triH, triXOffset }` in `code-tokens.ts` is the single source of truth for the play-button triangle. Both the canvas renderer (`renderCodeLayout`'s header section) and the DOM SVG (`createHeaderDiv` in `CodeTool.ts`) read from it, so the two stay pixel-aligned at every zoom. Triangle is centroid-balanced — `triXOffset = triW / 3` shifts the triangle so its geometric centroid sits at `btnCx`. SVG path `M0 0L17 10L0 20Z` (viewBox `0 0 17 20`, aspect ratio 17:20 = 0.85) maps cleanly to the canvas triangle's `triW : triH = 0.85 : 1`.
 
 ### Chrome
 | Constant | Hex | Purpose |
@@ -339,14 +347,14 @@ Zero-allocation span iteration — no intermediate objects. Steps:
 
 1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`. Height = `blockHeight(...)` (includes chrome when present, uses `outputCache` for line count when provided)
 2. **Separator helper (`drawSep`):** Pixel-snapped hairline — reads `ctx.getTransform()`, converts Y to device coords via `Math.round()`, draws exactly `dpr` device pixels (= 1 CSS pixel) with `resetTransform()`. Prevents sub-pixel anti-aliasing from halving apparent separator opacity
-3. **Header bar** (when `title !== undefined`): Separator at `originY + headerBarHeight(fs)`. Title text at chrome font size, vertically centered. Play button: `CODE_PLAY_BG` circle (radius `fs * 0.5`) + `CODE_PLAY_GREEN` triangle, right-aligned
+3. **Header bar** (when `title !== undefined`): Separator at `originY + headerBarHeight(fs)`. Title text at chrome font size, vertically centered. Play button: `CODE_PLAY_BG` circle + `CODE_PLAY_GREEN` triangle (geometry from `playButtonGeom(fs)`, centroid-balanced via `triXOffset = triW/3`), right-aligned
 4. **Code content:** All lines offset down by `headerBarHeight(fs)` when header present (`codeTop = originY + hh`)
 5. **Per visual line:** Compute `baseY = codeTop + padTop + i * lineHeight + baselineOffset`. Read `srcIdx = vlSrcIdx[i]`, `vFrom = vlFrom[i]`, `vTo = vFrom + vlLen[i]` from the SOA layout
 6. **Gutter:** When `layout.lineNumbers` is true and `vlFrom[i] === 0`, right-align line number within gutter area. Skipped entirely when lineNumbers is false
-7. **Code text:** Iterate flat span triples in `[spanLineStart[srcIdx], spanLineStart[srcIdx+1])` with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `fullText.substring(lineStartChar + drawFrom, lineStartChar + drawTo)` for fillText (V8 SlicedString — single allocation per painted span). Whitespace checked via `charCodeAt` (no regex)
+7. **Code text:** Iterate flat span triples in `[spanLineStart[srcIdx], spanLineStart[srcIdx+1])` with inline `[vFrom, vTo)` clipping. **Whitespace skip:** if `spanWhitespace[si/3]` is `1`, advance `x` by `drawLen * cw` and continue — no font set, no fillStyle set, no fillText. Otherwise, `PALETTE[style]` for color, layout's cached `boldFont`/`normalFont` (no string allocation per call), `fullText.substring(lineStartChar + drawFrom, lineStartChar + drawTo)` for fillText (V8 SlicedString — single allocation per painted span)
 8. **Batching:** Font and fillStyle only set on change (`prevFont` tracking)
 9. **Placeholder:** After the loop, if `source.lineCount === 1 && source.fullText.length === 0`, draw grey "Type something..." at first line position
-10. **Output panel** (when `output !== undefined`): Separator at code bottom. "Output" label at chrome font size, vertically centered. Output text lines (max `MAX_OUTPUT_CANVAS_LINES`) iterated via `outputCache.lineStart` when supplied — falls back to a no-allocation `indexOf('\n')` walk for first-paint paths
+10. **Output panel** (when `output !== undefined`): Separator at code bottom. "Output" label at chrome font size, vertically centered. Output text lines (max `MAX_OUTPUT_CANVAS_LINES`) iterated via `outputCache.lineStart`. Callers (`drawCode` + scale paths in `objects.ts`, `computeCodeBBox`) always pass an eagerly-built `outputCache` when output is shown, so the renderer has no fallback branch.
 
 ---
 
@@ -467,19 +475,30 @@ Registered in `tool-registry.ts` as singleton `codeTool`, mapped to `'code'` too
 
 ### Object Creation
 
-Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2` (includes `headerBarHeight` in centering). Default language: `typescript`. Width from `getDefaultWidth(fontSize)`. fontSize from `useDeviceUIStore.textSize`. `lineNumbers` from `useDeviceUIStore.codeLineNumbers`. New blocks set `headerVisible: true`, `outputVisible: false`. `title` and `output` are NOT set (undefined → defaults).
+Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2` (includes `headerBarHeight` in centering when the header is visible). Default language: `typescript`. Width from `getDefaultWidth(fontSize)`. fontSize from `useDeviceUIStore.textSize`. `lineNumbers` from `useDeviceUIStore.codeLineNumbers`. `headerVisible` from `useDeviceUIStore.codeHeaderVisible` (persisted: toggling header in the context menu writes through to the store via the `HEADER_VISIBLE` field descriptor's `persist` hook, so the next new block honors the user's preference). `title: 'Untitled'` is committed at creation; `outputVisible: false`; `output` is NOT set (undefined).
 
-### Editor Lifecycle
+### Editor Lifecycle — Atomic Mount
 
-**Mount:** Close existing editor if open → create container div → set screen-space dimensions + CSS vars → create header div if `headerVisible` → append to `editorHost` → lazy-load CM modules (parallel `Promise.all`) → create session UM → build `EditorState` with extensions → create `EditorView` → create output div if `outputVisible` → **focus routing** (see below) → extract `syncConf` → seal main UM (captureTimeout → 600s) → register Y.Map observer → `beginCodeEditing(objectId)` → invalidate world.
+The async CM import window (~500ms cold) used to fall between `appendChild(container)` and the EditorView construction. Result: a visible flash of an empty container after the canvas had already suppressed its rendering. The atomic mount eliminates this:
+
+**Mount (six phases):**
+1. **Off-DOM build.** Create container, set screen-space dimensions + CSS vars, build header div (if `headerVisible`). Container is detached — code stays painted on the canvas, no flicker.
+2. **Mark intent.** Set `pendingMountId = objectId`.
+3. **Lazy CM imports.** `Promise.all` over CM modules (the only async window).
+4. **Post-await abort check.** If `pendingMountId !== objectId` (re-entrancy: a newer `startEditing` overwrote it), or `getHandle(objectId)` is null/wrong-kind (deleted during the wait), drop the half-built container (still off-DOM, GC handles it) and return without mutating shared state.
+5. **Build CM state + view.** Session UM, language compartment, line-numbers compartment, EditorState, `new EditorView({ state, parent: container })`. CM renders into the off-DOM container. Build output div if `outputVisible`.
+6. **ATOMIC SWAP.** Single tick: `host.appendChild(container)` → `beginCodeEditing(objectId)` (canvas suppresses code, overlay clears handles) → assign `this.editorView` / `this.container` / `this.objectId`, clear `this.pendingMountId` → `invalidateOverlay()` + `invalidateWorldAll()`. From the user's perspective, in one frame: code disappears from canvas + handles disappear + DOM appears with fully rendered CM.
+7. **Post-swap wiring.** Focus routing, syncConf extraction, main UM sealing, Y.Map observer, document-level handlers.
+
+**Re-entrancy guard.** A second `startEditing` while one is pending overwrites `pendingMountId`. The earlier mount's post-await check then sees a stale id and bails. `commitAndClose` also clears `pendingMountId` so a programmatic close during the await window aborts the mount cleanly.
 
 **Focus routing on mount:** If `pendingEntryWorld` Y < `origin[1] + headerBarHeight(fontSize)` AND header visible → focus title input. Else if entry world exists → focus CM, place cursor at click position via `posAtCoords()` in rAF. Else (new block) → focus CM.
 
-**Close (`commitAndClose`):** `saveTitle()` → null `titleInput` (prevents blur re-entry during DOM removal) → remove event handlers → unseal main UM (captureTimeout → 500ms) → unobserve Y.Map → destroy EditorView → clear session UM → remove container from DOM → null all refs → `endCodeEditing()` → invalidate world + overlay.
+**Close (`commitAndClose`):** `saveTitle()` → null `titleInput` (prevents blur re-entry during DOM removal) → remove event handlers → unseal main UM (captureTimeout → 500ms) → unobserve Y.Map → destroy EditorView → clear session UM → remove container from DOM → null all refs (including `pendingMountId`) → `endCodeEditing()` → invalidate world + overlay.
 
 ### Header DOM Lifecycle
 
-`createHeaderDiv(container, y, fs, scale)`: Creates flex div with title input + play button. Title input reads `y.get('title') ?? "Untitled.{ext}"` (uses `??` to preserve empty string). Play button: circle bg `#4ADE8035`, green triangle SVG `#4ADE80`, `pointer-events: none` (decorative).
+`createHeaderDiv(container, y, fs, scale)`: Creates flex div with title input + play button. Title input reads `y.get('title') ?? "Untitled"` (uses `??` to preserve empty string). Play button: circle bg `#4ADE8035`, green triangle SVG `#4ADE80`, `pointer-events: none` (decorative). The SVG's `width`/`height` are computed from `playButtonGeom(fs)` × scale so the DOM SVG matches the canvas triangle pixel-for-pixel during edit.
 
 **Title input events:**
 - **Blur:** Calls `saveTitle()` to persist
@@ -513,7 +532,7 @@ Two-level undo: per-session UM for in-editor Ctrl+Z/Y, main UM for post-close at
 
 Registered after EditorView creation on `handle.y`. Listens for `keysChanged`:
 - `fontSize`, `width`, `origin` → `positionEditor()`
-- `language` → `switchLanguage()` + `updateTitleForLanguageChange()` (updates fallback only if title is undefined, not empty string)
+- `language` → `switchLanguage()` (title is independent of language — no fallback rewrite)
 - `lineNumbers` → `switchLineNumbers()` + `positionEditor()`
 - `headerVisible` → `updateHeaderVisibility()` + `positionEditor()`
 - `outputVisible` → `updateOutputVisibility()` + `positionEditor()`
@@ -544,21 +563,24 @@ Room change / full rebuild: `codeSystem.clear()`.
 
 ### objects.ts — Render Dispatch
 
+The render-side scalar derivation is inlined at each call site (no wrapper). Keeps the hot path allocation-free:
+
 ```typescript
 function drawCode(ctx, handle) {
-  if (useSelectionStore.getState().codeEditingId === handle.id) return; // DOM overlay active
+  if (_codeEditingId === handle.id) return; // DOM overlay active
   const props = getCodeProps(handle.y);
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const spans = codeSystem.getSpans(id);
   const source = codeSystem.getSource(id);
-  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  if (!spans || !source) return;
+  const title = props.headerVisible ? (props.title ?? 'Untitled') : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
-  const outputCache = codeSystem.getOutputCache(id, output) ?? undefined;
+  const outputCache = output !== undefined ? (codeSystem.getOutputCache(id, output) ?? undefined) : undefined;
   renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, source, title, output, outputCache);
 }
 ```
 
-Title/output args: `headerVisible` → `title` (undefined hides header, string shows it). `outputVisible` → `output` (undefined hides panel, string shows it). All three render functions (`drawCode`, `drawScaledCodePreview`, `drawReflowedCodePreview`) use identical arg-building logic.
+Title/output args: `headerVisible` → `title` (undefined hides header, string shows it — the literal `'Untitled'` fallback covers legacy objects with `title: undefined`). `outputVisible` → `output` (undefined hides panel, string shows it). The scale-time render branches (`reflow` / `uniform`) inline the same six lines — no shared wrapper, zero per-frame object allocation. Output cache is always built when output is shown so the renderer's output branch has no fallback path.
 
 Scale transform rendering: uniform (`drawScaledCodePreview`), reflow (`drawReflowedCodePreview`), edge-pin translate. Full transform behavior matrix in `tools/selection/CLAUDE.md`.
 

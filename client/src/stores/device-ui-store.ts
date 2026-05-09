@@ -91,6 +91,7 @@ interface DeviceUIState {
 
   // Code-specific settings
   codeLineNumbers: boolean;
+  codeHeaderVisible: boolean;
 
   // Connector cap/type settings
   connectorStartCap: ConnectorCap;
@@ -127,6 +128,7 @@ interface DeviceUIState {
   setHighlighterOpacity: (opacity: number) => void;
   setTextSize: (size: number) => void;
   setCodeLineNumbers: (v: boolean) => void;
+  setCodeHeaderVisible: (v: boolean) => void;
   setConnectorSize: (size: ConnectorSizePreset) => void;
   setConnectorStartCap: (cap: ConnectorCap) => void;
   setConnectorEndCap: (cap: ConnectorCap) => void;
@@ -171,6 +173,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       textSize: 24,
       connectorSize: 4,
       codeLineNumbers: true,
+      codeHeaderVisible: true,
       connectorStartCap: 'none' as ConnectorCap,
       connectorEndCap: 'arrow' as ConnectorCap,
       connectorType: 'straight' as ConnectorType,
@@ -235,6 +238,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setHighlighterOpacity: (opacity) => set({ highlighterOpacity: opacity }),
       setTextSize: (size) => set({ textSize: size }),
       setCodeLineNumbers: (v) => set({ codeLineNumbers: v }),
+      setCodeHeaderVisible: (v) => set({ codeHeaderVisible: v }),
       setConnectorSize: (size) => set({ connectorSize: size }),
       setConnectorStartCap: (cap) => set({ connectorStartCap: cap }),
       setConnectorEndCap: (cap) => set({ connectorEndCap: cap }),

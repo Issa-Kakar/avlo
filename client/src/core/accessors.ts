@@ -273,12 +273,6 @@ export function getCodeProps(y: Y.Map<unknown>): CodeProps | null {
   };
 }
 
-export const CODE_EXTENSIONS: Record<CodeLanguage, string> = {
-  javascript: 'js',
-  typescript: 'ts',
-  python: 'py',
-};
-
 export function getHeaderVisible(y: Y.Map<unknown>, fallback = true): boolean {
   return (y.get('headerVisible') as boolean | undefined) ?? fallback;
 }

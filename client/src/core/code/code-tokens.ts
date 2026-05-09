@@ -106,6 +106,22 @@ export const CODE_PLAY_GREEN = '#4ADE80';
 export const CODE_PLAY_BG = '#4ADE8035';
 export const CODE_OUTPUT_LABEL = '#E0E0E090';
 
+/**
+ * Single source of truth for the play-button triangle proportions. Used by
+ * both the canvas renderer and the DOM SVG inside the editor header so the
+ * two stay pixel-aligned at every zoom.
+ *
+ * The triangle is centroid-balanced: shifted left by `triW / 3` so the
+ * triangle's geometric centroid sits at `btnCx`. SVG viewBox `17 0 0 20`
+ * (apex at right midpoint, base on left) matches `triW : triH = 0.85 : 1`.
+ */
+export function playButtonGeom(fontSize: number): { btnR: number; triW: number; triH: number; triXOffset: number } {
+  const btnR = fontSize * 0.5;
+  const triH = btnR * 0.9;
+  const triW = triH * 0.85;
+  return { btnR, triW, triH, triXOffset: triW / 3 };
+}
+
 // ============================================================================
 // TAG_STYLES / TAG_STYLE_INDEX
 // ============================================================================
@@ -172,16 +188,42 @@ export function countPackedTriples(lineLen: number, buf: number[], count: number
 
 /**
  * Write gap-filled triples into `spanData` starting at `runOffset`. Caller is responsible
- * for ensuring `spanData` has capacity at `runOffset + countPackedTriples(...) * 3`.
- * Returns the new offset after the writes.
+ * for ensuring `spanData` has capacity at `runOffset + countPackedTriples(...) * 3` and
+ * `spanWhitespace` has capacity at `(runOffset / 3) + countPackedTriples(...)`. Whitespace
+ * flag is computed by scanning the source text once per emitted triple, so the renderer
+ * can skip non-ink runs without touching `fullText.charCodeAt`. Returns the new offset.
  */
-export function writePackedTriples(spanData: Uint16Array, lineLen: number, buf: number[], count: number, runOffset: number): number {
+export function writePackedTriples(
+  spanData: Uint16Array,
+  spanWhitespace: Uint8Array,
+  lineLen: number,
+  buf: number[],
+  count: number,
+  runOffset: number,
+  lineText: string,
+  lineFromAbs: number,
+): number {
   if (lineLen === 0) return runOffset;
+  const writeTriple = (from: number, len: number, style: number, wi: number): number => {
+    spanData[wi] = from;
+    spanData[wi + 1] = len;
+    spanData[wi + 2] = style;
+    let allWs = 1;
+    const fromAbs = lineFromAbs + from;
+    const toAbs = fromAbs + len;
+    for (let ci = fromAbs; ci < toAbs; ci++) {
+      const cc = lineText.charCodeAt(ci);
+      if (cc !== 32 && cc !== 9) {
+        allWs = 0;
+        break;
+      }
+    }
+    spanWhitespace[(wi / 3) | 0] = allWs;
+    return wi + 3;
+  };
+
   if (count === 0) {
-    spanData[runOffset] = 0;
-    spanData[runOffset + 1] = lineLen;
-    spanData[runOffset + 2] = S.DEFAULT;
-    return runOffset + 3;
+    return writeTriple(0, lineLen, S.DEFAULT, runOffset);
   }
   let wi = runOffset;
   let pos = 0;
@@ -189,31 +231,27 @@ export function writePackedTriples(spanData: Uint16Array, lineLen: number, buf: 
     const from = buf[i * 3];
     const to = buf[i * 3 + 1];
     const style = buf[i * 3 + 2];
-    if (from > pos) {
-      spanData[wi++] = pos;
-      spanData[wi++] = from - pos;
-      spanData[wi++] = S.DEFAULT;
-    }
-    if (to > from) {
-      spanData[wi++] = from;
-      spanData[wi++] = to - from;
-      spanData[wi++] = style;
-    }
+    if (from > pos) wi = writeTriple(pos, from - pos, S.DEFAULT, wi);
+    if (to > from) wi = writeTriple(from, to - from, style, wi);
     pos = to;
   }
-  if (pos < lineLen) {
-    spanData[wi++] = pos;
-    spanData[wi++] = lineLen - pos;
-    spanData[wi++] = S.DEFAULT;
-  }
+  if (pos < lineLen) wi = writeTriple(pos, lineLen - pos, S.DEFAULT, wi);
   return wi;
 }
 
 /** Pack triples into a `CodeSpans` buffer, growing capacity as needed. Returns new write offset. */
-export function packRunSpansInto(out: CodeSpans, lineLen: number, buf: number[], count: number, runOffset: number): number {
+export function packRunSpansInto(
+  out: CodeSpans,
+  lineLen: number,
+  buf: number[],
+  count: number,
+  runOffset: number,
+  lineText: string,
+  lineFromAbs: number,
+): number {
   const triples = countPackedTriples(lineLen, buf, count);
   ensureSpansDataCap(out, runOffset + triples * 3);
-  return writePackedTriples(out.spanData, lineLen, buf, count, runOffset);
+  return writePackedTriples(out.spanData, out.spanWhitespace, lineLen, buf, count, runOffset, lineText, lineFromAbs);
 }
 
 // ============================================================================
@@ -722,7 +760,7 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
       i++;
     }
 
-    writeOffset = packRunSpansInto(out, line.length, _syncBuf, _syncBufCount, writeOffset);
+    writeOffset = packRunSpansInto(out, line.length, _syncBuf, _syncBufCount, writeOffset, fullText, lineFrom);
     out.spanLineStart[lineIdx + 1] = writeOffset;
   }
 }

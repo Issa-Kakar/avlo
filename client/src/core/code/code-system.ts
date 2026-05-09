@@ -44,6 +44,7 @@ import {
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
   PALETTE,
+  playButtonGeom,
   syncTokenizeInto,
 } from './code-tokens';
 
@@ -65,10 +66,15 @@ export interface CodeSource {
 /**
  * Tier 2: flat span buffer. Triples [off, len, style] for line i live at
  * `spanData[spanLineStart[i] .. spanLineStart[i+1])`. `spanCap` measured in u16 slots.
+ *
+ * `spanWhitespace` — one byte per triple (parallel to spanData/3): `1 = all
+ * whitespace, 0 = has ink`. Computed at tokenize time so the renderer skips
+ * the per-triple charCode scan entirely.
  */
 export interface CodeSpans {
   spanData: Uint16Array;
   spanLineStart: Uint32Array; // [lineCap + 1]
+  spanWhitespace: Uint8Array; // [spanCap / 3] — one byte per triple
   lineCount: number;
   spanCap: number;
   lineCap: number;
@@ -76,7 +82,8 @@ export interface CodeSpans {
 
 /**
  * Tier 3: visual lines (post-wrapping). No string slots — renderer derives line text from
- * `(source.fullText, source.lineStart[srcIdx])`.
+ * `(source.fullText, source.lineStart[srcIdx])`. `normalFont`/`boldFont`/`chromeFont` are
+ * cached at layout time so the renderer doesn't allocate three template strings per call.
  */
 export interface CodeLayout {
   fontSize: number;
@@ -90,6 +97,11 @@ export interface CodeLayout {
   vlSrcIdx: Uint32Array; // [visualLineCap]
   vlFrom: Uint32Array; // [visualLineCap]  char offset within source line
   vlLen: Uint32Array; // [visualLineCap]   char length of visual line
+
+  // Cached font strings — recomputed by `layoutCodeSourceInto` only when fontSize changes.
+  normalFont: string;
+  boldFont: string;
+  chromeFont: string;
 }
 
 /** Small cache for output panel. Rebuilt only when the `output` Y.Map field changes. */
@@ -142,6 +154,7 @@ interface WorkerResponse {
   version: number;
   spanData: Uint16Array;
   spanLineStart: Uint32Array;
+  spanWhitespace: Uint8Array;
 }
 
 // ============================================================================
@@ -276,6 +289,7 @@ function createCodeSpans(): CodeSpans {
   return {
     spanData: new Uint16Array(48), // 16 triples
     spanLineStart: new Uint32Array(9), // cap 8 + sentinel
+    spanWhitespace: new Uint8Array(16), // one byte per triple
     lineCount: 0,
     spanCap: 48,
     lineCap: 8,
@@ -300,6 +314,13 @@ export function ensureSpansDataCap(s: CodeSpans, n: number): void {
   next.set(s.spanData);
   s.spanData = next;
   s.spanCap = cap;
+  // Whitespace buffer is parallel: one byte per triple = one slot per 3 spanData u16s.
+  const wsCap = (cap / 3) | 0;
+  if (s.spanWhitespace.length < wsCap) {
+    const nextWs = new Uint8Array(wsCap);
+    nextWs.set(s.spanWhitespace);
+    s.spanWhitespace = nextWs;
+  }
 }
 
 // ============================================================================
@@ -318,6 +339,9 @@ export function createCodeLayout(): CodeLayout {
     vlSrcIdx: new Uint32Array(16),
     vlFrom: new Uint32Array(16),
     vlLen: new Uint32Array(16),
+    normalFont: '',
+    boldFont: '',
+    chromeFont: '',
   };
 }
 
@@ -362,6 +386,13 @@ export function layoutCodeSourceInto(
   out: CodeLayout,
 ): CodeLayout {
   resetCodeLayout(out);
+  // Recompute cached font strings only when fontSize changes — string template is
+  // hot enough at 60fps that even a tiny `${weight} ${px}px` allocation matters.
+  if (out.fontSize !== fontSize) {
+    out.normalFont = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
+    out.boldFont = `${FONT_WEIGHT_BOLD} ${fontSize}px ${CODE_FONT}`;
+    out.chromeFont = `${FONT_WEIGHT} ${chromeFontSize(fontSize)}px ${CODE_FONT}`;
+  }
   out.fontSize = fontSize;
   out.width = width;
   out.lineNumbers = lineNumbers;
@@ -549,8 +580,8 @@ function dispatch(msg: WorkerRequest): void {
 }
 
 function handleWorkerMessage(e: MessageEvent<WorkerResponse>): void {
-  const { id, version, spanData, spanLineStart } = e.data;
-  codeSystem.applyWorkerSpans(id, spanData, spanLineStart, version);
+  const { id, version, spanData, spanLineStart, spanWhitespace } = e.data;
+  codeSystem.applyWorkerSpans(id, spanData, spanLineStart, spanWhitespace, version);
 }
 
 function requestParse(id: string, text: string, language: CodeLanguage, version: number, changes?: ChangedRange[]): void {
@@ -714,12 +745,13 @@ class CodeSystemCache {
    * Apply Lezer worker spans (ceiling upgrade). Version-gated to discard stale results.
    * Swaps the spans buffers directly — zero-copy from the worker's transferred ArrayBuffers.
    */
-  applyWorkerSpans(id: string, spanData: Uint16Array, spanLineStart: Uint32Array, forVersion: number): void {
+  applyWorkerSpans(id: string, spanData: Uint16Array, spanLineStart: Uint32Array, spanWhitespace: Uint8Array, forVersion: number): void {
     const e = this.entries.get(id);
     if (!e || forVersion !== e.version) return;
     e.spans.spanData = spanData;
     e.spans.spanCap = spanData.length;
     e.spans.spanLineStart = spanLineStart;
+    e.spans.spanWhitespace = spanWhitespace;
     e.spans.lineCap = spanLineStart.length - 1;
     e.spans.lineCount = spanLineStart.length - 1;
     // Layout dimensions unchanged — only colors differ. No layout invalidation.
@@ -824,10 +856,9 @@ export function renderCodeLayout(
   const bgH = blockHeight(layout, fontSize, title !== undefined, output !== undefined, output, outputCache);
   const digits = Math.max(2, String(layout.sourceLineCount).length);
   const cl = contentLeft(digits, fontSize, layout.lineNumbers);
-  const normalFont = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
-  const boldFont = `${FONT_WEIGHT_BOLD} ${fontSize}px ${CODE_FONT}`;
+  // Pre-cached on the layout — recomputed only when fontSize changes.
+  const { normalFont, boldFont, chromeFont } = layout;
   const cfs = chromeFontSize(fontSize);
-  const chromeFont = `${FONT_WEIGHT} ${cfs}px ${CODE_FONT}`;
 
   ctx.save();
 
@@ -862,8 +893,8 @@ export function renderCodeLayout(
     ctx.font = chromeFont;
     ctx.fillText(title, originX + pl, originY + hh / 2);
 
-    // Play button — green circle with white triangle
-    const btnR = fontSize * 0.5;
+    // Play button — green circle with white triangle (centroid-centered)
+    const { btnR, triW, triH, triXOffset } = playButtonGeom(fontSize);
     const btnCx = originX + layout.totalWidth - padRight(fontSize) - btnR;
     const btnCy = originY + hh / 2;
 
@@ -872,10 +903,7 @@ export function renderCodeLayout(
     ctx.arc(btnCx, btnCy, btnR, 0, Math.PI * 2);
     ctx.fill();
 
-    // Green play triangle inside
-    const triH = btnR * 0.9;
-    const triW = triH * 0.85;
-    const triX = btnCx - triW * 0.35;
+    const triX = btnCx - triXOffset;
     ctx.fillStyle = CODE_PLAY_GREEN;
     ctx.beginPath();
     ctx.moveTo(triX, btnCy - triH / 2);
@@ -895,6 +923,7 @@ export function renderCodeLayout(
   const sourceLineStart = source.lineStart;
   const spanData = spans.spanData;
   const spanLineStart = spans.spanLineStart;
+  const spanWhitespace = spans.spanWhitespace;
   const visualLineCount = layout.visualLineCount;
   const vlSrcIdx = layout.vlSrcIdx;
   const vlFrom = layout.vlFrom;
@@ -941,6 +970,15 @@ export function renderCodeLayout(
       const drawLen = drawTo - drawFrom;
       if (drawLen <= 0) continue;
 
+      // Whitespace flag pre-computed at tokenize time. Skip ink work AND fillText.
+      // Note: we skip when the entire underlying triple is whitespace, which is
+      // a sufficient (not strict) condition — clipped sub-runs of an inky triple
+      // still pay fillText, but those are vanishingly rare.
+      if (spanWhitespace[(si / 3) | 0]) {
+        x += drawLen * cw;
+        continue;
+      }
+
       const font = isBold(style) ? boldFont : normalFont;
       if (prevFont !== font) {
         ctx.font = font;
@@ -948,20 +986,9 @@ export function renderCodeLayout(
       }
       ctx.fillStyle = PALETTE[style];
 
-      // Only fillText for non-whitespace
-      let allWhitespace = true;
       const absFrom = lineStartChar + drawFrom;
       const absTo = lineStartChar + drawTo;
-      for (let ci = absFrom; ci < absTo; ci++) {
-        const cc = fullText.charCodeAt(ci);
-        if (cc !== 32 && cc !== 9) {
-          allWhitespace = false;
-          break;
-        }
-      }
-      if (!allWhitespace) {
-        ctx.fillText(fullText.substring(absFrom, absTo), x, baseY);
-      }
+      ctx.fillText(fullText.substring(absFrom, absTo), x, baseY);
       x += drawLen * cw;
     }
   }
@@ -987,32 +1014,20 @@ export function renderCodeLayout(
     ctx.fillStyle = CODE_OUTPUT_LABEL;
     ctx.fillText('Output', originX + pl, codeBottomY + labelH / 2);
 
-    // Output text lines — iterate via cached lineStart when available
-    if (output) {
+    // Output text lines — outputCache is eagerly built by callers (objects.ts +
+    // computeCodeBBox), so the cache is always populated and identity-matched
+    // when output is non-empty. No fallback branch.
+    if (output && outputCache) {
       ctx.textBaseline = 'alphabetic';
       ctx.fillStyle = CODE_DEFAULT;
       ctx.font = chromeFont;
       const chromeBl = (cfs * (OUTPUT_LINE_H_MULT + 0.8)) / 2; // approximate ascent
-      if (outputCache && outputCache.text === output) {
-        const maxLines = Math.min(outputCache.lineCount, MAX_OUTPUT_CANVAS_LINES);
-        const ls = outputCache.lineStart;
-        for (let i = 0; i < maxLines; i++) {
-          const from = ls[i];
-          const to = ls[i + 1] - 1;
-          ctx.fillText(output.substring(from, to), originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
-        }
-      } else {
-        // First-paint path with no cache — walk the string directly without splitting.
-        let from = 0;
-        let i = 0;
-        while (i < MAX_OUTPUT_CANVAS_LINES) {
-          let to = output.indexOf('\n', from);
-          if (to === -1) to = output.length;
-          ctx.fillText(output.substring(from, to), originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
-          if (to === output.length) break;
-          from = to + 1;
-          i++;
-        }
+      const maxLines = Math.min(outputCache.lineCount, MAX_OUTPUT_CANVAS_LINES);
+      const ls = outputCache.lineStart;
+      for (let i = 0; i < maxLines; i++) {
+        const from = ls[i];
+        const to = ls[i + 1] - 1;
+        ctx.fillText(output.substring(from, to), originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
       }
     }
   }

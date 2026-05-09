@@ -1,6 +1,4 @@
-import type { CodeProps } from '@/core/accessors';
 import {
-  CODE_EXTENSIONS,
   getAlign,
   getAlignV,
   getAssetId,
@@ -49,17 +47,6 @@ import type { TransformState } from '@/tools/selection/types';
 import { getConnectorPaths, getPath } from '../geometry-cache';
 import { paintConnector, paintConnectorFromPoints } from './connector-render-atoms';
 import { paintShapeFrame } from './shape-preview';
-
-function getCodeRenderData(id: string, props: CodeProps) {
-  const output = props.outputVisible ? (props.output ?? '') : undefined;
-  return {
-    spans: codeSystem.getSpans(id),
-    source: codeSystem.getSource(id),
-    title: props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined,
-    output,
-    outputCache: codeSystem.getOutputCache(id, output) ?? undefined,
-  };
-}
 
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateIds: string[] = [];
@@ -407,8 +394,12 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   if (!props) return;
 
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
-  const { spans, source, title, output, outputCache } = getCodeRenderData(id, props);
+  const spans = codeSystem.getSpans(id);
+  const source = codeSystem.getSource(id);
   if (!spans || !source) return;
+  const title = props.headerVisible ? (props.title ?? 'Untitled') : undefined;
+  const output = props.outputVisible ? (props.output ?? '') : undefined;
+  const outputCache = output !== undefined ? (codeSystem.getOutputCache(id, output) ?? undefined) : undefined;
   renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, source, title, output, outputCache);
 }
 
@@ -554,8 +545,12 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
       if (behavior === 'reflow' && entry.out.layout.visualLineCount > 0) {
         const props = getCodeProps(handle.y);
         if (!props) break;
-        const { spans, source, title, output, outputCache } = getCodeRenderData(handle.id, props);
+        const spans = codeSystem.getSpans(handle.id);
+        const source = codeSystem.getSource(handle.id);
         if (!spans || !source) break;
+        const title = props.headerVisible ? (props.title ?? 'Untitled') : undefined;
+        const output = props.outputVisible ? (props.output ?? '') : undefined;
+        const outputCache = output !== undefined ? (codeSystem.getOutputCache(handle.id, output) ?? undefined) : undefined;
         renderCodeLayout(
           ctx,
           entry.out.layout,
@@ -573,8 +568,12 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
         const props = getCodeProps(handle.y);
         if (!props) break;
         const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
-        const { spans, source, title, output, outputCache } = getCodeRenderData(handle.id, props);
+        const spans = codeSystem.getSpans(handle.id);
+        const source = codeSystem.getSource(handle.id);
         if (!spans || !source) break;
+        const title = props.headerVisible ? (props.title ?? 'Untitled') : undefined;
+        const output = props.outputVisible ? (props.output ?? '') : undefined;
+        const outputCache = output !== undefined ? (codeSystem.getOutputCache(handle.id, output) ?? undefined) : undefined;
         const b = entry.out.bbox;
         ctx.save();
         ctx.translate(b[0], b[1]);

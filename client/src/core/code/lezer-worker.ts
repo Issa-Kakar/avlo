@@ -142,6 +142,7 @@ const _hlBuf: number[] = [];
 let _hlCount = 0;
 const _lineBuf: number[] = [];
 let _workerSpanData = new Uint16Array(256);
+let _workerSpanWhitespace = new Uint8Array(256 / 3 + 1);
 
 function ensureLineOffsetsCap(n: number): void {
   // Need slots [0..n] inclusive (n+1 slots), so the sentinel at index n always fits.
@@ -156,6 +157,10 @@ function ensureWorkerSpanCap(n: number): void {
   let cap = _workerSpanData.length;
   while (cap < n) cap *= 2;
   _workerSpanData = new Uint16Array(cap);
+  const wsCap = (cap / 3) | 0;
+  if (_workerSpanWhitespace.length < wsCap) {
+    _workerSpanWhitespace = new Uint8Array(wsCap);
+  }
 }
 
 function binarySearchLine(offsets: Uint32Array, lineCount: number, pos: number): number {
@@ -238,10 +243,11 @@ function extractAndSendSpans(tree: Tree, text: string, id: string, version: numb
   for (let i = 0; i < lineCount; i++) {
     spanLineStart[i] = writeOffset;
     const lineLen = lineOffsets[i + 1] - lineOffsets[i] - 1;
+    const lineFrom = lineOffsets[i];
 
     if (cursor >= _hlCount || _hlBuf[cursor * 4] !== i) {
       // No highlights on this line — packs to 0 triples (empty) or 1 default-fill.
-      writeOffset = writePackedTriples(_workerSpanData, lineLen, _emptyBuf, 0, writeOffset);
+      writeOffset = writePackedTriples(_workerSpanData, _workerSpanWhitespace, lineLen, _emptyBuf, 0, writeOffset, text, lineFrom);
       continue;
     }
 
@@ -256,14 +262,19 @@ function extractAndSendSpans(tree: Tree, text: string, id: string, version: numb
       count++;
       cursor++;
     }
-    writeOffset = writePackedTriples(_workerSpanData, lineLen, _lineBuf, count, writeOffset);
+    writeOffset = writePackedTriples(_workerSpanData, _workerSpanWhitespace, lineLen, _lineBuf, count, writeOffset, text, lineFrom);
   }
   spanLineStart[lineCount] = writeOffset;
 
-  // 6. Copy used prefix into a fresh transfer buffer (zero-copy on postMessage).
+  // 6. Copy used prefixes into fresh transfer buffers (zero-copy on postMessage).
   const spanData = _workerSpanData.slice(0, writeOffset);
+  const spanWhitespace = _workerSpanWhitespace.slice(0, (writeOffset / 3) | 0);
 
-  (self as unknown as Worker).postMessage({ type: 'spans', id, version, spanData, spanLineStart }, [spanData.buffer, spanLineStart.buffer]);
+  (self as unknown as Worker).postMessage({ type: 'spans', id, version, spanData, spanLineStart, spanWhitespace }, [
+    spanData.buffer,
+    spanLineStart.buffer,
+    spanWhitespace.buffer,
+  ]);
 }
 
 const _emptyBuf: number[] = [];

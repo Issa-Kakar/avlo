@@ -263,6 +263,7 @@ const setShapeAlign = (v: TextAlign) => useDeviceUIStore.getState().setShapeAlig
 const setNoteAlignV = (v: TextAlignV) => useDeviceUIStore.getState().setNoteAlignV(v);
 const setShapeAlignV = (v: TextAlignV) => useDeviceUIStore.getState().setShapeAlignV(v);
 const setCodeLineNumbers = (v: boolean) => useDeviceUIStore.getState().setCodeLineNumbers(v);
+const setCodeHeaderVisible = (v: boolean) => useDeviceUIStore.getState().setCodeHeaderVisible(v);
 
 // ============================================================================
 // FIELD DESCRIPTORS
@@ -503,6 +504,7 @@ export const LINE_NUMBERS: FieldDescriptor<boolean> = {
 export const HEADER_VISIBLE: FieldDescriptor<boolean> = {
   read: { code: (h) => getHeaderVisible(h.y) },
   write: { code: (h, v) => h.y.set('headerVisible', v) },
+  persist: { code: setCodeHeaderVisible },
 };
 
 export const OUTPUT_VISIBLE: FieldDescriptor<boolean> = {

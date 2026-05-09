@@ -8,16 +8,7 @@
 
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { CodeLanguage } from '@/core/accessors';
-import {
-  CODE_EXTENSIONS,
-  getCodeOutput,
-  getCodeProps,
-  getHeaderVisible,
-  getLanguage,
-  getLineNumbers,
-  getOutputVisible,
-} from '@/core/accessors';
+import { getCodeOutput, getCodeProps, getHeaderVisible, getLineNumbers, getOutputVisible } from '@/core/accessors';
 import {
   borderRadius,
   charWidth,
@@ -39,6 +30,7 @@ import {
   OUTPUT_LABEL_H_RATIO,
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
+  playButtonGeom,
 } from '@/core/code/code-tokens';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -74,6 +66,10 @@ export class CodeTool implements PointerTool {
   private langCompartment: unknown = null;
   private lineNumbersCompartment: unknown = null;
   private yMapUnobserve: (() => void) | null = null;
+  // Tracks the in-flight mount target during the async CM import window. A second
+  // startEditing call simply overwrites this; the first await's post-resume
+  // identity check then finds a stale id and bails without ever touching the DOM.
+  private pendingMountId: string | null = null;
 
   canBegin(): boolean {
     return !this.gestureActive;
@@ -139,7 +135,6 @@ export class CodeTool implements PointerTool {
   // Public API for SelectTool double-click-to-edit
   startEditing(objectId: string, entryWorld?: [number, number]): void {
     this.pendingEntryWorld = entryWorld ?? null;
-    useSelectionStore.getState().beginCodeEditing(objectId);
     this.mountEditor(objectId);
   }
 
@@ -166,11 +161,12 @@ export class CodeTool implements PointerTool {
     const uiState = useDeviceUIStore.getState();
     const fontSize = uiState.textSize;
     const lineNumbers = uiState.codeLineNumbers;
+    const headerVisible = uiState.codeHeaderVisible;
     const width = getDefaultWidth(fontSize);
     const lh = lineHeightFn(fontSize);
 
-    // Center placement: origin = click minus half block size (including header)
-    const singleLineH = headerBarHeight(fontSize) + padTop(fontSize) + lh + padBottom(fontSize);
+    // Center placement: origin = click minus half block size (including header when shown)
+    const singleLineH = (headerVisible ? headerBarHeight(fontSize) : 0) + padTop(fontSize) + lh + padBottom(fontSize);
     const originX = worldX - width / 2;
     const originY = worldY - singleLineH / 2;
 
@@ -186,8 +182,9 @@ export class CodeTool implements PointerTool {
       yObj.set('fontSize', fontSize);
       yObj.set('width', width);
       yObj.set('lineNumbers', lineNumbers);
-      yObj.set('headerVisible', true);
+      yObj.set('headerVisible', headerVisible);
       yObj.set('outputVisible', false);
+      yObj.set('title', 'Untitled');
       yObj.set('ownerId', '');
       yObj.set('createdAt', Date.now());
 
@@ -196,7 +193,6 @@ export class CodeTool implements PointerTool {
     });
 
     if (createdId) {
-      useSelectionStore.getState().beginCodeEditing(createdId);
       this.mountEditor(createdId);
     }
   }
@@ -244,12 +240,15 @@ export class CodeTool implements PointerTool {
     const scale = useCameraStore.getState().scale;
     const { origin, fontSize, width } = props;
 
-    // Screen-space dimensions — no CSS transform
+    // ─── PHASE 1: off-DOM build ────────────────────────────────────────────
+    // Container + header are constructed detached. CM is still imported async
+    // below; the editor view will be parented into this container while it's
+    // off-DOM. Nothing visible to the user yet — code stays painted on the
+    // canvas, no flicker.
     const screenFS = fontSize * scale;
     const screenW = width * scale;
     const screenLH = lineHeightFn(fontSize) * scale;
 
-    // Create container div
     const container = document.createElement('div');
     container.className = 'code-editor';
     container.style.position = 'absolute';
@@ -264,14 +263,16 @@ export class CodeTool implements PointerTool {
     container.style.borderRadius = `${borderRadius(fontSize) * scale}px`;
     this.setCSSVars(container, fontSize, scale, props.lineNumbers);
 
-    // Header bar (before CM editor)
     if (props.headerVisible) {
       this.createHeaderDiv(container, handle.y, props.fontSize, scale);
     }
 
-    host.appendChild(container);
+    // Mark intent. A subsequent `startEditing` overwrites this id; the older
+    // mount's post-await check then sees a stale id and bails before any DOM
+    // swap or store mutation.
+    this.pendingMountId = objectId;
 
-    // Load CodeMirror modules lazily (parallel)
+    // ─── PHASE 2: lazy CM imports (the only async window) ──────────────────
     const [cmState, cmView, cmCommands, cmLang, cmJS, cmPython, cmYCollab, cmAutocomplete, themeExts] = await Promise.all([
       import('@codemirror/state'),
       import('@codemirror/view'),
@@ -284,7 +285,20 @@ export class CodeTool implements PointerTool {
       getCodeMirrorExtensions(),
     ]);
 
-    // Per-session UndoManager scoped to Y.Text + Y.Map (captures content + property changes)
+    // ─── PHASE 3: post-await abort check ───────────────────────────────────
+    // - Re-entrancy: another startEditing overwrote pendingMountId.
+    // - Object was deleted / kind changed during the import wait.
+    // - Editor was closed (commitAndClose) during the wait.
+    // In any case, drop the half-built container (still off-DOM, GC handles it)
+    // and don't touch shared state.
+    if (this.pendingMountId !== objectId) return;
+    const stillValid = getHandle(objectId);
+    if (!stillValid || stillValid.kind !== 'code') {
+      this.pendingMountId = null;
+      return;
+    }
+
+    // ─── PHASE 4: build CM state + view (still off-DOM) ────────────────────
     const yText = props.content;
     const yMap = handle.y;
     const userId = getUserId();
@@ -309,7 +323,6 @@ export class CodeTool implements PointerTool {
     });
 
     // Backspace at 4-space indent boundaries deletes the unit
-
     const backspaceIndent = {
       key: 'Backspace',
       // biome-ignore lint/suspicious/noExplicitAny: CodeMirror keymap handler view param
@@ -367,13 +380,31 @@ export class CodeTool implements PointerTool {
       ],
     });
 
+    // CM renders its DOM into the off-DOM container. Works fine — measurement
+    // happens later via `requestMeasure` (or implicitly on first focus).
     const view = new cmView.EditorView({ state, parent: container });
 
-    // Output panel (after CM editor)
     if (props.outputVisible) {
       this.createOutputDiv(container, handle.y, props.fontSize, scale);
     }
 
+    // ─── PHASE 5: ATOMIC SWAP ──────────────────────────────────────────────
+    // In a single tick: container hits the DOM (visible with full content),
+    // canvas suppresses its code rendering for this id, overlay clears its
+    // resize handles. From the user's perspective, one frame: code disappears
+    // from canvas + handles disappear + DOM appears with fully rendered CM.
+    host.appendChild(container);
+    useSelectionStore.getState().beginCodeEditing(objectId);
+
+    this.editorView = view;
+    this.container = container;
+    this.objectId = objectId;
+    this.pendingMountId = null;
+
+    invalidateOverlay();
+    invalidateWorldAll();
+
+    // ─── PHASE 6: post-swap wiring ─────────────────────────────────────────
     // Focus routing: title input if click landed in header region, else CM
     const entryWorld = this.pendingEntryWorld;
     this.pendingEntryWorld = null;
@@ -398,7 +429,6 @@ export class CodeTool implements PointerTool {
         v.focus();
       });
     } else {
-      // No entry point (keyboard Enter) — position cursor at end of document.
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();
     }
@@ -424,7 +454,6 @@ export class CodeTool implements PointerTool {
       }
       if (keys.has('language')) {
         this.switchLanguage(yMap);
-        this.updateTitleForLanguageChange(yMap);
       }
       if (keys.has('lineNumbers')) {
         this.switchLineNumbers(yMap);
@@ -441,8 +470,7 @@ export class CodeTool implements PointerTool {
       if (keys.has('title')) {
         if (this.titleInput && document.activeElement !== this.titleInput) {
           const raw = yMap.get('title') as string | undefined;
-          const lang = getLanguage(yMap) as CodeLanguage;
-          this.titleInput.value = raw ?? `Untitled.${CODE_EXTENSIONS[lang]}`;
+          this.titleInput.value = raw ?? 'Untitled';
         }
       }
       if (keys.has('output')) {
@@ -451,12 +479,6 @@ export class CodeTool implements PointerTool {
     };
     yMap.observe(mapObserver);
     this.yMapUnobserve = () => yMap.unobserve(mapObserver);
-
-    this.editorView = view;
-    this.container = container;
-    this.objectId = objectId;
-
-    invalidateWorldAll();
 
     this.setupEditorHandlers();
   }
@@ -667,6 +689,9 @@ export class CodeTool implements PointerTool {
       invalidateOverlay();
     }
 
+    // Cancel any in-flight mount — its post-await check will see a stale id
+    // and bail before mutating shared state or the DOM.
+    this.pendingMountId = null;
     useSelectionStore.getState().endCodeEditing();
   }
 
@@ -677,7 +702,6 @@ export class CodeTool implements PointerTool {
   private createHeaderDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
     const hh = headerBarHeight(fs) * scale;
     const cfs = chromeFontSize(fs) * scale;
-    const lang = getLanguage(y) as CodeLanguage;
 
     const header = document.createElement('div');
     header.className = 'code-header';
@@ -689,7 +713,7 @@ export class CodeTool implements PointerTool {
     input.type = 'text';
     input.maxLength = MAX_TITLE_LENGTH;
     const raw = y.get('title') as string | undefined;
-    input.value = raw ?? `Untitled.${CODE_EXTENSIONS[lang]}`;
+    input.value = raw ?? 'Untitled';
     input.style.fontSize = `${cfs}px`;
     input.addEventListener('blur', () => this.saveTitle());
     input.addEventListener('keydown', (e) => {
@@ -707,7 +731,10 @@ export class CodeTool implements PointerTool {
     playBtn.style.width = `${fs * scale}px`;
     playBtn.style.height = `${fs * scale}px`;
     playBtn.style.background = '#4ADE8035';
-    playBtn.innerHTML = `<svg viewBox="0 0 16 16" width="${cfs * 0.8}px" height="${cfs * 0.8}px"><path d="M5 3l8 5-8 5V3z" fill="#4ADE80"/></svg>`;
+    const { triW, triH } = playButtonGeom(fs);
+    const triWpx = triW * scale;
+    const triHpx = triH * scale;
+    playBtn.innerHTML = `<svg viewBox="0 0 17 20" width="${triWpx}px" height="${triHpx}px"><path d="M0 0L17 10L0 20Z" fill="#4ADE80"/></svg>`;
 
     header.appendChild(input);
     header.appendChild(playBtn);
@@ -833,14 +860,5 @@ export class CodeTool implements PointerTool {
   private updateOutputContent(y: Y.Map<unknown>): void {
     if (!this.outputTextDiv) return;
     this.outputTextDiv.textContent = getCodeOutput(y) ?? '';
-  }
-
-  private updateTitleForLanguageChange(y: Y.Map<unknown>): void {
-    if (!this.titleInput) return;
-    const raw = y.get('title') as string | undefined;
-    if (raw === undefined) {
-      const lang = getLanguage(y) as CodeLanguage;
-      this.titleInput.value = `Untitled.${CODE_EXTENSIONS[lang]}`;
-    }
   }
 }
