@@ -1,47 +1,31 @@
 /**
  * Code Theme — CodeMirror theme extensions (CoolGlow dark theme + syntax highlighting).
  *
- * Lazy-loaded and cached. No dependency on code-system.ts.
+ * Lazy-loaded and cached. Reads colors from `THEME` (palette + chrome) in
+ * `code-tokens.ts`; the `HighlightStyle.define` rule list is derived from
+ * `SYNTAX_RULES` (in `code-syntax-rules.ts`) + `THEME.palette` + `isBold` so
+ * the canvas renderer and the CodeMirror DOM share one source of truth for
+ * Lezer-tag → S → color.
  */
 
-import {
-  ATTRIBUTE,
-  CODE_BG,
-  CODE_CARET,
-  CODE_DEFAULT,
-  CODE_FONT_FAMILY,
-  CODE_GUTTER,
-  CODE_LINE_HL,
-  CODE_SELECTION,
-  COMMENT,
-  DEF_KEYWORD,
-  FUNCTION,
-  KEYWORD,
-  LINE_HEIGHT_MULT,
-  MODIFIER,
-  NUMBER,
-  OPERATOR,
-  STRING,
-  TYPE,
-  VARIABLE,
-} from './code-tokens';
+import { SYNTAX_RULES } from './code-syntax-rules';
+import { CODE_FONT_FAMILY, isBold, LINE_HEIGHT_MULT, S, THEME } from './code-tokens';
 
 let _themeExtensions: unknown[] | null = null;
 
 export async function getCodeMirrorExtensions(): Promise<unknown[]> {
   if (_themeExtensions) return _themeExtensions;
 
-  const [{ EditorView }, { syntaxHighlighting, HighlightStyle }, { tags }] = await Promise.all([
+  const [{ EditorView }, { syntaxHighlighting, HighlightStyle }] = await Promise.all([
     import('@codemirror/view'),
     import('@codemirror/language'),
-    import('@lezer/highlight'),
   ]);
 
   const codeEditorTheme = EditorView.theme(
     {
       '&': {
-        backgroundColor: CODE_BG,
-        color: CODE_DEFAULT,
+        backgroundColor: THEME.chrome.bg,
+        color: THEME.palette[S.DEFAULT],
         borderRadius: 'inherit',
       },
       // All padding/sizing via CSS vars (--c-*) set as exact px by CodeTool
@@ -56,8 +40,8 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         paddingBottom: 'var(--c-pb)',
       },
       '.cm-gutters': {
-        backgroundColor: CODE_BG,
-        color: CODE_GUTTER,
+        backgroundColor: THEME.chrome.bg,
+        color: THEME.chrome.gutter,
         border: 'none',
         paddingLeft: 'var(--c-gl)',
       },
@@ -75,39 +59,39 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         textAlign: 'right',
         minWidth: 'var(--c-gw)',
       },
-      '.cm-cursor': { borderLeftColor: CODE_CARET },
-      '.cm-activeLine': { backgroundColor: CODE_LINE_HL },
+      '.cm-cursor': { borderLeftColor: THEME.chrome.caret },
+      '.cm-activeLine': { backgroundColor: THEME.chrome.lineHl },
       '.cm-activeLineGutter': {
-        backgroundColor: CODE_LINE_HL,
+        backgroundColor: THEME.chrome.lineHl,
         marginLeft: 'calc(-1 * var(--c-gl))',
         paddingLeft: 'var(--c-gl)',
       },
       '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
-        backgroundColor: CODE_SELECTION,
+        backgroundColor: THEME.chrome.selection,
       },
       '.cm-matchingBracket': {
         backgroundColor: 'transparent',
-        outline: `1px solid ${KEYWORD}80`,
-        color: KEYWORD,
+        outline: `1px solid ${THEME.palette[S.KEYWORD]}80`,
+        color: THEME.palette[S.KEYWORD],
       },
       '.cm-nonmatchingBracket': {
         backgroundColor: 'transparent',
-        outline: '1px solid #FF537080',
-        color: '#FF5370',
+        outline: `1px solid ${THEME.chrome.nonmatchBracket}80`,
+        color: THEME.chrome.nonmatchBracket,
       },
-      '.cm-searchMatch': { backgroundColor: '#FFD43B40' },
+      '.cm-searchMatch': { backgroundColor: THEME.chrome.searchMatch },
       '.cm-tooltip': {
-        backgroundColor: CODE_BG,
-        color: CODE_DEFAULT,
-        border: `1px solid ${CODE_SELECTION}`,
+        backgroundColor: THEME.chrome.bg,
+        color: THEME.palette[S.DEFAULT],
+        border: `1px solid ${THEME.chrome.selection}`,
       },
       '.cm-foldPlaceholder': {
-        backgroundColor: CODE_SELECTION,
-        color: CODE_DEFAULT,
+        backgroundColor: THEME.chrome.selection,
+        color: THEME.palette[S.DEFAULT],
         border: 'none',
       },
       '.cm-placeholder': {
-        color: CODE_GUTTER,
+        color: THEME.chrome.gutter,
         fontStyle: 'normal',
       },
     },
@@ -115,76 +99,13 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
   );
 
   const codeHighlightStyle = syntaxHighlighting(
-    HighlightStyle.define([
-      // Control keywords
-      {
-        tag: [tags.keyword, tags.operatorKeyword, tags.controlKeyword],
-        color: KEYWORD,
-        fontWeight: 'bold',
-      },
-      // Definition keywords
-      { tag: tags.definitionKeyword, color: DEF_KEYWORD, fontWeight: 'bold' },
-      // Module keywords + modifiers
-      { tag: [tags.moduleKeyword, tags.modifier], color: MODIFIER, fontWeight: 'bold' },
-      // Strings
-      {
-        tag: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.escape, tags.regexp, tags.character],
-        color: STRING,
-      },
-      // Numbers / atoms
-      {
-        tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom],
-        color: NUMBER,
-      },
-      // Comments
-      { tag: [tags.lineComment, tags.blockComment, tags.docComment], color: COMMENT },
-      // Functions / class names / definitions
-      {
-        tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.definition(tags.variableName))],
-        color: FUNCTION,
-      },
-      {
-        tag: [tags.className, tags.definition(tags.propertyName), tags.definition(tags.typeName)],
-        color: FUNCTION,
-      },
-      // Variables
-      { tag: [tags.variableName, tags.self, tags.definition(tags.variableName)], color: VARIABLE },
-      // Types / properties / tags
-      {
-        tag: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace],
-        color: TYPE,
-      },
-      // Operators
-      {
-        tag: [
-          tags.operator,
-          tags.compareOperator,
-          tags.logicOperator,
-          tags.arithmeticOperator,
-          tags.bitwiseOperator,
-          tags.updateOperator,
-          tags.definitionOperator,
-          tags.typeOperator,
-          tags.controlOperator,
-        ],
-        color: OPERATOR,
-      },
-      // Deref → default
-      { tag: tags.derefOperator, color: CODE_DEFAULT },
-      // Attributes (JSX/HTML)
-      { tag: tags.attributeName, color: ATTRIBUTE },
-      // Meta (decorators, hashbang)
-      { tag: tags.meta, color: MODIFIER },
-      // Punctuation / brackets
-      {
-        tag: [tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace],
-        color: CODE_DEFAULT,
-      },
-      // Labels
-      { tag: tags.labelName, color: VARIABLE },
-      // Invalid
-      { tag: tags.invalid, color: '#FF5370' },
-    ]),
+    HighlightStyle.define(
+      SYNTAX_RULES.map((r) => ({
+        tag: r.tags,
+        color: THEME.palette[r.style],
+        ...(isBold(r.style) ? { fontWeight: 'bold' as const } : {}),
+      })),
+    ),
   );
 
   _themeExtensions = [codeEditorTheme, codeHighlightStyle];

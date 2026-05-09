@@ -31,6 +31,7 @@ import {
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
   playButtonGeom,
+  THEME,
 } from '@/core/code/code-tokens';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -202,10 +203,13 @@ export class CodeTool implements PointerTool {
   // =========================================================================
 
   /** Set all --c-* CSS custom properties as exact px on the container.
-   *  CM theme references these instead of em units, eliminating browser
-   *  em→px conversion rounding that causes sub-pixel mismatches vs canvas. */
+   *  CM theme references the layout vars instead of em units, eliminating
+   *  browser em→px conversion rounding. Chrome color vars feed plain CSS
+   *  rules (`.code-editor`, `.code-title`, ...) so a future theme swap
+   *  flows through without touching index.css. */
   private setCSSVars(container: HTMLDivElement, fontSize: number, scale: number, lineNumbers = true): void {
     const s = container.style;
+    // Layout (px)
     s.setProperty('--c-pt', `${padTop(fontSize) * scale}px`);
     s.setProperty('--c-pb', `${padBottom(fontSize) * scale}px`);
     s.setProperty('--c-pr', `${padRight(fontSize) * scale}px`);
@@ -218,6 +222,14 @@ export class CodeTool implements PointerTool {
       s.setProperty('--c-gr', `${padLeft(fontSize) * scale}px`);
       s.setProperty('--c-gw', '0px');
     }
+    // Chrome colors — index.css rules read `var(--c-*, <hex fallback>)`.
+    s.setProperty('--c-bg', THEME.chrome.bg);
+    s.setProperty('--c-sep', THEME.chrome.sep);
+    s.setProperty('--c-title', THEME.chrome.title);
+    s.setProperty('--c-caret', THEME.chrome.caret);
+    s.setProperty('--c-placeholder', THEME.chrome.placeholder);
+    s.setProperty('--c-output-label', THEME.chrome.outputLabel);
+    s.setProperty('--c-output-text', THEME.chrome.outputText);
   }
 
   // =========================================================================
@@ -729,11 +741,11 @@ export class CodeTool implements PointerTool {
     playBtn.className = 'code-run-btn';
     playBtn.style.width = `${fs * scale}px`;
     playBtn.style.height = `${fs * scale}px`;
-    playBtn.style.background = '#4ADE8035';
+    playBtn.style.background = THEME.chrome.playBg;
     const { triW, triH } = playButtonGeom(fs);
     const triWpx = triW * scale;
     const triHpx = triH * scale;
-    playBtn.innerHTML = `<svg viewBox="0 0 17 20" width="${triWpx}px" height="${triHpx}px"><path d="M0 0L17 10L0 20Z" fill="#4ADE80"/></svg>`;
+    playBtn.innerHTML = `<svg viewBox="0 0 17 20" width="${triWpx}px" height="${triHpx}px"><path d="M0 0L17 10L0 20Z" fill="${THEME.chrome.playGreen}"/></svg>`;
 
     header.appendChild(input);
     header.appendChild(playBtn);
@@ -757,7 +769,7 @@ export class CodeTool implements PointerTool {
     // Separator line — matches canvas fillRect (1px within the output area)
     const sep = document.createElement('div');
     sep.style.height = '1px';
-    sep.style.background = 'rgba(255, 255, 255, 0.125)';
+    sep.style.background = THEME.chrome.sep;
     sep.style.margin = `0 ${-padRight(fs) * scale}px 0 ${-padLeft(fs) * scale}px`;
 
     const label = document.createElement('div');

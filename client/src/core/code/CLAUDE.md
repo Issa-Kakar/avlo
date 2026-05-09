@@ -10,11 +10,12 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 
 | File | Role |
 |------|------|
-| `code-tokens.ts` | Style enum (`S`), `PALETTE`, spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap` — kept here, not in `code-system.ts`, so the worker bundle stays free of `RenderLoop` → `image-manager`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, chrome constants (separator/title/play/output colors + sizing ratios), keyword sets + classification, sync regex tokenizer (`syncTokenizeInto`) — imported by main thread, worker, and theme |
+| `code-tokens.ts` | Style enum (`S` — 14 values incl. `WHITESPACE` sentinel), `THEME` struct (palette + chrome — single source of truth for colors), spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap` — kept here, not in `code-system.ts`, so the worker bundle stays free of `RenderLoop` → `image-manager`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), length-bucketed keyword tables + `classifyIdent`, sizing ratios (`CHROME_FONT_RATIO`, `LINE_HEIGHT_MULT`, etc.), char-code sync tokenizer (`syncTokenizeInto`) — imported by main thread, worker, and theme |
+| `code-syntax-rules.ts` | Single source of truth for Lezer-tag → S enum mapping. Exports `SYNTAX_RULES` (consumed by `code-theme.ts` to derive `HighlightStyle.define` rules) and `STYLE_HIGHLIGHTER` (custom Lezer Highlighter that returns the stringified S int directly; worker callback recovers via `+classes \| 0`). One declaration, no `tagHighlighter` / `TAG_STYLE_INDEX` indirection |
 | `code-system.ts` | SOA pipeline types (`CodeSource`, `CodeSpans`, `CodeLayout`, `CodeOutput`), pooled-buffer `CodeSystemCache`, `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, zero-allocation canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers (`chromeFontSize`, `headerBarHeight`, `outputPanelHeight`, `blockHeight`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system) |
-| `code-theme.ts` | CodeMirror theme extensions — lazy-loaded CoolGlow dark theme + syntax highlighting (`getCodeMirrorExtensions`). No dependency on code-system |
-| `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree` → flat `{spanData, spanLineStart}` via `TAG_STYLE_INDEX` + `writePackedTriples`, zero-copy transfer of both ArrayBuffers |
-| `CodeTool.ts` (in `tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties) + header/output DOM chrome (title input, play button, output panel). `justClosedCodeId` prevents close→remount cycle; `startEditing(id)` public API for SelectTool double-click entry |
+| `code-theme.ts` | CodeMirror theme extensions — lazy-loaded dark theme + syntax highlighting (`getCodeMirrorExtensions`). Reads `THEME.chrome.*` for chrome and derives `HighlightStyle.define` rules from `SYNTAX_RULES` + `THEME.palette` + `isBold`. No dependency on code-system |
+| `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree(tree, STYLE_HIGHLIGHTER, …)` → flat `{spanData, spanLineStart}` via `+classes \| 0` + `writePackedTriples`, zero-copy transfer of both ArrayBuffers |
+| `CodeTool.ts` (in `tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties incl. chrome color vars) + header/output DOM chrome (title input, play button, output panel). `justClosedCodeId` prevents close→remount cycle; `startEditing(id)` public API for SelectTool double-click entry |
 
 ---
 
@@ -62,19 +63,19 @@ Four pooled buffers per id (`CacheEntry`), allocation-free hot paths:
 | Tier | Type | Slots | Owner |
 |------|------|-------|-------|
 | Source | `CodeSource` | `fullText: string` + `lineStart: Uint32Array` (sentinel `text.length+1`) | `buildCodeSourceInto` |
-| Spans  | `CodeSpans`  | flat `spanData: Uint16Array` of triples + `spanLineStart: Uint32Array` half-open ranges + `spanWhitespace: Uint8Array` (one byte per triple) | `syncTokenizeInto` (main) / worker (transfer-swap) |
+| Spans  | `CodeSpans`  | flat `spanData: Uint16Array` of triples + `spanLineStart: Uint32Array` half-open ranges | `syncTokenizeInto` (main) / worker (transfer-swap) |
 | Layout | `CodeLayout` | parallel `vlSrcIdx` / `vlFrom` / `vlLen` `Uint32Array`s + cached `normalFont`/`boldFont`/`chromeFont` strings | `layoutCodeSourceInto` |
 | Output | `CodeOutput` | `text: string \| null` + `lineStart: Uint32Array` | `ensureOutputCache` (identity-checked rebuild) |
 
-**Whitespace flag pre-computation.** Every emitted span triple gets a parallel `1`/`0` byte in `spanWhitespace` (indexed by `i / 3`): `1 = entire run is space/tab, 0 = has ink`. Computed once during tokenization (`writePackedTriples` scans `lineText` per emitted run) so the renderer can skip non-ink triples without a per-frame `charCodeAt` loop. Worker transfers a third ArrayBuffer alongside `spanData` and `spanLineStart`.
+**Whitespace sentinel.** Pure space/tab gap runs are emitted with `style = S.WHITESPACE` directly into the triple's style slot (writer scans the gap once during tokenization, just as before). The renderer's per-span branch is a single `style === S.WHITESPACE` compare on a value already in a register — no `(si/3)|0` divide, no parallel buffer, no second cache line. `THEME.palette[S.WHITESPACE] = THEME.palette[S.DEFAULT]` so any blind palette read returns a defined value; `isBold(S.WHITESPACE)` is false.
 
 **Cached font strings.** `CodeLayout` caches `${weight} ${px}px ${family}` template strings — recomputed only when `fontSize` changes (gated inside `layoutCodeSourceInto`). The renderer reads from the layout instead of allocating three template strings per call.
 
 All buffers grow but never shrink (capacity-doubling). `out?` parameters mirror text-system's `parseAndTokenize` / `measureTokenizedContent` / `layoutMeasuredContent` — reused across content edits, font/width changes, and reflow gestures. Per-pointermove allocations during E/W reflow: zero.
 
-**Style enum (`S`):** 13 values (DEFAULT=0 through INVALID=12), `const enum` for zero-cost inlining. Colors looked up via `PALETTE[style]`, bold via `isBold(style)` (true for indices 1-3: KEYWORD, DEF_KW, MODIFIER).
+**Style enum (`S`):** 14 values (DEFAULT=0 through WHITESPACE=13), fits in a byte. Colors looked up via `THEME.palette[style]`, bold via `isBold(style)` (true for indices 1-3: KEYWORD, DEF_KW, MODIFIER).
 
-**`packRunSpansInto(out, lineLen, buf, count, runOffset, lineText, lineFromAbs)`:** Pre-counts gap-filled triples (`countPackedTriples`), grows `out.spanData` (and parallel `out.spanWhitespace`) if needed, and writes via `writePackedTriples`. Each emitted triple's whitespace flag is computed by scanning `lineText[lineFromAbs + from .. lineFromAbs + from + len)`. Returns the new write offset. The worker uses `writePackedTriples` directly against its own growing buffers (`_workerSpanData` + `_workerSpanWhitespace`) to bypass the CodeSpans struct.
+**`packRunSpansInto(out, lineLen, buf, count, runOffset, lineText, lineFromAbs)`:** Pre-counts gap-filled triples (`countPackedTriples`), grows `out.spanData` if needed, and writes via `writePackedTriples`. Token triples carry their explicit style; gap-fill triples are scanned for whitespace once and stamped `S.WHITESPACE` (pure space/tab) or `S.DEFAULT` (has ink). Returns the new write offset. The worker uses `writePackedTriples` directly against its own growing `_workerSpanData` to bypass the CodeSpans struct.
 
 **Memory:** Per visual line is 12 bytes (3 × Uint32) vs ~40+ bytes for the prior `VisualLine` object (V8 header + 3 slots + retained substring). Spans dropped a `Uint16Array[]` outer container and N per-line ArrayBuffers in favor of a single flat `Uint16Array` + `Uint32Array` index.
 
@@ -165,30 +166,23 @@ Continuation lines have `vlFrom > 0` (no gutter number). The renderer clips flat
 
 ---
 
-## Theme — CoolGlow Palette
+## Theme — `THEME` Struct
 
-Single fixed dark theme (no user-selectable themes). All constants in `code-tokens.ts`, consumed by sync tokenizer, Lezer worker, CM theme, and canvas renderer.
+Single source of truth for colors. `code-tokens.ts` exports `THEME: ThemeSpec` (currently `COOLGLOW_THEME`); a swap is `export const THEME = SWEET_DRACULA_THEME` plus invalidate. Two slots:
+
+- **`THEME.palette: readonly string[]`** — index = `S` enum value (length 14, including `WHITESPACE` at index 13 mirrored from `DEFAULT`).
+- **`THEME.chrome: { bg, gutter, selection, lineHl, caret, nonmatchBracket, searchMatch, sep, title, playGreen, playBg, outputLabel, outputText, placeholder }`** — chrome colors (background, gutter, selection, separator, play button, output panel, title input placeholder). Anything that isn't a token color but used to be a hard-coded hex now lives here.
+
+Consumers:
+- Canvas renderer (`renderCodeLayout`) reads `THEME.palette[style]` for token color and `THEME.chrome.{bg,sep,title,playGreen,playBg,outputLabel}` (plus `THEME.palette[S.DEFAULT]` for placeholder + output text).
+- CM theme (`code-theme.ts`) reads `THEME.chrome.*` directly. `.cm-matchingBracket` derives its color from `THEME.palette[S.KEYWORD]` so matching brackets follow the keyword color through any theme swap.
+- `CodeTool.setCSSVars` writes `--c-bg`, `--c-sep`, `--c-title`, `--c-caret`, `--c-placeholder`, `--c-output-label`, `--c-output-text` from `THEME.chrome.*`. `index.css` rules read `var(--c-*, <hex fallback>)` so partially-themed elements degrade gracefully.
 
 ### Run Button — Geometry Helper
 
-`playButtonGeom(fontSize) → { btnR, triW, triH, triXOffset }` in `code-tokens.ts` is the single source of truth for the play-button triangle. Both the canvas renderer (`renderCodeLayout`'s header section) and the DOM SVG (`createHeaderDiv` in `CodeTool.ts`) read from it, so the two stay pixel-aligned at every zoom. Triangle is centroid-balanced — `triXOffset = triW / 3` shifts the triangle so its geometric centroid sits at `btnCx`. SVG path `M0 0L17 10L0 20Z` (viewBox `0 0 17 20`, aspect ratio 17:20 = 0.85) maps cleanly to the canvas triangle's `triW : triH = 0.85 : 1`.
+`playButtonGeom(fontSize) → { btnR, triW, triH, triXOffset }` in `code-tokens.ts` is the single source of truth for the play-button triangle. Both the canvas renderer (`renderCodeLayout`'s header section) and the DOM SVG (`createHeaderDiv` in `CodeTool.ts`) read from it, so the two stay pixel-aligned at every zoom. Triangle is centroid-balanced — `triXOffset = triW / 3` shifts the triangle so its geometric centroid sits at `btnCx`. SVG path `M0 0L17 10L0 20Z` (viewBox `0 0 17 20`, aspect ratio 17:20 = 0.85) maps cleanly to the canvas triangle's `triW : triH = 0.85 : 1`. SVG fill is `THEME.chrome.playGreen`; circle background is `THEME.chrome.playBg`.
 
-### Chrome
-| Constant | Hex | Purpose |
-|----------|-----|---------|
-| `CODE_BG` | `#060521` | Background fill |
-| `CODE_DEFAULT` | `#E0E0E0` | Gap-fill text (punctuation, brackets, whitespace) |
-| `CODE_GUTTER` | `#E0E0E090` | Line numbers |
-| `CODE_SELECTION` | `#122BBB` | CM selection background |
-| `CODE_LINE_HL` | `#FFFFFF0F` | CM active line highlight |
-| `CODE_CARET` | `#FFFFFFA6` | CM cursor |
-| `CODE_SEPARATOR` | `#FFFFFF20` | Header/output separator lines (~12.5% white) |
-| `CODE_TITLE_COLOR` | `#AEAEAE` | Title text in header bar |
-| `CODE_PLAY_GREEN` | `#4ADE80` | Play button triangle |
-| `CODE_PLAY_BG` | `#4ADE8035` | Play button circle background (~21% green) |
-| `CODE_OUTPUT_LABEL` | `#E0E0E090` | "Output" label text |
-
-### Token Colors — Two-Tier Keywords
+### Token Colors — Two-Tier Keywords (CoolGlow values)
 | S Enum | Hex | Semantic | Examples |
 |--------|-----|----------|----------|
 | `S.KEYWORD` | `#2BF1DC` | Control flow | `if`, `else`, `return`, `for`, `while`, `switch` |
@@ -203,24 +197,45 @@ Single fixed dark theme (no user-selectable themes). All constants in `code-toke
 | `S.TYPE` | `#60A4F1` | Types, properties, tags | `string`, `HTMLElement`, `<div>` |
 | `S.ATTRIBUTE` | `#7BACCA` | JSX/HTML attributes | `className`, `onClick` |
 
-**Two-tier keyword split:** Cyan (`#2BF1DC`) for all keywords, modifiers, and operators. Yellow (`#F8FBB1`) exclusively for definition keywords — "this line declares something." `MODIFIER` and `OPERATOR` are separate enum values sharing the cyan palette entry for future flexibility.
+**Two-tier keyword split:** Cyan for all keywords, modifiers, and operators. Yellow exclusively for definition keywords — "this line declares something." `MODIFIER` and `OPERATOR` share `S.KEYWORD`'s cyan palette entry today but live in separate enum values for future theme flexibility.
 
-**Theme-ready:** Future theme toggle = swap `PALETTE` contents + invalidate. No re-tokenization needed.
+### `SYNTAX_RULES` + `STYLE_HIGHLIGHTER` (Lezer-tag → S)
 
-### TAG_STYLES / TAG_STYLE_INDEX
+`code-syntax-rules.ts` exports the single Lezer-tag → S mapping in two consumable forms, both derived from one declaration:
 
-`TAG_STYLES`: Maps Lezer tag class names → `{ color, bold? }`. Derived from `PALETTE`. Used by CM `HighlightStyle`.
+- **`SYNTAX_RULES: readonly { tags: Tag[]; style: S }[]`** — declarative table (~13 rows). `code-theme.ts` derives `HighlightStyle.define([...])` from it: `{ tag: r.tags, color: THEME.palette[r.style], fontWeight: isBold(r.style) ? 'bold' : undefined }` per row.
+- **`STYLE_HIGHLIGHTER: Highlighter`** — custom `{ style(tags) }` impl that returns the stringified S int directly (e.g. `'5'` for `S.NUMBER`). Worker callback recovers via `+classes | 0`. No `tagHighlighter` indirection, no `TAG_STYLE_INDEX` lookup.
 
-`TAG_STYLE_INDEX`: Maps Lezer tag class names → `S` enum values. Used by worker's `highlightTree()` callback. 14 entries.
+This collapses the previous three sources of truth (`code-theme.ts`'s hand-written rule list + worker's `tagHighlighter` block + `TAG_STYLE_INDEX` map) into one.
 
 ### Sync Tokenizer Keyword Classification
 
-The sync tokenizer uses string-based sets to classify keywords into two tiers via `keywordStyle(word, lang)`:
-- **Definition sets** (`jsDefKwSet`, `tsDefExtras`, `pyDefKwSet`) → `S.DEF_KW`
-- **Modifier sets** (`jsModifierSet`, `tsModifierExtras`, `pyModifierSet`) → `S.MODIFIER`
-- **Everything else in keyword set** → `S.KEYWORD`
+Keywords classify via length-bucketed `KwEntry[][]` tables built once at module load (`JS_KW_BY_LEN`, `TS_KW_BY_LEN`, `PY_KW_BY_LEN`). Each entry stores a `Uint8Array` of char codes plus the final `S` to emit. `classifyIdent(text, start, end, table)` looks up the length bucket and char-code-compares — no `string.slice`, no `Set.has`, zero allocation per identifier. The previous three `Set.has` calls in `keywordStyle` collapse into a single `classifyIdent`.
 
-Decorators (`@name`) use `S.MODIFIER`. The Lezer pass uses semantic tags (`definitionKeyword` → `S.DEF_KW`, `moduleKeyword`/`modifier` → `S.MODIFIER`).
+Reclassifications baked at table-build time so the sync output matches the Lezer worker's tag output (no color flip on first parse arrival):
+- `true` / `false` / `null` (JS/TS) → `S.NUMBER`
+- `True` / `False` / `None` (Python) → `S.NUMBER`
+- `this` / `super` (JS/TS) → `S.VARIABLE`
+
+Decorators (`@name`) emit `S.MODIFIER` directly. The Lezer pass uses semantic tags (`definitionKeyword` → `S.DEF_KW`, `moduleKeyword`/`modifier`/`meta` → `S.MODIFIER`).
+
+### WYSIWYG Sync ↔ Worker Alignment
+
+The sync tokenizer's identifier classification matches the worker's tag-based output — no color flip when the Lezer parse arrives:
+
+| Construct | Sync output | Lezer output | Match |
+|-----------|-------------|--------------|-------|
+| `true` / `false` / `null` (JS/TS) | `S.NUMBER` (table) | `S.NUMBER` (`tags.bool` / `tags.null`) | ✓ |
+| `True` / `False` / `None` (Python) | `S.NUMBER` (table) | `S.NUMBER` (`tags.bool` / `tags.null`) | ✓ |
+| `this` / `super` (JS/TS) | `S.VARIABLE` (table) | `S.VARIABLE` (`tags.self`) | ✓ |
+| `obj.foo` (lowercase, no `(` next) | `S.TYPE` (`lastSignificantChar === '.'`) | `S.TYPE` (`tags.propertyName`) | ✓ |
+| `obj.foo()` | `S.FUNCTION` (`(` lookahead) | `S.FUNCTION` (`tags.function(propertyName)`) | ✓ |
+| `@decorator` | `S.MODIFIER` | `S.MODIFIER` (`tags.meta`) | ✓ |
+
+Property-access tracking uses a function-local `lastSignificantChar` (char code of the last non-ws / non-comment emitted char; reset to 0 at the top of each `syncTokenizeInto` call, NOT per line — so `obj\n  .foo` works). Number branch resets it to 0; comments and whitespace deliberately leave it unchanged so `obj /* */ . foo` still resolves `foo` as `S.TYPE`.
+
+**Out of scope** (deferred to Sweet Dracula swap pass — needs new S slots / AST awareness):
+destructured aliases (`const { foo } = obj`), regex-delimiter split, JSX HTML-tag vs Component split, escape sequences inside strings, parameter vs variable distinction.
 
 ---
 
@@ -251,13 +266,13 @@ Source + spans are **always populated** after entry creation. Cold miss in `getL
 
 ### Sync Tokenizer (`syncTokenizeInto`)
 
-Regex-based tokenizer — signature `syncTokenizeInto(source: CodeSource, lang, out: CodeSpans): void`. Iterates `source.lineStart` offsets, extracts one substring per line for the existing index-based tokenizer body, then `packRunSpansInto(out, lineLen, _syncBuf, _syncBufCount, writeOffset)` per line writes flat triples into `out.spanData` and updates `out.spanLineStart[lineIdx + 1]`. Pushes `(from, to, styleIndex)` triples into a reusable module-level `_syncBuf`. No `string[]` array, no per-line `Uint16Array` allocation.
+Char-code tokenizer — signature `syncTokenizeInto(source: CodeSource, lang, out: CodeSpans): void`. Iterates `source.fullText` with absolute offsets (no per-line `substring`), pushes line-relative `(from, to, style)` triples into a reusable `_syncBuf`, then `packRunSpansInto` per line writes flat triples into `out.spanData` and updates `out.spanLineStart[lineIdx + 1]`. Helpers (`isHexDigit`, `isIdentStart`, `isIdentPart`, `isDigit`, `isOperator`) take char codes — V8 jump-tables / branchless compares the predicates. No `slice`, no `substring`, no `Set.has`, no `string[]`.
 
-Handles: keywords (JS/TS/Python sets, three-tier classification via `keywordStyle()`), strings (including template literals with `${}` nesting, Python f/r/b-prefix strings, triple quotes), numbers (hex/binary/octal/scientific/separators/BigInt), comments (line `//`, block `/* */`, Python `#`, hashbang `#!`), operators (including `=>`, `?.`, `??`, `...`), decorators (`@name` → S.MODIFIER), identifiers (function calls → S.FUNCTION, PascalCase → S.TYPE, others → S.VARIABLE).
+Handles: keywords (length-bucketed table lookup via `classifyIdent`, see above for reclassifications), strings (template literals with `${}` nesting, Python f/r/b-prefix strings, triple quotes), numbers (hex/binary/octal/scientific/separators/BigInt), comments (line `//`, block `/* */`, Python `#`, hashbang `#!`), operators (including `=>`, `?.`, `??`, `...`), decorators (`@name` → S.MODIFIER), identifiers (function calls via `(` lookahead → S.FUNCTION, PascalCase → S.TYPE, post-`.` lowercase → S.TYPE, others → S.VARIABLE).
 
-Does NOT emit tokens for punctuation, brackets, or whitespace — these become `S.DEFAULT` gaps via the gap-fill writer.
+Does NOT emit tokens for punctuation, brackets, or pure whitespace — these become gap-fill triples in `packRunSpansInto`. Pure space/tab gaps stamp `S.WHITESPACE` so the renderer skips ink work; mixed gaps stamp `S.DEFAULT`.
 
-Multi-line state tracked via `inBlockComment` and `inTemplateString` flags across lines. `scanTemplateLiteral` pushes directly into the shared buffer instead of allocating/returning objects.
+Multi-line state tracked via `inBlockComment`, `inTemplateString`, and `inTripleString` flags across lines. `inTripleString` stores the quote char code (`34` for `"""`, `39` for `'''`) so Python multi-line docstrings color correctly. `scanTemplateLiteral` pushes directly into the shared buffer.
 
 ### Lezer Worker Pool
 
@@ -267,7 +282,7 @@ Multi-line state tracked via `inBlockComment` and `inTemplateString` flags acros
 
 **Per-object state:** Each worker maintains a `Map<string, { tree: Tree, fragments: TreeFragment[] }>`. When `changes` are provided, `TreeFragment.applyChanges()` enables incremental parsing. Without changes (cold parse or language change), a full parse is performed.
 
-**Span extraction (`extractAndSendSpans`):** Builds the line-offset table via a single `charCodeAt(i) === 10` scan into the reusable `_workerLineOffsets: Uint32Array` (sentinel `text.length + 1`). `highlightTree()` walks the Lezer `Tree` and stores `[lineIdx, from, to, style]` quads into a flat `_hlBuf` (zero object allocation). Sequential cursor scan packs each line's triples into `_workerSpanData` (reusable growing `Uint16Array`) via `writePackedTriples`. The used prefix is sliced into a fresh `Uint16Array` for transfer — `_workerSpanData` itself stays warm.
+**Span extraction (`extractAndSendSpans`):** Builds the line-offset table via a single `charCodeAt(i) === 10` scan into the reusable `_workerLineOffsets: Uint32Array` (sentinel `text.length + 1`). `highlightTree(tree, STYLE_HIGHLIGHTER, callback)` walks the Lezer `Tree`; the callback recovers the S int with `+classes | 0` (no `TAG_STYLE_INDEX` lookup) and stores `[lineIdx, from, to, style]` quads into a flat `_hlBuf` (zero object allocation). Sequential cursor scan packs each line's triples into `_workerSpanData` (reusable growing `Uint16Array`) via `writePackedTriples`. The used prefix is sliced into a fresh `Uint16Array` for transfer — `_workerSpanData` itself stays warm.
 
 **Zero-copy transfer:** Worker transfers two ArrayBuffers in one `postMessage(..., [spanData.buffer, spanLineStart.buffer])`. Main thread `applyWorkerSpans` swaps `entry.spans.spanData` / `spanLineStart` refs directly.
 
@@ -284,7 +299,7 @@ Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineSta
 - `'typescript'` → `@lezer/javascript` configured with `dialect: 'ts jsx'` (cached)
 - `'javascript'` (default) → `@lezer/javascript` configured with `dialect: 'jsx'` (cached)
 
-**Worker bundle hygiene.** `code-tokens.ts` imports `code-system.ts` only as `import type { CodeSpans }` — value imports are forbidden. A static value import would chain `code-tokens → code-system → @/renderer/RenderLoop → @/core/image/image-manager`, dragging the main-thread bundle into the worker; `image-manager.ts` has top-level `new Worker(...)` (would spawn 2 nested image workers per lezer worker on module load) and `window.addEventListener(...)` (throws in worker context), aborting the worker's module-load before `onmessage` is installed and silently dropping every parse request. The cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`) live in `code-tokens.ts` to keep this chain broken — they're cited by the sync tokenizer's `packRunSpansInto`. `w.onerror` / `w.onmessageerror` handlers in `ensureWorkers` surface any future module-load regression instead of failing silently.
+**Worker bundle hygiene.** `code-tokens.ts` and `code-syntax-rules.ts` both import `code-system.ts` only as `import type { CodeSpans }` (or not at all) — value imports are forbidden. A static value import would chain `code-tokens → code-system → @/renderer/RenderLoop → @/core/image/image-manager`, dragging the main-thread bundle into the worker; `image-manager.ts` has top-level `new Worker(...)` (would spawn 2 nested image workers per lezer worker on module load) and `window.addEventListener(...)` (throws in worker context), aborting the worker's module-load before `onmessage` is installed and silently dropping every parse request. `@lezer/highlight` (used by `code-syntax-rules.ts` for `STYLE_HIGHLIGHTER`) is already in the worker bundle — no new pull. The cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`) live in `code-tokens.ts` to keep this chain broken. `w.onerror` / `w.onmessageerror` handlers in `ensureWorkers` surface any future module-load regression instead of failing silently.
 
 ---
 
@@ -315,11 +330,11 @@ interface CacheEntry {
 | Trigger | What changes | Layout | Frame | Version |
 |---------|-------------|--------|-------|---------|
 | `handleContentChange` | Source rebuilt, spans re-tokenized in place | invalidated (`layoutValid=false`) | nulled | incremented |
-| `applyWorkerSpans` | `spans.spanData` / `spanLineStart` refs swapped (colors only) | unchanged | unchanged | checked (must match) |
+| `applyWorkerSpans` | `spans.spanData` / `spanLineStart` refs swapped (colors only); viewport-culls before invalidation | unchanged | unchanged | checked (must match) |
 | fontSize/width/lineNumbers change (detected in `getLayout`) | — | reflowed in place | nulled | unchanged |
 | Language change (detected in `getLayout`) | Spans re-tokenized in place | **preserved** if dims unchanged | preserved | incremented |
 
-`applyWorkerSpans` does NOT touch the layout — only span colors change. It calls `invalidateWorld(frameBounds)` if a cached frame exists. Floors `e.spans.spanCap = Math.max(spanData.length, 48)` so an empty-content response (`spanData.length === 0`) doesn't trip `ensureSpansDataCap`'s `cap *= 2` doubling loop on the next sync-tokenize grow; `ensureSpansDataCap` separately floors `cap = Math.max(s.spanCap, 16)` for defense-in-depth.
+`applyWorkerSpans` does NOT touch the layout — only span colors change. It viewport-culls before invalidating: the cached frame is intersected with `getVisibleBoundsTuple()` (shared scratch tuple from camera-store, no allocation) and only emits `invalidateWorldBBox([fx, fy, fx+fw, fy+fh])` if the block overlaps the visible viewport. Off-screen blocks (remote edits while panned far away, or freshly-mounted blocks deep in a long doc) skip the invalidation entirely — saves dirty-rect bookkeeping plus a redundant repaint of an empty rect. Floors `e.spans.spanCap = Math.max(spanData.length, 48)` so an empty-content response (`spanData.length === 0`) doesn't trip `ensureSpansDataCap`'s `cap *= 2` doubling loop on the next sync-tokenize grow; `ensureSpansDataCap` separately floors `cap = Math.max(s.spanCap, 16)` for defense-in-depth.
 
 **Language change optimization:** Language affects only colors, not geometry. Re-tokenize spans + dispatch worker parse, but do NOT recompute layout unless fontSize/width also changed.
 
@@ -330,7 +345,7 @@ interface CacheEntry {
 | `layoutCodeSourceInto(source, fontSize, width, lineNumbers, out)` | SelectTool reflow (`reflowCode`) | In-place layout into a pooled `CodeLayout` buffer |
 | `getLayout(id, yText, fontSize, width, lang, lineNumbers?)` | `computeCodeBBox`, `drawCode` | Build or return cached layout; handles cold miss, language change, relayout |
 | `handleContentChange(id, ev, lang)` | Deep observer | Rebuild source + sync-tokenize + dispatch worker parse with delta changes |
-| `applyWorkerSpans(id, spanData, spanLineStart, forVersion)` | Worker response handler | Version-gated span ref-swap |
+| `applyWorkerSpans(id, spanData, spanLineStart, forVersion)` | Worker response handler | Version-gated span ref-swap; viewport-culls before invalidate |
 | `getSpans(id)` | `drawCode` in objects.ts | Get `CodeSpans` for renderer (flat triples) |
 | `getSource(id)` / `getCodeSource(id)` | `drawCode`, transform freeze | Get `CodeSource` for renderer / E/W reflow |
 | `getOutputCache(id, output)` | `drawCode`, `computeCodeBBox` | Identity-checked rebuild of `CodeOutput` line offsets |
@@ -347,13 +362,13 @@ Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, spans, sou
 
 Zero-allocation span iteration — no intermediate objects. Steps:
 
-1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`. Height = `blockHeight(...)` (includes chrome when present, uses `outputCache` for line count when provided)
-2. **Separator helper (`drawSep`):** Pixel-snapped hairline — reads `ctx.getTransform()`, converts Y to device coords via `Math.round()`, draws exactly `dpr` device pixels (= 1 CSS pixel) with `resetTransform()`. Prevents sub-pixel anti-aliasing from halving apparent separator opacity
-3. **Header bar** (when `title !== undefined`): Separator at `originY + headerBarHeight(fs)`. Title text at chrome font size, vertically centered. Play button: `CODE_PLAY_BG` circle + `CODE_PLAY_GREEN` triangle (geometry from `playButtonGeom(fs)`, centroid-balanced via `triXOffset = triW/3`), right-aligned
+1. **Background:** `roundRect` fill with `THEME.chrome.bg`, `borderRadius(fontSize)`. Height = `blockHeight(...)` (includes chrome when present, uses `outputCache` for line count when provided)
+2. **Separator helper (`drawSep`):** Pixel-snapped hairline — reads `ctx.getTransform()`, converts Y to device coords via `Math.round()`, draws exactly `dpr` device pixels (= 1 CSS pixel) with `resetTransform()` and `THEME.chrome.sep` fill. Prevents sub-pixel anti-aliasing from halving apparent separator opacity
+3. **Header bar** (when `title !== undefined`): Separator at `originY + headerBarHeight(fs)`. Title text (`THEME.chrome.title`) at chrome font size, vertically centered. Play button: `THEME.chrome.playBg` circle + `THEME.chrome.playGreen` triangle (geometry from `playButtonGeom(fs)`, centroid-balanced via `triXOffset = triW/3`), right-aligned
 4. **Code content:** All lines offset down by `headerBarHeight(fs)` when header present (`codeTop = originY + hh`)
 5. **Per visual line:** Compute `baseY = codeTop + padTop + i * lineHeight + baselineOffset`. Read `srcIdx = vlSrcIdx[i]`, `vFrom = vlFrom[i]`, `vTo = vFrom + vlLen[i]` from the SOA layout
-6. **Gutter:** When `layout.lineNumbers` is true and `vlFrom[i] === 0`, right-align line number within gutter area. Skipped entirely when lineNumbers is false
-7. **Code text:** Iterate flat span triples in `[spanLineStart[srcIdx], spanLineStart[srcIdx+1])` with inline `[vFrom, vTo)` clipping. **Whitespace skip:** if `spanWhitespace[si/3]` is `1`, advance `x` by `drawLen * cw` and continue — no font set, no fillStyle set, no fillText. Otherwise, `PALETTE[style]` for color, layout's cached `boldFont`/`normalFont` (no string allocation per call), `fullText.substring(lineStartChar + drawFrom, lineStartChar + drawTo)` for fillText (V8 SlicedString — single allocation per painted span)
+6. **Gutter:** When `layout.lineNumbers` is true and `vlFrom[i] === 0`, right-align line number within gutter area (`THEME.chrome.gutter`). Skipped entirely when lineNumbers is false
+7. **Code text:** Iterate flat span triples in `[spanLineStart[srcIdx], spanLineStart[srcIdx+1])` with inline `[vFrom, vTo)` clipping. **Whitespace skip:** if `style === S.WHITESPACE`, advance `x` by `drawLen * cw` and continue — single compare-and-branch on a value already in a register, no font set, no fillStyle set, no fillText. Otherwise, `THEME.palette[style]` for color, layout's cached `boldFont`/`normalFont` (no string allocation per call), `fullText.substring(lineStartChar + drawFrom, lineStartChar + drawTo)` for fillText (V8 SlicedString — single allocation per painted span)
 8. **Batching:** Font and fillStyle only set on change (`prevFont` tracking)
 9. **Placeholder:** After the loop, if `source.lineCount === 1 && source.fullText.length === 0`, draw grey "Type something..." at first line position
 10. **Output panel** (when `output !== undefined`): Separator at code bottom. "Output" label at chrome font size, vertically centered. Output text lines (max `MAX_OUTPUT_CANVAS_LINES`) iterated via `outputCache.lineStart`. Callers (`drawCode` + scale paths in `objects.ts`, `computeCodeBBox`) always pass an eagerly-built `outputCache` when output is shown, so the renderer has no fallback branch.
@@ -377,9 +392,9 @@ Position via `worldToClient(origin)` → `left/top` in CSS px.
 
 ### CSS Custom Properties (`--c-*`)
 
-The CM theme references CSS custom properties instead of `em` units. `setCSSVars()` writes them as exact px on the container at mount and on every `positionEditor()` call. Values depend on `lineNumbers`:
+`setCSSVars()` writes layout AND chrome color vars as exact px / hex on the container. Layout vars are set at mount and on every `positionEditor()` call (depend on zoom + `lineNumbers`); chrome color vars come from `THEME.chrome.*` and are written alongside them so a future theme swap picks up the CSS side automatically. The CM theme references the layout vars instead of `em` units (avoiding browser em→px rounding); `index.css` rules read the chrome vars with hex fallbacks identical to today's literals.
 
-**lineNumbers ON (default):**
+**Layout — lineNumbers ON (default):**
 | CSS var | Value | Used by |
 |---------|-------|---------|
 | `--c-pt` | `padTop(fs) * scale` px | `.cm-scroller` paddingTop |
@@ -389,9 +404,18 @@ The CM theme references CSS custom properties instead of `em` units. `setCSSVars
 | `--c-pr` | `padRight(fs) * scale` px | `.cm-line` padding-right |
 | `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth |
 
-**lineNumbers OFF:** `--c-gl` = `0px`, `--c-gw` = `0px`, `--c-gr` = `padLeft(fs) * scale` px (provides block left indent via `.cm-line` padding since CM removes `.cm-gutters` entirely when the `lineNumbers` extension is absent).
+**Layout — lineNumbers OFF:** `--c-gl` = `0px`, `--c-gw` = `0px`, `--c-gr` = `padLeft(fs) * scale` px (provides block left indent via `.cm-line` padding since CM removes `.cm-gutters` entirely when the `lineNumbers` extension is absent).
 
-This avoids browser `em→px` conversion which introduces sub-pixel rounding mismatches versus the canvas renderer.
+**Chrome colors (from `THEME.chrome.*`):**
+| CSS var | Source | Used by |
+|---------|--------|---------|
+| `--c-bg` | `THEME.chrome.bg` | `.code-editor` background |
+| `--c-sep` | `THEME.chrome.sep` | `.code-header` border-bottom |
+| `--c-title` | `THEME.chrome.title` | `.code-title` color |
+| `--c-caret` | `THEME.chrome.caret` | `.code-title` caret-color |
+| `--c-placeholder` | `THEME.chrome.placeholder` | `.code-title::placeholder` |
+| `--c-output-label` | `THEME.chrome.outputLabel` | `.code-output-label` color |
+| `--c-output-text` | `THEME.chrome.outputText` | `.code-output-text` color |
 
 ### Padding Placement: Scroller, Not Content
 
@@ -409,7 +433,8 @@ Called on every zoom/pan change (`onViewChange()`). Updates ALL dimensional prop
 
 ```css
 .code-editor {
-  pointer-events: auto; z-index: 1000; overflow: hidden; background: #060521;
+  pointer-events: auto; z-index: 1000; overflow: hidden;
+  background: var(--c-bg, #060521);
 }
 .code-editor .cm-editor { height: auto; border-radius: inherit; outline: none; }
 .code-editor .cm-scroller {
@@ -418,22 +443,25 @@ Called on every zoom/pan change (`onViewChange()`). Updates ALL dimensional prop
   line-height: inherit !important;  /* Override CM base theme's 1.4 */
 }
 
-/* Header/output chrome */
+/* Header/output chrome — colors via --c-* with hex fallbacks. */
 .code-header {
   display: flex; align-items: center; box-sizing: border-box;
-  border-bottom: 1px solid rgba(255,255,255,0.125);  /* CODE_SEPARATOR */
+  border-bottom: 1px solid var(--c-sep, rgba(255,255,255,0.125));
 }
 .code-title {
-  background: transparent; border: none; outline: none; color: #AEAEAE;
+  background: transparent; border: none; outline: none;
+  color: var(--c-title, #aeaeae);
+  caret-color: var(--c-caret, #ffffffa6);
   font-family: 'JetBrains Mono', monospace; flex: 1; min-width: 0; padding: 0;
 }
+.code-title::placeholder { color: var(--c-placeholder, #e0e0e060); }
 .code-run-btn {
   flex-shrink: 0; border: none; border-radius: 50%; pointer-events: none;
   display: flex; align-items: center; justify-content: center; padding: 0;
 }
 .code-output { font-family: 'JetBrains Mono', monospace; overflow: hidden; box-sizing: border-box; }
-.code-output-label { color: #E0E0E090; font-weight: 450; }
-.code-output-text { color: #AEAEAE; white-space: pre-wrap; word-break: break-all; overflow-y: auto; }
+.code-output-label { color: var(--c-output-label, #e0e0e090); font-weight: 450; }
+.code-output-text { color: var(--c-output-text, #aeaeae); white-space: pre-wrap; word-break: break-all; overflow-y: auto; }
 ```
 
 The `line-height: inherit !important` forces the scroller to use the container's explicit px line-height instead of CM's base theme value of `1.4`, which fights the code system's `1.5` multiplier at identical specificity.
@@ -446,9 +474,9 @@ All dynamic chrome sizing (fontSize, padding, height, lineHeight) is set via inl
 
 Lazy-loaded via `getCodeMirrorExtensions()` (cached after first call). Two extensions:
 
-1. **Theme** (`EditorView.theme`, dark mode): CoolGlow chrome — background, gutter, cursor (`CODE_CARET`), selection (`CODE_SELECTION`), active line (`CODE_LINE_HL`), bracket matching (cyan/red outlines), search match, tooltip, fold placeholder, placeholder hint. All padding/sizing via `var(--c-*)`. Line-height set as the `LINE_HEIGHT_MULT` ratio on `.cm-scroller`. Gutter elements use `fontFeatureSettings: '"tnum"'` for tabular numbers.
+1. **Theme** (`EditorView.theme`, dark mode): chrome reads `THEME.chrome.*` (background, gutter, selection, active line, caret, nonmatching bracket, search match, tooltip, fold placeholder, placeholder hint). Matching brackets derive from `THEME.palette[S.KEYWORD]` so they follow the keyword color through any theme swap. All padding/sizing via `var(--c-*)`. Line-height set as the `LINE_HEIGHT_MULT` ratio on `.cm-scroller`. Gutter elements use `fontFeatureSettings: '"tnum"'` for tabular numbers.
 
-2. **Syntax highlighting** (`HighlightStyle.define`): Comprehensive Lezer tag mapping using the three-tier keyword system. Tags grouped by semantic role: control keywords → `KEYWORD`, definition keywords → `DEF_KEYWORD`, module/modifier → `MODIFIER`, plus full coverage of strings (including special(brace), character), numbers (integer, float), comments (doc), functions (className, definition types), variables (self, labelName), types (angleBracket, namespace), all operator subtypes, attributes, deref, punctuation, and invalid.
+2. **Syntax highlighting** (`HighlightStyle.define`): derived from `SYNTAX_RULES` (`code-syntax-rules.ts`) + `THEME.palette` + `isBold` — one declarative table feeds both this CM rule list AND the worker's `STYLE_HIGHLIGHTER`. Tags grouped by semantic role: control keywords → `S.KEYWORD`, definition keywords → `S.DEF_KW`, module/modifier/meta → `S.MODIFIER`, plus full coverage of strings (string, special, escape, regexp, character), numbers (integer, float, bool, null, atom), comments (line, block, doc), functions (className, function-of, definition types), variables (self, labelName), types (angleBracket, namespace), all operator subtypes, attributes, deref/punctuation/brackets (→ default), and invalid.
 
 ### Editor State Extensions (set at mount)
 

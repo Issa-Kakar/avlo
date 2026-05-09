@@ -18,24 +18,16 @@
  */
 
 import type * as Y from 'yjs';
-import { invalidateWorld } from '@/renderer/RenderLoop';
+import { invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import type { CodeLanguage } from '../accessors';
 import { getCodeProps } from '../accessors';
-import { frameTupleToWorldBounds } from '../geometry/bounds';
 import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-system';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 
 import {
   CHROME_FONT_RATIO,
-  CODE_BG,
-  CODE_DEFAULT,
   CODE_FONT_FAMILY,
-  CODE_GUTTER,
-  CODE_OUTPUT_LABEL,
-  CODE_PLAY_BG,
-  CODE_PLAY_GREEN,
-  CODE_SEPARATOR,
-  CODE_TITLE_COLOR,
   HEADER_HEIGHT_RATIO,
   isBold,
   LINE_HEIGHT_MULT,
@@ -43,9 +35,10 @@ import {
   OUTPUT_LABEL_H_RATIO,
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
-  PALETTE,
   playButtonGeom,
+  S,
   syncTokenizeInto,
+  THEME,
 } from './code-tokens';
 
 // ============================================================================
@@ -67,14 +60,13 @@ export interface CodeSource {
  * Tier 2: flat span buffer. Triples [off, len, style] for line i live at
  * `spanData[spanLineStart[i] .. spanLineStart[i+1])`. `spanCap` measured in u16 slots.
  *
- * `spanWhitespace` — one byte per triple (parallel to spanData/3): `1 = all
- * whitespace, 0 = has ink`. Computed at tokenize time so the renderer skips
- * the per-triple charCode scan entirely.
+ * Whitespace runs are sentinelled to `S.WHITESPACE` in the style slot at
+ * tokenize time, so the renderer skips ink work via a single `style === S.WHITESPACE`
+ * compare — no parallel buffer, no `(si/3)|0` divide, no second cache line.
  */
 export interface CodeSpans {
   spanData: Uint16Array;
   spanLineStart: Uint32Array; // [lineCap + 1]
-  spanWhitespace: Uint8Array; // [spanCap / 3] — one byte per triple
   lineCount: number;
   spanCap: number;
   lineCap: number;
@@ -154,7 +146,6 @@ interface WorkerResponse {
   version: number;
   spanData: Uint16Array;
   spanLineStart: Uint32Array;
-  spanWhitespace: Uint8Array;
 }
 
 // ============================================================================
@@ -292,7 +283,6 @@ function createCodeSpans(): CodeSpans {
   return {
     spanData: new Uint16Array(48), // 16 triples
     spanLineStart: new Uint32Array(9), // cap 8 + sentinel
-    spanWhitespace: new Uint8Array(16), // one byte per triple
     lineCount: 0,
     spanCap: 48,
     lineCap: 8,
@@ -558,8 +548,8 @@ function dispatch(msg: WorkerRequest): void {
 }
 
 function handleWorkerMessage(e: MessageEvent<WorkerResponse>): void {
-  const { id, version, spanData, spanLineStart, spanWhitespace } = e.data;
-  codeSystem.applyWorkerSpans(id, spanData, spanLineStart, spanWhitespace, version);
+  const { id, version, spanData, spanLineStart } = e.data;
+  codeSystem.applyWorkerSpans(id, spanData, spanLineStart, version);
 }
 
 function requestParse(id: string, text: string, language: CodeLanguage, version: number, changes?: ChangedRange[]): void {
@@ -723,7 +713,7 @@ class CodeSystemCache {
    * Apply Lezer worker spans (ceiling upgrade). Version-gated to discard stale results.
    * Swaps the spans buffers directly — zero-copy from the worker's transferred ArrayBuffers.
    */
-  applyWorkerSpans(id: string, spanData: Uint16Array, spanLineStart: Uint32Array, spanWhitespace: Uint8Array, forVersion: number): void {
+  applyWorkerSpans(id: string, spanData: Uint16Array, spanLineStart: Uint32Array, forVersion: number): void {
     const e = this.entries.get(id);
     if (!e || forVersion !== e.version) return;
     e.spans.spanData = spanData;
@@ -733,12 +723,21 @@ class CodeSystemCache {
     // with the floor inside ensureSpansDataCap itself.
     e.spans.spanCap = Math.max(spanData.length, 48);
     e.spans.spanLineStart = spanLineStart;
-    e.spans.spanWhitespace = spanWhitespace;
     e.spans.lineCap = spanLineStart.length - 1;
     e.spans.lineCount = spanLineStart.length - 1;
     // Layout dimensions unchanged — only colors differ. No layout invalidation.
+    // Viewport-cull: a code block edited remotely while it's fully off-screen
+    // doesn't need to mark a dirty rect — the next pan/zoom into view will
+    // repaint it from scratch anyway. Saves dirty-rect bookkeeping + an empty
+    // repaint pass on long docs.
     if (e.frame) {
-      invalidateWorld(frameTupleToWorldBounds(e.frame));
+      const [fx, fy, fw, fh] = e.frame;
+      const bx1 = fx + fw;
+      const by1 = fy + fh;
+      const vis = getVisibleBoundsTuple();
+      if (bx1 >= vis[0] && fx <= vis[2] && by1 >= vis[1] && fy <= vis[3]) {
+        invalidateWorldBBox([fx, fy, bx1, by1]);
+      }
     }
   }
 
@@ -845,7 +844,7 @@ export function renderCodeLayout(
   ctx.save();
 
   // 1. Background
-  ctx.fillStyle = CODE_BG;
+  ctx.fillStyle = THEME.chrome.bg;
   ctx.beginPath();
   ctx.roundRect(originX, originY, layout.totalWidth, bgH, borderRadius(fontSize));
   ctx.fill();
@@ -859,7 +858,7 @@ export function renderCodeLayout(
     const devW = Math.round(m.a * (originX + layout.totalWidth) + m.e) - devX;
     ctx.save();
     ctx.resetTransform();
-    ctx.fillStyle = CODE_SEPARATOR;
+    ctx.fillStyle = THEME.chrome.sep;
     ctx.fillRect(devX, devY, devW, dpr);
     ctx.restore();
   };
@@ -871,7 +870,7 @@ export function renderCodeLayout(
 
     ctx.textBaseline = 'middle';
     // Title text
-    ctx.fillStyle = CODE_TITLE_COLOR;
+    ctx.fillStyle = THEME.chrome.title;
     ctx.font = chromeFont;
     ctx.fillText(title, originX + pl, originY + hh / 2);
 
@@ -880,13 +879,13 @@ export function renderCodeLayout(
     const btnCx = originX + layout.totalWidth - padRight(fontSize) - btnR;
     const btnCy = originY + hh / 2;
 
-    ctx.fillStyle = CODE_PLAY_BG;
+    ctx.fillStyle = THEME.chrome.playBg;
     ctx.beginPath();
     ctx.arc(btnCx, btnCy, btnR, 0, Math.PI * 2);
     ctx.fill();
 
     const triX = btnCx - triXOffset;
-    ctx.fillStyle = CODE_PLAY_GREEN;
+    ctx.fillStyle = THEME.chrome.playGreen;
     ctx.beginPath();
     ctx.moveTo(triX, btnCy - triH / 2);
     ctx.lineTo(triX + triW, btnCy);
@@ -905,7 +904,6 @@ export function renderCodeLayout(
   const sourceLineStart = source.lineStart;
   const spanData = spans.spanData;
   const spanLineStart = spans.spanLineStart;
-  const spanWhitespace = spans.spanWhitespace;
   const visualLineCount = layout.visualLineCount;
   const vlSrcIdx = layout.vlSrcIdx;
   const vlFrom = layout.vlFrom;
@@ -919,7 +917,7 @@ export function renderCodeLayout(
 
     // Gutter — only on first segment of source line, when lineNumbers enabled
     if (layout.lineNumbers && vFrom === 0) {
-      ctx.fillStyle = CODE_GUTTER;
+      ctx.fillStyle = THEME.chrome.gutter;
       if (prevFont !== normalFont) {
         ctx.font = normalFont;
         prevFont = normalFont;
@@ -952,11 +950,9 @@ export function renderCodeLayout(
       const drawLen = drawTo - drawFrom;
       if (drawLen <= 0) continue;
 
-      // Whitespace flag pre-computed at tokenize time. Skip ink work AND fillText.
-      // Note: we skip when the entire underlying triple is whitespace, which is
-      // a sufficient (not strict) condition — clipped sub-runs of an inky triple
-      // still pay fillText, but those are vanishingly rare.
-      if (spanWhitespace[(si / 3) | 0]) {
+      // Whitespace sentinel — single compare on a value already in a register.
+      // Skip ink work AND fillText entirely.
+      if (style === S.WHITESPACE) {
         x += drawLen * cw;
         continue;
       }
@@ -966,7 +962,7 @@ export function renderCodeLayout(
         ctx.font = font;
         prevFont = font;
       }
-      ctx.fillStyle = PALETTE[style];
+      ctx.fillStyle = THEME.palette[style];
 
       const absFrom = lineStartChar + drawFrom;
       const absTo = lineStartChar + drawTo;
@@ -977,7 +973,7 @@ export function renderCodeLayout(
 
   // Placeholder — empty block shows grey hint text at first line position
   if (source.lineCount === 1 && source.fullText.length === 0) {
-    ctx.fillStyle = CODE_GUTTER;
+    ctx.fillStyle = THEME.chrome.gutter;
     ctx.font = normalFont;
     ctx.fillText('Type something...', originX + cl, codeTop + pt + bl);
   }
@@ -993,7 +989,7 @@ export function renderCodeLayout(
     // "Output" label
     ctx.textBaseline = 'middle';
     ctx.font = chromeFont;
-    ctx.fillStyle = CODE_OUTPUT_LABEL;
+    ctx.fillStyle = THEME.chrome.outputLabel;
     ctx.fillText('Output', originX + pl, codeBottomY + labelH / 2);
 
     // Output text lines — outputCache is eagerly built by callers (objects.ts +
@@ -1001,7 +997,7 @@ export function renderCodeLayout(
     // when output is non-empty. No fallback branch.
     if (output && outputCache) {
       ctx.textBaseline = 'alphabetic';
-      ctx.fillStyle = CODE_DEFAULT;
+      ctx.fillStyle = THEME.palette[S.DEFAULT];
       ctx.font = chromeFont;
       const chromeBl = (cfs * (OUTPUT_LINE_H_MULT + 0.8)) / 2; // approximate ascent
       const maxLines = Math.min(outputCache.lineCount, MAX_OUTPUT_CANVAS_LINES);

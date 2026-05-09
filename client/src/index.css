@@ -189,7 +189,7 @@ html {
   pointer-events: auto;
   z-index: 1000;
   overflow: hidden;
-  background: #060521;
+  background: var(--c-bg, #060521);
 }
 .code-editor .cm-editor {
   height: auto;
@@ -209,25 +209,28 @@ html {
   line-height: inherit !important;
 }
 /* --- Code Header & Output Chrome --- */
+/* Color values come from THEME.chrome.* via CSS custom properties set in
+   CodeTool.setCSSVars. Hex fallbacks mirror the current values so partially-
+   themed elements degrade gracefully if the vars haven't landed yet. */
 .code-header {
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.125);
+  border-bottom: 1px solid var(--c-sep, rgba(255, 255, 255, 0.125));
 }
 .code-title {
   background: transparent;
   border: none;
   outline: none;
-  color: #aeaeae;
+  color: var(--c-title, #aeaeae);
   font-family: "JetBrains Mono", monospace;
   flex: 1;
   min-width: 0;
   padding: 0;
-  caret-color: #ffffffa6;
+  caret-color: var(--c-caret, #ffffffa6);
 }
 .code-title::placeholder {
-  color: #e0e0e060;
+  color: var(--c-placeholder, #e0e0e060);
 }
 .code-run-btn {
   flex-shrink: 0;
@@ -246,11 +249,11 @@ html {
   box-sizing: border-box;
 }
 .code-output-label {
-  color: #e0e0e090;
+  color: var(--c-output-label, #e0e0e090);
   font-weight: 450;
 }
 .code-output-text {
-  color: #aeaeae;
+  color: var(--c-output-text, #aeaeae);
   white-space: pre-wrap;
   word-break: break-all;
   overflow-y: auto;

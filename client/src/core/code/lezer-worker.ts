@@ -10,72 +10,21 @@
  *   Main → Worker: { type:'clearAll' }
  *   Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineStart: Uint32Array }
  *                  (both ArrayBuffers transferred zero-copy)
+ *
+ * Style mapping is owned by `code-syntax-rules.ts`'s `STYLE_HIGHLIGHTER`,
+ * which returns the stringified S enum value directly. The `highlightTree`
+ * callback recovers the int with `+classes | 0` — no `tagHighlighter` /
+ * `TAG_STYLE_INDEX` indirection.
  */
 
 import type { Parser, Tree } from '@lezer/common';
 import { TreeFragment } from '@lezer/common';
-import { highlightTree, tagHighlighter, tags } from '@lezer/highlight';
+import { highlightTree } from '@lezer/highlight';
 import { parser as jsParser } from '@lezer/javascript';
 import { parser as pythonParser } from '@lezer/python';
 
-import { TAG_STYLE_INDEX, writePackedTriples } from './code-tokens';
-
-// ============================================================================
-// Tag Highlighter — expanded tag list for complete coloring
-// ============================================================================
-
-const styleHighlighter = tagHighlighter([
-  { tag: tags.keyword, class: 'keyword' },
-  { tag: tags.self, class: 'variable' },
-  { tag: tags.definitionKeyword, class: 'def-keyword' },
-  { tag: [tags.moduleKeyword, tags.modifier], class: 'modifier' },
-  { tag: tags.meta, class: 'modifier' },
-  { tag: tags.string, class: 'string' },
-  { tag: [tags.special(tags.string), tags.special(tags.brace)], class: 'string' },
-  { tag: [tags.escape, tags.regexp, tags.character], class: 'string' },
-  {
-    tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom],
-    class: 'number',
-  },
-  { tag: [tags.lineComment, tags.blockComment, tags.docComment], class: 'comment' },
-  {
-    tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.definition(tags.variableName))],
-    class: 'function',
-  },
-  {
-    tag: [tags.className, tags.definition(tags.propertyName), tags.definition(tags.typeName)],
-    class: 'function',
-  },
-  {
-    tag: [tags.variableName, tags.definition(tags.variableName), tags.labelName],
-    class: 'variable',
-  },
-  {
-    tag: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace],
-    class: 'type',
-  },
-  {
-    tag: [
-      tags.operator,
-      tags.compareOperator,
-      tags.logicOperator,
-      tags.arithmeticOperator,
-      tags.bitwiseOperator,
-      tags.updateOperator,
-      tags.definitionOperator,
-      tags.typeOperator,
-      tags.controlOperator,
-    ],
-    class: 'operator',
-  },
-  { tag: tags.derefOperator, class: 'deref' },
-  { tag: tags.attributeName, class: 'attribute' },
-  {
-    tag: [tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace],
-    class: 'punctuation',
-  },
-  { tag: tags.invalid, class: 'invalid' },
-]);
+import { STYLE_HIGHLIGHTER } from './code-syntax-rules';
+import { writePackedTriples } from './code-tokens';
 
 // ============================================================================
 // Per-object state
@@ -142,7 +91,6 @@ const _hlBuf: number[] = [];
 let _hlCount = 0;
 const _lineBuf: number[] = [];
 let _workerSpanData = new Uint16Array(256);
-let _workerSpanWhitespace = new Uint8Array(256 / 3 + 1);
 
 function ensureLineOffsetsCap(n: number): void {
   // Need slots [0..n] inclusive (n+1 slots), so the sentinel at index n always fits.
@@ -157,10 +105,6 @@ function ensureWorkerSpanCap(n: number): void {
   let cap = _workerSpanData.length;
   while (cap < n) cap *= 2;
   _workerSpanData = new Uint16Array(cap);
-  const wsCap = (cap / 3) | 0;
-  if (_workerSpanWhitespace.length < wsCap) {
-    _workerSpanWhitespace = new Uint8Array(wsCap);
-  }
 }
 
 function binarySearchLine(offsets: Uint32Array, lineCount: number, pos: number): number {
@@ -193,9 +137,10 @@ function extractAndSendSpans(tree: Tree, text: string, id: string, version: numb
 
   // 2. First pass: collect highlights into flat quad buffer [lineIdx, from, to, style].
   _hlCount = 0;
-  highlightTree(tree, styleHighlighter, (from, to, classes) => {
-    const style = TAG_STYLE_INDEX[classes];
-    if (style === undefined) return;
+  highlightTree(tree, STYLE_HIGHLIGHTER, (from, to, classes) => {
+    if (!classes) return;
+    // STYLE_HIGHLIGHTER returns the stringified S enum value directly.
+    const style = +classes | 0;
 
     let lineIdx = binarySearchLine(lineOffsets, lineCount, from);
 
@@ -246,8 +191,9 @@ function extractAndSendSpans(tree: Tree, text: string, id: string, version: numb
     const lineFrom = lineOffsets[i];
 
     if (cursor >= _hlCount || _hlBuf[cursor * 4] !== i) {
-      // No highlights on this line — packs to 0 triples (empty) or 1 default-fill.
-      writeOffset = writePackedTriples(_workerSpanData, _workerSpanWhitespace, lineLen, _emptyBuf, 0, writeOffset, text, lineFrom);
+      // No highlights on this line — packs to 0 triples (empty) or 1 default-fill
+      // (which becomes S.WHITESPACE for pure-ws lines via writePackedTriples).
+      writeOffset = writePackedTriples(_workerSpanData, lineLen, _emptyBuf, 0, writeOffset, text, lineFrom);
       continue;
     }
 
@@ -262,19 +208,14 @@ function extractAndSendSpans(tree: Tree, text: string, id: string, version: numb
       count++;
       cursor++;
     }
-    writeOffset = writePackedTriples(_workerSpanData, _workerSpanWhitespace, lineLen, _lineBuf, count, writeOffset, text, lineFrom);
+    writeOffset = writePackedTriples(_workerSpanData, lineLen, _lineBuf, count, writeOffset, text, lineFrom);
   }
   spanLineStart[lineCount] = writeOffset;
 
-  // 6. Copy used prefixes into fresh transfer buffers (zero-copy on postMessage).
+  // 6. Copy used prefix into a fresh transfer buffer (zero-copy on postMessage).
   const spanData = _workerSpanData.slice(0, writeOffset);
-  const spanWhitespace = _workerSpanWhitespace.slice(0, (writeOffset / 3) | 0);
 
-  (self as unknown as Worker).postMessage({ type: 'spans', id, version, spanData, spanLineStart, spanWhitespace }, [
-    spanData.buffer,
-    spanLineStart.buffer,
-    spanWhitespace.buffer,
-  ]);
+  (self as unknown as Worker).postMessage({ type: 'spans', id, version, spanData, spanLineStart }, [spanData.buffer, spanLineStart.buffer]);
 }
 
 const _emptyBuf: number[] = [];
