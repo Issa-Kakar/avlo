@@ -10,10 +10,10 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 
 | File | Role |
 |------|------|
-| `code-tokens.ts` | Style enum (`S`), `PALETTE`, `RunSpans` type, `packRunSpans` gap-fill, `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, chrome constants (separator/title/play/output colors + sizing ratios), keyword sets + classification, sync regex tokenizer (`syncTokenize`) — imported by main thread, worker, and theme |
-| `code-system.ts` | Singleton `CodeSystemCache`, zero-allocation canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers (`chromeFontSize`, `headerBarHeight`, `outputPanelHeight`, `blockHeight`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system), layout computation with word-aware wrapping |
+| `code-tokens.ts` | Style enum (`S`), `PALETTE`, packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, chrome constants (separator/title/play/output colors + sizing ratios), keyword sets + classification, sync regex tokenizer (`syncTokenizeInto`) — imported by main thread, worker, and theme |
+| `code-system.ts` | SOA pipeline types (`CodeSource`, `CodeSpans`, `CodeLayout`, `CodeOutput`), pooled-buffer `CodeSystemCache`, `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, zero-allocation canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers (`chromeFontSize`, `headerBarHeight`, `outputPanelHeight`, `blockHeight`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system) |
 | `code-theme.ts` | CodeMirror theme extensions — lazy-loaded CoolGlow dark theme + syntax highlighting (`getCodeMirrorExtensions`). No dependency on code-system |
-| `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree` → `RunSpans[]` via `TAG_STYLE_INDEX` + `packRunSpans`, zero-copy transfer |
+| `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree` → flat `{spanData, spanLineStart}` via `TAG_STYLE_INDEX` + `writePackedTriples`, zero-copy transfer of both ArrayBuffers |
 | `CodeTool.ts` (in `tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties) + header/output DOM chrome (title input, play button, output panel). `justClosedCodeId` prevents close→remount cycle; `startEditing(id)` public API for SelectTool double-click entry |
 
 ---
@@ -55,15 +55,24 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 
 ## Architecture
 
-### RunSpans — Flat Packed Style Model
+### SOA Pipeline — Pooled Buffers
 
-The core data model for rendering. A `RunSpans` is a `Uint16Array` of `[offset, length, styleIndex]` triples covering an entire source line with no gaps. Both the sync tokenizer and Lezer worker produce `RunSpans[]` (one per source line).
+Four pooled buffers per id (`CacheEntry`), allocation-free hot paths:
+
+| Tier | Type | Slots | Owner |
+|------|------|-------|-------|
+| Source | `CodeSource` | `fullText: string` + `lineStart: Uint32Array` (sentinel `text.length+1`) | `buildCodeSourceInto` |
+| Spans  | `CodeSpans`  | flat `spanData: Uint16Array` of triples + `spanLineStart: Uint32Array` half-open ranges | `syncTokenizeInto` (main) / worker (transfer-swap) |
+| Layout | `CodeLayout` | parallel `vlSrcIdx` / `vlFrom` / `vlLen` `Uint32Array`s — no `vlText` slot | `layoutCodeSourceInto` |
+| Output | `CodeOutput` | `text: string \| null` + `lineStart: Uint32Array` | `ensureOutputCache` (identity-checked rebuild) |
+
+All buffers grow but never shrink (capacity-doubling). `out?` parameters mirror text-system's `parseAndTokenize` / `measureTokenizedContent` / `layoutMeasuredContent` — reused across content edits, font/width changes, and reflow gestures. Per-pointermove allocations during E/W reflow: zero.
 
 **Style enum (`S`):** 13 values (DEFAULT=0 through INVALID=12), `const enum` for zero-cost inlining. Colors looked up via `PALETTE[style]`, bold via `isBold(style)` (true for indices 1-3: KEYWORD, DEF_KW, MODIFIER).
 
-**`packRunSpans(lineLen, buf, count)`:** Converts sparse `(from, to, style)` triples in a reusable buffer into a gap-filled `Uint16Array`. Both tokenizers push triples into a shared buffer, then call `packRunSpans` once per line. No intermediate object allocation.
+**`packRunSpansInto(out, lineLen, buf, count, runOffset)`:** Pre-counts gap-filled triples (`countPackedTriples`), grows `out.spanData` if needed, and writes via `writePackedTriples`. Returns the new write offset. The worker uses `writePackedTriples` directly against its own growing buffer to bypass the CodeSpans struct.
 
-**Memory:** ~20x reduction vs old TextRun objects. 100-line file with ~8 runs/line: ~4.8KB (Uint16Arrays) vs ~96KB (TextRun objects + string slices).
+**Memory:** Per visual line is 12 bytes (3 × Uint32) vs ~40+ bytes for the prior `VisualLine` object (V8 header + 3 slots + retained substring). Spans dropped a `Uint16Array[]` outer container and N per-line ArrayBuffers in favor of a single flat `Uint16Array` + `Uint32Array` index.
 
 ### Coordinate System & Positioning
 
@@ -126,31 +135,29 @@ Both canvas renderer and CM theme use the same derived metrics.
 ### Content Layout
 
 ```typescript
-interface VisualLine {
-  srcIdx: number;   // source line index
-  from: number;     // char offset in source line (0 = first segment → show gutter)
-  text: string;     // visual line text
-}
 interface CodeLayout {
-  lines: VisualLine[];
-  sourceLineCount: number;
-  totalWidth: number;
-  lineNumbers: boolean;    // Gutter visibility — controls contentLeft + renderer gutter skip
+  fontSize: number; width: number; lineNumbers: boolean;
+  totalWidth: number; sourceLineCount: number;
+  // Visual lines — SOA, no string slot per line.
+  visualLineCount: number; visualLineCap: number;
+  vlSrcIdx: Uint32Array;   // source line index
+  vlFrom:   Uint32Array;   // char offset within source line (0 = first segment → show gutter)
+  vlLen:    Uint32Array;   // char length of visual line
 }
 ```
 
-Layout stores only geometry-independent data plus `lineNumbers` (which affects `contentLeft` and gutter rendering). All dimensional values (height, gutter width, content offset) are derived from `fontSize` via getter functions.
+Visual line text is derived at render time from `(source.fullText, source.lineStart[srcIdx])` — no `string` slot per line. `layoutCodeSourceInto(source, fontSize, width, lineNumbers, out)` mutates `out` in place; capacity grows but never shrinks.
 
 ### Line Wrapping — WYSIWYG Match
 
-The canvas wrapping algorithm matches CodeMirror's `lineWrapping` extension behavior. CM uses `overflow-wrap: anywhere` + `word-break: break-word` + the CSS forces `white-space: break-spaces` via the scroller. The canvas `computeLayout()` mirrors this:
+The canvas wrapping algorithm matches CodeMirror's `lineWrapping` extension behavior. CM uses `overflow-wrap: anywhere` + `word-break: break-word` + the CSS forces `white-space: break-spaces` via the scroller. `layoutCodeSourceInto()` mirrors this:
 
 1. Compute `maxChars = floor((width - contentLeft - padRight) / charWidth)`
-2. For lines exceeding `maxChars`, scan backward from the break point for a space/tab boundary
+2. For lines exceeding `maxChars`, scan backward from the break point for a space/tab boundary (`fullText.charCodeAt(lineFrom + j)`)
 3. If a word boundary is found, break there (whole-word wrap)
 4. If no boundary found within the window, break at `maxChars` (character-level fallback)
 
-Continuation lines have `from > 0` (no gutter number). The renderer clips `RunSpans` inline using `[vFrom, vTo)` range — no intermediate allocation.
+Continuation lines have `vlFrom > 0` (no gutter number). The renderer clips flat span triples inline using `[vFrom, vTo)` range — no intermediate allocation; per-span fillText takes a single substring of `fullText`.
 
 ---
 
@@ -216,30 +223,31 @@ Decorators (`@name`) use `S.MODIFIER`. The Lezer pass uses semantic tags (`defin
 Y.Text change (typing or remote sync)
   → deep observer fires synchronously
   → codeSystem.handleContentChange(id, ev, lang)
-    → syncTokenize(sourceLines, lang) → RunSpans[] (flat packed triples)
-    → cache.spans updated, layout/frame nulled, version incremented
+    → buildCodeSourceInto(text, entry.source)        // mutate lineStart, no string[]
+    → syncTokenizeInto(entry.source, lang, entry.spans)  // flat triples into spanData
+    → version incremented, layout marked invalid, frame nulled
     → deltaToChangedRanges(ev.delta) → ChangedRange[] (adjacent ranges merged)
     → dispatch to worker (hash-routed): { type:'parse', id, text, language, version, changes }
 
 Same rAF frame:
-  → renderer calls getLayout() → gets sync-tokenized spans → draws all chars
+  → renderer calls getLayout() → reflows entry.layout in place → draws all chars
 
 Worker responds (typically next frame):
-  → applyWorkerSpans(id, spans, forVersion)
+  → applyWorkerSpans(id, spanData, spanLineStart, forVersion)
   → version-gated: discarded if stale
-  → swaps spans (only colors change), invalidateWorld() for redraw
-  → renderer draws Lezer-accurate colors
+  → swap entry.spans.spanData / spanLineStart refs to worker's transferred buffers
+  → invalidateWorld() for redraw; renderer draws Lezer-accurate colors
 ```
 
-Spans are **always populated** after entry creation. Cold miss in `getLayout()` creates a full entry with sync-tokenized spans and dispatches a worker parse. No blank-until-first-edit.
+Source + spans are **always populated** after entry creation. Cold miss in `getLayout()` builds source, sync-tokenizes spans, runs layout, and dispatches a worker parse. No blank-until-first-edit.
 
-### Sync Tokenizer (`syncTokenize`)
+### Sync Tokenizer (`syncTokenizeInto`)
 
-Regex-based tokenizer — signature `syncTokenize(lines: string[], lang)`, returns `RunSpans[]`. Callers pass pre-split `sourceLines[]` (no internal `text.split('\n')`). Pushes `(from, to, styleIndex)` triples into a reusable module-level buffer, then calls `packRunSpans()` per line. No per-highlight object allocation.
+Regex-based tokenizer — signature `syncTokenizeInto(source: CodeSource, lang, out: CodeSpans): void`. Iterates `source.lineStart` offsets, extracts one substring per line for the existing index-based tokenizer body, then `packRunSpansInto(out, lineLen, _syncBuf, _syncBufCount, writeOffset)` per line writes flat triples into `out.spanData` and updates `out.spanLineStart[lineIdx + 1]`. Pushes `(from, to, styleIndex)` triples into a reusable module-level `_syncBuf`. No `string[]` array, no per-line `Uint16Array` allocation.
 
 Handles: keywords (JS/TS/Python sets, three-tier classification via `keywordStyle()`), strings (including template literals with `${}` nesting, Python f/r/b-prefix strings, triple quotes), numbers (hex/binary/octal/scientific/separators/BigInt), comments (line `//`, block `/* */`, Python `#`, hashbang `#!`), operators (including `=>`, `?.`, `??`, `...`), decorators (`@name` → S.MODIFIER), identifiers (function calls → S.FUNCTION, PascalCase → S.TYPE, others → S.VARIABLE).
 
-Does NOT emit tokens for punctuation, brackets, or whitespace — these become `S.DEFAULT` gaps via `packRunSpans`.
+Does NOT emit tokens for punctuation, brackets, or whitespace — these become `S.DEFAULT` gaps via the gap-fill writer.
 
 Multi-line state tracked via `inBlockComment` and `inTemplateString` flags across lines. `scanTemplateLiteral` pushes directly into the shared buffer instead of allocating/returning objects.
 
@@ -251,16 +259,16 @@ Multi-line state tracked via `inBlockComment` and `inTemplateString` flags acros
 
 **Per-object state:** Each worker maintains a `Map<string, { tree: Tree, fragments: TreeFragment[] }>`. When `changes` are provided, `TreeFragment.applyChanges()` enables incremental parsing. Without changes (cold parse or language change), a full parse is performed.
 
-**Span extraction (`extractSpans`):** `highlightTree()` walks the Lezer `Tree` with the `styleHighlighter`. Callback stores `[lineIdx, from, to, style]` quads into a reusable flat `number[]` buffer (zero object allocation). Second pass uses a sequential cursor scan — O(highlights) total vs previous O(highlights × lines). Line offsets are binary-searched for fast token-to-line mapping.
+**Span extraction (`extractAndSendSpans`):** Builds the line-offset table via a single `charCodeAt(i) === 10` scan into the reusable `_workerLineOffsets: Uint32Array` (sentinel `text.length + 1`). `highlightTree()` walks the Lezer `Tree` and stores `[lineIdx, from, to, style]` quads into a flat `_hlBuf` (zero object allocation). Sequential cursor scan packs each line's triples into `_workerSpanData` (reusable growing `Uint16Array`) via `writePackedTriples`. The used prefix is sliced into a fresh `Uint16Array` for transfer — `_workerSpanData` itself stays warm.
 
-**Zero-copy transfer:** Worker transfers `RunSpans` ArrayBuffers to main thread (no structured clone overhead). Worker arrays become detached after postMessage.
+**Zero-copy transfer:** Worker transfers two ArrayBuffers in one `postMessage(..., [spanData.buffer, spanLineStart.buffer])`. Main thread `applyWorkerSpans` swaps `entry.spans.spanData` / `spanLineStart` refs directly.
 
 **Protocol:**
 ```
 Main → Worker: { type:'parse', id, text, language, version, changes? }
 Main → Worker: { type:'remove', id }
 Main → Worker: { type:'clearAll' }                    (broadcast to ALL workers)
-Worker → Main: { type:'spans', id, version, spans: RunSpans[] }
+Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineStart: Uint32Array }
 ```
 
 **Language → Parser mapping:**
@@ -272,19 +280,23 @@ Worker → Main: { type:'spans', id, version, spans: RunSpans[] }
 
 ## Cache (`CodeSystemCache`)
 
-Singleton `codeSystem`. Per-object `CacheEntry`:
+Singleton `codeSystem`. Per-object `CacheEntry` — four pooled SOA buffers:
 
 ```typescript
 interface CacheEntry {
-  sourceLines: string[];
+  source: CodeSource;           // pooled — slots overwritten per content change
+  spans: CodeSpans;             // pooled — flat buffer, grows only (worker upgrade swaps refs)
+  layout: CodeLayout;           // pooled — in-place reflow
+  output: CodeOutput;           // pooled — rebuilt on output change
+
   version: number;              // Monotonic, incremented on content or language change
-  spans: RunSpans[];            // Always populated — packed per source line
-  layout: CodeLayout | null;    // null = needs recompute
+  language: CodeLanguage;
+  frame: FrameTuple | null;     // Derived, set by computeCodeBBox
+
   layoutFontSize: number;       // Cache key
   layoutWidth: number;          // Cache key
   layoutLineNumbers: boolean;   // Cache key
-  language: CodeLanguage;       // Cache key
-  frame: FrameTuple | null;     // Derived, set by computeCodeBBox
+  layoutValid: boolean;         // false = needs recompute (set on content change)
 }
 ```
 
@@ -292,48 +304,49 @@ interface CacheEntry {
 
 | Trigger | What changes | Layout | Frame | Version |
 |---------|-------------|--------|-------|---------|
-| `handleContentChange` | New text, new sync-tokenized spans | nulled | nulled | incremented |
-| `applyWorkerSpans` | Spans swapped (colors only) | unchanged | unchanged | checked (must match) |
-| fontSize/width/lineNumbers change (detected in `getLayout`) | — | recomputed | nulled | unchanged |
-| Language change (detected in `getLayout`) | Re-tokenized spans | **preserved** if dims unchanged | preserved | incremented |
+| `handleContentChange` | Source rebuilt, spans re-tokenized in place | invalidated (`layoutValid=false`) | nulled | incremented |
+| `applyWorkerSpans` | `spans.spanData` / `spanLineStart` refs swapped (colors only) | unchanged | unchanged | checked (must match) |
+| fontSize/width/lineNumbers change (detected in `getLayout`) | — | reflowed in place | nulled | unchanged |
+| Language change (detected in `getLayout`) | Spans re-tokenized in place | **preserved** if dims unchanged | preserved | incremented |
 
-`applyWorkerSpans` does NOT null the layout — only colors change, not geometry. It calls `invalidateWorld(frameBounds)` if a cached frame exists.
+`applyWorkerSpans` does NOT touch the layout — only span colors change. It calls `invalidateWorld(frameBounds)` if a cached frame exists.
 
-**Language change optimization:** Language affects only colors, not geometry. Re-tokenize spans + dispatch worker parse, but do NOT null layout/frame unless fontSize/width also changed.
+**Language change optimization:** Language affects only colors, not geometry. Re-tokenize spans + dispatch worker parse, but do NOT recompute layout unless fontSize/width also changed.
 
 ### Public API
 
 | Method | Called by | Purpose |
 |--------|-----------|---------|
-| `computeLayout(sourceLines, fontSize, width, lineNumbers?)` | SelectTool width reflow preview | Pure layout computation (exported) |
+| `layoutCodeSourceInto(source, fontSize, width, lineNumbers, out)` | SelectTool reflow (`reflowCode`) | In-place layout into a pooled `CodeLayout` buffer |
 | `getLayout(id, yText, fontSize, width, lang, lineNumbers?)` | `computeCodeBBox`, `drawCode` | Build or return cached layout; handles cold miss, language change, relayout |
-| `handleContentChange(id, ev, lang)` | Deep observer | Sync tokenize + dispatch worker parse with delta changes |
-| `applyWorkerSpans(id, spans, forVersion)` | Worker response handler | Version-gated span upgrade |
-| `getSpans(id)` | `drawCode` in objects.ts | Get RunSpans[] for renderer |
-| `getSourceLines(id)` | `drawCode` in objects.ts | Get source lines for fillText |
+| `handleContentChange(id, ev, lang)` | Deep observer | Rebuild source + sync-tokenize + dispatch worker parse with delta changes |
+| `applyWorkerSpans(id, spanData, spanLineStart, forVersion)` | Worker response handler | Version-gated span ref-swap |
+| `getSpans(id)` | `drawCode` in objects.ts | Get `CodeSpans` for renderer (flat triples) |
+| `getSource(id)` / `getCodeSource(id)` | `drawCode`, transform freeze | Get `CodeSource` for renderer / E/W reflow |
+| `getOutputCache(id, output)` | `drawCode`, `computeCodeBBox` | Identity-checked rebuild of `CodeOutput` line offsets |
 | `getFrame(id)` / `setFrame(id, frame)` | Hit testing, selection, bbox | Read/write cached frame |
-| `remove(id)` / `clear()` | Deletion / room change | Cleanup entries + notify workers |
+| `evict(id)` / `clear()` | Deletion / room change | Cleanup entries + notify workers |
 
 ---
 
 ## Canvas Renderer (`renderCodeLayout`)
 
-Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, spans, sourceLines, title?, output?)`
+Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, spans, source, title?, output?, outputCache?)`
 
-`title` and `output` are optional: `undefined` = section hidden, present string = section visible. Callers in `objects.ts` build these from `headerVisible`/`outputVisible` props.
+`title` and `output` are optional: `undefined` = section hidden, present string = section visible. Callers in `objects.ts` build these from `headerVisible`/`outputVisible` props and forward `entry.output` as `outputCache`.
 
-Zero-allocation span iteration — no `sliceRuns`, no intermediate objects. Steps:
+Zero-allocation span iteration — no intermediate objects. Steps:
 
-1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`. Height = `blockHeight(...)` (includes chrome when present)
+1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`. Height = `blockHeight(...)` (includes chrome when present, uses `outputCache` for line count when provided)
 2. **Separator helper (`drawSep`):** Pixel-snapped hairline — reads `ctx.getTransform()`, converts Y to device coords via `Math.round()`, draws exactly `dpr` device pixels (= 1 CSS pixel) with `resetTransform()`. Prevents sub-pixel anti-aliasing from halving apparent separator opacity
 3. **Header bar** (when `title !== undefined`): Separator at `originY + headerBarHeight(fs)`. Title text at chrome font size, vertically centered. Play button: `CODE_PLAY_BG` circle (radius `fs * 0.5`) + `CODE_PLAY_GREEN` triangle, right-aligned
 4. **Code content:** All lines offset down by `headerBarHeight(fs)` when header present (`codeTop = originY + hh`)
-5. **Per visual line:** Compute `baseY = codeTop + padTop + i * lineHeight + baselineOffset`
-6. **Gutter:** When `layout.lineNumbers` is true and `vline.from === 0`, right-align line number within gutter area. Skipped entirely when lineNumbers is false
-7. **Code text:** Iterate `RunSpans` triples with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `lineText.substring(drawFrom, drawTo)` for fillText (V8 SlicedString optimization). Whitespace checked via `charCodeAt` (no regex)
+5. **Per visual line:** Compute `baseY = codeTop + padTop + i * lineHeight + baselineOffset`. Read `srcIdx = vlSrcIdx[i]`, `vFrom = vlFrom[i]`, `vTo = vFrom + vlLen[i]` from the SOA layout
+6. **Gutter:** When `layout.lineNumbers` is true and `vlFrom[i] === 0`, right-align line number within gutter area. Skipped entirely when lineNumbers is false
+7. **Code text:** Iterate flat span triples in `[spanLineStart[srcIdx], spanLineStart[srcIdx+1])` with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `fullText.substring(lineStartChar + drawFrom, lineStartChar + drawTo)` for fillText (V8 SlicedString — single allocation per painted span). Whitespace checked via `charCodeAt` (no regex)
 8. **Batching:** Font and fillStyle only set on change (`prevFont` tracking)
-9. **Placeholder:** After the loop, if `sourceLines.length === 1 && sourceLines[0] === ''`, draw grey "Type something..." at first line position
-10. **Output panel** (when `output !== undefined`): Separator at code bottom. "Output" label at chrome font size, vertically centered. Output text lines (max `MAX_OUTPUT_CANVAS_LINES`) at chrome font size, `CODE_DEFAULT` color
+9. **Placeholder:** After the loop, if `source.lineCount === 1 && source.fullText.length === 0`, draw grey "Type something..." at first line position
+10. **Output panel** (when `output !== undefined`): Separator at code bottom. "Output" label at chrome font size, vertically centered. Output text lines (max `MAX_OUTPUT_CANVAS_LINES`) iterated via `outputCache.lineStart` when supplied — falls back to a no-allocation `indexOf('\n')` walk for first-paint paths
 
 ---
 
@@ -537,10 +550,11 @@ function drawCode(ctx, handle) {
   const props = getCodeProps(handle.y);
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const spans = codeSystem.getSpans(id);
-  const lines = codeSystem.getSourceLines(id);
+  const source = codeSystem.getSource(id);
   const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
+  const outputCache = codeSystem.getOutputCache(id, output) ?? undefined;
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, source, title, output, outputCache);
 }
 ```
 

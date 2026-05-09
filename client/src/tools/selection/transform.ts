@@ -11,11 +11,13 @@ import type * as Y from 'yjs';
 import { getCodeProps, getFrame, getOrigin, getPoints, getTextProps, getWidth } from '@/core/accessors';
 import {
   type CodeLayout,
+  type CodeSource,
   blockHeight as codeBlockHeight,
-  codeSystem,
-  computeLayout as computeCodeLayout,
+  createCodeLayout,
   getCodeFrame,
   getMinWidth as getCodeMinWidth,
+  getCodeSource,
+  layoutCodeSourceInto,
 } from '@/core/code/code-system';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import {
@@ -113,7 +115,7 @@ type GeoMap = {
     HasBBox & {
       fontSize?: number;
       width?: number;
-      sourceLines?: string[] | null;
+      source?: CodeSource | null;
       lineNumbers?: boolean;
       headerVisible?: boolean;
       outputVisible?: boolean;
@@ -131,7 +133,7 @@ type OutMap = {
   // No points/width — gestures only update bbox; commitStrokeOffset/Uniform read frozen.
   stroke: HasBBox & { factor: number; fcx: number; fcy: number };
   text: HasOrigin & HasFontSize & HasWidth & HasBBox & { layout: TextLayout | null };
-  code: HasOrigin & HasFontSize & HasWidth & HasBBox & { layout: CodeLayout | null };
+  code: HasOrigin & HasFontSize & HasWidth & HasBBox & { layout: CodeLayout };
   note: HasOrigin & HasScale & HasBBox;
   bookmark: HasOrigin & HasScale & HasBBox;
   connector: never;
@@ -278,7 +280,8 @@ function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
   const fx = f.bbox[0];
   const fw = f.bbox[2] - f.bbox[0];
   const [newLeft, targetWidth] = computeReflowWidth(fx, fw, ctx.origin[0], ctx.sx, f.minW!);
-  const layout = computeCodeLayout(f.sourceLines!, f.fontSize!, targetWidth, f.lineNumbers!);
+  // o.layout is pre-allocated at freeze time (createOutFor('code')); reused per pointermove.
+  const layout = layoutCodeSourceInto(f.source!, f.fontSize!, targetWidth, f.lineNumbers!, o.layout);
   o.origin[0] = newLeft;
   o.origin[1] = f.origin[1];
   o.width = layout.totalWidth;
@@ -447,7 +450,9 @@ function createOutFor(kind: ObjectKind): any {
       // Other text behaviors (uniform/edgePin) leave it untouched but it's harmless.
       return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: createTextLayout() };
     case 'code':
-      return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: null };
+      // Pre-allocate a CodeLayout buffer once at freeze; reflowCode reuses it per pointermove.
+      // Other code behaviors (uniform/edgePin) leave it untouched but it's harmless.
+      return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: createCodeLayout() };
     case 'note':
     case 'bookmark':
       return { origin: [0, 0] as Point, scale: 1, bbox: [0, 0, 0, 0] as BBoxTuple };
@@ -517,7 +522,7 @@ function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string,
           bbox: b,
           fontSize: p.fontSize,
           width: p.width,
-          sourceLines: codeSystem.getSourceLines(id) ?? null,
+          source: getCodeSource(id),
           lineNumbers: p.lineNumbers,
           headerVisible: p.headerVisible,
           outputVisible: p.outputVisible,
@@ -671,7 +676,7 @@ export class TransformController {
         if (!m) continue;
       }
       if (behavior === 'reflow' && handle.kind === 'code') {
-        const s = codeSystem.getSourceLines(id);
+        const s = getCodeSource(id);
         if (!s) continue;
       }
 

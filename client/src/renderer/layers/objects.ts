@@ -51,11 +51,13 @@ import { paintConnector, paintConnectorFromPoints } from './connector-render-ato
 import { paintShapeFrame } from './shape-preview';
 
 function getCodeRenderData(id: string, props: CodeProps) {
+  const output = props.outputVisible ? (props.output ?? '') : undefined;
   return {
     spans: codeSystem.getSpans(id),
-    lines: codeSystem.getSourceLines(id),
+    source: codeSystem.getSource(id),
     title: props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined,
-    output: props.outputVisible ? (props.output ?? '') : undefined,
+    output,
+    outputCache: codeSystem.getOutputCache(id, output) ?? undefined,
   };
 }
 
@@ -405,8 +407,9 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   if (!props) return;
 
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
-  const { spans, lines, title, output } = getCodeRenderData(id, props);
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
+  const { spans, source, title, output, outputCache } = getCodeRenderData(id, props);
+  if (!spans || !source) return;
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, source, title, output, outputCache);
 }
 
 function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOverride?: FrameTuple): void {
@@ -548,22 +551,35 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
       const entry = getScaleEntry('code', handle.id);
       if (!entry) break;
       const behavior = getScaleBehavior('code');
-      if (behavior === 'reflow' && entry.out.layout) {
+      if (behavior === 'reflow' && entry.out.layout.visualLineCount > 0) {
         const props = getCodeProps(handle.y);
         if (!props) break;
-        const { spans, lines, title, output } = getCodeRenderData(handle.id, props);
-        renderCodeLayout(ctx, entry.out.layout, entry.out.origin[0], entry.out.origin[1], props.fontSize, spans, lines, title, output);
+        const { spans, source, title, output, outputCache } = getCodeRenderData(handle.id, props);
+        if (!spans || !source) break;
+        renderCodeLayout(
+          ctx,
+          entry.out.layout,
+          entry.out.origin[0],
+          entry.out.origin[1],
+          props.fontSize,
+          spans,
+          source,
+          title,
+          output,
+          outputCache,
+        );
       } else if (behavior === 'uniform') {
         const ratio = entry.out.fontSize / entry.frozen.fontSize!;
         const props = getCodeProps(handle.y);
         if (!props) break;
         const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
-        const { spans, lines, title, output } = getCodeRenderData(handle.id, props);
+        const { spans, source, title, output, outputCache } = getCodeRenderData(handle.id, props);
+        if (!spans || !source) break;
         const b = entry.out.bbox;
         ctx.save();
         ctx.translate(b[0], b[1]);
         ctx.scale(ratio, ratio);
-        renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines, title, output);
+        renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, source, title, output, outputCache);
         ctx.restore();
       } else {
         renderTranslatedEntry(ctx, handle, entry);

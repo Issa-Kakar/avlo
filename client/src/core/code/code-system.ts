@@ -1,9 +1,20 @@
 /**
- * Code System — Cache, Layout, Worker Pool, Font Metrics, Renderer
+ * Code System — SOA pipeline (source → spans → layout → output), worker pool, font metrics, renderer.
  *
- * Two-tier tokenization: sync regex (floor) + Lezer worker (ceiling).
- * RunSpans model: flat Uint16Array of [offset, length, styleIndex] triples per line.
- * Proportional padding (fontSize-relative) + measured font metrics for pixel-perfect alignment.
+ * Three-tier tokenization mirrors the data flow:
+ *   Y.Text.toString()
+ *       ↓ buildCodeSourceInto
+ *   CodeSource (fullText + lineStart Uint32Array)
+ *       ↓ syncTokenizeInto (sync floor) / lezer worker (ceiling)
+ *   CodeSpans (flat spanData Uint16Array + spanLineStart Uint32Array)
+ *       ↓ layoutCodeSourceInto
+ *   CodeLayout (vlSrcIdx / vlFrom / vlLen Uint32Arrays)
+ *       ↓
+ *   renderCodeLayout()    canvas output
+ *   computeCodeBBox()     spatial index
+ *
+ * All four buffers are pooled per-id on `CacheEntry`; `out?` parameters reuse buffers
+ * across content edits, font/width changes, and reflow gestures. Hot paths allocate zero.
  */
 
 import type * as Y from 'yjs';
@@ -33,37 +44,77 @@ import {
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
   PALETTE,
-  type RunSpans,
-  syncTokenize,
+  syncTokenizeInto,
 } from './code-tokens';
 
 // ============================================================================
-// §1 TYPES
+// §1 TYPES — SOA pipeline
 // ============================================================================
 
-export interface VisualLine {
-  srcIdx: number; // Source line index (always valid)
-  from: number; // Char offset in source line (0 = first segment → show gutter)
-  text: string; // Visual line text
+/**
+ * Tier 1: source text + line offset table. `lineStart[lineCount] = fullText.length + 1`
+ * sentinel so `lineLen(i) = lineStart[i+1] - lineStart[i] - 1` works for the last line.
+ */
+export interface CodeSource {
+  fullText: string;
+  lineStart: Uint32Array; // [lineCap + 1]
+  lineCount: number;
+  lineCap: number;
 }
 
+/**
+ * Tier 2: flat span buffer. Triples [off, len, style] for line i live at
+ * `spanData[spanLineStart[i] .. spanLineStart[i+1])`. `spanCap` measured in u16 slots.
+ */
+export interface CodeSpans {
+  spanData: Uint16Array;
+  spanLineStart: Uint32Array; // [lineCap + 1]
+  lineCount: number;
+  spanCap: number;
+  lineCap: number;
+}
+
+/**
+ * Tier 3: visual lines (post-wrapping). No string slots — renderer derives line text from
+ * `(source.fullText, source.lineStart[srcIdx])`.
+ */
 export interface CodeLayout {
-  lines: VisualLine[];
-  sourceLineCount: number;
-  totalWidth: number;
+  fontSize: number;
+  width: number;
   lineNumbers: boolean;
+  totalWidth: number; // = width
+  sourceLineCount: number;
+
+  visualLineCount: number;
+  visualLineCap: number;
+  vlSrcIdx: Uint32Array; // [visualLineCap]
+  vlFrom: Uint32Array; // [visualLineCap]  char offset within source line
+  vlLen: Uint32Array; // [visualLineCap]   char length of visual line
+}
+
+/** Small cache for output panel. Rebuilt only when the `output` Y.Map field changes. */
+export interface CodeOutput {
+  text: string | null;
+  lineStart: Uint32Array; // [lineCap + 1]
+  lineCount: number;
+  lineCap: number;
 }
 
 interface CacheEntry {
-  sourceLines: string[];
+  source: CodeSource;
+  spans: CodeSpans;
+  layout: CodeLayout;
+  output: CodeOutput;
+
   version: number;
-  spans: RunSpans[];
-  layout: CodeLayout | null;
+  language: CodeLanguage;
+  frame: FrameTuple | null;
+
+  // Layout cache keys
   layoutFontSize: number;
   layoutWidth: number;
   layoutLineNumbers: boolean;
-  language: CodeLanguage;
-  frame: FrameTuple | null;
+  layoutValid: boolean;
 }
 
 export interface ChangedRange {
@@ -89,7 +140,8 @@ interface WorkerResponse {
   type: 'spans';
   id: string;
   version: number;
-  spans: RunSpans[];
+  spanData: Uint16Array;
+  spanLineStart: Uint32Array;
 }
 
 // ============================================================================
@@ -114,9 +166,6 @@ const BORDER_RADIUS_RATIO = 0.85;
 // ============================================================================
 // §3 FONT METRICS & HELPERS
 // ============================================================================
-// Metrics derived from text-system's per-font measurement cache.
-// JetBrains Mono is true monospace — advance width identical across all weights,
-// so getMinCharWidthRatio (bold 'W') equals any-weight any-glyph advance.
 
 export function padTop(fs: number): number {
   return fs * PAD_TOP_RATIO;
@@ -172,55 +221,200 @@ export function getDefaultWidth(fontSize: number): number {
 }
 
 // ============================================================================
-// §4 LAYOUT
+// §4 SOURCE BUFFER — buildCodeSourceInto + capacity helpers
 // ============================================================================
 
-export function computeLayout(sourceLines: string[], fontSize: number, width: number, lineNumbers = true): CodeLayout {
-  const sourceLineCount = sourceLines.length;
-  const digits = Math.max(2, String(sourceLineCount).length);
+function createCodeSource(): CodeSource {
+  return {
+    fullText: '',
+    lineStart: new Uint32Array(9), // cap 8 + 1 sentinel slot
+    lineCount: 0,
+    lineCap: 8,
+  };
+}
+
+export function ensureSourceLineCap(s: CodeSource, n: number): void {
+  if (s.lineCap >= n) return;
+  let cap = s.lineCap;
+  while (cap < n) cap *= 2;
+  const next = new Uint32Array(cap + 1);
+  next.set(s.lineStart);
+  s.lineStart = next;
+  s.lineCap = cap;
+}
+
+/**
+ * Rebuild source line offsets from text. `out.fullText` aliases the text string;
+ * `lineStart` slots written in-place (capacity grows but never shrinks).
+ */
+export function buildCodeSourceInto(text: string, out: CodeSource): void {
+  out.fullText = text;
+  // Count newlines for capacity sizing
+  let lineCount = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) lineCount++;
+  }
+  ensureSourceLineCap(out, lineCount);
+  out.lineCount = lineCount;
+  out.lineStart[0] = 0;
+  let li = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      out.lineStart[li++] = i + 1;
+    }
+  }
+  // Sentinel: text.length + 1 so `lineLen(last) = lineStart[last+1] - lineStart[last] - 1`
+  // resolves to text.length - lineStart[last].
+  out.lineStart[lineCount] = text.length + 1;
+}
+
+// ============================================================================
+// §4b SPANS BUFFER — capacity helpers (used by code-tokens.ts and worker swap)
+// ============================================================================
+
+function createCodeSpans(): CodeSpans {
+  return {
+    spanData: new Uint16Array(48), // 16 triples
+    spanLineStart: new Uint32Array(9), // cap 8 + sentinel
+    lineCount: 0,
+    spanCap: 48,
+    lineCap: 8,
+  };
+}
+
+export function ensureSpansLineCap(s: CodeSpans, n: number): void {
+  if (s.lineCap >= n) return;
+  let cap = s.lineCap;
+  while (cap < n) cap *= 2;
+  const next = new Uint32Array(cap + 1);
+  next.set(s.spanLineStart);
+  s.spanLineStart = next;
+  s.lineCap = cap;
+}
+
+export function ensureSpansDataCap(s: CodeSpans, n: number): void {
+  if (s.spanCap >= n) return;
+  let cap = s.spanCap;
+  while (cap < n) cap *= 2;
+  const next = new Uint16Array(cap);
+  next.set(s.spanData);
+  s.spanData = next;
+  s.spanCap = cap;
+}
+
+// ============================================================================
+// §5 LAYOUT — pooled SOA, in-place reflow
+// ============================================================================
+
+export function createCodeLayout(): CodeLayout {
+  return {
+    fontSize: 0,
+    width: 0,
+    lineNumbers: true,
+    totalWidth: 0,
+    sourceLineCount: 0,
+    visualLineCount: 0,
+    visualLineCap: 16,
+    vlSrcIdx: new Uint32Array(16),
+    vlFrom: new Uint32Array(16),
+    vlLen: new Uint32Array(16),
+  };
+}
+
+export function resetCodeLayout(l: CodeLayout): void {
+  l.visualLineCount = 0;
+}
+
+function ensureLayoutVisualLineCap(l: CodeLayout, n: number): void {
+  if (l.visualLineCap >= n) return;
+  let cap = l.visualLineCap;
+  while (cap < n) cap *= 2;
+  const ns = new Uint32Array(cap);
+  ns.set(l.vlSrcIdx);
+  l.vlSrcIdx = ns;
+  const nf = new Uint32Array(cap);
+  nf.set(l.vlFrom);
+  l.vlFrom = nf;
+  const nl = new Uint32Array(cap);
+  nl.set(l.vlLen);
+  l.vlLen = nl;
+  l.visualLineCap = cap;
+}
+
+function pushVisualLine(l: CodeLayout, srcIdx: number, from: number, len: number): void {
+  ensureLayoutVisualLineCap(l, l.visualLineCount + 1);
+  const v = l.visualLineCount;
+  l.vlSrcIdx[v] = srcIdx;
+  l.vlFrom[v] = from;
+  l.vlLen[v] = len;
+  l.visualLineCount = v + 1;
+}
+
+/**
+ * Word-aware wrapping matching CSS break-spaces + overflow-wrap: anywhere.
+ * Slot-based: `out` mutated in place, capacity preserved across calls.
+ */
+export function layoutCodeSourceInto(
+  source: CodeSource,
+  fontSize: number,
+  width: number,
+  lineNumbers: boolean,
+  out: CodeLayout,
+): CodeLayout {
+  resetCodeLayout(out);
+  out.fontSize = fontSize;
+  out.width = width;
+  out.lineNumbers = lineNumbers;
+  out.totalWidth = width;
+  out.sourceLineCount = source.lineCount;
+
+  const digits = Math.max(2, String(source.lineCount).length);
   const cl = contentLeft(digits, fontSize, lineNumbers);
   const cw = charWidth(fontSize);
   const maxChars = Math.max(1, Math.floor((width - cl - padRight(fontSize)) / cw));
 
-  const lines: VisualLine[] = [];
-  for (let i = 0; i < sourceLines.length; i++) {
-    const text = sourceLines[i];
-    if (text.length <= maxChars) {
-      lines.push({ srcIdx: i, from: 0, text });
+  const fullText = source.fullText;
+  const lineStart = source.lineStart;
+  const lineCount = source.lineCount;
+
+  for (let i = 0; i < lineCount; i++) {
+    const lineFrom = lineStart[i];
+    const lineLen = lineStart[i + 1] - lineFrom - 1;
+    if (lineLen <= maxChars) {
+      pushVisualLine(out, i, 0, lineLen);
       continue;
     }
-    // Word-aware wrapping matching CSS break-spaces + overflow-wrap: anywhere
     let pos = 0;
-    while (pos < text.length) {
-      if (text.length - pos <= maxChars) {
-        lines.push({ srcIdx: i, from: pos, text: text.slice(pos) });
+    while (pos < lineLen) {
+      if (lineLen - pos <= maxChars) {
+        pushVisualLine(out, i, pos, lineLen - pos);
         break;
       }
       // Scan backward for last space/tab break opportunity within window
       let breakAt = -1;
       for (let j = pos + maxChars - 1; j >= pos; j--) {
-        const c = text.charCodeAt(j);
+        const c = fullText.charCodeAt(lineFrom + j);
         if (c === 32 || c === 9) {
           breakAt = j + 1;
           break;
         }
       }
       if (breakAt === -1) breakAt = pos + maxChars; // character-level fallback
-      lines.push({ srcIdx: i, from: pos, text: text.slice(pos, breakAt) });
+      pushVisualLine(out, i, pos, breakAt - pos);
       pos = breakAt;
     }
   }
 
-  return { lines, sourceLineCount, totalWidth: width, lineNumbers };
+  return out;
 }
 
 /** Compute total height from layout + fontSize — not stored. */
 export function totalHeight(layout: CodeLayout, fontSize: number): number {
-  return padTop(fontSize) + layout.lines.length * lineHeight(fontSize) + padBottom(fontSize);
+  return padTop(fontSize) + layout.visualLineCount * lineHeight(fontSize) + padBottom(fontSize);
 }
 
 // ============================================================================
-// §4b CHROME HEIGHT HELPERS — header bar + output panel
+// §5b CHROME HEIGHT HELPERS — header bar + output panel
 // ============================================================================
 
 export function chromeFontSize(fs: number): number {
@@ -231,14 +425,27 @@ export function headerBarHeight(fs: number): number {
   return fs * HEADER_HEIGHT_RATIO;
 }
 
-export function outputPanelHeight(fs: number, output: string | undefined): number {
+function outputLineCount(output: string | undefined, cache: CodeOutput | undefined): number {
+  if (!output) return 0;
+  if (cache && cache.text === output) return Math.min(cache.lineCount, MAX_OUTPUT_CANVAS_LINES);
+  // Allocation-free fallback: charCode scan with early exit at the cap.
+  let n = 1;
+  for (let i = 0; i < output.length; i++) {
+    if (output.charCodeAt(i) === 10) {
+      n++;
+      if (n >= MAX_OUTPUT_CANVAS_LINES) return MAX_OUTPUT_CANVAS_LINES;
+    }
+  }
+  return n;
+}
+
+export function outputPanelHeight(fs: number, output: string | undefined, cache?: CodeOutput): number {
   const cfs = chromeFontSize(fs);
   const outputLH = cfs * OUTPUT_LINE_H_MULT;
   const labelH = fs * OUTPUT_LABEL_H_RATIO;
   const padB = fs * OUTPUT_PAD_BOTTOM_RATIO;
   if (!output) return labelH + padB;
-  const lineCount = Math.min(output.split('\n').length, MAX_OUTPUT_CANVAS_LINES);
-  return labelH + lineCount * outputLH + padB;
+  return labelH + outputLineCount(output, cache) * outputLH + padB;
 }
 
 /** Full block height including header + code content + output panel. */
@@ -248,18 +455,67 @@ export function blockHeight(
   headerVisible: boolean,
   outputVisible: boolean,
   output: string | undefined,
+  outputCache?: CodeOutput,
 ): number {
   return (
     (headerVisible ? headerBarHeight(fontSize) : 0) +
     padTop(fontSize) +
-    layout.lines.length * lineHeight(fontSize) +
+    layout.visualLineCount * lineHeight(fontSize) +
     padBottom(fontSize) +
-    (outputVisible ? outputPanelHeight(fontSize, output) : 0)
+    (outputVisible ? outputPanelHeight(fontSize, output, outputCache) : 0)
   );
 }
 
 // ============================================================================
-// §5 WORKER POOL — Warm, Persistent, Hash-Based Routing
+// §5c OUTPUT CACHE — pooled split avoidance
+// ============================================================================
+
+function createCodeOutput(): CodeOutput {
+  return {
+    text: null,
+    lineStart: new Uint32Array(9),
+    lineCount: 0,
+    lineCap: 8,
+  };
+}
+
+function ensureOutputLineCap(o: CodeOutput, n: number): void {
+  if (o.lineCap >= n) return;
+  let cap = o.lineCap;
+  while (cap < n) cap *= 2;
+  const next = new Uint32Array(cap + 1);
+  next.set(o.lineStart);
+  o.lineStart = next;
+  o.lineCap = cap;
+}
+
+/** Identity-checked rebuild. No-op when output unchanged. */
+function ensureOutputCache(entry: CacheEntry, output: string | undefined): void {
+  const o = entry.output;
+  const target = output ?? null;
+  if (o.text === target) return;
+  o.text = target;
+  if (target === null) {
+    o.lineCount = 0;
+    o.lineStart[0] = 0;
+    return;
+  }
+  let lineCount = 1;
+  for (let i = 0; i < target.length; i++) {
+    if (target.charCodeAt(i) === 10) lineCount++;
+  }
+  ensureOutputLineCap(o, lineCount);
+  o.lineCount = lineCount;
+  o.lineStart[0] = 0;
+  let li = 1;
+  for (let i = 0; i < target.length; i++) {
+    if (target.charCodeAt(i) === 10) o.lineStart[li++] = i + 1;
+  }
+  o.lineStart[lineCount] = target.length + 1;
+}
+
+// ============================================================================
+// §6 WORKER POOL — Warm, Persistent, Hash-Based Routing
 // ============================================================================
 
 const POOL_SIZE = 2;
@@ -293,8 +549,8 @@ function dispatch(msg: WorkerRequest): void {
 }
 
 function handleWorkerMessage(e: MessageEvent<WorkerResponse>): void {
-  const { id, version, spans } = e.data;
-  codeSystem.applyWorkerSpans(id, spans, version);
+  const { id, version, spanData, spanLineStart } = e.data;
+  codeSystem.applyWorkerSpans(id, spanData, spanLineStart, version);
 }
 
 function requestParse(id: string, text: string, language: CodeLanguage, version: number, changes?: ChangedRange[]): void {
@@ -312,7 +568,7 @@ function requestClearAll(): void {
 }
 
 // ============================================================================
-// §6 DELTA CONVERSION
+// §7 DELTA CONVERSION
 // ============================================================================
 
 /**
@@ -355,67 +611,78 @@ export function deltaToChangedRanges(delta: { insert?: string | object; delete?:
 }
 
 // ============================================================================
-// §7 CACHE
+// §8 CACHE
 // ============================================================================
 
 class CodeSystemCache {
   private entries = new Map<string, CacheEntry>();
+
+  private newEntry(language: CodeLanguage): CacheEntry {
+    return {
+      source: createCodeSource(),
+      spans: createCodeSpans(),
+      layout: createCodeLayout(),
+      output: createCodeOutput(),
+      version: 0,
+      language,
+      frame: null,
+      layoutFontSize: 0,
+      layoutWidth: 0,
+      layoutLineNumbers: true,
+      layoutValid: false,
+    };
+  }
 
   getLayout(id: string, yText: Y.Text, fontSize: number, width: number, language: CodeLanguage, lineNumbers = true): CodeLayout {
     let e = this.entries.get(id);
 
     // COLD MISS — build full entry from Y.Text
     if (!e) {
+      e = this.newEntry(language);
       const text = yText.toString();
-      const sourceLines = text.split('\n');
-      const spans = syncTokenize(sourceLines, language);
-      const layout = computeLayout(sourceLines, fontSize, width, lineNumbers);
-      e = {
-        sourceLines,
-        version: 1,
-        spans,
-        layout,
-        layoutFontSize: fontSize,
-        layoutWidth: width,
-        layoutLineNumbers: lineNumbers,
-        language,
-        frame: null,
-      };
+      buildCodeSourceInto(text, e.source);
+      syncTokenizeInto(e.source, language, e.spans);
+      layoutCodeSourceInto(e.source, fontSize, width, lineNumbers, e.layout);
+      e.version = 1;
+      e.layoutFontSize = fontSize;
+      e.layoutWidth = width;
+      e.layoutLineNumbers = lineNumbers;
+      e.layoutValid = true;
       this.entries.set(id, e);
       requestParse(id, text, language, e.version);
-      return layout;
+      return e.layout;
     }
 
     // Language changed — re-tokenize spans only, keep layout if dims unchanged
     if (e.language !== language) {
-      e.spans = syncTokenize(e.sourceLines, language);
+      syncTokenizeInto(e.source, language, e.spans);
       e.language = language;
       e.version++;
-      requestParse(id, e.sourceLines.join('\n'), language, e.version);
+      requestParse(id, e.source.fullText, language, e.version);
       // Only recompute layout if fontSize/width/lineNumbers also changed
-      if (!e.layout || e.layoutFontSize !== fontSize || e.layoutWidth !== width || e.layoutLineNumbers !== lineNumbers) {
+      if (!e.layoutValid || e.layoutFontSize !== fontSize || e.layoutWidth !== width || e.layoutLineNumbers !== lineNumbers) {
+        layoutCodeSourceInto(e.source, fontSize, width, lineNumbers, e.layout);
         e.layoutFontSize = fontSize;
         e.layoutWidth = width;
         e.layoutLineNumbers = lineNumbers;
+        e.layoutValid = true;
         e.frame = null;
-        e.layout = computeLayout(e.sourceLines, fontSize, width, lineNumbers);
       }
       return e.layout;
     }
 
     // Cached layout still valid?
-    if (e.layout && e.layoutFontSize === fontSize && e.layoutWidth === width && e.layoutLineNumbers === lineNumbers) {
+    if (e.layoutValid && e.layoutFontSize === fontSize && e.layoutWidth === width && e.layoutLineNumbers === lineNumbers) {
       return e.layout;
     }
 
-    // Relayout needed (fontSize, width, or lineNumbers changed)
-    if (e.layoutFontSize !== fontSize || e.layoutWidth !== width || e.layoutLineNumbers !== lineNumbers) {
-      e.layoutFontSize = fontSize;
-      e.layoutWidth = width;
-      e.layoutLineNumbers = lineNumbers;
-      e.frame = null;
-    }
-    e.layout = computeLayout(e.sourceLines, fontSize, width, lineNumbers);
+    // Relayout needed (fontSize, width, or lineNumbers changed). Slot-reuse via in-place reflow.
+    layoutCodeSourceInto(e.source, fontSize, width, lineNumbers, e.layout);
+    e.layoutFontSize = fontSize;
+    e.layoutWidth = width;
+    e.layoutLineNumbers = lineNumbers;
+    e.layoutValid = true;
+    e.frame = null;
     return e.layout;
   }
 
@@ -426,30 +693,18 @@ class CodeSystemCache {
   handleContentChange(id: string, ev: Y.YTextEvent, language: CodeLanguage): void {
     const yText = ev.target as Y.Text;
     const text = yText.toString();
-    const sourceLines = text.split('\n');
-    const spans = syncTokenize(sourceLines, language);
 
     let e = this.entries.get(id);
-    if (e) {
-      e.sourceLines = sourceLines;
-      e.version++;
-      e.spans = spans;
-      e.layout = null;
-      e.frame = null;
-    } else {
-      e = {
-        sourceLines,
-        version: 1,
-        spans,
-        layout: null,
-        layoutFontSize: 0,
-        layoutWidth: 0,
-        layoutLineNumbers: true,
-        language,
-        frame: null,
-      };
+    if (!e) {
+      e = this.newEntry(language);
       this.entries.set(id, e);
     }
+
+    buildCodeSourceInto(text, e.source);
+    syncTokenizeInto(e.source, language, e.spans);
+    e.version++;
+    e.layoutValid = false;
+    e.frame = null;
 
     const changes = deltaToChangedRanges(ev.delta as { insert?: string | object; delete?: number; retain?: number }[]);
     requestParse(id, text, language, e.version, changes.length > 0 ? changes : undefined);
@@ -457,24 +712,35 @@ class CodeSystemCache {
 
   /**
    * Apply Lezer worker spans (ceiling upgrade). Version-gated to discard stale results.
+   * Swaps the spans buffers directly — zero-copy from the worker's transferred ArrayBuffers.
    */
-  applyWorkerSpans(id: string, spans: RunSpans[], forVersion: number): void {
+  applyWorkerSpans(id: string, spanData: Uint16Array, spanLineStart: Uint32Array, forVersion: number): void {
     const e = this.entries.get(id);
     if (!e || forVersion !== e.version) return;
-    e.spans = spans;
-    // Layout dimensions unchanged — only colors differ. No layout null.
-    // Trigger redraw if frame is known
+    e.spans.spanData = spanData;
+    e.spans.spanCap = spanData.length;
+    e.spans.spanLineStart = spanLineStart;
+    e.spans.lineCap = spanLineStart.length - 1;
+    e.spans.lineCount = spanLineStart.length - 1;
+    // Layout dimensions unchanged — only colors differ. No layout invalidation.
     if (e.frame) {
       invalidateWorld(frameTupleToWorldBounds(e.frame));
     }
   }
 
-  getSpans(id: string): RunSpans[] {
-    return this.entries.get(id)?.spans ?? [];
+  getSpans(id: string): CodeSpans | null {
+    return this.entries.get(id)?.spans ?? null;
   }
 
-  getSourceLines(id: string): string[] {
-    return this.entries.get(id)?.sourceLines ?? [];
+  getSource(id: string): CodeSource | null {
+    return this.entries.get(id)?.source ?? null;
+  }
+
+  getOutputCache(id: string, output: string | undefined): CodeOutput | null {
+    const e = this.entries.get(id);
+    if (!e) return null;
+    ensureOutputCache(e, output);
+    return e.output;
   }
 
   setFrame(id: string, frame: FrameTuple): void {
@@ -501,12 +767,17 @@ class CodeSystemCache {
 export const codeSystem = new CodeSystemCache();
 
 // ============================================================================
-// §8 PUBLIC API
+// §9 PUBLIC API
 // ============================================================================
 
 /** Get derived frame for a code object. Mirrors getTextFrame() pattern. */
 export function getCodeFrame(id: string): FrameTuple | null {
   return codeSystem.getFrame(id);
+}
+
+/** Source-buffer accessor for transform freeze (E/W reflow gestures). */
+export function getCodeSource(id: string): CodeSource | null {
+  return codeSystem.getSource(id);
 }
 
 /** Compute bbox for a code object — frame→bbox conversion. */
@@ -517,20 +788,21 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
     return [origin[0], origin[1], origin[0] + 1, origin[1] + 1];
   }
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
+  const outputCache = codeSystem.getOutputCache(id, props.output) ?? undefined;
   const [ox, oy] = props.origin;
-  const bh = blockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output);
+  const bh = blockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output, outputCache);
   const frame: FrameTuple = [ox, oy, layout.totalWidth, bh];
   codeSystem.setFrame(id, frame);
   return [ox, oy, ox + layout.totalWidth, oy + bh];
 }
 
 // ============================================================================
-// §9 CANVAS RENDERER — Zero-Allocation Span Iteration
+// §10 CANVAS RENDERER — SOA span iteration, zero per-line allocation
 // ============================================================================
 
 /**
- * Render a code layout onto the canvas using RunSpans (packed Uint16Array triples).
- * No intermediate object allocation — iterates spans inline with offset clipping for wrapping.
+ * Render a code layout onto the canvas using flat CodeSpans triples + CodeSource line offsets.
+ * Per-span fillText substring is the only unavoidable allocation (V8 SlicedString).
  */
 export function renderCodeLayout(
   ctx: CanvasRenderingContext2D,
@@ -538,17 +810,18 @@ export function renderCodeLayout(
   originX: number,
   originY: number,
   fontSize: number,
-  spans: RunSpans[],
-  sourceLines: string[],
+  spans: CodeSpans,
+  source: CodeSource,
   title?: string,
   output?: string,
+  outputCache?: CodeOutput,
 ): void {
   const lh = lineHeight(fontSize);
   const cw = charWidth(fontSize);
   const pt = padTop(fontSize);
   const pl = padLeft(fontSize);
   const hh = title !== undefined ? headerBarHeight(fontSize) : 0;
-  const bgH = blockHeight(layout, fontSize, title !== undefined, output !== undefined, output);
+  const bgH = blockHeight(layout, fontSize, title !== undefined, output !== undefined, output, outputCache);
   const digits = Math.max(2, String(layout.sourceLineCount).length);
   const cl = contentLeft(digits, fontSize, layout.lineNumbers);
   const normalFont = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
@@ -618,34 +891,44 @@ export function renderCodeLayout(
   const bl = baselineOffset(fontSize);
   let prevFont = '';
 
-  for (let i = 0; i < layout.lines.length; i++) {
-    const vline = layout.lines[i];
+  const fullText = source.fullText;
+  const sourceLineStart = source.lineStart;
+  const spanData = spans.spanData;
+  const spanLineStart = spans.spanLineStart;
+  const visualLineCount = layout.visualLineCount;
+  const vlSrcIdx = layout.vlSrcIdx;
+  const vlFrom = layout.vlFrom;
+  const vlLen = layout.vlLen;
+
+  for (let i = 0; i < visualLineCount; i++) {
+    const srcIdx = vlSrcIdx[i];
+    const vFrom = vlFrom[i];
+    const vTo = vFrom + vlLen[i];
     const baseY = codeTop + pt + i * lh + bl;
 
     // Gutter — only on first segment of source line, when lineNumbers enabled
-    if (layout.lineNumbers && vline.from === 0) {
+    if (layout.lineNumbers && vFrom === 0) {
       ctx.fillStyle = CODE_GUTTER;
       if (prevFont !== normalFont) {
         ctx.font = normalFont;
         prevFont = normalFont;
       }
-      const lineNum = String(vline.srcIdx + 1);
+      const lineNum = String(srcIdx + 1);
       ctx.fillText(lineNum, originX + pl + (digits - lineNum.length) * cw, baseY);
     }
 
-    // Code text — iterate RunSpans with inline [vFrom, vTo) clipping
-    const lineSpans = spans[vline.srcIdx];
-    const lineText = sourceLines[vline.srcIdx];
-    if (!lineSpans || !lineText) continue;
+    // Code text — iterate flat spans for this source line with [vFrom, vTo) clipping
+    const spanFrom = spanLineStart[srcIdx];
+    const spanTo = spanLineStart[srcIdx + 1];
+    if (spanFrom === spanTo) continue;
 
-    const vFrom = vline.from;
-    const vTo = vline.from + vline.text.length;
+    const lineStartChar = sourceLineStart[srcIdx];
     let x = originX + cl;
 
-    for (let si = 0; si < lineSpans.length; si += 3) {
-      const spanOff = lineSpans[si];
-      const spanLen = lineSpans[si + 1];
-      const style = lineSpans[si + 2];
+    for (let si = spanFrom; si < spanTo; si += 3) {
+      const spanOff = spanData[si];
+      const spanLen = spanData[si + 1];
+      const style = spanData[si + 2];
       const spanEnd = spanOff + spanLen;
 
       // Skip spans entirely outside [vFrom, vTo)
@@ -653,8 +936,8 @@ export function renderCodeLayout(
       if (spanOff >= vTo) break;
 
       // Clip to visual line range
-      const drawFrom = Math.max(spanOff, vFrom);
-      const drawTo = Math.min(spanEnd, vTo);
+      const drawFrom = spanOff > vFrom ? spanOff : vFrom;
+      const drawTo = spanEnd < vTo ? spanEnd : vTo;
       const drawLen = drawTo - drawFrom;
       if (drawLen <= 0) continue;
 
@@ -667,22 +950,24 @@ export function renderCodeLayout(
 
       // Only fillText for non-whitespace
       let allWhitespace = true;
-      for (let ci = drawFrom; ci < drawTo; ci++) {
-        const cc = lineText.charCodeAt(ci);
+      const absFrom = lineStartChar + drawFrom;
+      const absTo = lineStartChar + drawTo;
+      for (let ci = absFrom; ci < absTo; ci++) {
+        const cc = fullText.charCodeAt(ci);
         if (cc !== 32 && cc !== 9) {
           allWhitespace = false;
           break;
         }
       }
       if (!allWhitespace) {
-        ctx.fillText(lineText.substring(drawFrom, drawTo), x, baseY);
+        ctx.fillText(fullText.substring(absFrom, absTo), x, baseY);
       }
       x += drawLen * cw;
     }
   }
 
   // Placeholder — empty block shows grey hint text at first line position
-  if (sourceLines.length === 1 && sourceLines[0] === '') {
+  if (source.lineCount === 1 && source.fullText.length === 0) {
     ctx.fillStyle = CODE_GUTTER;
     ctx.font = normalFont;
     ctx.fillText('Type something...', originX + cl, codeTop + pt + bl);
@@ -690,7 +975,7 @@ export function renderCodeLayout(
 
   // 4. Output panel
   if (output !== undefined) {
-    const codeBottomY = codeTop + pt + layout.lines.length * lh + padBottom(fontSize);
+    const codeBottomY = codeTop + pt + visualLineCount * lh + padBottom(fontSize);
     drawSep(codeBottomY);
 
     const labelH = fontSize * OUTPUT_LABEL_H_RATIO;
@@ -702,16 +987,32 @@ export function renderCodeLayout(
     ctx.fillStyle = CODE_OUTPUT_LABEL;
     ctx.fillText('Output', originX + pl, codeBottomY + labelH / 2);
 
-    // Output text lines
+    // Output text lines — iterate via cached lineStart when available
     if (output) {
-      const outputLines = output.split('\n');
-      const maxLines = Math.min(outputLines.length, MAX_OUTPUT_CANVAS_LINES);
       ctx.textBaseline = 'alphabetic';
       ctx.fillStyle = CODE_DEFAULT;
       ctx.font = chromeFont;
       const chromeBl = (cfs * (OUTPUT_LINE_H_MULT + 0.8)) / 2; // approximate ascent
-      for (let i = 0; i < maxLines; i++) {
-        ctx.fillText(outputLines[i], originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
+      if (outputCache && outputCache.text === output) {
+        const maxLines = Math.min(outputCache.lineCount, MAX_OUTPUT_CANVAS_LINES);
+        const ls = outputCache.lineStart;
+        for (let i = 0; i < maxLines; i++) {
+          const from = ls[i];
+          const to = ls[i + 1] - 1;
+          ctx.fillText(output.substring(from, to), originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
+        }
+      } else {
+        // First-paint path with no cache — walk the string directly without splitting.
+        let from = 0;
+        let i = 0;
+        while (i < MAX_OUTPUT_CANVAS_LINES) {
+          let to = output.indexOf('\n', from);
+          if (to === -1) to = output.length;
+          ctx.fillText(output.substring(from, to), originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
+          if (to === output.length) break;
+          from = to + 1;
+          i++;
+        }
       }
     }
   }

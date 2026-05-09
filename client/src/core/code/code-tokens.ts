@@ -1,12 +1,15 @@
 /**
- * Code Tokens — Style enum, packed RunSpans, color palette, keyword sets,
+ * Code Tokens — Style enum, packed-triple writers, color palette, keyword sets,
  * sync tokenizer, and gap-fill algorithm.
  *
  * Shared between code-system.ts (main thread), code-theme.ts, and lezer-worker.ts.
- * RunSpans: flat Uint16Array of [offset, length, styleIndex] triples per source line.
+ * Spans live in CodeSpans (flat Uint16Array of [offset, length, styleIndex] triples,
+ * `spanLineStart` half-open ranges per source line).
  */
 
 import type { CodeLanguage } from '../accessors';
+import type { CodeSource, CodeSpans } from './code-system';
+import { ensureSpansDataCap, ensureSpansLineCap } from './code-system';
 
 // ============================================================================
 // STYLE ENUM — 13 styles, fits in a byte
@@ -144,73 +147,73 @@ export const TAG_STYLE_INDEX: Record<string, number> = {
 };
 
 // ============================================================================
-// RUNSPANS — flat packed [offset, length, style] triples
+// PACK TRIPLES — flat [offset, length, style] u16 packing
 // ============================================================================
 
 /**
- * A Uint16Array where length % 3 === 0. Each triple: [offset, length, styleIndex].
- * Concatenated triples cover the entire source line (no gaps).
+ * Number of gap-filled triples produced by packing `(buf, count)` for a line of length `lineLen`.
+ * Empty line → 0 triples; line with no highlights → 1 default-fill triple.
  */
-export type RunSpans = Uint16Array;
-
-/** Empty line sentinel — reused, no allocation. */
-export const EMPTY_SPANS = new Uint16Array(0);
-
-/**
- * Pack sparse highlight triples into a gap-filled RunSpans covering the full line.
- *
- * @param lineLen - length of the source line
- * @param buf - flat buffer of [from, to, styleIndex] triples (length = count * 3)
- * @param count - number of triples in buf
- */
-export function packRunSpans(lineLen: number, buf: number[], count: number): RunSpans {
-  if (lineLen === 0) return EMPTY_SPANS;
-  if (count === 0) {
-    const r = new Uint16Array(3);
-    r[0] = 0;
-    r[1] = lineLen;
-    r[2] = S.DEFAULT;
-    return r;
-  }
-
-  // Pre-count: each highlight = 1 run, each gap = 1 run
+export function countPackedTriples(lineLen: number, buf: number[], count: number): number {
+  if (lineLen === 0) return 0;
+  if (count === 0) return 1;
   let runCount = 0;
   let pos = 0;
   for (let i = 0; i < count; i++) {
     const from = buf[i * 3];
     const to = buf[i * 3 + 1];
-    if (from > pos) runCount++; // gap
-    if (to > from) runCount++; // highlight
+    if (from > pos) runCount++;
+    if (to > from) runCount++;
     pos = to;
   }
-  if (pos < lineLen) runCount++; // trailing gap
+  if (pos < lineLen) runCount++;
+  return runCount;
+}
 
-  const spans = new Uint16Array(runCount * 3);
-  let wi = 0;
-  pos = 0;
+/**
+ * Write gap-filled triples into `spanData` starting at `runOffset`. Caller is responsible
+ * for ensuring `spanData` has capacity at `runOffset + countPackedTriples(...) * 3`.
+ * Returns the new offset after the writes.
+ */
+export function writePackedTriples(spanData: Uint16Array, lineLen: number, buf: number[], count: number, runOffset: number): number {
+  if (lineLen === 0) return runOffset;
+  if (count === 0) {
+    spanData[runOffset] = 0;
+    spanData[runOffset + 1] = lineLen;
+    spanData[runOffset + 2] = S.DEFAULT;
+    return runOffset + 3;
+  }
+  let wi = runOffset;
+  let pos = 0;
   for (let i = 0; i < count; i++) {
     const from = buf[i * 3];
     const to = buf[i * 3 + 1];
     const style = buf[i * 3 + 2];
     if (from > pos) {
-      spans[wi++] = pos;
-      spans[wi++] = from - pos;
-      spans[wi++] = S.DEFAULT;
+      spanData[wi++] = pos;
+      spanData[wi++] = from - pos;
+      spanData[wi++] = S.DEFAULT;
     }
     if (to > from) {
-      spans[wi++] = from;
-      spans[wi++] = to - from;
-      spans[wi++] = style;
+      spanData[wi++] = from;
+      spanData[wi++] = to - from;
+      spanData[wi++] = style;
     }
     pos = to;
   }
   if (pos < lineLen) {
-    spans[wi++] = pos;
-    spans[wi++] = lineLen - pos;
-    spans[wi++] = S.DEFAULT;
+    spanData[wi++] = pos;
+    spanData[wi++] = lineLen - pos;
+    spanData[wi++] = S.DEFAULT;
   }
+  return wi;
+}
 
-  return spans;
+/** Pack triples into a `CodeSpans` buffer, growing capacity as needed. Returns new write offset. */
+export function packRunSpansInto(out: CodeSpans, lineLen: number, buf: number[], count: number, runOffset: number): number {
+  const triples = countPackedTriples(lineLen, buf, count);
+  ensureSpansDataCap(out, runOffset + triples * 3);
+  return writePackedTriples(out.spanData, lineLen, buf, count, runOffset);
 }
 
 // ============================================================================
@@ -483,23 +486,35 @@ function scanTemplateLiteral(line: string, start: number): number {
 }
 
 // ============================================================================
-// SYNC TOKENIZER — outputs RunSpans[] (flat packed triples)
+// SYNC TOKENIZER — writes flat triples into a pooled CodeSpans buffer
 // ============================================================================
 
 /**
- * Sync regex tokenizer — returns RunSpans[] (one packed Uint16Array per source line).
- * Gaps between highlights are filled by packRunSpans with S.DEFAULT.
+ * Sync regex tokenizer — packs triples directly into `out.spanData` per source line,
+ * recording the running offset in `out.spanLineStart`. Gaps between highlights are
+ * filled with S.DEFAULT. Single substring per line drives the existing inner tokenizer
+ * logic; no `string[]` array, no per-line ArrayBuffer.
  */
-export function syncTokenize(lines: string[], language: CodeLanguage): RunSpans[] {
+export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out: CodeSpans): void {
   const kwSet = getKeywordSet(language);
   const isPython = language === 'python';
-  const result: RunSpans[] = new Array(lines.length);
+  const lineCount = source.lineCount;
+  const fullText = source.fullText;
+  const lineStart = source.lineStart;
+
+  ensureSpansLineCap(out, lineCount);
+  out.lineCount = lineCount;
+  out.spanLineStart[0] = 0;
+  let writeOffset = 0;
 
   let inBlockComment = false;
   let inTemplateString = false;
 
-  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-    const line = lines[lineIdx];
+  for (let lineIdx = 0; lineIdx < lineCount; lineIdx++) {
+    const lineFrom = lineStart[lineIdx];
+    const lineTo = lineStart[lineIdx + 1] - 1;
+    // One substring per line — feeds the existing index-based tokenizer body.
+    const line = fullText.substring(lineFrom, lineTo);
     _syncBufCount = 0;
     let i = 0;
 
@@ -703,12 +718,11 @@ export function syncTokenize(lines: string[], language: CodeLanguage): RunSpans[
         continue;
       }
 
-      // --- Everything else (punctuation, unknown) → gap, filled by packRunSpans ---
+      // --- Everything else (punctuation, unknown) → gap, filled by packRunSpansInto ---
       i++;
     }
 
-    result[lineIdx] = packRunSpans(line.length, _syncBuf, _syncBufCount);
+    writeOffset = packRunSpansInto(out, line.length, _syncBuf, _syncBufCount, writeOffset);
+    out.spanLineStart[lineIdx + 1] = writeOffset;
   }
-
-  return result;
 }

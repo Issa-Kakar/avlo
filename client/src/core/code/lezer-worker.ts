@@ -1,5 +1,5 @@
 /**
- * Lezer Worker — Incremental parsing + RunSpans extraction
+ * Lezer Worker — Incremental parsing + flat span extraction
  *
  * One of 2 warm pool workers. Owns per-object parse state (Tree + TreeFragments).
  * Main thread never touches parse state.
@@ -8,7 +8,8 @@
  *   Main → Worker: { type:'parse', id, text, language, version, changes? }
  *   Main → Worker: { type:'remove', id }
  *   Main → Worker: { type:'clearAll' }
- *   Worker → Main: { type:'spans', id, version, spans: RunSpans[] }  (transferred)
+ *   Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineStart: Uint32Array }
+ *                  (both ArrayBuffers transferred zero-copy)
  */
 
 import type { Parser, Tree } from '@lezer/common';
@@ -17,8 +18,7 @@ import { highlightTree, tagHighlighter, tags } from '@lezer/highlight';
 import { parser as jsParser } from '@lezer/javascript';
 import { parser as pythonParser } from '@lezer/python';
 
-import type { RunSpans } from './code-tokens';
-import { EMPTY_SPANS, packRunSpans, TAG_STYLE_INDEX } from './code-tokens';
+import { TAG_STYLE_INDEX, writePackedTriples } from './code-tokens';
 
 // ============================================================================
 // Tag Highlighter — expanded tag list for complete coloring
@@ -133,38 +133,71 @@ function parse(id: string, text: string, language: string, changes?: ChangedRang
 }
 
 // ============================================================================
-// Span extraction — walks tree, maps Lezer tags to RunSpans via packRunSpans
+// Span extraction — walks tree, packs flat spanData / spanLineStart
 // ============================================================================
 
-// Reusable buffers — persisted across calls, zero allocation per parse
-const _lineBuf: number[] = [];
+// Reusable buffers — persisted across calls, zero allocation per parse beyond transfer.
+let _workerLineOffsets = new Uint32Array(64); // [lineCap + 1]; sentinel slot included
 const _hlBuf: number[] = [];
 let _hlCount = 0;
+const _lineBuf: number[] = [];
+let _workerSpanData = new Uint16Array(256);
 
-function extractSpans(tree: Tree, text: string): RunSpans[] {
-  const lines = text.split('\n');
-  const lineCount = lines.length;
-  const spans: RunSpans[] = new Array(lineCount);
+function ensureLineOffsetsCap(n: number): void {
+  // Need slots [0..n] inclusive (n+1 slots), so the sentinel at index n always fits.
+  if (_workerLineOffsets.length >= n + 1) return;
+  let cap = _workerLineOffsets.length;
+  while (cap < n + 1) cap *= 2;
+  _workerLineOffsets = new Uint32Array(cap);
+}
 
-  // Build line offset table for fast line lookup
-  const lineOffsets: number[] = [0];
-  for (let i = 0; i < lineCount - 1; i++) {
-    lineOffsets.push(lineOffsets[i] + lines[i].length + 1);
+function ensureWorkerSpanCap(n: number): void {
+  if (_workerSpanData.length >= n) return;
+  let cap = _workerSpanData.length;
+  while (cap < n) cap *= 2;
+  _workerSpanData = new Uint16Array(cap);
+}
+
+function binarySearchLine(offsets: Uint32Array, lineCount: number, pos: number): number {
+  let lo = 0;
+  let hi = lineCount - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsets[mid] <= pos) lo = mid;
+    else hi = mid - 1;
   }
+  return lo;
+}
 
-  // First pass: collect highlights into flat quad buffer [lineIdx, from, to, style]
-  // Zero object allocation — reuses _hlBuf across calls
+/** Walk the tree, build flat span buffers, post + transfer in one go. */
+function extractAndSendSpans(tree: Tree, text: string, id: string, version: number): void {
+  // 1. Build line-offset table via charCode-10 scan.
+  let lineCount = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) lineCount++;
+  }
+  ensureLineOffsetsCap(lineCount);
+  const lineOffsets = _workerLineOffsets;
+  lineOffsets[0] = 0;
+  let li = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) lineOffsets[li++] = i + 1;
+  }
+  // Sentinel: text.length + 1 so lineLen(i) = lineOffsets[i+1] - lineOffsets[i] - 1
+  lineOffsets[lineCount] = text.length + 1;
+
+  // 2. First pass: collect highlights into flat quad buffer [lineIdx, from, to, style].
   _hlCount = 0;
-
   highlightTree(tree, styleHighlighter, (from, to, classes) => {
     const style = TAG_STYLE_INDEX[classes];
     if (style === undefined) return;
 
-    let lineIdx = binarySearchLine(lineOffsets, from);
+    let lineIdx = binarySearchLine(lineOffsets, lineCount, from);
 
     while (lineIdx < lineCount) {
       const lineStart = lineOffsets[lineIdx];
-      const lineEnd = lineStart + lines[lineIdx].length;
+      const lineLen = lineOffsets[lineIdx + 1] - lineStart - 1;
+      const lineEnd = lineStart + lineLen;
 
       if (from >= lineEnd) {
         lineIdx++;
@@ -172,8 +205,8 @@ function extractSpans(tree: Tree, text: string): RunSpans[] {
       }
       if (to <= lineStart) break;
 
-      const tokenFrom = Math.max(0, from - lineStart);
-      const tokenTo = Math.min(lines[lineIdx].length, to - lineStart);
+      const tokenFrom = from > lineStart ? from - lineStart : 0;
+      const tokenTo = to - lineStart < lineLen ? to - lineStart : lineLen;
 
       if (tokenFrom < tokenTo) {
         const idx = _hlCount * 4;
@@ -190,45 +223,50 @@ function extractSpans(tree: Tree, text: string): RunSpans[] {
     }
   });
 
-  // Second pass: sequential cursor scan — O(highlights) total
-  // highlightTree emits in document order, so quads are sorted by lineIdx
+  // 3. Pre-grow working span buffer to upper bound (each highlight contributes ≤ 2 triples,
+  //    each line ≤ 1 trailing-gap triple, plus 1 default-fill for highlight-free lines).
+  const upperBoundTriples = _hlCount * 2 + lineCount + 1;
+  ensureWorkerSpanCap(upperBoundTriples * 3);
+
+  // 4. Allocate exact-sized spanLineStart for transfer.
+  const spanLineStart = new Uint32Array(lineCount + 1);
+
+  // 5. Sequential cursor scan — pack each line's triples into _workerSpanData.
+  let writeOffset = 0;
   let cursor = 0;
 
   for (let i = 0; i < lineCount; i++) {
+    spanLineStart[i] = writeOffset;
+    const lineLen = lineOffsets[i + 1] - lineOffsets[i] - 1;
+
     if (cursor >= _hlCount || _hlBuf[cursor * 4] !== i) {
-      spans[i] = lines[i].length === 0 ? EMPTY_SPANS : packRunSpans(lines[i].length, [], 0);
+      // No highlights on this line — packs to 0 triples (empty) or 1 default-fill.
+      writeOffset = writePackedTriples(_workerSpanData, lineLen, _emptyBuf, 0, writeOffset);
       continue;
     }
 
     let count = 0;
-    let j = cursor;
-    while (j < _hlCount && _hlBuf[j * 4] === i) {
-      const base = j * 4;
+    while (cursor < _hlCount && _hlBuf[cursor * 4] === i) {
+      const base = cursor * 4;
       const tripleBase = count * 3;
       if (tripleBase + 2 >= _lineBuf.length) _lineBuf.length = tripleBase + 30;
       _lineBuf[tripleBase] = _hlBuf[base + 1];
       _lineBuf[tripleBase + 1] = _hlBuf[base + 2];
       _lineBuf[tripleBase + 2] = _hlBuf[base + 3];
       count++;
-      j++;
+      cursor++;
     }
-    cursor = j;
-    spans[i] = packRunSpans(lines[i].length, _lineBuf, count);
+    writeOffset = writePackedTriples(_workerSpanData, lineLen, _lineBuf, count, writeOffset);
   }
+  spanLineStart[lineCount] = writeOffset;
 
-  return spans;
+  // 6. Copy used prefix into a fresh transfer buffer (zero-copy on postMessage).
+  const spanData = _workerSpanData.slice(0, writeOffset);
+
+  (self as unknown as Worker).postMessage({ type: 'spans', id, version, spanData, spanLineStart }, [spanData.buffer, spanLineStart.buffer]);
 }
 
-function binarySearchLine(offsets: number[], pos: number): number {
-  let lo = 0;
-  let hi = offsets.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (offsets[mid] <= pos) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
-}
+const _emptyBuf: number[] = [];
 
 // ============================================================================
 // Message handler
@@ -241,13 +279,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'parse': {
       const { id, text, language, version, changes } = msg;
       const tree = parse(id, text, language, changes);
-      const spans = extractSpans(tree, text);
-      // Transfer ArrayBuffers — zero-copy. Worker arrays become detached.
-      const transfer = [];
-      for (let i = 0; i < spans.length; i++) {
-        if (spans[i].byteLength > 0) transfer.push(spans[i].buffer);
-      }
-      (self as unknown as Worker).postMessage({ type: 'spans', id, version, spans }, transfer);
+      extractAndSendSpans(tree, text, id, version);
       break;
     }
     case 'remove':
