@@ -155,9 +155,14 @@ toggled.
 2. Highlighter toggle (`IconInspectorHighlighter`).
 3. Divider.
 4. Stroke weights `W1..W4` — `SizePreset [4, 7, 10, 13]` mapped to
-   `IconStrokeWeight1..4` via index in `constants.ts`. Per-button
-   handlers come from a module-level lookup table so memoized
-   `InspectorButton` keeps its props stable.
+   `IconStrokeWeight1..4` via index in `constants.ts`. Each icon is a
+   distinct hand-drawn squiggle (NOT a scaled clone): W1=Mural
+   drawWeight10, W2=drawWeight20, W3=drawWeight40, W4=custom heavy
+   (slightly heavier than Mural's drawWeight50). drawWeight30 is
+   skipped because its width gap from drawWeight20 reads as
+   imperceptible at icon scale. Per-button handlers come from a
+   module-level lookup table so memoized `InspectorButton` keeps its
+   props stable.
 5. Divider.
 6. `<ColorSlots />` — 3 rounded squares. Pen and highlighter each persist
    their own slot column + active-slot pointer; switching active tool
@@ -344,9 +349,6 @@ spacing, threshold values, and the variant icon set are all in flux.**
   the pen inspector (slots near the bottom), might want vertical
   alignment with the slot row's vertical center for consistency once
   more inspectors land.
-- **Stroke-weight icon scale jumps** (`1.00 / 1.12 / 1.24 / drawWeight60`)
-  — progression may not feel linear enough across the four presets.
-  Carried over from the prior pass.
 - **Fill toggle / shape inspector / text inspector**: still not ported.
   Selection-based mutation lives in the context menu; we have not yet
   decided whether the dock will grow inspectors for non-pen, non-connector
@@ -358,6 +360,14 @@ spacing, threshold values, and the variant icon set are all in flux.**
 
 ## Recent Behavior Changes (since the last state doc)
 
+- 2026-05-09: Stroke-weight icons now visually distinct. W2/W3 were
+  `drawWeight10` wrapped in `<g transform="scale(1.12)">` / `scale(1.24)`
+  — same SVG at three sizes, not three weights. Replaced with Mural's
+  real `drawWeight20` and `drawWeight40` SVGs (2 paths each: solid +
+  offset/opacity-.35 ring). `drawWeight30` skipped: width gap from
+  `drawWeight20` ≈ +0.21 in stroke radius, too small to read at icon
+  scale. Final W1→W4 progression has accelerating gaps (0.21 / 0.40 /
+  0.52). W1 (`drawWeight10`) and W4 (custom heavy) untouched.
 - 2026-04-22 → 2026-05-09: refactor pass replaced the `FIXED_COLORS` +
   `MORE_COLORS` + `recentColors` popover with a 3-slot persistent color
   model. Added the connector inspector. Deleted `ToolPanel.tsx/css`.
