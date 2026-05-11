@@ -11,20 +11,21 @@
  *   Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineStart: Uint32Array }
  *                  (both ArrayBuffers transferred zero-copy)
  *
- * Style mapping is owned by `code-syntax-rules.ts`'s `STYLE_HIGHLIGHTER`,
- * which returns the stringified S enum value directly. The `highlightTree`
- * callback recovers the int with `+classes | 0` — no `tagHighlighter` /
- * `TAG_STYLE_INDEX` indirection.
+ * Lezer-tag → S mapping lives inline at the bottom of this file as `STYLE_HIGHLIGHTER`
+ * (returns the stringified S int directly; `highlightTree` callback recovers via
+ * `+classes | 0`). `code-theme.ts` carries its own copy of the same mapping for
+ * the CodeMirror DOM theme — deliberate duplication so the main bundle never has
+ * to import `@lezer/highlight`.
  */
 
 import type { Parser, Tree } from '@lezer/common';
 import { TreeFragment } from '@lezer/common';
-import { highlightTree } from '@lezer/highlight';
+import type { Highlighter, Tag } from '@lezer/highlight';
+import { highlightTree, tags } from '@lezer/highlight';
 import { parser as jsParser } from '@lezer/javascript';
 import { parser as pythonParser } from '@lezer/python';
 
-import { STYLE_HIGHLIGHTER } from './code-syntax-rules';
-import { writePackedTriples } from './code-tokens';
+import { S, writePackedTriples } from './code-tokens';
 
 // ============================================================================
 // Per-object state
@@ -219,6 +220,84 @@ function extractAndSendSpans(tree: Tree, text: string, id: string, version: numb
 }
 
 const _emptyBuf: number[] = [];
+
+// ============================================================================
+// Lezer-tag → S mapping  (worker-side copy; the theme has its own — keep in sync)
+// ============================================================================
+
+// Modifier-set walk matches `@lezer/highlight`'s `tagHighlighter` semantics so
+// modifier tags like `tags.local(tags.variableName)` resolve to their base. Walk
+// returns on first match (most-specific → least-specific within each tag's set).
+//
+// Notable rules:
+//   - `tags.separator` is deliberately unmapped → falls through to DEFAULT.
+//   - `tags.definition(tags.propertyName)` → DEFAULT explicitly: `definition` has
+//     lower Modifier.id than `function`, so for
+//     `function(definition(propertyName))` the walk hits this entry BEFORE the
+//     `function(propertyName)` → FUNCTION_CALL rule. One row covers obj-literal
+//     keys, class fields, method shorthand, AND class methods.
+//   - No fontWeight / fontStyle anywhere — Sweet Dracula is color-only.
+const WORKER_RULES: readonly { tags: Tag[]; style: S }[] = [
+  { tags: [tags.keyword, tags.operatorKeyword, tags.controlKeyword], style: S.KEYWORD },
+  { tags: [tags.definitionKeyword], style: S.STORAGE },
+  { tags: [tags.moduleKeyword, tags.modifier], style: S.MODIFIER },
+  { tags: [tags.meta], style: S.LANG_VAR },
+  { tags: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.regexp, tags.character], style: S.STRING },
+  { tags: [tags.escape], style: S.OPERATOR },
+  { tags: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], style: S.NUMBER },
+  { tags: [tags.lineComment, tags.blockComment, tags.docComment], style: S.COMMENT },
+  {
+    tags: [tags.function(tags.definition(tags.variableName)), tags.className, tags.definition(tags.typeName)],
+    style: S.FUNCTION_DEF,
+  },
+  { tags: [tags.definition(tags.propertyName)], style: S.DEFAULT },
+  {
+    tags: [tags.function(tags.variableName), tags.function(tags.propertyName)],
+    style: S.FUNCTION_CALL,
+  },
+  { tags: [tags.self], style: S.LANG_VAR },
+  { tags: [tags.variableName, tags.definition(tags.variableName), tags.labelName], style: S.VARIABLE },
+  { tags: [tags.typeName, tags.propertyName, tags.namespace], style: S.TYPE },
+  { tags: [tags.tagName, tags.angleBracket], style: S.KEYWORD },
+  {
+    tags: [
+      tags.operator,
+      tags.compareOperator,
+      tags.logicOperator,
+      tags.arithmeticOperator,
+      tags.bitwiseOperator,
+      tags.updateOperator,
+      tags.definitionOperator,
+      tags.typeOperator,
+      tags.controlOperator,
+    ],
+    style: S.OPERATOR,
+  },
+  { tags: [tags.derefOperator], style: S.OPERATOR },
+  { tags: [tags.bracket, tags.squareBracket, tags.paren, tags.brace], style: S.DEFAULT },
+  { tags: [tags.attributeName], style: S.ATTRIBUTE },
+  { tags: [tags.invalid], style: S.INVALID },
+];
+
+const TAG_TO_S = new Map<Tag, S>();
+for (const r of WORKER_RULES) for (const t of r.tags) TAG_TO_S.set(t, r.style);
+
+// Pre-stringified per-S labels so the Highlighter callback never allocates.
+const _classCache: string[] = [];
+for (const r of WORKER_RULES) _classCache[r.style] = String(r.style);
+
+const STYLE_HIGHLIGHTER: Highlighter = {
+  style(tagList) {
+    for (let i = 0; i < tagList.length; i++) {
+      const set = tagList[i].set;
+      for (let j = 0; j < set.length; j++) {
+        const s = TAG_TO_S.get(set[j]);
+        if (s !== undefined) return _classCache[s];
+      }
+    }
+    return null;
+  },
+};
 
 // ============================================================================
 // Message handler

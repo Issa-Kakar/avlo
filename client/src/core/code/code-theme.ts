@@ -1,14 +1,18 @@
 /**
  * Code Theme — CodeMirror theme extensions (Sweet Dracula dark theme + syntax highlighting).
  *
- * Lazy-loaded and cached. Reads colors from `THEME` (palette + chrome) in
- * `code-tokens.ts`; the `HighlightStyle.define` rule list is derived from
- * `SYNTAX_RULES` (in `code-syntax-rules.ts`) + `THEME.palette` so the canvas
- * renderer and the CodeMirror DOM share one source of truth for Lezer-tag → S
- * → color. No bold or italic — Sweet Dracula's emphasis is color-only.
+ * Lazy-loaded and cached. All `@codemirror/*` and `@lezer/highlight` imports are
+ * dynamic so the main bundle has zero static dependency on the editor stack —
+ * everything ships in the same code-split chunk that downloads on first
+ * double-click of a code block.
+ *
+ * The `tags.X → S` rule list is built inline INSIDE `getCodeMirrorExtensions()`
+ * (it needs the dynamically-imported `tags` object). `lezer-worker.ts` keeps its
+ * own identical copy for `highlightTree`. Two sources of truth — deliberate, so
+ * `@lezer/highlight` stays out of the main bundle. If you change a rule here,
+ * change it there too.
  */
 
-import { SYNTAX_RULES } from './code-syntax-rules';
 import { CODE_FONT_FAMILY, LINE_HEIGHT_MULT, S, THEME } from './code-tokens';
 
 let _themeExtensions: unknown[] | null = null;
@@ -16,9 +20,10 @@ let _themeExtensions: unknown[] | null = null;
 export async function getCodeMirrorExtensions(): Promise<unknown[]> {
   if (_themeExtensions) return _themeExtensions;
 
-  const [{ EditorView }, { syntaxHighlighting, HighlightStyle }] = await Promise.all([
+  const [{ EditorView }, { syntaxHighlighting, HighlightStyle }, { tags }] = await Promise.all([
     import('@codemirror/view'),
     import('@codemirror/language'),
+    import('@lezer/highlight'),
   ]);
 
   const codeEditorTheme = EditorView.theme(
@@ -106,13 +111,58 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
     { dark: true },
   );
 
+  // Theme-side copy of the Lezer-tag → S mapping. `lezer-worker.ts` carries the
+  // matching `WORKER_RULES` — change here and there together. The set walk that
+  // resolves modifier tags is implemented by `HighlightStyle.define` itself.
   const codeHighlightStyle = syntaxHighlighting(
-    HighlightStyle.define(
-      SYNTAX_RULES.map((r) => ({
-        tag: r.tags,
-        color: THEME.palette[r.style],
-      })),
-    ),
+    HighlightStyle.define([
+      { tag: [tags.keyword, tags.operatorKeyword, tags.controlKeyword], color: THEME.palette[S.KEYWORD] },
+      { tag: [tags.definitionKeyword], color: THEME.palette[S.STORAGE] },
+      { tag: [tags.moduleKeyword, tags.modifier], color: THEME.palette[S.MODIFIER] },
+      { tag: [tags.meta], color: THEME.palette[S.LANG_VAR] },
+      {
+        tag: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.regexp, tags.character],
+        color: THEME.palette[S.STRING],
+      },
+      { tag: [tags.escape], color: THEME.palette[S.OPERATOR] },
+      { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], color: THEME.palette[S.NUMBER] },
+      { tag: [tags.lineComment, tags.blockComment, tags.docComment], color: THEME.palette[S.COMMENT] },
+      {
+        tag: [tags.function(tags.definition(tags.variableName)), tags.className, tags.definition(tags.typeName)],
+        color: THEME.palette[S.FUNCTION_DEF],
+      },
+      // `definition(propertyName)` → DEFAULT explicitly. The set walk ordered
+      // by Modifier.id hits this entry BEFORE `function(propertyName)` →
+      // FUNCTION_CALL — one rule covers obj-literal keys, class fields, method
+      // shorthand, AND class methods.
+      { tag: [tags.definition(tags.propertyName)], color: THEME.palette[S.DEFAULT] },
+      {
+        tag: [tags.function(tags.variableName), tags.function(tags.propertyName)],
+        color: THEME.palette[S.FUNCTION_CALL],
+      },
+      { tag: [tags.self], color: THEME.palette[S.LANG_VAR] },
+      { tag: [tags.variableName, tags.definition(tags.variableName), tags.labelName], color: THEME.palette[S.VARIABLE] },
+      { tag: [tags.typeName, tags.propertyName, tags.namespace], color: THEME.palette[S.TYPE] },
+      { tag: [tags.tagName, tags.angleBracket], color: THEME.palette[S.KEYWORD] },
+      {
+        tag: [
+          tags.operator,
+          tags.compareOperator,
+          tags.logicOperator,
+          tags.arithmeticOperator,
+          tags.bitwiseOperator,
+          tags.updateOperator,
+          tags.definitionOperator,
+          tags.typeOperator,
+          tags.controlOperator,
+        ],
+        color: THEME.palette[S.OPERATOR],
+      },
+      { tag: [tags.derefOperator], color: THEME.palette[S.OPERATOR] },
+      { tag: [tags.bracket, tags.squareBracket, tags.paren, tags.brace], color: THEME.palette[S.DEFAULT] },
+      { tag: [tags.attributeName], color: THEME.palette[S.ATTRIBUTE] },
+      { tag: [tags.invalid], color: THEME.palette[S.INVALID] },
+    ]),
   );
 
   _themeExtensions = [codeEditorTheme, codeHighlightStyle];

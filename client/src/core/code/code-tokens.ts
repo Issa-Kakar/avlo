@@ -2,8 +2,8 @@
  * Code Tokens — Style enum (S), THEME struct (palette + chrome), packed-triple
  * writers, length-bucketed keyword tables, and char-code sync tokenizer.
  *
- * Shared between code-system.ts (main thread), code-theme.ts, code-syntax-rules.ts,
- * and lezer-worker.ts. Spans live in CodeSpans (flat Uint16Array of
+ * Shared between code-system.ts (main thread), code-theme.ts, and lezer-worker.ts.
+ * Spans live in CodeSpans (flat Uint16Array of
  * [offset, length, styleIndex] triples, `spanLineStart` half-open ranges per
  * source line). Whitespace runs are sentinelled to S.WHITESPACE inline — no
  * parallel buffer.
