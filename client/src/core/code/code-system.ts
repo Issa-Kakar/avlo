@@ -161,7 +161,7 @@ const PAD_TOP_RATIO = 1.5;
 const PAD_BOTTOM_RATIO = 1.5;
 const PAD_LEFT_RATIO = 1.0;
 const PAD_RIGHT_RATIO = 0.85;
-const GUTTER_PAD_RATIO = 2.2;
+const GUTTER_GAP_RATIO = 0.5;
 const BORDER_RADIUS_RATIO = 0.85;
 
 // ============================================================================
@@ -180,8 +180,8 @@ export function padLeft(fs: number): number {
 export function padRight(fs: number): number {
   return fs * PAD_RIGHT_RATIO;
 }
-export function gutterPad(fs: number): number {
-  return fs * GUTTER_PAD_RATIO;
+export function gutterGap(fs: number): number {
+  return fs * GUTTER_GAP_RATIO;
 }
 export function borderRadius(fs: number): number {
   return fs * BORDER_RADIUS_RATIO;
@@ -207,18 +207,17 @@ export function gutterWidth(maxDigits: number, fontSize: number): number {
 }
 
 export function contentLeft(maxDigits: number, fontSize: number, lineNumbers = true): number {
-  if (!lineNumbers) return padLeft(fontSize);
-  return padLeft(fontSize) + gutterWidth(maxDigits, fontSize) + gutterPad(fontSize);
+  const pl = padLeft(fontSize);
+  if (!lineNumbers) return pl;
+  return pl + gutterWidth(maxDigits, fontSize) + gutterGap(fontSize) + pl;
 }
 
 export function getMinWidth(fontSize: number): number {
-  const cw = charWidth(fontSize);
-  return MIN_CHARS * cw + padLeft(fontSize) + padRight(fontSize) + gutterWidth(2, fontSize) + gutterPad(fontSize);
+  return MIN_CHARS * charWidth(fontSize) + contentLeft(2, fontSize, true) + padRight(fontSize);
 }
 
 export function getDefaultWidth(fontSize: number): number {
-  const cw = charWidth(fontSize);
-  return DEFAULT_CHARS * cw + padLeft(fontSize) + padRight(fontSize) + gutterWidth(2, fontSize) + gutterPad(fontSize);
+  return DEFAULT_CHARS * charWidth(fontSize) + contentLeft(2, fontSize, true) + padRight(fontSize);
 }
 
 // ============================================================================

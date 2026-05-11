@@ -14,7 +14,7 @@ import {
   charWidth,
   chromeFontSize,
   getDefaultWidth,
-  gutterPad,
+  gutterGap,
   headerBarHeight,
   lineHeight as lineHeightFn,
   padBottom,
@@ -209,18 +209,23 @@ export class CodeTool implements PointerTool {
    *  flows through without touching index.css. */
   private setCSSVars(container: HTMLDivElement, fontSize: number, scale: number, lineNumbers = true): void {
     const s = container.style;
-    // Layout (px)
+    const pl = padLeft(fontSize) * scale;
+    // Layout (px) — single padLeft constant for chrome, gutter indent, and content.
+    // `--c-gg` is the extra gutter→content separation (lines-on only), painted as
+    // right-padding inside `.cm-gutterElement` so the active-line gutter highlight
+    // covers it continuously up to the code line.
     s.setProperty('--c-pt', `${padTop(fontSize) * scale}px`);
     s.setProperty('--c-pb', `${padBottom(fontSize) * scale}px`);
     s.setProperty('--c-pr', `${padRight(fontSize) * scale}px`);
+    s.setProperty('--c-cl', `${pl}px`);
     if (lineNumbers) {
-      s.setProperty('--c-gl', `${padLeft(fontSize) * scale}px`);
-      s.setProperty('--c-gr', `${gutterPad(fontSize) * scale}px`);
+      s.setProperty('--c-gi', `${pl}px`);
       s.setProperty('--c-gw', `${2 * charWidth(fontSize) * scale}px`);
+      s.setProperty('--c-gg', `${gutterGap(fontSize) * scale}px`);
     } else {
-      s.setProperty('--c-gl', '0px');
-      s.setProperty('--c-gr', `${padLeft(fontSize) * scale}px`);
-      s.setProperty('--c-gw', '0px');
+      s.removeProperty('--c-gi');
+      s.removeProperty('--c-gw');
+      s.removeProperty('--c-gg');
     }
     // Play button — sized to fontSize. CSS positions the SVG absolutely via
     // `calc(50% - var(--c-tri-w) / 3)` so the triangle centroid (at W/3 of its

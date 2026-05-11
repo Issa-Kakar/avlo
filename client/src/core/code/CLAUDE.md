@@ -94,7 +94,7 @@ All padding is a ratio of `fontSize`:
 ```
 padTop(fs)    = fs * 1.5          padBottom(fs) = fs * 1.5
 padLeft(fs)   = fs * 1.0          padRight(fs)  = fs * 0.85
-gutterPad(fs) = fs * 2.2
+gutterGap(fs) = fs * 0.5
 
 totalWidth  = stored width field (set at creation from getDefaultWidth)
 totalHeight = padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)
@@ -102,6 +102,13 @@ totalHeight = padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)
 charWidth(fs)  = fs * getMinCharWidthRatio('JetBrains Mono')  (from text-system cache)
 lineHeight(fs) = fs * 1.5
 ```
+
+`padLeft` is the single horizontal-pad constant for chrome left inset (header
+/ output), gutter internal indent, AND content left padding. `gutterGap` is
+an additional half-`fs` separator between the gutter and code text (lines-on
+only) — small enough to feel like part of the gutter, large enough that the
+eye reads "numbers / code" as two distinct columns. Painted inside the
+gutter element so the active-line gutter highlight covers it continuously.
 
 **Chrome sizing** (header bar + output panel):
 ```
@@ -122,8 +129,8 @@ blockHeight(layout, fs, headerVisible, outputVisible, output) =
 
 Gutter width = `maxDigits * charWidth(fs)`, where `maxDigits = max(2, String(sourceLineCount).length)`.
 Content left offset = `contentLeft(digits, fs, lineNumbers)`:
-- `lineNumbers=true`: `padLeft(fs) + gutterWidth + gutterPad(fs)`
-- `lineNumbers=false`: `padLeft(fs)` — gutter space becomes content space, block width unchanged
+- `lineNumbers=true`: `padLeft + gutterWidth + gutterGap + padLeft` — `padLeft` on both sides of the gutter (chrome / content padding both stay = `padLeft`); `gutterGap` is the dedicated breathing room between the line numbers' right edge and the code text's left edge
+- `lineNumbers=false`: `padLeft(fs)` — content padding-left only (no gutter element, no gap)
 
 `borderRadius(fs)` = `fs * 0.85` — fontSize-proportional.
 
@@ -461,15 +468,20 @@ Position via `worldToClient(origin)` → `left/top` in CSS px.
 |---------|-------|---------|
 | `--c-pt` | `padTop(fs) * scale` px | `.cm-scroller` paddingTop |
 | `--c-pb` | `padBottom(fs) * scale` px | `.cm-scroller` paddingBottom |
-| `--c-gl` | `padLeft(fs) * scale` px | `.cm-gutters` paddingLeft |
-| `--c-gr` | `gutterPad(fs) * scale` px | `.cm-line` padding-left (gutter-to-content gap) |
+| `--c-cl` | `padLeft(fs) * scale` px | `.cm-line` padding-left (always present — content padding) |
+| `--c-gi` | `padLeft(fs) * scale` px | `.cm-gutterElement` padding-left (gutter internal indent — line numbers stop here from block edge) |
+| `--c-gg` | `gutterGap(fs) * scale` px | `.cm-gutterElement` padding-right (gutter→content visual gap, painted inside the gutter element so `.cm-activeLineGutter` covers it) |
 | `--c-pr` | `padRight(fs) * scale` px | `.cm-line` padding-right |
-| `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth |
+| `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth content area (added to `--c-gi + --c-gg` for total min-width) |
 | `--c-btn-size` | `fs * scale` px | `.code-run-btn` width + height (circle diameter = `fs`) |
 | `--c-tri-w` | `playButtonGeom(fs).triW * scale` px | `.code-run-btn > svg` width + centroid horizontal offset |
 | `--c-tri-h` | `playButtonGeom(fs).triH * scale` px | `.code-run-btn > svg` height + centroid vertical offset |
 
-**Layout — lineNumbers OFF:** `--c-gl` = `0px`, `--c-gw` = `0px`, `--c-gr` = `padLeft(fs) * scale` px (provides block left indent via `.cm-line` padding since CM removes `.cm-gutters` entirely when the `lineNumbers` extension is absent).
+`--c-cl` and `--c-gi` are emitted as the same `padLeft(fs) * scale` px value
+— different CSS vars only for clarity on which selector consumes which.
+`--c-gg` is a smaller separate value for the gutter→content gap.
+
+**Layout — lineNumbers OFF:** `--c-cl` stays set (content padding still applies and gives the block its left indent); `--c-gi`, `--c-gw`, and `--c-gg` are removed since CM strips `.cm-gutters` entirely when the `lineNumbers` extension is absent. The `var(--c-gg, 0px)` fallback in the gutter-element rule ensures correct behavior even if a future regression sets the gutter visible without `--c-gg`.
 
 **Chrome colors (from `THEME.chrome.*`):**
 | CSS var | Source | Used by |
@@ -486,9 +498,26 @@ Position via `worldToClient(origin)` → `left/top` in CSS px.
 
 Vertical padding (`--c-pt`, `--c-pb`) is on `.cm-scroller`, not `.cm-content`. CM's `viewState.measure()` reads `contentDOM` padding with `parseInt()`, which truncates fractional px values, causing gutter-content vertical misalignment. Placing padding on the scroller avoids this.
 
-### Gutter-Content Gap: Line, Not Gutters
+### Content Padding & Gutter Gap — Where the Spaces Live
 
-The gutter-to-content gap (`--c-gr`, `gutterPad`) is applied as `padding-left` on `.cm-line`, not as `padding-right` on `.cm-gutters` or `.cm-gutterElement`. CM6's base theme sets `box-sizing: border-box` on `.cm-gutterElement`, which absorbs padding into the element's box without propagating it to push `.cm-content` rightward. Placing the gap on `.cm-line` ensures correct alignment AND makes `.cm-activeLine` background cover the gap area seamlessly (no highlight discontinuity between gutter and content).
+`.cm-content` itself has `padding: 0`. The horizontal whitespace around code
+text lives in three places (all painted inside elements whose backgrounds
+extend with the active-line highlight, so the highlight is continuous):
+
+1. **`.cm-gutterElement` padding-left = `--c-gi`** — internal indent of the
+   gutter from the block-left edge. Line numbers (right-aligned in the
+   content area) sit at `gutterIndent + gutterWidth` from the block edge.
+2. **`.cm-gutterElement` padding-right = `--c-gg`** — gutter→content gap,
+   half-`fs` wide. Painted inside the gutter element so
+   `.cm-activeLineGutter` covers it as part of the gutter highlight,
+   eliminating any seam between numbers and code line.
+3. **`.cm-line` padding-left = `--c-cl`** — code content padding (always
+   present). Painted inside `.cm-line` so `.cm-activeLine` covers it.
+
+`box-sizing: border-box` is set explicitly on the gutter element to defend
+against any future CM base-theme regression — its background-painted
+padding-box reaches the block left edge, so `.cm-activeLineGutter` highlight
+naturally extends across all three regions without any negative-margin trick.
 
 ### `positionEditor()`
 
@@ -555,7 +584,7 @@ Lazy-loaded via `getCodeMirrorExtensions()` (cached after first call). Two exten
 ### Editor State Extensions (set at mount)
 
 - `lineNumbers()` in `Compartment` — `formatNumber` callback pads with spaces to match canvas digit reservation. When `lineNumbers=false`, compartment holds empty `[]` (CM removes `.cm-gutters` entirely). Dynamically reconfigurable via `switchLineNumbers()`
-- `highlightActiveLine()` + `highlightActiveLineGutter()` — continuous active line highlight. `.cm-activeLineGutter` uses negative `marginLeft` + `paddingLeft` (both `var(--c-gl)`) to extend the highlight background to the block's left edge
+- `highlightActiveLine()` + `highlightActiveLineGutter()` — continuous active line highlight. Active highlights reach the block left edge AND cross the gutter→content gap naturally because `.cm-gutterElement`'s border-box background covers its own `--c-gi` indent + `--c-gg` gap, and `.cm-line`'s border-box background covers its own `--c-cl` padding — no negative-margin trick needed
 - `EditorView.lineWrapping` — enables CM's native word-wrapping
 - `bracketMatching()` — highlights matching bracket pairs (cyan outline) and mismatches (red outline)
 - `closeBrackets()` — auto-closes brackets, quotes, template literals; `closeBracketsKeymap` for Backspace pair-deletion
