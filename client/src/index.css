@@ -235,13 +235,22 @@ html {
 .code-run-btn {
   flex-shrink: 0;
   border: none;
-  cursor: default;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 0;
+  position: relative;
   border-radius: 50%;
   pointer-events: none;
+  width: var(--c-btn-size);
+  height: var(--c-btn-size);
+}
+.code-run-btn > svg {
+  position: absolute;
+  /* Triangle path (M0 0L17 10L0 20Z) has its centroid at (W/3, H/2) of its
+     bounding box. Shift the SVG so the centroid lands on the button center —
+     mirrors canvas `triX = btnCx - triW/3` (see playButtonGeom). */
+  left: calc(50% - var(--c-tri-w) / 3);
+  top: calc(50% - var(--c-tri-h) / 2);
+  width: var(--c-tri-w);
+  height: var(--c-tri-h);
 }
 .code-output {
   font-family: "JetBrains Mono", monospace;

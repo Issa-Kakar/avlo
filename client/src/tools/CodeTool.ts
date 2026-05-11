@@ -222,6 +222,13 @@ export class CodeTool implements PointerTool {
       s.setProperty('--c-gr', `${padLeft(fontSize) * scale}px`);
       s.setProperty('--c-gw', '0px');
     }
+    // Play button — sized to fontSize. CSS positions the SVG absolutely via
+    // `calc(50% - var(--c-tri-w) / 3)` so the triangle centroid (at W/3 of its
+    // bbox) lands on the button center, matching canvas's `triX = btnCx - triW/3`.
+    const { triW, triH } = playButtonGeom(fontSize);
+    s.setProperty('--c-btn-size', `${fontSize * scale}px`);
+    s.setProperty('--c-tri-w', `${triW * scale}px`);
+    s.setProperty('--c-tri-h', `${triH * scale}px`);
     // Chrome colors — index.css rules read `var(--c-*, <hex fallback>)`.
     s.setProperty('--c-bg', THEME.chrome.bg);
     s.setProperty('--c-sep', THEME.chrome.sep);
@@ -739,13 +746,11 @@ export class CodeTool implements PointerTool {
 
     const playBtn = document.createElement('button');
     playBtn.className = 'code-run-btn';
-    playBtn.style.width = `${fs * scale}px`;
-    playBtn.style.height = `${fs * scale}px`;
     playBtn.style.background = THEME.chrome.playBg;
-    const { triW, triH } = playButtonGeom(fs);
-    const triWpx = triW * scale;
-    const triHpx = triH * scale;
-    playBtn.innerHTML = `<svg viewBox="0 0 17 20" width="${triWpx}px" height="${triHpx}px"><path d="M0 0L17 10L0 20Z" fill="${THEME.chrome.playGreen}"/></svg>`;
+    // Size + SVG positioning come from --c-btn-size / --c-tri-w / --c-tri-h on
+    // the container (set in setCSSVars, refreshed on every positionEditor).
+    // viewBox `0 0 17 20` matches triW:triH = 0.85:1.
+    playBtn.innerHTML = `<svg viewBox="0 0 17 20"><path d="M0 0L17 10L0 20Z" fill="${THEME.chrome.playGreen}"/></svg>`;
 
     header.appendChild(input);
     header.appendChild(playBtn);

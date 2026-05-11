@@ -180,7 +180,7 @@ Consumers:
 
 ### Run Button — Geometry Helper
 
-`playButtonGeom(fontSize) → { btnR, triW, triH, triXOffset }` in `code-tokens.ts` is the single source of truth for the play-button triangle. Both the canvas renderer (`renderCodeLayout`'s header section) and the DOM SVG (`createHeaderDiv` in `CodeTool.ts`) read from it, so the two stay pixel-aligned at every zoom. Triangle is centroid-balanced — `triXOffset = triW / 3` shifts the triangle so its geometric centroid sits at `btnCx`. SVG path `M0 0L17 10L0 20Z` (viewBox `0 0 17 20`, aspect ratio 17:20 = 0.85) maps cleanly to the canvas triangle's `triW : triH = 0.85 : 1`. SVG fill is `THEME.chrome.playGreen`; circle background is `THEME.chrome.playBg`.
+`playButtonGeom(fontSize) → { btnR, triW, triH, triXOffset }` in `code-tokens.ts` is the single source of truth for the play-button triangle. The canvas renderer reads `triXOffset = triW / 3` to draw the triangle centroid-balanced on `btnCx`. The DOM editor consumes the same numbers through CSS vars set by `CodeTool.setCSSVars` (`--c-btn-size = fs * scale`, `--c-tri-w = triW * scale`, `--c-tri-h = triH * scale`) so `positionEditor()` updates flow automatically on every zoom. `.code-run-btn > svg` is `position: absolute` with `left: calc(50% - var(--c-tri-w) / 3); top: calc(50% - var(--c-tri-h) / 2);` — a direct CSS translation of the canvas `triX = btnCx - triW/3, triY_top = btnCy - triH/2`, so the SVG triangle's centroid lands on the button center (NOT the SVG's visual center — those differ by `triW/6` because the triangle's centroid sits at `triW/3`, not `triW/2`). SVG path `M0 0L17 10L0 20Z` (viewBox `0 0 17 20`, aspect 17:20 = 0.85) matches the canvas triangle's `triW:triH = 0.85:1`. SVG fill is `THEME.chrome.playGreen`; circle background is `THEME.chrome.playBg` (both set inline at creation).
 
 ### Token Colors — Two-Tier Keywords (CoolGlow values)
 | S Enum | Hex | Semantic | Examples |
@@ -403,6 +403,9 @@ Position via `worldToClient(origin)` → `left/top` in CSS px.
 | `--c-gr` | `gutterPad(fs) * scale` px | `.cm-line` padding-left (gutter-to-content gap) |
 | `--c-pr` | `padRight(fs) * scale` px | `.cm-line` padding-right |
 | `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth |
+| `--c-btn-size` | `fs * scale` px | `.code-run-btn` width + height (circle diameter = `fs`) |
+| `--c-tri-w` | `playButtonGeom(fs).triW * scale` px | `.code-run-btn > svg` width + centroid horizontal offset |
+| `--c-tri-h` | `playButtonGeom(fs).triH * scale` px | `.code-run-btn > svg` height + centroid vertical offset |
 
 **Layout — lineNumbers OFF:** `--c-gl` = `0px`, `--c-gw` = `0px`, `--c-gr` = `padLeft(fs) * scale` px (provides block left indent via `.cm-line` padding since CM removes `.cm-gutters` entirely when the `lineNumbers` extension is absent).
 
@@ -456,8 +459,17 @@ Called on every zoom/pan change (`onViewChange()`). Updates ALL dimensional prop
 }
 .code-title::placeholder { color: var(--c-placeholder, #e0e0e060); }
 .code-run-btn {
-  flex-shrink: 0; border: none; border-radius: 50%; pointer-events: none;
-  display: flex; align-items: center; justify-content: center; padding: 0;
+  flex-shrink: 0; border: none; padding: 0; position: relative;
+  border-radius: 50%; pointer-events: none;
+  width: var(--c-btn-size); height: var(--c-btn-size);
+}
+.code-run-btn > svg {
+  /* SVG is absolute-positioned (NOT flex-centered) so the triangle's centroid
+     — which sits at triW/3, not triW/2 — lands on the button center. */
+  position: absolute;
+  left: calc(50% - var(--c-tri-w) / 3);
+  top:  calc(50% - var(--c-tri-h) / 2);
+  width: var(--c-tri-w); height: var(--c-tri-h);
 }
 .code-output { font-family: 'JetBrains Mono', monospace; overflow: hidden; box-sizing: border-box; }
 .code-output-label { color: var(--c-output-label, #e0e0e090); font-weight: 450; }
@@ -528,7 +540,7 @@ The async CM import window (~500ms cold) used to fall between `appendChild(conta
 
 ### Header DOM Lifecycle
 
-`createHeaderDiv(container, y, fs, scale)`: Creates flex div with title input + play button. Title input reads `y.get('title') ?? "Untitled"` (uses `??` to preserve empty string). Play button: circle bg `#4ADE8035`, green triangle SVG `#4ADE80`, `pointer-events: none` (decorative). The SVG's `width`/`height` are computed from `playButtonGeom(fs)` × scale so the DOM SVG matches the canvas triangle pixel-for-pixel during edit.
+`createHeaderDiv(container, y, fs, scale)`: Creates flex div with title input + play button. Title input reads `y.get('title') ?? "Untitled"` (uses `??` to preserve empty string). Play button: circle bg `#4ADE8035`, green triangle SVG `#4ADE80`, `pointer-events: none` (decorative). The button width/height and SVG geometry are driven entirely by `--c-btn-size` / `--c-tri-w` / `--c-tri-h` on the container — `createHeaderDiv` sets no inline sizes, so `setCSSVars` (called on every `positionEditor`) keeps the DOM SVG pixel-aligned with the canvas triangle at every zoom.
 
 **Title input events:**
 - **Blur:** Calls `saveTitle()` to persist
