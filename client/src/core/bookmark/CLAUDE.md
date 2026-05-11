@@ -49,7 +49,7 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
 | `client/src/lib/bookmark/bookmark-unfurl.ts` | Lifecycle coordinator: pending map, worker commands, atomic Y.Doc writes, placeholder management |
 | `client/src/lib/bookmark/bookmark-placeholder.ts` | HTML loading elements: spinner + domain label, camera-tracked positioning |
 | `worker/src/unfurl.ts` | Cloudflare Worker: Zod validation, SSRF guard, HTMLRewriter parse, image fetch/R2 store, edge cache |
-| `packages/shared/src/utils/url-utils.ts` | `normalizeUrl()`, `isValidHttpUrl()`, `extractDomain()` |
+| `packages/shared/src/utils/url-utils.ts` | `normalizeUrl()`, `isValidHttpUrl()`, `extractDomain()`, `prettifyDomain()` |
 | `packages/shared/src/accessors/object-accessors.ts` | `getBookmarkProps()`, `getBookmarkUrl()` — typed Y.Map accessors |
 | `packages/shared/src/utils/image-validation.ts` | `validateImage()`, `parseImageDimensions()` — binary header parsing for width/height |
 
@@ -226,7 +226,7 @@ No pending/failed visual states — layout determined purely by which metadata f
 ├──────────────────────────────┤
 │ Title (bold 14px)            │  ← Max 2 lines, ellipsis (if present)
 │ Description (12px gray)      │  ← Max 3 lines, ellipsis (if present)
-│ 🔗 domain.com               │  ← Favicon 18×18 + domain text
+│ 🔗 Github                    │  ← Favicon 18×18 + prettified site name (13px black)
 └──────────────────────────────┘
 ```
 
@@ -235,9 +235,11 @@ No pending/failed visual states — layout determined purely by which metadata f
 ┌──────────────────────────────┐
 │ Title (bold 14px)            │
 │ Description (12px gray)      │
-│ 🔗 domain.com    [Open ↗]   │  ← 78×28 button right-aligned in domain row
+│ 🔗 Github         [Open ↗]   │  ← 78×28 button right-aligned in favicon row
 └──────────────────────────────┘
 ```
+
+Title and description sections are separated by a `SECTION_GAP` (6wu); the same gap precedes the favicon row when any text is present.
 
 ### Shadow + Body
 
@@ -275,9 +277,9 @@ Placeholder `#f5f5f5` rect while bitmap loading.
 - **Full card:** overlaid on OG image, `OPEN_BTN_MARGIN` (10wu) from bottom-right of image area
 - **Text card:** right-aligned in domain row, vertically centered with favicon
 
-### Favicon
+### Favicon + Display Name
 
-18×18wu. Drawn via `getBitmap(props.faviconAssetId)` from `image-manager.ts`. Positioned at left edge of domain row, 6px spacing before domain text. Domain text color `#6b7280` (hover: `#2563eb`).
+18×18wu favicon drawn via `getBitmap(props.faviconAssetId)` from `image-manager.ts`. Positioned at left edge of the favicon row, 6wu gap before the display name. The display name is the prettified site name (`prettifyDomain(domain)` → "Github", "Excalidraw", …), rendered in 13px regular Inter, black (`#1a1a1a`). It is **not** a link — no hover state, no click target. The prettified form is computed once per layout-cache fill and stored on `BookmarkLayout.displayDomain`.
 
 ### Layout Cache
 
@@ -288,53 +290,49 @@ interface BookmarkLayout {
   totalHeight: number;        // Computed total card height
   hasOgImage: boolean;        // OG image available (!!ogImageAssetId)
   ogDisplayH: number;         // Clamped display height [70, 250]
-  domainTextWidth: number;    // Measured domain text width (for hit-test bounds)
+  displayDomain: string;      // Prettified site name (prettifyDomain(domain))
 }
 ```
 
-Module-level `Map<string, BookmarkLayout>` keyed by object ID. Computed on first render via `getLayout(id, props)` using a singleton `OffscreenCanvas` context for `measureText()`.
+Module-level `Map<string, BookmarkLayout>` keyed by object ID. Computed on first render via `getLayout(id, props)`. **Text measurement uses the shared `measureTextCached()` from `core/text/text-system.ts`** — same offscreen canvas and font-state cache as text/note layout, no duplicate measurement context. `buildLayout(data)` is the single source of truth: cache wrapper (`getLayout`) and one-shot height path (`computeBookmarkHeight`) both call it.
+
+**Text wrapping** (`wrapText`) is robust against oversized single tokens: a word wider than the card character-breaks across as many lines as needed (subject to `maxLines`), so a long URL/hash inside a title can never overflow. Truncation uses binary search on prefix width, and char-break / truncation both clamp to UTF-16 surrogate-pair boundaries.
 
 **Invalidation:**
-- `invalidateBookmarkLayout(id)` — on object deletion (called from `room-doc-manager.ts`)
-- `clearBookmarkLayouts()` — full cache clear (called from `room-doc-manager.ts` on destroy + full rebuild)
+- `bookmarkCache.evict(id)` — on object deletion (called from `renderer/object-cache.ts`)
+- `bookmarkCache.clear()` — full cache clear (called from `renderer/object-cache.ts` on room teardown)
 - Layout auto-recomputes on next render when Y.Map properties change (title, description, assets arrive via unfurl)
 
 ### Height Computation
 
 ```typescript
-// Height formulas:
-Full:      ogDisplayH + CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING
-Text:      CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING
-Defensive: CARD_PADDING + domainLineH + CARD_PADDING
+// Height formulas (titleToDesc + textToDomain inserted iff the adjacent sections are non-empty):
+Full:      ogDisplayH + CARD_PADDING + titleH + titleToDesc + descH + textToDomain + FAVICON_SIZE + CARD_PADDING
+Text:      CARD_PADDING + titleH + titleToDesc + descH + textToDomain + FAVICON_SIZE + CARD_PADDING
+Defensive: CARD_PADDING + FAVICON_SIZE + CARD_PADDING
 
 // Where:
-titleH      = titleLines.length * TITLE_LINE_H   (19px per line)
-descH       = descLines.length * DESC_LINE_H     (16px per line)
-domainLineH = DOMAIN_FONT_SIZE + 12              (23px)
+titleH       = titleLines.length * TITLE_LINE_H   (19px per line)
+descH        = descLines.length * DESC_LINE_H     (16px per line)
+titleToDesc  = SECTION_GAP if (titleLines && descLines) else 0
+textToDomain = SECTION_GAP if (titleLines || descLines) else 0
+FAVICON_SIZE = 18                                  (favicon row height)
 ```
 
-`computeBookmarkHeight(data)` is called before Y.Doc write (to set frame height). Does NOT use the layout cache — computes independently.
+`computeBookmarkHeight(data)` is called before Y.Doc write (to set frame height). Delegates to the same `buildLayout(data)` used by `getLayout` — no duplicate wrap/measure path.
 
 ### Hit-Test Helpers (for future click interactions)
 
 Exported types and functions for external hit testing of interactive regions:
 
 ```typescript
-type BookmarkHoverTarget = 'button' | 'link';
-
 interface LocalRect { lx: number; ly: number; lw: number; lh: number }
 
-// Public layout accessor (delegates to internal cache)
-getBookmarkLayout(id, props, cardWidth?) → BookmarkLayout
-
-// Frame-local bounds of the "Open" button (full card: on OG image; text card: in domain row)
+// Frame-local bounds of the "Open" button (full card: on OG image; text card: in favicon row)
 getOpenButtonLocalBounds(layout, cardWidth) → LocalRect
-
-// Frame-local bounds of the domain text (for link click detection)
-getDomainLinkLocalBounds(layout, cardWidth, hasFavicon) → LocalRect
 ```
 
-All coordinates are **frame-local** (relative to bookmark frame origin). Convert to world coords by adding `frame[0]`/`frame[1]`. These entry points are preparation for click-to-open and link navigation — not yet wired into SelectTool.
+Coordinates are **frame-local** (relative to bookmark frame origin). Convert to world coords by adding `frame[0]`/`frame[1]`. The Open button is not yet wired into SelectTool. The prettified display name is plain text — it has no hit-test bounds.
 
 ---
 
@@ -492,7 +490,7 @@ Bookmarks are connectable objects — rect frame, always treated as filled.
 ### Room Doc Manager (`room-doc-manager.ts`)
 - Hydration: standard `computeBBoxFor()` (frame-based with shadow padding)
 - Observer: bbox recomputes on any Y.Map property change
-- Deletion: `invalidateBookmarkLayout(id)`
+- Deletion: `bookmarkCache.evict(id)` via `removeObjectCaches`
 
 ### Canvas Runtime (`CanvasRuntime.ts`)
 - `stop()` calls `cleanupOnRoomTeardown()` (clears placeholders + pending map)
@@ -510,25 +508,27 @@ No changes needed. `/api/assets/*` cache-first handles OG images and favicons. `
 ## Constants
 
 ```
-BOOKMARK_WIDTH    = 300       Card width (fixed)
-CARD_PADDING      = 14        Inner padding
-MIN_OG_H          = 70        Minimum OG image display height
-MAX_OG_H          = 250       Maximum OG image display height
-TITLE_FONT_SIZE   = 14        Bold Inter
-DESC_FONT_SIZE    = 12        Regular Inter
-DOMAIN_FONT_SIZE  = 11        Regular Inter, #6b7280 (hover: #2563eb)
-TITLE_LINE_H      = 19        Title line height
-DESC_LINE_H       = 16        Description line height
-TITLE_MAX_LINES   = 2
-DESC_MAX_LINES    = 3
-FAVICON_SIZE      = 18        18×18
-CARD_FILL         = '#FFFFFF'
-CARD_RADIUS       = 8
-OPEN_BTN_W        = 78        Open button width
-OPEN_BTN_H        = 28        Open button height
-OPEN_BTN_RADIUS   = 6         Open button border radius
-OPEN_BTN_MARGIN   = 10        Margin from card edges
-PLACEHOLDER_H     = 48        HTML placeholder height (width = BOOKMARK_WIDTH)
+BOOKMARK_WIDTH     = 300       Card width (fixed)
+CARD_PADDING       = 14        Inner padding
+SECTION_GAP        = 6         Gap between title/description/favicon-row sections
+MIN_OG_H           = 70        Minimum OG image display height
+MAX_OG_H           = 250       Maximum OG image display height
+TITLE_FONT_SIZE    = 14        Bold Inter, #1a1a1a
+DESC_FONT_SIZE     = 12        Regular Inter, #6b7280
+DISPLAY_FONT_SIZE  = 13        Regular Inter, #1a1a1a (prettified site name)
+TITLE_LINE_H       = 19        Title line height
+DESC_LINE_H        = 16        Description line height
+TITLE_MAX_LINES    = 2
+DESC_MAX_LINES     = 3
+FAVICON_SIZE       = 18        18×18; also the favicon-row height
+FAVICON_GAP        = 6         Gap between favicon and display name
+CARD_FILL          = '#FFFFFF'
+CARD_RADIUS        = 8
+OPEN_BTN_W         = 78        Open button width
+OPEN_BTN_H         = 28        Open button height
+OPEN_BTN_RADIUS    = 6         Open button border radius
+OPEN_BTN_MARGIN    = 10        Margin from card edges
+PLACEHOLDER_H      = 48        HTML placeholder height (width = BOOKMARK_WIDTH)
 ```
 
 ---
@@ -551,7 +551,7 @@ PLACEHOLDER_H     = 48        HTML placeholder height (width = BOOKMARK_WIDTH)
 
 ## NOT Implemented
 
-- **Link open on click** — "Open" button and domain link have hit-test bounds exported (`getOpenButtonLocalBounds`, `getDomainLinkLocalBounds`) but no navigation wired yet
+- **Open button click + hover-only visibility** — `getOpenButtonLocalBounds` is exported and the button accepts a `hovered` flag, but no hover tracking, no hit testing, and no navigation wiring yet. The button is drawn always for now
 - **Double-click behavior** — no editing mode (bookmarks are not editable)
 - **Context menu actions** — no bookmark-specific toolbar bar
 - **Re-unfurl** — no way to retry from UI (failures are final → text object)

@@ -40,3 +40,47 @@ export function extractDomain(url: string): string {
     return '';
   }
 }
+
+const TWO_SEGMENT_TLDS = new Set([
+  'co.uk',
+  'co.jp',
+  'co.in',
+  'co.nz',
+  'co.kr',
+  'co.za',
+  'com.au',
+  'com.br',
+  'com.mx',
+  'com.tr',
+  'com.sg',
+  'ac.uk',
+  'org.uk',
+  'ne.jp',
+  'or.jp',
+]);
+
+/**
+ * Turn a hostname into a human-readable site name.
+ *   github.com           → "Github"
+ *   excalidraw.com       → "Excalidraw"
+ *   docs.github.com      → "Github"
+ *   play.google.com      → "Google"
+ *   amazon.co.uk         → "Amazon"
+ *   news.ycombinator.com → "Ycombinator"
+ */
+export function prettifyDomain(domain: string): string {
+  if (!domain) return '';
+  const parts = domain.split('.');
+  if (parts.length === 1) return capitalize(parts[0]);
+  let labelIdx = parts.length - 2;
+  if (parts.length >= 3) {
+    const lastTwo = parts[parts.length - 2] + '.' + parts[parts.length - 1];
+    if (TWO_SEGMENT_TLDS.has(lastTwo)) labelIdx = parts.length - 3;
+  }
+  if (labelIdx < 0) labelIdx = 0;
+  return capitalize(parts[labelIdx]);
+}
+
+function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s;
+}
