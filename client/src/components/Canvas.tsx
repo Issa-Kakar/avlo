@@ -52,7 +52,7 @@ export const Canvas: React.FC<CanvasProps> = ({ className }) => {
 
   return (
     <>
-      <div ref={containerRef} className="relative w-full h-full overflow-hidden" style={{ backgroundColor: '#FFFFFF' }}>
+      <div ref={containerRef} className="relative w-full h-full overflow-hidden" style={{ backgroundColor: '#fafafa' }}>
         <canvas
           ref={baseCanvasRef}
           className={className}
@@ -64,7 +64,7 @@ export const Canvas: React.FC<CanvasProps> = ({ className }) => {
             width: '100%',
             height: '100%',
             touchAction: 'none',
-            backgroundColor: '#f8f9fa',
+            backgroundColor: '#fafafa',
           }}
         />
         <canvas

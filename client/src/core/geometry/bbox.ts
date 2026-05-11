@@ -4,7 +4,7 @@ import { BOOKMARK_WIDTH, computeBookmarkBBox } from '../bookmark/bookmark-render
 import { computeCodeBBox } from '../code/code-system';
 import { getConnectorRoute } from '../connectors/connector-router';
 import type { ConnectorCap } from '../connectors/types';
-import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
+import { computeNoteBBox, NOTE_SHADOW_BOTTOM_RATIO, NOTE_SHADOW_SIDE_RATIO, NOTE_SHADOW_TOP_RATIO, NOTE_WIDTH } from '../text/sticky-note';
 import { computeTextBBox } from '../text/text-system';
 import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
 import type { ObjectKind } from '../types/objects';
@@ -81,8 +81,10 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
       const height = (yMap.get('height') as number) ?? 60;
       const w = BOOKMARK_WIDTH * scale;
       const h = height * scale;
-      const sp = w * 0.15;
-      return [origin[0] - sp, origin[1] - sp, origin[0] + w + sp, origin[1] + h + sp];
+      const padTop = w * NOTE_SHADOW_TOP_RATIO;
+      const padSide = w * NOTE_SHADOW_SIDE_RATIO;
+      const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
+      return [origin[0] - padSide, origin[1] - padTop, origin[0] + w + padSide, origin[1] + h + padBottom];
     }
 
     case 'connector': {

@@ -1,7 +1,7 @@
 import { prettifyDomain } from '@avlo/shared';
 import { getBookmarkProps } from '../accessors';
 import { getBitmap } from '../image/image-manager';
-import { renderNoteBody } from '../text/sticky-note';
+import { NOTE_SHADOW_BOTTOM_RATIO, NOTE_SHADOW_SIDE_RATIO, NOTE_SHADOW_TOP_RATIO, getNoteCornerRadius, renderNoteBody } from '../text/sticky-note';
 import { buildFontString, measureTextCached } from '../text/text-system';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { BookmarkProps, ObjectHandle } from '../types/objects';
@@ -25,7 +25,7 @@ const DESC_MAX_LINES = 3;
 const FAVICON_SIZE = 18;
 const FAVICON_GAP = 6;
 const CARD_FILL = '#FFFFFF';
-const CARD_RADIUS = 8;
+const CARD_RADIUS = getNoteCornerRadius(BOOKMARK_WIDTH);
 const OPEN_BTN_W = 78;
 const OPEN_BTN_H = 28;
 const OPEN_BTN_RADIUS = 6;
@@ -265,13 +265,12 @@ export function computeBookmarkHeight(data: LayoutInput): number {
 // BBox + Frame
 // ---------------------------------------------------------------------------
 
-export function getBookmarkShadowPad(scale: number): number {
-  return BOOKMARK_WIDTH * scale * 0.15;
-}
-
 /**
  * Compute bbox for a bookmark from its props. Populates layout + frame caches
  * as a side effect; subsequent `getBookmarkFrame(id)` reads from the frame cache.
+ * Bbox is asymmetric — shadow extends mostly downward, so top/sides need only a
+ * thin halo while the bottom holds the long downward tail (single source of
+ * truth: NOTE_SHADOW_*_RATIO constants from sticky-note).
  */
 export function computeBookmarkBBox(id: string, props: BookmarkProps): BBoxTuple {
   getLayout(id, props);
@@ -280,8 +279,10 @@ export function computeBookmarkBBox(id: string, props: BookmarkProps): BBoxTuple
   const h = props.height * s;
   const frame: FrameTuple = [props.origin[0], props.origin[1], w, h];
   bookmarkFrameCache.set(id, frame);
-  const sp = getBookmarkShadowPad(s);
-  return [frame[0] - sp, frame[1] - sp, frame[0] + w + sp, frame[1] + h + sp];
+  const padTop = w * NOTE_SHADOW_TOP_RATIO;
+  const padSide = w * NOTE_SHADOW_SIDE_RATIO;
+  const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
+  return [frame[0] - padSide, frame[1] - padTop, frame[0] + w + padSide, frame[1] + h + padBottom];
 }
 
 export function getBookmarkFrame(id: string): FrameTuple | null {

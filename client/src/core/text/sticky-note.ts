@@ -41,8 +41,14 @@ export const NOTE_WIDTH = 125;
 export const NOTE_FILL_COLOR = '#FEF3AC';
 
 const NOTE_PADDING_RATIO = 20 / 280;
-const NOTE_CORNER_RADIUS_RATIO = 0.011;
-const NOTE_SHADOW_PAD_RATIO = 0.15;
+const NOTE_CORNER_RADIUS_RATIO = 0.06;
+// Asymmetric shadow pads — the shadow is directional (mostly downward), so
+// top/sides need only a small halo while the bottom contains the downward tail.
+// Cache canvas, bbox, and visible halo extent all key off these. Exported so
+// bookmarks track the exact same ratios (dirty-rect invariant).
+export const NOTE_SHADOW_TOP_RATIO = 0.06; // ~7.5wu — slight halo from contact's blur tail
+export const NOTE_SHADOW_SIDE_RATIO = 0.08; // ~10wu — fits drop's gaussian tail (1.5·blur)
+export const NOTE_SHADOW_BOTTOM_RATIO = 0.15; // ~18.75wu — fits drop's blur + offset
 
 const BASE_CONTENT_WIDTH = NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO);
 const NOTE_FONT_STEPS: number[] = [
@@ -69,12 +75,18 @@ export function getNoteContentWidth(scale: number): number {
   return NOTE_WIDTH * scale * (1 - 2 * NOTE_PADDING_RATIO);
 }
 
-function getNoteCornerRadius(w: number): number {
+export function getNoteCornerRadius(w: number): number {
   return w * NOTE_CORNER_RADIUS_RATIO;
 }
 
-function getNoteShadowPad(scale: number): number {
-  return NOTE_WIDTH * scale * NOTE_SHADOW_PAD_RATIO;
+function getNoteShadowPadTop(scale: number): number {
+  return NOTE_WIDTH * scale * NOTE_SHADOW_TOP_RATIO;
+}
+function getNoteShadowPadSide(scale: number): number {
+  return NOTE_WIDTH * scale * NOTE_SHADOW_SIDE_RATIO;
+}
+function getNoteShadowPadBottom(scale: number): number {
+  return NOTE_WIDTH * scale * NOTE_SHADOW_BOTTOM_RATIO;
 }
 
 // =============================================================================
@@ -366,78 +378,117 @@ export function getNoteDerivedFontSize(objectId: string): number {
 }
 
 // =============================================================================
-// SHADOW SYSTEM — 9-slice cache
+// SHADOW SYSTEM — directional drop shadow, asymmetric cache (no slicing)
 // =============================================================================
+//
+// Real drop shadows under gravity reach long below, minimal at the sides,
+// none above. Native canvas `shadowBlur` is gaussian + isotropic, so blur
+// alone always spreads side-to-side. Two coupled knobs make the shadow
+// directional without resorting to a (canvas-unsupported) spread:
+//
+//   - small blur            keeps side spread tight
+//   - offsetY ≥ blur·1.2    pushes the gaussian's mass clearly below body
+//                           (so above-extent collapses to ~0)
+//
+// One body silhouette is filled twice — once with a wider drop shadow for
+// the downward tail, once with a tight contact shadow that touches the body
+// edge and covers any tiny gap left by drop's near edge. The same path is
+// then punched. Single roundRect path → no expanded ring → no AA stroke.
+//
+// Cache canvas is asymmetric: top/sides hold the small halo, bottom holds
+// the long downward extent. Saves cache memory and keeps bbox tight.
+//
+// Per-dimension LRU, max 16 entries. Notes always render at (125,125) → 1
+// entry shared forever. Bookmarks render at (300, height) → one per unique
+// height. Cleared on DPR change.
 
-interface ShadowCache {
-  canvas: OffscreenCanvas;
-  padPx: number;
-  rectPx: number;
-  dpr: number;
-}
+const SHADOW_CACHE_MAX = 16;
+const _shadowCache = new Map<string, OffscreenCanvas>();
+let _shadowCacheDpr = 0;
 
-let _shadowCache: ShadowCache | null = null;
+// All ratios of body width — proportions hold across note (125wu) and bookmark
+// (300wu). Drop: visible extent below ≈ blur·1.2 + offset ≈ 11 %, side ≈ 5 %,
+// above ≈ 0. Contact: anchors the shadow at the body edge so the visible halo
+// reads as connected to the body even when drop's near edge is faint.
+const SHADOW_DROP_BLUR_RATIO = 0.04;
+const SHADOW_DROP_OFFSET_RATIO = 0.06;
+const SHADOW_DROP_COLOR = 'rgba(0,0,0,0.20)';
+const SHADOW_CONTACT_BLUR_RATIO = 0.015;
+const SHADOW_CONTACT_OFFSET_RATIO = 0.012;
+const SHADOW_CONTACT_COLOR = 'rgba(0,0,0,0.10)';
 
-function ensureShadowCache(): ShadowCache {
-  const dpr = window.devicePixelRatio || 1;
-  if (_shadowCache && _shadowCache.dpr === dpr) return _shadowCache;
+function ensureShadow(w: number, h: number, dpr: number): OffscreenCanvas {
+  if (_shadowCacheDpr !== dpr) {
+    _shadowCache.clear();
+    _shadowCacheDpr = dpr;
+  }
 
-  const padPx = 100,
-    rectPx = 80;
-  const total = rectPx + 2 * padPx;
-  const radius = 5;
+  const key = `${w.toFixed(2)}|${h.toFixed(2)}`;
+  const hit = _shadowCache.get(key);
+  if (hit) {
+    // LRU touch — re-insert at the end of insertion order.
+    _shadowCache.delete(key);
+    _shadowCache.set(key, hit);
+    return hit;
+  }
 
-  const canvas = new OffscreenCanvas(total * dpr, total * dpr);
+  // Evict oldest entries until we have headroom for the new one.
+  while (_shadowCache.size >= SHADOW_CACHE_MAX) {
+    const oldest = _shadowCache.keys().next().value;
+    if (oldest === undefined) break;
+    _shadowCache.delete(oldest);
+  }
+
+  const padTop = w * NOTE_SHADOW_TOP_RATIO;
+  const padSide = w * NOTE_SHADOW_SIDE_RATIO;
+  const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
+  const totalW = w + 2 * padSide;
+  const totalH = h + padTop + padBottom;
+  const r = getNoteCornerRadius(w);
+
+  const canvas = new OffscreenCanvas(Math.ceil(totalW * dpr), Math.ceil(totalH * dpr));
   const ctx = canvas.getContext('2d')!;
   ctx.scale(dpr, dpr);
   ctx.fillStyle = '#000';
 
-  ctx.shadowColor = 'rgba(0,0,0,0.10)';
-  ctx.shadowBlur = 34;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 28;
+  // Single body path — used for both shadow casters and the punch. Identical
+  // path each time means the punch removes every black pixel deposited by the
+  // fills, leaving only the gaussian halo around the original body silhouette.
   ctx.beginPath();
-  ctx.roundRect(padPx, padPx, rectPx, rectPx, radius);
+  ctx.roundRect(padSide, padTop, w, h, r);
+
+  // Drop — the long downward tail.
+  ctx.shadowColor = SHADOW_DROP_COLOR;
+  ctx.shadowBlur = w * SHADOW_DROP_BLUR_RATIO;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = w * SHADOW_DROP_OFFSET_RATIO;
   ctx.fill();
 
-  ctx.shadowColor = 'rgba(0,0,0,0.06)';
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 3;
-  ctx.beginPath();
-  ctx.roundRect(padPx, padPx, rectPx, rectPx, radius);
+  // Contact — tight halo anchored at the body edge.
+  ctx.shadowColor = SHADOW_CONTACT_COLOR;
+  ctx.shadowBlur = w * SHADOW_CONTACT_BLUR_RATIO;
+  ctx.shadowOffsetY = w * SHADOW_CONTACT_OFFSET_RATIO;
   ctx.fill();
 
+  // Punch the body — removes every opaque fill pixel, leaving only the halo.
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
-  ctx.shadowOffsetX = 0;
   ctx.shadowOffsetY = 0;
   ctx.globalCompositeOperation = 'destination-out';
-  ctx.beginPath();
-  ctx.roundRect(padPx - 1, padPx - 1, rectPx + 2, rectPx + 2, radius);
   ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
 
-  _shadowCache = { canvas, padPx, rectPx, dpr };
-  return _shadowCache;
+  _shadowCache.set(key, canvas);
+  return canvas;
 }
 
 function drawNoteShadow(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
-  const sc = ensureShadowCache();
-  const d = sc.dpr;
-  const sp = sc.padPx * d;
-  const sm = sc.rectPx * d;
-  const dp = w * NOTE_SHADOW_PAD_RATIO;
-  const src = sc.canvas;
-
-  ctx.drawImage(src, 0, 0, sp, sp, x - dp, y - dp, dp, dp);
-  ctx.drawImage(src, sp, 0, sm, sp, x, y - dp, w, dp);
-  ctx.drawImage(src, sp + sm, 0, sp, sp, x + w, y - dp, dp, dp);
-  ctx.drawImage(src, 0, sp, sp, sm, x - dp, y, dp, h);
-  ctx.drawImage(src, sp + sm, sp, sp, sm, x + w, y, dp, h);
-  ctx.drawImage(src, 0, sp + sm, sp, sp, x - dp, y + h, dp, dp);
-  ctx.drawImage(src, sp, sp + sm, sm, sp, x, y + h, w, dp);
-  ctx.drawImage(src, sp + sm, sp + sm, sp, sp, x + w, y + h, dp, dp);
+  const dpr = window.devicePixelRatio || 1;
+  const canvas = ensureShadow(w, h, dpr);
+  const padTop = w * NOTE_SHADOW_TOP_RATIO;
+  const padSide = w * NOTE_SHADOW_SIDE_RATIO;
+  const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
+  ctx.drawImage(canvas, x - padSide, y - padTop, w + 2 * padSide, h + padTop + padBottom);
 }
 
 // =============================================================================
@@ -555,6 +606,8 @@ export function computeNoteBBox(objectId: string, props: NoteProps): BBoxTuple {
   getNoteLayout(objectId, content, fontFamily);
   textLayoutCache.setFrame(objectId, frame);
 
-  const sp = getNoteShadowPad(scale);
-  return [frame[0] - sp, frame[1] - sp, frame[0] + noteW + sp, frame[1] + noteW + sp];
+  const padTop = getNoteShadowPadTop(scale);
+  const padSide = getNoteShadowPadSide(scale);
+  const padBottom = getNoteShadowPadBottom(scale);
+  return [frame[0] - padSide, frame[1] - padTop, frame[0] + noteW + padSide, frame[1] + noteW + padBottom];
 }

@@ -19,7 +19,7 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 | File | Purpose |
 |------|---------|
 | `core/text/text-system.ts` | Layout engine, cache, text/label renderers, text BBox |
-| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox` |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), per-dimension shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
 | `core/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
 | `core/text/font-loader.ts` | `ensureFontsLoaded()` / `areFontsLoaded()` |
@@ -430,8 +430,8 @@ Everything derives from `NOTE_WIDTH (125) * scale`. All helpers take `scale`:
 ```typescript
 getNotePadding(scale)       -> NOTE_WIDTH * scale * NOTE_PADDING_RATIO       // ~8.9wu at scale=1
 getNoteContentWidth(scale)  -> NOTE_WIDTH * scale * (1 - 2*NOTE_PADDING_RATIO) // ~107wu at scale=1
-getNoteCornerRadius(scale)  -> NOTE_WIDTH * scale * 0.011                    // ~1.4wu at scale=1
-getNoteShadowPad(scale)     -> NOTE_WIDTH * scale * 0.15                     // ~18.8wu at scale=1
+getNoteCornerRadius(scale)  -> NOTE_WIDTH * scale * 0.06                     // ~7.5wu at scale=1
+getNoteShadowPad(scale)     -> NOTE_WIDTH * scale * NOTE_SHADOW_PAD_RATIO    // ~33.8wu at scale=1 (0.27)
 ```
 
 `NOTE_PADDING_RATIO = 20/280` (kept as `/280` so future width tweaks don't drift the visual padding feel).
@@ -441,7 +441,7 @@ getNoteShadowPad(scale)     -> NOTE_WIDTH * scale * 0.15                     // 
 | Note width/height | 125wu (always square) |
 | Content padding | ~8.9wu per side |
 | Content width/height | ~107wu (square content box) |
-| Corner radius | ~1.4wu |
+| Corner radius | ~7.5wu |
 | Shadow pad | ~18.8wu |
 
 `maxContentH = contentWidth ≈ 107` — threshold where vertical alignment transitions from centering to clamping.
@@ -571,28 +571,43 @@ Key differences from `renderTextLayout`:
 - Vertical offset via `getNoteContentOffsetY` (not baseline positioning)
 - Clips overflow at content area boundary
 
-### Shadow System — 9-Slice Cache
+### Shadow System — Directional Drop Shadow, Asymmetric Cache
 
-Dual-layer Gaussian shadow pre-rendered on DPR-scaled `OffscreenCanvas`, drawn via 8 `drawImage` calls (9-slice, center skipped).
+Real drop shadows under gravity reach *long below*, *barely on the sides*, *not above*. Native canvas `shadowBlur` is gaussian + isotropic — blur alone always spreads side-to-side. Two knobs make it directional:
 
-**Source canvas:** `(280 * dpr) x (280 * dpr)` px. Layout: `[100px pad][80px rect][100px pad]`.
+1. **Small blur (`0.04·w`)** — keeps side spread tight (~5 %).
+2. **OffsetY ≥ blur · 1.2 (`0.06·w`)** — pushes the gaussian's mass below the body. Above-extent collapses to ~0.
 
-**Dual layers** (opaque `#000` fill, body punched out with `destination-out`):
+Spread (à la CSS `box-shadow`) was tried and abandoned: the only way to fake it in canvas is to draw a wider rounded-rect fill, but then either you leave the expanded fill in (visible black ring around the body) or you punch the expanded silhouette (transparent ring around the body where the real body fill doesn't reach). Both visibly broken. Instead, a **contact layer** is filled on top of the drop layer using the *same* body path — it anchors the shadow at the body edge so the visible halo reads as connected to the body even when drop's near edge is faint.
 
-| Layer | blur | offsetY | alpha | Purpose |
-|-------|------|---------|-------|---------|
-| Floor | 34 | 28 | 0.10 | Long bottom tail, 3D lift |
-| Contact | 10 | 3 | 0.06 | Soft edge definition |
+Crucial: both layers fill the **identical** body path. The final `destination-out` punch on that same path removes every black pixel deposited by the fills, leaving only the gaussian halo. No mismatched paths → no surviving opaque pixels → no black AA stroke.
 
-Why dual-layer: single Gaussian can't produce asymmetric sticky-note shadow. Floor's large offsetY pushes it below body. Contact adds soft edges.
+Rendered on a DPR-scaled `OffscreenCanvas` with **asymmetric pad** — top/sides small, bottom large — so the cache canvas isn't wasted on transparent pixels above the body where no shadow lives. Cached by `(w, h)` in an LRU map (max 16 entries, cleared on DPR change).
 
-Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punch-out expanded 1px to eliminate anti-aliased fringe.
+| Layer | blur ratio | offsetY ratio | alpha | Visible extent below | Visible extent side |
+|-------|-----------|--------------|-------|---------------------|---------------------|
+| Drop | 0.04 | 0.06 | 0.20 | ~11 % of body width | ~5 % |
+| Contact | 0.015 | 0.012 | 0.10 | ~3 % | ~2 % |
 
-**Cache invalidation:** Auto-rebuilds on DPR change. Module-level singleton.
+**Pad ratios (single source of truth, exported from sticky-note.ts):**
 
-**Destination mapping:** Source pad (100px) -> `w * NOTE_SHADOW_PAD_RATIO` (~18.8wu at scale=1; 45wu for bookmarks at `w=300`). Source canvas is fixed-size and independent of `NOTE_WIDTH`. Inside `ctx.scale(noteScale)`, draws at base dimensions.
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `NOTE_SHADOW_TOP_RATIO` | 0.06 | Slight halo from contact's blur tail |
+| `NOTE_SHADOW_SIDE_RATIO` | 0.08 | Fits drop's gaussian tail (1.5·blur) |
+| `NOTE_SHADOW_BOTTOM_RATIO` | 0.15 | Fits drop's blur·1.5 + offset with headroom |
 
-**`renderNoteBody(ctx, x, y, w, h, fillColor)`:** `drawNoteShadow` (9-slice) + `roundRect` fill at `w * NOTE_CORNER_RADIUS_RATIO`.
+`computeNoteBBox`, `computeBookmarkBBox`, and the bookmark fallback in `bbox.ts` all read these exported constants — the dirty-rect invariant requires bbox pad ≥ painted shadow pad on every side.
+
+Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punch matches the body's `roundRect` **exactly** — because the cached canvas is sized at the body's exact dimensions, the punched silhouette aligns 1:1 with the body fill drawn next by `renderNoteBody`. No corner wedge possible.
+
+**Cache shape:**
+- Notes always render inside `ctx.scale(noteScale)` at base dimensions `(NOTE_WIDTH, NOTE_WIDTH)` → all notes share one cache entry forever.
+- Bookmarks render inside `ctx.scale(s)` at `(BOOKMARK_WIDTH, props.height)` → one entry per unique height. Typical boards have <20 distinct heights, well under the 16-entry LRU bound; oldest entries evict on overflow and re-render on next use.
+
+**Cache invalidation:** `_shadowCacheDpr` tracks the DPR — mismatch clears all entries. No per-id invalidation needed: same `(w, h)` → same shadow.
+
+**`renderNoteBody(ctx, x, y, w, h, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `w * NOTE_CORNER_RADIUS_RATIO`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge.
 
 ### Alignment System
 

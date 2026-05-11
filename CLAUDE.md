@@ -122,7 +122,7 @@ All paths relative to `client/src/` unless noted.
 | `core/connectors/binary-heap.ts` | Generic min-heap with `clear()` for reuse — A* priority queue. Single consumer: `routing-astar`. |
 | `core/connectors/constants.ts` | `SNAP_CONFIG` (CSS px), `ANCHOR_DOT_CONFIG`, `GUIDE_CONFIG` (overlay), `ROUTING_CONFIG` (world-space, stored). |
 | `core/connectors/types.ts` | Shared connector routing types (Pipeline, RouteContext, etc.) |
-| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox`. **Docs:** `core/text/CLAUDE.md` |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), per-dimension shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox`. **Docs:** `core/text/CLAUDE.md` |
 | `core/text/font-config.ts` | `FONT_FAMILIES`, `FONT_WEIGHTS` — record-keyed by CSS font-family name (zero indirection) |
 | `core/text/font-loader.ts` | `ensureFontsLoaded()` via CSS Font Loading API — awaited in `main.tsx` before canvas exists |
 | `core/text/extensions.ts` | Custom `TextCollaboration` Tiptap extension — replaces upstream to avoid UndoManager retention across short-lived editor mounts |

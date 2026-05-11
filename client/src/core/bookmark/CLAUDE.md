@@ -148,7 +148,7 @@ manageImageViewport() (per render tick):
 ```
 hydrateObjectsFromY()
   ├── Y.Map walk → ObjectHandle with kind: 'bookmark', collected into mediaHandles[]
-  ├── BBox: frame-based with shadow padding (frame[2] * 0.15)
+  ├── BBox: frame-based with shadow padding (frame[2] * NOTE_SHADOW_PAD_RATIO)
   └── hydrateImages(mediaHandles): per handle → collect ogImageAssetId + faviconAssetId at level 0 using handle.bbox
 ```
 
@@ -243,7 +243,7 @@ Title and description sections are separated by a `SECTION_GAP` (6wu); the same 
 
 ### Shadow + Body
 
-Shared with sticky notes via `renderNoteBody(ctx, x, y, w, h, CARD_FILL)` from `core/text/sticky-note.ts`. Draws 9-slice cached dual-layer Gaussian shadow + white rounded rect fill (`#FFFFFF`, corner radius computed from `w * 0.011`).
+Shared with sticky notes via `renderNoteBody(ctx, x, y, w, h, CARD_FILL)` from `core/text/sticky-note.ts`. Draws a dual-layer Gaussian shadow cached per-`(w, h)` (rendered at exact body dimensions, no slicing) + white rounded rect fill (`#FFFFFF`, corner radius `w * NOTE_CORNER_RADIUS_RATIO`). Each unique bookmark height produces one cache entry (LRU-bound). `CARD_RADIUS` (used for OG image top-corner clip) is derived from the same corner-radius ratio — keeps the OG image clip lined up with the body curve and the shared shadow silhouette at the top corners.
 
 ### OG Image Drawing
 
@@ -478,7 +478,7 @@ Bookmarks are connectable objects — rect frame, always treated as filled.
 - `computeRawGeometryBounds`: bookmark in bbox-based branch (alongside notes) — handles are at bbox positions
 
 ### BBox (`bbox.ts`)
-- `computeBookmarkBBox(id, props)` called from `computeBBoxFor()`. Frame derived from `origin + scale + height`, shadow padding `BOOKMARK_WIDTH * scale * 0.15`.
+- `computeBookmarkBBox(id, props)` called from `computeBBoxFor()`. Frame derived from `origin + scale + height`, shadow padding `BOOKMARK_WIDTH * scale * NOTE_SHADOW_PAD_RATIO` (imported from sticky-note — single source of truth for shadow halo extent).
 
 ### Object Cache (`object-cache.ts`)
 - No bookmark-specific case — bookmarks have no Path2D or ConnectorPaths geometry cache
@@ -523,7 +523,7 @@ DESC_MAX_LINES     = 3
 FAVICON_SIZE       = 18        18×18; also the favicon-row height
 FAVICON_GAP        = 6         Gap between favicon and display name
 CARD_FILL          = '#FFFFFF'
-CARD_RADIUS        = 8
+CARD_RADIUS        = getNoteCornerRadius(BOOKMARK_WIDTH)   // 18 at base width, derived from sticky-note ratio so OG image top-corner clip aligns with shared shadow-body silhouette
 OPEN_BTN_W         = 78        Open button width
 OPEN_BTN_H         = 28        Open button height
 OPEN_BTN_RADIUS    = 6         Open button border radius
