@@ -41,31 +41,28 @@ export function ensureSpansDataCap(s: CodeSpans, n: number): void {
 }
 
 // ============================================================================
-// STYLE ENUM — 14 styles incl. WHITESPACE sentinel, fits in a byte
+// STYLE ENUM — 16 styles incl. WHITESPACE sentinel, fits in a byte
 // ============================================================================
 
-/** Numeric style tokens indexed into THEME.palette / isBold. */
+/** Numeric style tokens indexed into THEME.palette. */
 export enum S {
   DEFAULT = 0,
   KEYWORD = 1,
-  DEF_KW = 2,
+  STORAGE = 2,
   MODIFIER = 3,
   STRING = 4,
   NUMBER = 5,
   COMMENT = 6,
-  FUNCTION = 7,
+  FUNCTION_DEF = 7,
   VARIABLE = 8,
   TYPE = 9,
   OPERATOR = 10,
   ATTRIBUTE = 11,
   INVALID = 12,
+  FUNCTION_CALL = 13,
+  LANG_VAR = 14,
   /** Sentinel — pure space/tab gap-fill. Renderer skips ink work entirely. */
-  WHITESPACE = 13,
-}
-
-/** Bold: only KEYWORD, DEF_KW, MODIFIER (indices 1-3). */
-export function isBold(s: number): boolean {
-  return s >= 1 && s <= 3;
+  WHITESPACE = 15,
 }
 
 // ============================================================================
@@ -73,7 +70,7 @@ export function isBold(s: number): boolean {
 // ============================================================================
 
 export interface ThemeSpec {
-  /** Index = S enum value, length = enum count. */
+  /** Index = S enum value, length = enum count (16). */
   palette: readonly string[];
   chrome: {
     bg: string;
@@ -98,22 +95,25 @@ export interface ThemeSpec {
   };
 }
 
-export const COOLGLOW_THEME: ThemeSpec = {
+// CoolGlow chrome + Sweet Dracula palette
+export const CODE_THEME: ThemeSpec = {
   palette: [
-    '#E0E0E0', // DEFAULT
-    '#2BF1DC', // KEYWORD
-    '#F8FBB1', // DEF_KW
-    '#2BF1DC', // MODIFIER
-    '#8DFF8E', // STRING
-    '#62E9BD', // NUMBER
-    '#AEAEAE', // COMMENT
-    '#A3EBFF', // FUNCTION
-    '#B683CA', // VARIABLE
-    '#60A4F1', // TYPE
-    '#2BF1DC', // OPERATOR
-    '#7BACCA', // ATTRIBUTE
-    '#FF5370', // INVALID
-    '#E0E0E0', // WHITESPACE — same as DEFAULT for defensive blind palette reads
+    '#F8F8F2', //  0 DEFAULT       — fg
+    '#FF79C6', //  1 KEYWORD       — pink
+    '#8BE9FD', //  2 STORAGE       — cyan (function/class/const/let/var/type/interface/enum/def/lambda)
+    '#FF79C6', //  3 MODIFIER      — pink (export/import/from/async/static/declare/...)
+    '#F1FA8C', //  4 STRING        — yellow
+    '#BD93F9', //  5 NUMBER        — purple (incl. true/false/null)
+    '#AEAEAE', //  6 COMMENT       — light grey (CoolGlow chrome contrast)
+    '#50FA7B', //  7 FUNCTION_DEF  — green (function defs, class names)
+    '#F8F8F2', //  8 VARIABLE      — fg (plain identifiers)
+    '#8BE9FD', //  9 TYPE          — cyan (PascalCase types, primitives, property names)
+    '#FF79C6', // 10 OPERATOR      — pink (operators, derefs, escapes inside strings)
+    '#50FA7B', // 11 ATTRIBUTE     — green (JSX attribute names)
+    '#FF5555', // 12 INVALID       — red
+    '#50FA7B', // 13 FUNCTION_CALL — green (function invocations — matches FUNCTION_DEF)
+    '#BD93F9', // 14 LANG_VAR      — purple (this/super/self, decorators, magic funcs)
+    '#F8F8F2', // 15 WHITESPACE    — mirrors DEFAULT (defensive blind palette reads)
   ],
   chrome: {
     bg: '#060521',
@@ -133,7 +133,7 @@ export const COOLGLOW_THEME: ThemeSpec = {
   },
 };
 
-export const THEME: ThemeSpec = COOLGLOW_THEME;
+export const THEME: ThemeSpec = CODE_THEME;
 
 // ============================================================================
 // CONSTANTS — sizing (font, line height, chrome ratios, limits)
@@ -272,30 +272,38 @@ export function packRunSpansInto(
 // ============================================================================
 //
 // Per-language `KwEntry[][]` indexed by identifier length. Each entry stores a
-// Uint8Array of char codes plus the final S to emit. `classifyIdent` scans the
-// length-bucket, comparing char codes — no `string.slice`, no `Set.has`
-// allocation per identifier. The keyword/def-keyword/modifier classification
-// (previously three `Set.has` per ident) collapses to one call.
+// Uint8Array of char codes, the final S to emit, and a `definesNext` flag —
+// when true (function/class/def/type/interface/enum), the sync tokenizer's
+// `lastDefIsFunc` state promotes the next identifier to S.FUNCTION_DEF
+// (green). Tables built once at module load — no runtime cost.
 //
 // Reclassifications baked at table-build time so the sync tokenizer matches
 // the lezer worker's tag-based output (no color flip on first parse arrival):
 //   - true / false / null  (JS/TS) → S.NUMBER
 //   - True / False / None  (Python) → S.NUMBER
-//   - this / super         (JS/TS) → S.VARIABLE
+//   - this / super         (JS/TS) → S.LANG_VAR (purple — Sweet Dracula's `variable.language`)
+//   - self                 (Python) → S.LANG_VAR
 
 interface KwEntry {
   codes: Uint8Array;
   style: S;
+  definesNext: boolean;
 }
 
-function buildKwTable(spec: readonly { word: string; style: S }[]): KwEntry[][] {
+interface KwSpec {
+  word: string;
+  style: S;
+  definesNext?: boolean;
+}
+
+function buildKwTable(spec: readonly KwSpec[]): KwEntry[][] {
   const table: KwEntry[][] = [];
-  for (const { word, style } of spec) {
+  for (const { word, style, definesNext } of spec) {
     const len = word.length;
     if (!table[len]) table[len] = [];
     const codes = new Uint8Array(len);
     for (let i = 0; i < len; i++) codes[i] = word.charCodeAt(i);
-    table[len].push({ codes, style });
+    table[len].push({ codes, style, definesNext: definesNext === true });
   }
   return table;
 }
@@ -329,12 +337,12 @@ const JS_KW_BY_LEN: KwEntry[][] = buildKwTable([
   { word: 'in', style: S.KEYWORD },
   { word: 'of', style: S.KEYWORD },
   { word: 'do', style: S.KEYWORD },
-  // DEF_KW
-  { word: 'function', style: S.DEF_KW },
-  { word: 'class', style: S.DEF_KW },
-  { word: 'const', style: S.DEF_KW },
-  { word: 'let', style: S.DEF_KW },
-  { word: 'var', style: S.DEF_KW },
+  // STORAGE (definer keywords — cyan); function/class promote next ident to FUNCTION_DEF
+  { word: 'function', style: S.STORAGE, definesNext: true },
+  { word: 'class', style: S.STORAGE, definesNext: true },
+  { word: 'const', style: S.STORAGE },
+  { word: 'let', style: S.STORAGE },
+  { word: 'var', style: S.STORAGE },
   // MODIFIER
   { word: 'export', style: S.MODIFIER },
   { word: 'import', style: S.MODIFIER },
@@ -345,13 +353,13 @@ const JS_KW_BY_LEN: KwEntry[][] = buildKwTable([
   { word: 'true', style: S.NUMBER },
   { word: 'false', style: S.NUMBER },
   { word: 'null', style: S.NUMBER },
-  // VARIABLE (reclassified — matches worker tag output)
-  { word: 'this', style: S.VARIABLE },
-  { word: 'super', style: S.VARIABLE },
+  // LANG_VAR (purple — Sweet Dracula's `variable.language`)
+  { word: 'this', style: S.LANG_VAR },
+  { word: 'super', style: S.LANG_VAR },
 ]);
 
 const TS_KW_BY_LEN: KwEntry[][] = buildKwTable([
-  // KEYWORD — JS subset (with `enum` REMOVED here; reclassified as DEF_KW for TS below)
+  // KEYWORD — JS subset (with `enum` REMOVED here; reclassified as STORAGE for TS below)
   { word: 'instanceof', style: S.KEYWORD },
   { word: 'continue', style: S.KEYWORD },
   { word: 'debugger', style: S.KEYWORD },
@@ -386,15 +394,15 @@ const TS_KW_BY_LEN: KwEntry[][] = buildKwTable([
   { word: 'any', style: S.KEYWORD },
   { word: 'as', style: S.KEYWORD },
   { word: 'is', style: S.KEYWORD },
-  // DEF_KW (JS + TS, including `enum` reclassified)
-  { word: 'function', style: S.DEF_KW },
-  { word: 'class', style: S.DEF_KW },
-  { word: 'const', style: S.DEF_KW },
-  { word: 'let', style: S.DEF_KW },
-  { word: 'var', style: S.DEF_KW },
-  { word: 'type', style: S.DEF_KW },
-  { word: 'interface', style: S.DEF_KW },
-  { word: 'enum', style: S.DEF_KW },
+  // STORAGE (definer keywords — cyan); function/class/type/interface/enum promote next ident to FUNCTION_DEF
+  { word: 'function', style: S.STORAGE, definesNext: true },
+  { word: 'class', style: S.STORAGE, definesNext: true },
+  { word: 'const', style: S.STORAGE },
+  { word: 'let', style: S.STORAGE },
+  { word: 'var', style: S.STORAGE },
+  { word: 'type', style: S.STORAGE, definesNext: true },
+  { word: 'interface', style: S.STORAGE, definesNext: true },
+  { word: 'enum', style: S.STORAGE, definesNext: true },
   // MODIFIER (JS + TS extras)
   { word: 'export', style: S.MODIFIER },
   { word: 'import', style: S.MODIFIER },
@@ -414,9 +422,9 @@ const TS_KW_BY_LEN: KwEntry[][] = buildKwTable([
   { word: 'true', style: S.NUMBER },
   { word: 'false', style: S.NUMBER },
   { word: 'null', style: S.NUMBER },
-  // VARIABLE (reclassified)
-  { word: 'this', style: S.VARIABLE },
-  { word: 'super', style: S.VARIABLE },
+  // LANG_VAR (purple)
+  { word: 'this', style: S.LANG_VAR },
+  { word: 'super', style: S.LANG_VAR },
 ]);
 
 const PY_KW_BY_LEN: KwEntry[][] = buildKwTable([
@@ -444,10 +452,10 @@ const PY_KW_BY_LEN: KwEntry[][] = buildKwTable([
   { word: 'in', style: S.KEYWORD },
   { word: 'is', style: S.KEYWORD },
   { word: 'or', style: S.KEYWORD },
-  // DEF_KW
-  { word: 'def', style: S.DEF_KW },
-  { word: 'class', style: S.DEF_KW },
-  { word: 'lambda', style: S.DEF_KW },
+  // STORAGE (definer keywords — cyan); def/class promote next ident to FUNCTION_DEF
+  { word: 'def', style: S.STORAGE, definesNext: true },
+  { word: 'class', style: S.STORAGE, definesNext: true },
+  { word: 'lambda', style: S.STORAGE },
   // MODIFIER
   { word: 'global', style: S.MODIFIER },
   { word: 'nonlocal', style: S.MODIFIER },
@@ -457,6 +465,8 @@ const PY_KW_BY_LEN: KwEntry[][] = buildKwTable([
   { word: 'True', style: S.NUMBER },
   { word: 'False', style: S.NUMBER },
   { word: 'None', style: S.NUMBER },
+  // LANG_VAR (purple)
+  { word: 'self', style: S.LANG_VAR },
 ]);
 
 function getKwTable(lang: CodeLanguage): KwEntry[][] {
@@ -467,18 +477,24 @@ function getKwTable(lang: CodeLanguage): KwEntry[][] {
 
 /**
  * Linear scan of a length-bucket. Two char-code compares per candidate. No
- * string allocation. Returns the matched `S` or -1 on miss.
+ * string allocation. Returns the matched `S` or -1 on miss. On hit, sets the
+ * module-level `_classifyDefines` so the caller knows whether the matched kw
+ * is a definer (`function`/`class`/`def`/`type`/`interface`/`enum`).
  */
+let _classifyDefines = false;
 function classifyIdent(text: string, start: number, end: number, table: KwEntry[][]): S | -1 {
+  _classifyDefines = false;
   const len = end - start;
   const bucket = table[len];
   if (!bucket) return -1;
   outer: for (let i = 0; i < bucket.length; i++) {
-    const codes = bucket[i].codes;
+    const entry = bucket[i];
+    const codes = entry.codes;
     for (let j = 0; j < len; j++) {
       if (text.charCodeAt(start + j) !== codes[j]) continue outer;
     }
-    return bucket[i].style;
+    _classifyDefines = entry.definesNext;
+    return entry.style;
   }
   return -1;
 }
@@ -495,9 +511,18 @@ function classifyIdent(text: string, start: number, end: number, table: KwEntry[
 // non-comment) char so `obj.foo` (lowercase ident after `.`, no `(` next)
 // classifies as S.TYPE — matching the worker's tag-based classification.
 //
-// Out of scope (deferred to Sweet Dracula swap): destructured aliases,
-// regex-delimiter split, JSX HTML/component tag split, escape-in-string,
-// parameter vs variable distinction. Those need new S slots / AST awareness.
+// `lastDefIsFunc` is set true by a definer kw emit (function/class/def/type/
+// interface/enum). The next identifier emit consumes it and renders as
+// S.FUNCTION_DEF (green): `function foo`, `class Foo`, `type Bar`, `def baz`
+// all turn green on the name. State persists across whitespace and comments
+// (`function /* */ foo` resolves), reset by any other emit.
+//
+// Strings emit STRING runs with embedded escape sequences (`\X`, `\xHH`,
+// `\uHHHH`, `\u{...}`, `\NNN`) split out as S.OPERATOR — pink escapes inside
+// yellow strings, matching Sweet Dracula's TextMate scope.
+//
+// Out of scope (needs AST awareness): regex-delimiter split, JSX HTML/component
+// tag split, parameter vs variable distinction, destructured aliases.
 
 // Char-code helpers — '0'-'9' = 48-57, 'a'-'z' = 97-122, 'A'-'Z' = 65-90,
 // '_' = 95, '$' = 36.
@@ -585,22 +610,131 @@ function scanDecimal(text: string, start: number, end: number): void {
   scanDecimalEnd = i;
 }
 
-function findStringEnd(text: string, from: number, lineTo: number, quoteCC: number): number {
-  for (let i = from; i < lineTo; i++) {
+/**
+ * Scan an escape sequence starting at backslash position. Returns absolute
+ * position AFTER the escape sequence; callers clamp via
+ * `Math.min(escEnd, lineTo)` on the pushTriple emit.
+ *
+ * Recognized forms:
+ *   `\xHH`        — hex byte (up to 2 hex digits)
+ *   `\uHHHH`      — unicode code point (up to 4 hex digits)
+ *   `\u{...}`     — extended unicode (until closing brace)
+ *   `\NNN`        — octal (1-3 digits; lang-dependent, tokenized uniformly)
+ *   `\X`          — single-char escape (\\n, \\t, \\r, \\\\, \\', \\", \\`, ...)
+ */
+function scanEscape(text: string, escStart: number, lineTo: number): number {
+  if (escStart + 1 >= lineTo) return lineTo;
+  const next = text.charCodeAt(escStart + 1);
+  // \xHH
+  if (next === 120) {
+    let end = escStart + 2;
+    for (let k = 0; k < 2 && end < lineTo && isHexDigit(text.charCodeAt(end)); k++) end++;
+    return end;
+  }
+  // \uHHHH or \u{...}
+  if (next === 117) {
+    if (escStart + 2 < lineTo && text.charCodeAt(escStart + 2) === 123) {
+      let end = escStart + 3;
+      while (end < lineTo && text.charCodeAt(end) !== 125) end++;
+      if (end < lineTo) end++; // consume '}'
+      return end;
+    }
+    let end = escStart + 2;
+    for (let k = 0; k < 4 && end < lineTo && isHexDigit(text.charCodeAt(end)); k++) end++;
+    return end;
+  }
+  // \NNN (octal, 1-3 digits)
+  if (next >= 48 && next <= 55) {
+    let end = escStart + 2;
+    for (let k = 0; k < 2 && end < lineTo; k++) {
+      const c = text.charCodeAt(end);
+      if (c >= 48 && c <= 55) end++;
+      else break;
+    }
+    return end;
+  }
+  // Single-char escape
+  return escStart + 2;
+}
+
+/**
+ * Scan a quoted string with escape-sequence splits. `runStart` is where the
+ * STRING run begins (may include a prefix char like Python `f` before the
+ * opening quote). `openQuotePos` is the position of the opening quote.
+ *
+ * Emits S.STRING for body chunks (including opening/closing quotes) and
+ * S.OPERATOR for each escape sequence. Returns absolute position AFTER the
+ * closing quote, or `lineTo` if unterminated on this line.
+ */
+function scanQuotedString(text: string, runStart: number, openQuotePos: number, lineTo: number, quoteCC: number, lineFrom: number): number {
+  let i = openQuotePos + 1;
+  let strStart = runStart;
+  while (i < lineTo) {
     const c = text.charCodeAt(i);
     if (c === 92) {
-      i++;
+      if (i > strStart) pushTriple(strStart - lineFrom, i - lineFrom, S.STRING);
+      const escEnd = scanEscape(text, i, lineTo);
+      const escClamp = escEnd < lineTo ? escEnd : lineTo;
+      pushTriple(i - lineFrom, escClamp - lineFrom, S.OPERATOR);
+      i = escEnd;
+      strStart = i;
       continue;
     }
-    if (c === quoteCC) return i;
+    if (c === quoteCC) {
+      pushTriple(strStart - lineFrom, i + 1 - lineFrom, S.STRING);
+      return i + 1;
+    }
+    i++;
   }
+  if (lineTo > strStart) pushTriple(strStart - lineFrom, lineTo - lineFrom, S.STRING);
+  return lineTo;
+}
+
+/**
+ * Scan a Python triple-quoted string body with escape-sequence splits. Emits
+ * S.STRING for body chunks and S.OPERATOR for each escape. Returns absolute
+ * position AFTER the closing triple-quote if found within this line, otherwise
+ * `-1` (caller marks `inTripleString` so the next line continuation resumes).
+ *
+ * `runStart` is where the STRING run begins (may include a prefix); `bodyStart`
+ * is the position AFTER the opening triple (or the resumption position on a
+ * continuation line — equal to `runStart` there).
+ */
+function scanTripleStringBody(
+  text: string,
+  runStart: number,
+  bodyStart: number,
+  lineTo: number,
+  quoteCC: number,
+  lineFrom: number,
+): number {
+  let i = bodyStart;
+  let strStart = runStart;
+  while (i < lineTo) {
+    const c = text.charCodeAt(i);
+    if (c === 92) {
+      if (i > strStart) pushTriple(strStart - lineFrom, i - lineFrom, S.STRING);
+      const escEnd = scanEscape(text, i, lineTo);
+      const escClamp = escEnd < lineTo ? escEnd : lineTo;
+      pushTriple(i - lineFrom, escClamp - lineFrom, S.OPERATOR);
+      i = escEnd;
+      strStart = i;
+      continue;
+    }
+    if (c === quoteCC && i + 2 < lineTo && text.charCodeAt(i + 1) === quoteCC && text.charCodeAt(i + 2) === quoteCC) {
+      pushTriple(strStart - lineFrom, i + 3 - lineFrom, S.STRING);
+      return i + 3;
+    }
+    i++;
+  }
+  if (lineTo > strStart) pushTriple(strStart - lineFrom, lineTo - lineFrom, S.STRING);
   return -1;
 }
 
 /**
- * Scan a template literal body for ${} expressions. Pushes triples to
- * `_syncBuf` line-relative to `lineFromAbs`. Returns absolute end (after
- * closing `) or -1.
+ * Scan a template literal body for `${}` expressions, escapes, and the closing
+ * backtick. Pushes triples to `_syncBuf` line-relative to `lineFromAbs`.
+ * Returns absolute end (after closing `) or -1 if unterminated on this line.
  */
 function scanTemplateLiteral(text: string, start: number, lineTo: number, lineFromAbs: number): number {
   let i = start;
@@ -609,7 +743,12 @@ function scanTemplateLiteral(text: string, start: number, lineTo: number, lineFr
   while (i < lineTo) {
     const cc = text.charCodeAt(i);
     if (cc === 92) {
-      i += 2;
+      if (i > strStart) pushTriple(strStart - lineFromAbs, i - lineFromAbs, S.STRING);
+      const escEnd = scanEscape(text, i, lineTo);
+      const escClamp = escEnd < lineTo ? escEnd : lineTo;
+      pushTriple(i - lineFromAbs, escClamp - lineFromAbs, S.OPERATOR);
+      i = escEnd;
+      strStart = i;
       continue;
     }
     if (cc === 96) {
@@ -665,6 +804,10 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
   // Char code of last emitted non-whitespace, non-comment char. Drives
   // property-access classification (`obj.foo` → S.TYPE when prev sig char === '.').
   let lastSignificantChar = 0;
+  // Set true after a definer kw (function/class/def/type/interface/enum) emit.
+  // Consumed by the next identifier emit, which renders as S.FUNCTION_DEF
+  // (green). Persists across whitespace + comments; reset by any other emit.
+  let lastDefIsFunc = false;
 
   for (let lineIdx = 0; lineIdx < lineCount; lineIdx++) {
     const lineFrom = lineStart[lineIdx];
@@ -699,21 +842,20 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
           i = end;
           inTemplateString = false;
           lastSignificantChar = 96;
+          lastDefIsFunc = false;
         }
         continue;
       }
 
       // --- Python triple-quoted string continuation (cross-line) ---
       if (inTripleString !== 0) {
-        const closeSeq = inTripleString === 34 ? '"""' : "'''";
-        const end = fullText.indexOf(closeSeq, i);
-        if (end === -1 || end >= lineTo) {
-          pushTriple(i - lineFrom, lineTo - lineFrom, S.STRING);
+        const end = scanTripleStringBody(fullText, i, i, lineTo, inTripleString, lineFrom);
+        if (end === -1) {
           i = lineTo;
         } else {
-          pushTriple(i - lineFrom, end + 3 - lineFrom, S.STRING);
-          i = end + 3;
+          i = end;
           lastSignificantChar = inTripleString;
+          lastDefIsFunc = false;
           inTripleString = 0;
         }
         continue;
@@ -762,13 +904,14 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
         continue;
       }
 
-      // --- Decorators ---
+      // --- Decorators (purple — Sweet Dracula's `meta.decorator`) ---
       if (cc === 64 && i + 1 < lineTo && isIdentStart(fullText.charCodeAt(i + 1))) {
         const start = i;
         i++;
         while (i < lineTo && isIdentPart(fullText.charCodeAt(i))) i++;
-        pushTriple(start - lineFrom, i - lineFrom, S.MODIFIER);
+        pushTriple(start - lineFrom, i - lineFrom, S.LANG_VAR);
         lastSignificantChar = fullText.charCodeAt(i - 1);
+        lastDefIsFunc = false;
         continue;
       }
 
@@ -785,29 +928,26 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
             i = end;
             lastSignificantChar = 96;
           }
+          lastDefIsFunc = false;
           continue;
         }
         if (isPython && i + 2 < lineTo && fullText.charCodeAt(i + 1) === cc && fullText.charCodeAt(i + 2) === cc) {
           // Python triple-quoted — cross-line OK
-          const closeSeq = cc === 34 ? '"""' : "'''";
-          const end = fullText.indexOf(closeSeq, i + 3);
-          if (end === -1 || end >= lineTo) {
-            pushTriple(i - lineFrom, lineTo - lineFrom, S.STRING);
+          const end = scanTripleStringBody(fullText, i, i + 3, lineTo, cc, lineFrom);
+          if (end === -1) {
             i = lineTo;
             inTripleString = cc;
           } else {
-            pushTriple(i - lineFrom, end + 3 - lineFrom, S.STRING);
-            i = end + 3;
+            i = end;
             lastSignificantChar = cc;
           }
+          lastDefIsFunc = false;
           continue;
         }
         // Single/double quote — clamp to lineTo (newline terminates unterminated)
-        const end = findStringEnd(fullText, i + 1, lineTo, cc);
-        const stringEnd = end === -1 ? lineTo : end + 1;
-        pushTriple(i - lineFrom, stringEnd - lineFrom, S.STRING);
-        i = stringEnd;
+        i = scanQuotedString(fullText, i, i, lineTo, cc, lineFrom);
         lastSignificantChar = cc;
+        lastDefIsFunc = false;
         continue;
       }
 
@@ -855,6 +995,7 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
         // on `1.toString()` (belt-and-suspenders — `(` lookahead would catch it
         // anyway but a bare `1.foo` should not classify `foo` as TYPE).
         lastSignificantChar = 0;
+        lastDefIsFunc = false;
         continue;
       }
 
@@ -863,26 +1004,21 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
         const next = i + 1 < lineTo ? fullText.charCodeAt(i + 1) : 0;
         if (next === 34 || next === 39) {
           const start = i;
-          i++; // skip prefix
-          const q = fullText.charCodeAt(i);
-          if (i + 2 < lineTo && fullText.charCodeAt(i + 1) === q && fullText.charCodeAt(i + 2) === q) {
-            const closeSeq = q === 34 ? '"""' : "'''";
-            const end = fullText.indexOf(closeSeq, i + 3);
-            if (end === -1 || end >= lineTo) {
-              pushTriple(start - lineFrom, lineTo - lineFrom, S.STRING);
+          const q = next;
+          if (i + 3 < lineTo && fullText.charCodeAt(i + 2) === q && fullText.charCodeAt(i + 3) === q) {
+            // Prefixed triple-quoted (e.g. f""")
+            const end = scanTripleStringBody(fullText, start, i + 4, lineTo, q, lineFrom);
+            if (end === -1) {
               i = lineTo;
               inTripleString = q;
             } else {
-              pushTriple(start - lineFrom, end + 3 - lineFrom, S.STRING);
-              i = end + 3;
+              i = end;
             }
           } else {
-            const end = findStringEnd(fullText, i + 1, lineTo, q);
-            const stringEnd = end === -1 ? lineTo : end + 1;
-            pushTriple(start - lineFrom, stringEnd - lineFrom, S.STRING);
-            i = stringEnd;
+            i = scanQuotedString(fullText, start, i + 1, lineTo, q, lineFrom);
           }
           lastSignificantChar = q;
+          lastDefIsFunc = false;
           continue;
         }
       }
@@ -896,9 +1032,15 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
         const kwStyle = classifyIdent(fullText, start, i, kwTable);
         if (kwStyle !== -1) {
           pushTriple(start - lineFrom, i - lineFrom, kwStyle);
+          lastDefIsFunc = _classifyDefines;
+        } else if (lastDefIsFunc) {
+          // Preceding definer kw promotes this ident to FUNCTION_DEF (green)
+          // — `function foo`, `class Foo`, `type Bar`, `def baz`, `interface I`.
+          pushTriple(start - lineFrom, i - lineFrom, S.FUNCTION_DEF);
+          lastDefIsFunc = false;
         } else if (i < lineTo && fullText.charCodeAt(i) === 40) {
-          // Followed by `(` → function call
-          pushTriple(start - lineFrom, i - lineFrom, S.FUNCTION);
+          // Followed by `(` → function call (cyan)
+          pushTriple(start - lineFrom, i - lineFrom, S.FUNCTION_CALL);
         } else {
           const firstCC = fullText.charCodeAt(start);
           if (firstCC >= 65 && firstCC <= 90) {
@@ -922,6 +1064,7 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
         while (i < lineTo && isOperator(fullText.charCodeAt(i))) i++;
         pushTriple(start - lineFrom, i - lineFrom, S.OPERATOR);
         lastSignificantChar = fullText.charCodeAt(i - 1);
+        lastDefIsFunc = false;
         continue;
       }
 
@@ -930,6 +1073,7 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
         pushTriple(i - lineFrom, i + 3 - lineFrom, S.OPERATOR);
         i += 3;
         lastSignificantChar = 46;
+        lastDefIsFunc = false;
         continue;
       }
 
@@ -938,6 +1082,7 @@ export function syncTokenizeInto(source: CodeSource, language: CodeLanguage, out
       //     classification on the next ident. Comments and whitespace deliberately
       //     do NOT update it, so `obj /* */ . foo` still resolves `foo` as TYPE.
       lastSignificantChar = cc;
+      lastDefIsFunc = false;
       i++;
     }
 

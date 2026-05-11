@@ -29,7 +29,6 @@ import {
   CHROME_FONT_RATIO,
   CODE_FONT_FAMILY,
   HEADER_HEIGHT_RATIO,
-  isBold,
   LINE_HEIGHT_MULT,
   MAX_OUTPUT_CANVAS_LINES,
   OUTPUT_LABEL_H_RATIO,
@@ -74,8 +73,8 @@ export interface CodeSpans {
 
 /**
  * Tier 3: visual lines (post-wrapping). No string slots — renderer derives line text from
- * `(source.fullText, source.lineStart[srcIdx])`. `normalFont`/`boldFont`/`chromeFont` are
- * cached at layout time so the renderer doesn't allocate three template strings per call.
+ * `(source.fullText, source.lineStart[srcIdx])`. `normalFont`/`chromeFont` are cached at
+ * layout time so the renderer doesn't allocate template strings per call.
  */
 export interface CodeLayout {
   fontSize: number;
@@ -92,7 +91,6 @@ export interface CodeLayout {
 
   // Cached font strings — recomputed by `layoutCodeSourceInto` only when fontSize changes.
   normalFont: string;
-  boldFont: string;
   chromeFont: string;
 }
 
@@ -157,7 +155,6 @@ export const MIN_CHARS = 20;
 export const DEFAULT_CHARS = 50;
 
 export const FONT_WEIGHT = 450;
-export const FONT_WEIGHT_BOLD = 700;
 export const CODE_FONT = `'${CODE_FONT_FAMILY}', monospace`;
 
 const PAD_TOP_RATIO = 1.5;
@@ -306,7 +303,6 @@ export function createCodeLayout(): CodeLayout {
     vlFrom: new Uint32Array(16),
     vlLen: new Uint32Array(16),
     normalFont: '',
-    boldFont: '',
     chromeFont: '',
   };
 }
@@ -356,7 +352,6 @@ export function layoutCodeSourceInto(
   // hot enough at 60fps that even a tiny `${weight} ${px}px` allocation matters.
   if (out.fontSize !== fontSize) {
     out.normalFont = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
-    out.boldFont = `${FONT_WEIGHT_BOLD} ${fontSize}px ${CODE_FONT}`;
     out.chromeFont = `${FONT_WEIGHT} ${chromeFontSize(fontSize)}px ${CODE_FONT}`;
   }
   out.fontSize = fontSize;
@@ -838,7 +833,7 @@ export function renderCodeLayout(
   const digits = Math.max(2, String(layout.sourceLineCount).length);
   const cl = contentLeft(digits, fontSize, layout.lineNumbers);
   // Pre-cached on the layout — recomputed only when fontSize changes.
-  const { normalFont, boldFont, chromeFont } = layout;
+  const { normalFont, chromeFont } = layout;
   const cfs = chromeFontSize(fontSize);
 
   ctx.save();
@@ -898,7 +893,10 @@ export function renderCodeLayout(
   const codeTop = originY + hh;
   ctx.textBaseline = 'alphabetic';
   const bl = baselineOffset(fontSize);
-  let prevFont = '';
+  // Hoist normalFont out of the inner loop — Sweet Dracula has no bold tokens,
+  // so the per-span branch that used to switch between bold/normal is gone.
+  // Chrome blocks (header above, output below) set chromeFont explicitly.
+  ctx.font = normalFont;
 
   const fullText = source.fullText;
   const sourceLineStart = source.lineStart;
@@ -918,10 +916,6 @@ export function renderCodeLayout(
     // Gutter — only on first segment of source line, when lineNumbers enabled
     if (layout.lineNumbers && vFrom === 0) {
       ctx.fillStyle = THEME.chrome.gutter;
-      if (prevFont !== normalFont) {
-        ctx.font = normalFont;
-        prevFont = normalFont;
-      }
       const lineNum = String(srcIdx + 1);
       ctx.fillText(lineNum, originX + pl + (digits - lineNum.length) * cw, baseY);
     }
@@ -957,11 +951,6 @@ export function renderCodeLayout(
         continue;
       }
 
-      const font = isBold(style) ? boldFont : normalFont;
-      if (prevFont !== font) {
-        ctx.font = font;
-        prevFont = font;
-      }
       ctx.fillStyle = THEME.palette[style];
 
       const absFrom = lineStartChar + drawFrom;
@@ -971,10 +960,10 @@ export function renderCodeLayout(
     }
   }
 
-  // Placeholder — empty block shows grey hint text at first line position
+  // Placeholder — empty block shows grey hint text at first line position.
+  // ctx.font is still normalFont from the hoist above.
   if (source.lineCount === 1 && source.fullText.length === 0) {
     ctx.fillStyle = THEME.chrome.gutter;
-    ctx.font = normalFont;
     ctx.fillText('Type something...', originX + cl, codeTop + pt + bl);
   }
 

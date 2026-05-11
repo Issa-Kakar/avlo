@@ -1,15 +1,15 @@
 /**
- * Code Theme — CodeMirror theme extensions (CoolGlow dark theme + syntax highlighting).
+ * Code Theme — CodeMirror theme extensions (Sweet Dracula dark theme + syntax highlighting).
  *
  * Lazy-loaded and cached. Reads colors from `THEME` (palette + chrome) in
  * `code-tokens.ts`; the `HighlightStyle.define` rule list is derived from
- * `SYNTAX_RULES` (in `code-syntax-rules.ts`) + `THEME.palette` + `isBold` so
- * the canvas renderer and the CodeMirror DOM share one source of truth for
- * Lezer-tag → S → color.
+ * `SYNTAX_RULES` (in `code-syntax-rules.ts`) + `THEME.palette` so the canvas
+ * renderer and the CodeMirror DOM share one source of truth for Lezer-tag → S
+ * → color. No bold or italic — Sweet Dracula's emphasis is color-only.
  */
 
 import { SYNTAX_RULES } from './code-syntax-rules';
-import { CODE_FONT_FAMILY, isBold, LINE_HEIGHT_MULT, S, THEME } from './code-tokens';
+import { CODE_FONT_FAMILY, LINE_HEIGHT_MULT, S, THEME } from './code-tokens';
 
 let _themeExtensions: unknown[] | null = null;
 
@@ -69,12 +69,20 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
         backgroundColor: THEME.chrome.selection,
       },
-      '.cm-matchingBracket': {
+      // bracketMatching() decoration — editor-only UI marker for the active
+      // brace pair during DOM editing. Independent of THEME and Lezer tagging:
+      // transparent fill + plain white outline, nothing more.
+      //
+      // Selector MUST match `&.cm-focused .cm-matchingBracket` (not plain
+      // `.cm-matchingBracket`) — `@codemirror/language`'s baseTheme uses that
+      // higher-specificity selector to paint a teal `#328c8252` background,
+      // which otherwise wins and shows as a teal film over the bracket. Same
+      // story for the nonmatching variant.
+      '&.cm-focused .cm-matchingBracket': {
         backgroundColor: 'transparent',
-        outline: `1px solid ${THEME.palette[S.KEYWORD]}80`,
-        color: THEME.palette[S.KEYWORD],
+        outline: '1px solid #ffffff4d',
       },
-      '.cm-nonmatchingBracket': {
+      '&.cm-focused .cm-nonmatchingBracket': {
         backgroundColor: 'transparent',
         outline: `1px solid ${THEME.chrome.nonmatchBracket}80`,
         color: THEME.chrome.nonmatchBracket,
@@ -103,7 +111,6 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       SYNTAX_RULES.map((r) => ({
         tag: r.tags,
         color: THEME.palette[r.style],
-        ...(isBold(r.style) ? { fontWeight: 'bold' as const } : {}),
       })),
     ),
   );

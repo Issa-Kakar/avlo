@@ -3,7 +3,7 @@
  *
  * Consumers:
  *   - `code-theme.ts` derives `HighlightStyle.define` rules (CodeMirror DOM)
- *     from `SYNTAX_RULES` + `THEME.palette` + `isBold`.
+ *     from `SYNTAX_RULES` + `THEME.palette`.
  *   - `lezer-worker.ts` imports `STYLE_HIGHLIGHTER` (a custom Highlighter that
  *     returns the stringified S int directly). The worker callback recovers
  *     the int with `+classes | 0` — no `tagHighlighter`/`TAG_STYLE_INDEX`
@@ -20,28 +20,53 @@ export interface SyntaxRule {
 }
 
 export const SYNTAX_RULES: readonly SyntaxRule[] = [
+  // Control / general keywords (pink)
   { tags: [tags.keyword, tags.operatorKeyword, tags.controlKeyword], style: S.KEYWORD },
-  { tags: [tags.definitionKeyword], style: S.DEF_KW },
-  { tags: [tags.moduleKeyword, tags.modifier, tags.meta], style: S.MODIFIER },
-  {
-    tags: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.escape, tags.regexp, tags.character],
-    style: S.STRING,
-  },
+
+  // Storage / definer kws (cyan) — was bundled under KEYWORD in CoolGlow
+  { tags: [tags.definitionKeyword], style: S.STORAGE },
+
+  // Modifiers (pink) split from decorators (purple)
+  { tags: [tags.moduleKeyword, tags.modifier], style: S.MODIFIER },
+  { tags: [tags.meta], style: S.LANG_VAR },
+
+  // Strings (yellow) split from escape sequences (pink) — `\n`, `\xHH`, `\uHHHH`
+  // appear pink inside yellow string bodies, matching Sweet Dracula.
+  { tags: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.regexp, tags.character], style: S.STRING },
+  { tags: [tags.escape], style: S.OPERATOR },
+
   { tags: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], style: S.NUMBER },
   { tags: [tags.lineComment, tags.blockComment, tags.docComment], style: S.COMMENT },
+
+  // Function defs (green) split from calls (green via palette).
   {
-    tags: [
-      tags.function(tags.variableName),
-      tags.function(tags.propertyName),
-      tags.function(tags.definition(tags.variableName)),
-      tags.className,
-      tags.definition(tags.propertyName),
-      tags.definition(tags.typeName),
-    ],
-    style: S.FUNCTION,
+    tags: [tags.function(tags.definition(tags.variableName)), tags.className, tags.definition(tags.typeName)],
+    style: S.FUNCTION_DEF,
   },
-  { tags: [tags.variableName, tags.self, tags.definition(tags.variableName), tags.labelName], style: S.VARIABLE },
-  { tags: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace], style: S.TYPE },
+  // Property-key definitions (white). One rule covers every case via the
+  // modifier-set walk: `definition` has Modifier.id 0 (lower than `function`),
+  // so for tag = `function(definition(propertyName))` the set is ordered
+  // `[function(definition(propertyName)), definition(propertyName),
+  // function(propertyName), propertyName]` — the walk hits
+  // `definition(propertyName)` BEFORE `function(propertyName)`, so this single
+  // entry steals method-shorthand + class methods from FUNCTION_CALL and
+  // object-literal keys + class fields from TYPE (`propertyName` base).
+  // Without this rule, the base `propertyName` → S.TYPE makes them cyan.
+  { tags: [tags.definition(tags.propertyName)], style: S.DEFAULT },
+  {
+    tags: [tags.function(tags.variableName), tags.function(tags.propertyName)],
+    style: S.FUNCTION_CALL,
+  },
+
+  // Variables — `self`/`this`/`super` (tags.self) split out as LANG_VAR (purple)
+  { tags: [tags.self], style: S.LANG_VAR },
+  { tags: [tags.variableName, tags.definition(tags.variableName), tags.labelName], style: S.VARIABLE },
+
+  // Types — JSX tagName + angleBracket split out as KEYWORD (pink — JSX punctuation)
+  { tags: [tags.typeName, tags.propertyName, tags.namespace], style: S.TYPE },
+  { tags: [tags.tagName, tags.angleBracket], style: S.KEYWORD },
+
+  // Operators (pink)
   {
     tags: [
       tags.operator,
@@ -56,10 +81,12 @@ export const SYNTAX_RULES: readonly SyntaxRule[] = [
     ],
     style: S.OPERATOR,
   },
-  {
-    tags: [tags.derefOperator, tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace],
-    style: S.DEFAULT,
-  },
+
+  // Derefs (`.`) pink; brackets stay fg. `tags.separator` (`,` / `;`)
+  // deliberately unmapped → falls through to DEFAULT (white).
+  { tags: [tags.derefOperator], style: S.OPERATOR },
+  { tags: [tags.bracket, tags.squareBracket, tags.paren, tags.brace], style: S.DEFAULT },
+
   { tags: [tags.attributeName], style: S.ATTRIBUTE },
   { tags: [tags.invalid], style: S.INVALID },
 ];
