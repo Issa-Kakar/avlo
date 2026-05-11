@@ -11,7 +11,7 @@ import { getCodeProps } from '@/core/accessors';
 import { codeSystem } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor } from '@/core/geometry/bbox';
-import { hydrateImages } from '@/core/image/image-manager';
+import { hydrateImages, registerBookmarkMeta, registerImageMeta, unregisterMedia } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
@@ -267,6 +267,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (!handle) continue;
       this.spatialIndex.remove(id, handle.bbox);
       removeObjectCaches(id, handle.kind);
+      if (handle.kind === 'image' || handle.kind === 'bookmark') unregisterMedia(id);
       dirty.push(handle.bbox);
       this.objectsById.delete(id);
     }
@@ -298,6 +299,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const newBBox = computeBBoxFor(id, kind, yObj);
       const { prevBBox, bboxChanged } = this.upsertHandle(id, kind, yObj, newBBox);
       this.finalizeUpsert(id, prevBBox, newBBox, bboxChanged, false, dirty);
+
+      // Media meta cache: idempotent re-register on every touch. AssetIds are
+      // immutable post-creation and bookmarks are written atomically (offline/failed
+      // unfurl → text object, never a partial bookmark), so this is effectively an
+      // insert-only call — the per-touch invocation just keeps the wiring simple.
+      if (kind === 'image') registerImageMeta(id, yObj);
+      else if (kind === 'bookmark') registerBookmarkMeta(id, yObj);
+
       if (bboxChanged) {
         changed.add(id);
         // Bindable bbox change → propagate to attached connectors. `onBindableChanged`
@@ -380,11 +389,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     clearAllObjectCaches();
 
     const handles: ObjectHandle[] = [];
-    const mediaHandles: ObjectHandle[] = [];
     const deferredConnectorIds: string[] = [];
 
     // Pass 1: build handles for everything except connectors. Connectors only get
     // their anchorIds + shapeToConnectors entries here — bbox + route deferred to pass 2.
+    // Media meta caches (imageMeta, bookmarkAssetIds) are populated inline so that
+    // the immediately-following hydrateImages() call reads them.
     this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
@@ -399,7 +409,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const handle: ObjectHandle = { id, kind, y: yObj, bbox };
       this.objectsById.set(id, handle);
       handles.push(handle);
-      if (kind === 'image' || kind === 'bookmark') mediaHandles.push(handle);
+      if (kind === 'image') registerImageMeta(id, yObj);
+      else if (kind === 'bookmark') registerBookmarkMeta(id, yObj);
     });
 
     // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).
@@ -418,7 +429,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.spatialIndex.bulkLoad(handles);
     }
 
-    hydrateImages(mediaHandles);
+    hydrateImages();
     invalidateWorldAll();
   }
 
