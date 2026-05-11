@@ -37,7 +37,7 @@ import {
 // CONSTANTS
 // =============================================================================
 
-export const NOTE_WIDTH = 125;
+export const NOTE_WIDTH = 145;
 export const NOTE_FILL_COLOR = '#FEF3AC';
 
 const NOTE_PADDING_RATIO = 20 / 280;
@@ -46,9 +46,9 @@ const NOTE_CORNER_RADIUS_RATIO = 0.06;
 // top/sides need only a small halo while the bottom contains the downward tail.
 // Cache canvas, bbox, and visible halo extent all key off these. Exported so
 // bookmarks track the exact same ratios (dirty-rect invariant).
-export const NOTE_SHADOW_TOP_RATIO = 0.06; // ~7.5wu — slight halo from contact's blur tail
-export const NOTE_SHADOW_SIDE_RATIO = 0.08; // ~10wu — fits drop's gaussian tail (1.5·blur)
-export const NOTE_SHADOW_BOTTOM_RATIO = 0.15; // ~18.75wu — fits drop's blur + offset
+export const NOTE_SHADOW_TOP_RATIO = 0.06; // ~7.5wu — fringe from drop's blur tail
+export const NOTE_SHADOW_SIDE_RATIO = 0.075; // ~9.4wu — fits drop's gaussian tail (1.5·blur)
+export const NOTE_SHADOW_BOTTOM_RATIO = 0.12; // ~15wu — fits drop's blur + offset with headroom
 
 const BASE_CONTENT_WIDTH = NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO);
 const NOTE_FONT_STEPS: number[] = [
@@ -407,15 +407,16 @@ const _shadowCache = new Map<string, OffscreenCanvas>();
 let _shadowCacheDpr = 0;
 
 // All ratios of body width — proportions hold across note (125wu) and bookmark
-// (300wu). Drop: visible extent below ≈ blur·1.2 + offset ≈ 11 %, side ≈ 5 %,
-// above ≈ 0. Contact: anchors the shadow at the body edge so the visible halo
-// reads as connected to the body even when drop's near edge is faint.
+// (300wu). Drop: visible extent below ≈ blur·1.2 + offset ≈ 9 %, side ≈ 5 %,
+// above ≈ 0. Contact: anchors the shadow at the body edge so the halo reads as
+// resting on a surface, not floating. Alphas tuned for natural paper-on-desk
+// density: combined peak ≈ 0.16 on white (vs ~0.28 when over-cranked).
 const SHADOW_DROP_BLUR_RATIO = 0.04;
-const SHADOW_DROP_OFFSET_RATIO = 0.06;
-const SHADOW_DROP_COLOR = 'rgba(0,0,0,0.20)';
-const SHADOW_CONTACT_BLUR_RATIO = 0.015;
-const SHADOW_CONTACT_OFFSET_RATIO = 0.012;
-const SHADOW_CONTACT_COLOR = 'rgba(0,0,0,0.10)';
+const SHADOW_DROP_OFFSET_RATIO = 0.045;
+const SHADOW_DROP_COLOR = 'rgba(0,0,0,0.11)';
+const SHADOW_CONTACT_BLUR_RATIO = 0.013;
+const SHADOW_CONTACT_OFFSET_RATIO = 0.008;
+const SHADOW_CONTACT_COLOR = 'rgba(0,0,0,0.07)';
 
 function ensureShadow(w: number, h: number, dpr: number): OffscreenCanvas {
   if (_shadowCacheDpr !== dpr) {
