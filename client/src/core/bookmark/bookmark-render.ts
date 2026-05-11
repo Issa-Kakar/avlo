@@ -1,7 +1,14 @@
 import { prettifyDomain } from '@avlo/shared';
+import { getHandle } from '@/runtime/room-runtime';
 import { getBookmarkProps } from '../accessors';
 import { getBitmap } from '../image/image-manager';
-import { NOTE_SHADOW_BOTTOM_RATIO, NOTE_SHADOW_SIDE_RATIO, NOTE_SHADOW_TOP_RATIO, getNoteCornerRadius, renderNoteBody } from '../text/sticky-note';
+import {
+  getNoteCornerRadius,
+  NOTE_SHADOW_BOTTOM_RATIO,
+  NOTE_SHADOW_SIDE_RATIO,
+  NOTE_SHADOW_TOP_RATIO,
+  renderNoteBody,
+} from '../text/sticky-note';
 import { buildFontString, measureTextCached } from '../text/text-system';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { BookmarkProps, ObjectHandle } from '../types/objects';
@@ -290,7 +297,8 @@ export function getBookmarkFrame(id: string): FrameTuple | null {
 }
 
 // ---------------------------------------------------------------------------
-// "Open" button (kept always-visible; hover wiring is a future task)
+// "Open" button — always painted by drawBookmark in its non-hover state.
+// Hover state is painted on top by selection-overlay (see drawHoveredOpenButton).
 // ---------------------------------------------------------------------------
 
 const boxArrowPath = new Path2D('M1 11H11V7.5 M1 11V1H4.5 M5 7L11 1 M7.5 1H11V4');
@@ -461,31 +469,77 @@ function drawBottomRow(
 }
 
 // ---------------------------------------------------------------------------
-// Frame-local hit-test bounds (kept for future hover/click wiring)
+// Frame-local hit-test bounds — single module scratch, mutated per call.
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the Open button rect in frame-local coordinates.
+ * MUTABLE scratch — `getOpenButtonLocalBounds` returns this same object every
+ * call. If you need to call it twice before consuming the first result, copy
+ * the fields you need. Mirrors the marqueeBBox/marqueeCurrent idiom in
+ * SelectTool.ts (lines 73-74). `lw`/`lh` are set once at module init (always
+ * OPEN_BTN_W/OPEN_BTN_H in local space); only `lx`/`ly` mutate.
+ */
+const _openBtnScratch: LocalRect = { lx: 0, ly: 0, lw: OPEN_BTN_W, lh: OPEN_BTN_H };
+
+/**
+ * Returns the Open button rect in frame-local coordinates (card is always
+ * BOOKMARK_WIDTH = 300 in local space; scale is applied at the draw-transform
+ * level, not at this layer). MUTATES `_openBtnScratch` — see scratch comment.
  * Full card: overlaid on OG image bottom-right. Text card: right-aligned in the favicon row.
  */
-export function getOpenButtonLocalBounds(layout: BookmarkLayout, cardWidth: number): LocalRect {
+export function getOpenButtonLocalBounds(layout: BookmarkLayout): LocalRect {
   if (layout.hasOgImage) {
-    return {
-      lx: cardWidth - OPEN_BTN_W - OPEN_BTN_MARGIN,
-      ly: layout.ogDisplayH - OPEN_BTN_H - OPEN_BTN_MARGIN,
-      lw: OPEN_BTN_W,
-      lh: OPEN_BTN_H,
-    };
+    _openBtnScratch.lx = BOOKMARK_WIDTH - OPEN_BTN_W - OPEN_BTN_MARGIN;
+    _openBtnScratch.ly = layout.ogDisplayH - OPEN_BTN_H - OPEN_BTN_MARGIN;
+    return _openBtnScratch;
   }
   const titleH = layout.titleLines.length * TITLE_LINE_H;
   const descH = layout.descLines.length * DESC_LINE_H;
   const titleToDesc = layout.titleLines.length && layout.descLines.length ? SECTION_GAP : 0;
   const textToDomain = layout.titleLines.length || layout.descLines.length ? SECTION_GAP : 0;
   const rowY = CARD_PADDING + titleH + titleToDesc + descH + textToDomain;
-  return {
-    lx: cardWidth - CARD_PADDING - OPEN_BTN_W,
-    ly: rowY + (FAVICON_SIZE - OPEN_BTN_H) / 2,
-    lw: OPEN_BTN_W,
-    lh: OPEN_BTN_H,
-  };
+  _openBtnScratch.lx = BOOKMARK_WIDTH - CARD_PADDING - OPEN_BTN_W;
+  _openBtnScratch.ly = rowY + (FAVICON_SIZE - OPEN_BTN_H) / 2;
+  return _openBtnScratch;
+}
+
+/**
+ * Test whether a world-space point falls inside the Open button's visible rect.
+ * Caller responsible for visibility/occlusion (SelectTool gates this on
+ * `pickTopmostPaint` first). Consumes `_openBtnScratch` synchronously — no
+ * re-call within this function.
+ */
+export function hitTestOpenButton(handle: ObjectHandle, worldX: number, worldY: number): boolean {
+  if (handle.kind !== 'bookmark') return false;
+  const props = getBookmarkProps(handle.y);
+  if (!props) return false;
+  const layout = layoutCache.get(handle.id);
+  const frame = bookmarkFrameCache.get(handle.id);
+  if (!layout || !frame) return false;
+  const localX = (worldX - frame[0]) / props.scale;
+  const localY = (worldY - frame[1]) / props.scale;
+  const r = getOpenButtonLocalBounds(layout);
+  return localX >= r.lx && localX <= r.lx + r.lw && localY >= r.ly && localY <= r.ly + r.lh;
+}
+
+/**
+ * Paint the Open button in its hover state on top of the base canvas's already-
+ * painted (non-hover) button. Called by selection-overlay before primary
+ * selection visuals so bbox stroke + resize handles render above. Same
+ * translate+scale math as `drawBookmark`, so pixels align exactly.
+ */
+export function drawHoveredOpenButton(ctx: CanvasRenderingContext2D, id: string): void {
+  const handle = getHandle(id);
+  if (!handle || handle.kind !== 'bookmark') return;
+  const props = getBookmarkProps(handle.y);
+  if (!props) return;
+  const layout = layoutCache.get(id);
+  const frame = bookmarkFrameCache.get(id);
+  if (!layout || !frame) return;
+  const r = getOpenButtonLocalBounds(layout);
+  ctx.save();
+  ctx.translate(frame[0], frame[1]);
+  ctx.scale(props.scale, props.scale);
+  drawOpenButton(ctx, r.lx, r.ly, true);
+  ctx.restore();
 }

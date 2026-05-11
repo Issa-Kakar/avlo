@@ -1,4 +1,6 @@
 import { getConnectorType } from '@/core/accessors';
+import { openBookmarkUrl } from '@/core/bookmark/bookmark-actions';
+import { hitTestOpenButton } from '@/core/bookmark/bookmark-render';
 import { isAnchored } from '@/core/connectors/anchor-atoms';
 import type { Slot } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
@@ -42,7 +44,8 @@ type DownHit =
   | { kind: 'selectionGap' }
   | { kind: 'object'; handle: ObjectHandle; isSelected: boolean }
   | { kind: 'handle'; handleId: HandleId }
-  | { kind: 'endpoint'; connectorId: string; slot: Slot };
+  | { kind: 'endpoint'; connectorId: string; slot: Slot }
+  | { kind: 'openButton'; handle: ObjectHandle };
 
 // === SelectTool Class ===
 
@@ -73,6 +76,11 @@ export class SelectTool implements PointerTool {
   private readonly marqueeBBox: BBoxTuple = [0, 0, 0, 0];
   private readonly marqueeCurrent: Point = [0, 0];
 
+  // Bookmark Open-button hover indicator. Drives both the overlay paint
+  // (selection-overlay reads `getHoveredOpenBookmarkId`) and `getPreview`'s
+  // null-bail decision so the overlay keeps painting when only hover is active.
+  private hoveredOpenBookmarkId: string | null = null;
+
   private updateMarqueeBBox(curX: number, curY: number): void {
     this.marqueeCurrent[0] = curX;
     this.marqueeCurrent[1] = curY;
@@ -81,6 +89,23 @@ export class SelectTool implements PointerTool {
 
   getMarqueeBBox(): Readonly<BBoxTuple> | null {
     return this.marqueeActive ? this.marqueeBBox : null;
+  }
+
+  getHoveredOpenBookmarkId(): string | null {
+    return this.hoveredOpenBookmarkId;
+  }
+
+  private clearBookmarkOpenHoverIfAny(): void {
+    if (this.hoveredOpenBookmarkId !== null) {
+      this.hoveredOpenBookmarkId = null;
+      invalidateOverlay();
+    }
+  }
+
+  private rehoverFromLastCursor(): void {
+    if (this.phase !== 'idle') return;
+    const last = getLastCursorWorld();
+    if (last) this.handleHoverCursor(last[0], last[1]);
   }
 
   private hasAddModifier(): boolean {
@@ -96,6 +121,9 @@ export class SelectTool implements PointerTool {
   begin(pointerId: number, worldX: number, worldY: number): void {
     if (this.phase !== 'idle') return;
     contextMenuController.hide();
+    // Any gesture other than the openButton branch consumes prior hover;
+    // openButton re-sets it below before invalidating the overlay.
+    this.clearBookmarkOpenHoverIfAny();
 
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
@@ -136,6 +164,16 @@ export class SelectTool implements PointerTool {
     const hit = this.hitTestObjects(worldX, worldY);
 
     if (hit) {
+      // Bookmark Open-button: handled below standard handle/endpoint priority
+      // (those returned already) but above the regular object click. Shift/Ctrl
+      // falls through to additive object selection — standard convention.
+      if (hit.kind === 'bookmark' && !this.hasAddModifier() && hitTestOpenButton(hit, worldX, worldY)) {
+        this.downHit = { kind: 'openButton', handle: hit };
+        this.hoveredOpenBookmarkId = hit.id;
+        this.phase = 'pendingClick';
+        invalidateOverlay();
+        return;
+      }
       const isSelected = selectedIds.includes(hit.id);
       this.downHit = { kind: 'object', handle: hit, isSelected };
       this.phase = 'pendingClick';
@@ -245,6 +283,26 @@ export class SelectTool implements PointerTool {
             }
             if (isSelected) contextMenuController.hide();
             else store.setSelection([handle.id]);
+            this.phase = 'translate';
+            useSelectionStore.getState().beginTranslate();
+            break;
+          }
+
+          case 'openButton': {
+            if (!passMove) break;
+            // Drift on a pressed Open button is a translate intent — user is
+            // moving the bookmark, exactly as if they'd clicked elsewhere on
+            // the card. Promote to translate; mirrors the 'object' case. Drop
+            // the hover indicator: bookmarkFrameCache won't update mid-gesture
+            // (writes commit only at gesture end), so a lingering hover paint
+            // would draw at the stale pre-drag frame while the bookmark
+            // renders at its live transform position.
+            const { handle } = this.downHit;
+            const store = useSelectionStore.getState();
+            const isSelected = store.selectedIds.includes(handle.id);
+            if (isSelected) contextMenuController.hide();
+            else store.setSelection([handle.id]);
+            this.clearBookmarkOpenHoverIfAny();
             this.phase = 'translate';
             useSelectionStore.getState().beginTranslate();
             break;
@@ -381,6 +439,26 @@ export class SelectTool implements PointerTool {
             // Click on background → deselect
             store.clearSelection();
             break;
+
+          case 'openButton': {
+            // Re-verify against a fresh handle (bookmark may have been deleted
+            // mid-press) and re-test the button rect (cursor may have left the
+            // visible button between down and up — drift >MOVE_THRESHOLD_PX
+            // would have already promoted to translate above, so here we just
+            // re-confirm we're still on the button at release).
+            const { handle: stored } = this.downHit;
+            const handle = getHandle(stored.id);
+            if (
+              handle &&
+              handle.kind === 'bookmark' &&
+              worldX !== undefined &&
+              worldY !== undefined &&
+              hitTestOpenButton(handle, worldX, worldY)
+            ) {
+              openBookmarkUrl(handle.id);
+            }
+            break;
+          }
         }
         break;
       }
@@ -413,6 +491,10 @@ export class SelectTool implements PointerTool {
 
     textTool.justClosedLabelId = null;
     invalidateOverlay();
+    // Re-evaluate hover against the post-transform frame so a just-committed
+    // bookmark scale immediately reflects in the hover indicator without
+    // requiring a cursor wiggle.
+    this.rehoverFromLastCursor();
   }
 
   cancel(): void {
@@ -420,6 +502,7 @@ export class SelectTool implements PointerTool {
     useSelectionStore.getState().cancelTransform();
 
     this.marqueeActive = false;
+    this.clearBookmarkOpenHoverIfAny();
     // Clear any cursor override on cancel
     setCursorOverride(null);
     applyCursor();
@@ -432,6 +515,7 @@ export class SelectTool implements PointerTool {
 
     textTool.justClosedLabelId = null;
     invalidateOverlay();
+    this.rehoverFromLastCursor();
   }
 
   isActive(): boolean {
@@ -444,7 +528,7 @@ export class SelectTool implements PointerTool {
 
   getPreview(): PreviewData | null {
     const { selectedIds } = useSelectionStore.getState();
-    if (selectedIds.length === 0 && !this.marqueeActive) return null;
+    if (selectedIds.length === 0 && !this.marqueeActive && this.hoveredOpenBookmarkId === null) return null;
     return { kind: 'selection' };
   }
 
@@ -456,16 +540,14 @@ export class SelectTool implements PointerTool {
     if (textTool.isEditorMounted()) textTool.onViewChange();
     if (codeTool.isEditorMounted()) codeTool.onViewChange();
     invalidateOverlay();
-    if (this.phase === 'idle') {
-      const last = getLastCursorWorld();
-      if (last) this.handleHoverCursor(last[0], last[1]);
-    }
+    this.rehoverFromLastCursor();
   }
 
   /**
    * Called when pointer leaves canvas - clears any hover cursor state.
    */
   onPointerLeave(): void {
+    this.clearBookmarkOpenHoverIfAny();
     setCursorOverride(null);
     applyCursor();
   }
@@ -476,8 +558,11 @@ export class SelectTool implements PointerTool {
    * Handle hover cursor detection when idle.
    * Called by move() when phase is 'idle'.
    *
-   * Standard mode: resize cursors on handles.
-   * Connector mode: grab cursor on endpoint dots.
+   * Standard mode: resize cursors on handles (highest priority).
+   * Connector mode: grab cursor on endpoint dots (highest priority).
+   * All modes: pointer cursor + hover paint on visible Open buttons of
+   * bookmarks (gated below handle/endpoint priority — handles/endpoints
+   * always win). Occlusion via `pickTopmostPaint`.
    */
   private handleHoverCursor(worldX: number, worldY: number): void {
     // Cursor ownership: panTool owns 'grabbing' during MMB/spacebar pan. The
@@ -488,17 +573,12 @@ export class SelectTool implements PointerTool {
     const store = useSelectionStore.getState();
     const { mode, selectedIds } = store;
 
-    if (mode === 'none') {
-      setCursorOverride(null);
-      applyCursor();
-      return;
-    }
-
     if (mode === 'standard' && (!store.textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
       const bounds = computeSelectionBounds();
       if (bounds) {
         const handle = hitResizeHandle([worldX, worldY], bounds);
         if (handle) {
+          this.clearBookmarkOpenHoverIfAny();
           setCursorOverride(handleCursor(handle));
           applyCursor();
           return;
@@ -507,12 +587,29 @@ export class SelectTool implements PointerTool {
     } else if (mode === 'connector') {
       const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
+        this.clearBookmarkOpenHoverIfAny();
         setCursorOverride('grab');
         applyCursor();
         return;
       }
     }
 
+    // Bookmark Open-button hover — occlusion via `pickTopmostPaint` (framed
+    // kinds always paint 'ink' on hit, so a bookmark winning the picker means
+    // the cursor is on genuinely visible bookmark pixels — no separate
+    // 4-corner sampling needed).
+    const topmost = pickTopmostPaint([worldX, worldY], { px: HIT_RADIUS_PX });
+    if (topmost && topmost.kind === 'bookmark' && hitTestOpenButton(topmost, worldX, worldY)) {
+      if (this.hoveredOpenBookmarkId !== topmost.id) {
+        this.hoveredOpenBookmarkId = topmost.id;
+        invalidateOverlay();
+      }
+      setCursorOverride('pointer');
+      applyCursor();
+      return;
+    }
+
+    this.clearBookmarkOpenHoverIfAny();
     setCursorOverride(null);
     applyCursor();
   }

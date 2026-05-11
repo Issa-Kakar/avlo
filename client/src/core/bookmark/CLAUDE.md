@@ -45,7 +45,8 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
 
 | File | Purpose |
 |------|---------|
-| `client/src/lib/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()`, text wrapping, height computation, two card layouts (full + text) |
+| `client/src/lib/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()`, text wrapping, height computation, two card layouts (full + text), Open-button hit/hover helpers |
+| `client/src/lib/bookmark/bookmark-actions.ts` | Side-effecting actions: `openBookmarkUrl(id)` — two-pass URL validation, `window.open(_blank, noopener,noreferrer)` |
 | `client/src/lib/bookmark/bookmark-unfurl.ts` | Lifecycle coordinator: pending map, worker commands, atomic Y.Doc writes, placeholder management |
 | `client/src/lib/bookmark/bookmark-placeholder.ts` | HTML loading elements: spinner + domain label, camera-tracked positioning |
 | `worker/src/unfurl.ts` | Cloudflare Worker: Zod validation, SSRF guard, HTMLRewriter parse, image fetch/R2 store, edge cache |
@@ -321,18 +322,32 @@ FAVICON_SIZE = 18                                  (favicon row height)
 
 `computeBookmarkHeight(data)` is called before Y.Doc write (to set frame height). Delegates to the same `buildLayout(data)` used by `getLayout` — no duplicate wrap/measure path.
 
-### Hit-Test Helpers (for future click interactions)
+### Hit-Test & Hover Helpers
 
-Exported types and functions for external hit testing of interactive regions:
+Exported types and functions for SelectTool integration:
 
 ```typescript
 interface LocalRect { lx: number; ly: number; lw: number; lh: number }
 
-// Frame-local bounds of the "Open" button (full card: on OG image; text card: in favicon row)
-getOpenButtonLocalBounds(layout, cardWidth) → LocalRect
+// Frame-local bounds of the "Open" button — card width is always BOOKMARK_WIDTH
+// in local space (scale applied at draw-transform level, not here). Returns a
+// module-scope MUTABLE scratch: copy fields if calling twice before consuming.
+getOpenButtonLocalBounds(layout) → LocalRect
+
+// World-space hit test against the Open button rect. Caller responsible for
+// occlusion (SelectTool gates on `pickTopmostPaint` first). Reads layout +
+// frame caches; both must be populated (layout/frame is null before first
+// render → returns false).
+hitTestOpenButton(handle, worldX, worldY) → boolean
+
+// Paint the Open button in its hover state on top of the base canvas's already-
+// painted non-hover button. Called by selection-overlay BEFORE selection
+// primary visuals so bbox stroke + resize handles render above. Same
+// translate+scale math as drawBookmark — pixels align exactly.
+drawHoveredOpenButton(ctx, id) → void
 ```
 
-Coordinates are **frame-local** (relative to bookmark frame origin). Convert to world coords by adding `frame[0]`/`frame[1]`. The Open button is not yet wired into SelectTool. The prettified display name is plain text — it has no hit-test bounds.
+`getOpenButtonLocalBounds` returns coordinates **frame-local** (relative to bookmark frame origin, pre-scale). Convert to world by `frame[0] + lx * scale`, `frame[1] + ly * scale`. The prettified display name is plain text — no hit-test bounds.
 
 ---
 
@@ -551,7 +566,6 @@ PLACEHOLDER_H      = 48        HTML placeholder height (width = BOOKMARK_WIDTH)
 
 ## NOT Implemented
 
-- **Open button click + hover-only visibility** — `getOpenButtonLocalBounds` is exported and the button accepts a `hovered` flag, but no hover tracking, no hit testing, and no navigation wiring yet. The button is drawn always for now
 - **Double-click behavior** — no editing mode (bookmarks are not editable)
 - **Context menu actions** — no bookmark-specific toolbar bar
 - **Re-unfurl** — no way to retry from UI (failures are final → text object)

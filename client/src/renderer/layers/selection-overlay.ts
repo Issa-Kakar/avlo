@@ -18,6 +18,7 @@
  */
 
 import { getConnectorType } from '@/core/accessors';
+import { drawHoveredOpenButton } from '@/core/bookmark/bookmark-render';
 import { getEndpointEdgePosition, isInteriorAnchored } from '@/core/connectors/anchor-atoms';
 import { SLOT_END, SLOT_START, slotKey, slotOther, slotPointIndex } from '@/core/connectors/reroute-connector';
 import { frameToBbox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
@@ -119,6 +120,22 @@ function shouldHideHandlesForEditing(textEditingId: string | null, codeEditingId
 /**
  * Draw selection overlay on overlay canvas.
  *
+ * Bookmark Open-button hover paints FIRST — it's a continuation of the base
+ * canvas's own button paint (the bookmark's face), not standard overlay UI.
+ * Selection bbox stroke + resize handles must draw above it, exactly as they
+ * do for any other selected object. Runs even with empty selection so a hover-
+ * only state still paints — `drawSelectionPrimary` early-returns on empty.
+ */
+export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
+  const hoveredId = selectTool.getHoveredOpenBookmarkId();
+  if (hoveredId !== null) drawHoveredOpenButton(ctx, hoveredId);
+  drawSelectionPrimary(ctx);
+}
+
+/**
+ * Selection primary visuals (marquee, per-object highlights, bounds rect,
+ * handles, connector endpoint dots).
+ *
  * Discriminates by selection size and mode:
  *   single non-connector → one rect (the bounds *is* the highlight) + handles.
  *                          Whiteboard convention — the selection rect alone signals
@@ -132,7 +149,7 @@ function shouldHideHandlesForEditing(textEditingId: string | null, codeEditingId
  *                          hard to match without extra work for no real benefit.
  * Handles hide during translate and when the bbox would be too small on screen.
  */
-export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
+function drawSelectionPrimary(ctx: CanvasRenderingContext2D): void {
   const { selectedIds, mode, transform, textEditingId, codeEditingId } = useSelectionStore.getState();
   const scale = useCameraStore.getState().scale;
 
