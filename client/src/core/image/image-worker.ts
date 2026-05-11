@@ -70,6 +70,7 @@ export type WorkerOutbound =
         ogImageWidth?: number;
         ogImageHeight?: number;
         faviconAssetId?: string;
+        faviconSvgBase64?: string;
       };
     }
   | { type: 'unfurl-failed'; objectId: string; permanent: boolean }

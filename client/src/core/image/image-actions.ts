@@ -24,7 +24,7 @@ const SVG_TIMEOUT = 10_000; // 10 s
  * so the browser's SVG renderer rasterizes the vector art at high resolution
  * instead of at tiny intrinsic size (e.g. 24×24 icon → 2048×2048 PNG).
  */
-async function rasterizeSvg(blob: Blob): Promise<Blob> {
+export async function rasterizeSvg(blob: Blob): Promise<Blob> {
   if (blob.size > MAX_SVG_INPUT) throw new Error('SVG exceeds 10 MB');
 
   const text = await blob.text();

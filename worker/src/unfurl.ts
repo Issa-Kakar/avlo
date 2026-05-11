@@ -1,4 +1,4 @@
-import { extractDomain, normalizeUrl, parseImageDimensions, validateImage } from '@avlo/shared';
+import { extractDomain, isSvg, normalizeUrl, parseImageDimensions, validateImage } from '@avlo/shared';
 import type { Context } from 'hono';
 import { z } from 'zod/v4';
 
@@ -57,44 +57,68 @@ async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
   return hex;
 }
 
+async function fetchBytesCapped(url: string, maxBytes: number): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': UA },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT),
+  });
+  if (!res.ok || !res.body) {
+    console.warn('[unfurl] fetch failed:', url, res.status);
+    return null;
+  }
+
+  const contentType = res.headers.get('content-type') ?? '';
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      console.warn('[unfurl] too large:', url, total);
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return { bytes, contentType };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function storeRaster(assets: R2Bucket, bytes: Uint8Array, mimeType: string): Promise<string> {
+  const assetId = await sha256Hex(bytes);
+  if (!(await assets.head(assetId))) {
+    await assets.put(assetId, bytes, { httpMetadata: { contentType: mimeType } });
+  }
+  return assetId;
+}
+
 async function fetchAndStoreImage(
   assets: R2Bucket,
   imageUrl: string,
   maxBytes: number,
 ): Promise<{ assetId: string; width: number; height: number } | null> {
   try {
-    const res = await fetch(imageUrl, {
-      headers: { 'User-Agent': UA },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT),
-    });
-    if (!res.ok || !res.body) {
-      console.warn('[unfurl] image fetch failed:', imageUrl, res.status);
-      return null;
-    }
-
-    // Read with size guard
-    const reader = res.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        console.warn('[unfurl] image too large:', imageUrl, total);
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(value);
-    }
-
-    // Merge chunks
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+    const fetched = await fetchBytesCapped(imageUrl, maxBytes);
+    if (!fetched) return null;
+    const { bytes } = fetched;
 
     const { valid, mimeType } = validateImage(bytes);
     if (!valid) {
@@ -104,19 +128,51 @@ async function fetchAndStoreImage(
 
     const dims = parseImageDimensions(bytes, mimeType);
     console.warn('[unfurl] image dims:', imageUrl, dims.width, 'x', dims.height);
-    const assetId = await sha256Hex(bytes);
-
-    // Content-addressed dedup
-    if (await assets.head(assetId)) return { assetId, width: dims.width, height: dims.height };
-
-    await assets.put(assetId, bytes, {
-      httpMetadata: { contentType: mimeType },
-    });
+    const assetId = await storeRaster(assets, bytes, mimeType);
     return { assetId, width: dims.width, height: dims.height };
   } catch (err) {
     console.warn('[unfurl] image fetch error:', imageUrl, err);
     return null;
   }
+}
+
+type FaviconResult = { kind: 'raster'; assetId: string } | { kind: 'svg'; base64: string };
+
+async function fetchFavicon(assets: R2Bucket, faviconUrl: string, maxBytes: number): Promise<FaviconResult | null> {
+  try {
+    const fetched = await fetchBytesCapped(faviconUrl, maxBytes);
+    if (!fetched) return null;
+    const { bytes, contentType } = fetched;
+
+    if (contentType.startsWith('image/svg+xml') || isSvg(bytes)) {
+      return { kind: 'svg', base64: bytesToBase64(bytes) };
+    }
+
+    const { valid, mimeType } = validateImage(bytes);
+    if (!valid) {
+      console.warn('[unfurl] favicon validation failed:', faviconUrl);
+      return null;
+    }
+    const assetId = await storeRaster(assets, bytes, mimeType);
+    return { kind: 'raster', assetId };
+  } catch (err) {
+    console.warn('[unfurl] favicon fetch error:', faviconUrl, err);
+    return null;
+  }
+}
+
+function parseIconArea(sizes: string | null): number {
+  if (!sizes) return 0;
+  let max = 0;
+  for (const token of sizes.toLowerCase().split(/\s+/)) {
+    if (token === 'any') return Number.MAX_SAFE_INTEGER;
+    const m = token.match(/^(\d+)x(\d+)$/);
+    if (m) {
+      const area = parseInt(m[1], 10) * parseInt(m[2], 10);
+      if (area > max) max = area;
+    }
+  }
+  return max;
 }
 
 function resolveUrl(href: string | null | undefined, pageUrl: string): string | null {
@@ -204,7 +260,9 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   let metaDescription: string | null = null;
   let titleText = '';
   let faviconHref: string | null = null;
+  let faviconArea = -1;
   let appleTouchIconHref: string | null = null;
+  let imageSrcHref: string | null = null;
   let inTitle = false;
 
   const rewritten = new HTMLRewriter()
@@ -218,11 +276,11 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
 
         if (key === 'og:title') ogTitle = content;
         else if (key === 'og:description') ogDescription = content;
-        else if (key === 'og:image') ogImage = content;
+        else if (key === 'og:image' || key === 'og:image:url') ogImage = content;
         else if (key === 'og:image:secure_url') ogImageSecure = content;
         else if (key === 'twitter:title') twitterTitle = content;
         else if (key === 'twitter:description') twitterDescription = content;
-        else if (key === 'twitter:image') twitterImage = content;
+        else if (key === 'twitter:image' || key === 'twitter:image:src') twitterImage = content;
         else if (key === 'description') metaDescription = content;
       },
     })
@@ -240,8 +298,18 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
         const rel = (el.getAttribute('rel') ?? '').toLowerCase();
         const href = el.getAttribute('href');
         if (!href) return;
-        if (rel === 'apple-touch-icon') appleTouchIconHref = href;
-        else if (rel === 'icon' || rel === 'shortcut icon') faviconHref = href;
+
+        if (rel === 'apple-touch-icon' || rel === 'apple-touch-icon-precomposed') {
+          appleTouchIconHref = href;
+        } else if (rel === 'icon' || rel === 'shortcut icon') {
+          const area = parseIconArea(el.getAttribute('sizes'));
+          if (area > faviconArea) {
+            faviconHref = href;
+            faviconArea = area;
+          }
+        } else if (rel === 'image_src') {
+          imageSrcHref = href;
+        }
       },
     })
     .transform(pageRes);
@@ -252,13 +320,13 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   // --- Resolve metadata ---
   const title = ogTitle ?? twitterTitle ?? (titleText.trim() || null);
   const description = ogDescription ?? twitterDescription ?? metaDescription;
-  const rawOgImage = resolveUrl(ogImageSecure ?? ogImage ?? twitterImage, url);
+  const rawOgImage = resolveUrl(ogImageSecure ?? ogImage ?? twitterImage ?? imageSrcHref, url);
   const rawFavicon = resolveUrl(appleTouchIconHref ?? faviconHref, url);
 
   // --- Fetch + store images in parallel ---
-  const [ogImageResult, faviconAssetId] = await Promise.all([
+  const [ogImageResult, faviconResult] = await Promise.all([
     rawOgImage ? fetchAndStoreImage(c.env.ASSETS, rawOgImage, OG_IMAGE_MAX) : null,
-    rawFavicon ? fetchAndStoreImage(c.env.ASSETS, rawFavicon, FAVICON_MAX).then((r) => r?.assetId ?? null) : null,
+    rawFavicon ? fetchFavicon(c.env.ASSETS, rawFavicon, FAVICON_MAX) : null,
   ]);
 
   // --- Check for useful metadata ---
@@ -276,11 +344,13 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
     data.ogImageWidth = ogImageResult.width;
     data.ogImageHeight = ogImageResult.height;
   }
-  if (faviconAssetId) data.faviconAssetId = faviconAssetId;
+  if (faviconResult?.kind === 'raster') data.faviconAssetId = faviconResult.assetId;
+  else if (faviconResult?.kind === 'svg') data.faviconSvgBase64 = faviconResult.base64;
+
   console.warn('[unfurl] success:', url, {
     title: !!title,
     ogImage: !!ogImageResult,
-    favicon: !!faviconAssetId,
+    favicon: faviconResult?.kind ?? false,
   });
 
   return jsonCached(c, cache, cacheKey, data);

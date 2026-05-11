@@ -14,7 +14,8 @@ import { getCurrentTool } from '@/runtime/tool-registry';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { pasteUrlAsText } from '../clipboard/clipboard-actions';
-import { postToPrimary } from '../image/image-manager';
+import { rasterizeSvg } from '../image/image-actions';
+import { ingest, postToPrimary } from '../image/image-manager';
 import { createPlaceholder, removeAllPlaceholders, removePlaceholder } from './bookmark-placeholder';
 import { BOOKMARK_WIDTH, computeBookmarkHeight } from './bookmark-render';
 
@@ -37,6 +38,39 @@ export interface UnfurlResultData {
   ogImageWidth?: number;
   ogImageHeight?: number;
   faviconAssetId?: string;
+  faviconSvgBase64?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function base64ToBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const buf = new ArrayBuffer(binary.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
+  return buf;
+}
+
+/**
+ * Resolve favicon to a raster assetId. SVG branch rasterizes on main thread
+ * via the existing `rasterizeSvg` pipeline, then ingests the PNG (which
+ * uploads to R2 and decodes to a bitmap). Returns undefined on failure —
+ * bookmark still renders without a favicon.
+ */
+async function resolveFaviconAssetId(data: UnfurlResultData): Promise<string | undefined> {
+  if (data.faviconAssetId) return data.faviconAssetId;
+  if (!data.faviconSvgBase64) return undefined;
+  try {
+    const svgBlob = new Blob([base64ToBuffer(data.faviconSvgBase64)], { type: 'image/svg+xml' });
+    const pngBlob = await rasterizeSvg(svgBlob);
+    const result = await ingest(pngBlob);
+    return result.assetId;
+  } catch (err) {
+    console.warn('[bookmark] svg favicon rasterize failed:', err);
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,8 +117,11 @@ export function beginUnfurl(url: string, worldX: number, worldY: number): string
 
 /**
  * Worker callback: unfurl succeeded. Write bookmark to Y.Doc atomically.
+ *
+ * SVG favicons are rasterized + ingested before the transact so the Y.Doc
+ * write stays a single atomic transaction containing only a raster assetId.
  */
-export function handleUnfurlResult(objectId: string, data: UnfurlResultData): void {
+export async function handleUnfurlResult(objectId: string, data: UnfurlResultData): Promise<void> {
   if (!hasActiveRoom()) return;
 
   const pending = pendingBookmarks.get(objectId);
@@ -100,10 +137,16 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       return;
     }
 
+    const faviconAssetId = await resolveFaviconAssetId(data);
+
+    // Async work may have torn down the room; bail before mutating Y.Doc.
+    if (!hasActiveRoom() || !pendingBookmarks.has(objectId)) return;
+
     // Online happy path — single atomic transaction with ALL fields
     console.warn('[bookmark] unfurl success:', objectId, {
       title: !!data.title,
       ogImage: !!data.ogImageAssetId,
+      favicon: !!faviconAssetId,
     });
     const height = computeBookmarkHeight(data);
     const origin: [number, number] = [pending.worldX - BOOKMARK_WIDTH / 2, pending.worldY - height / 2];
@@ -122,7 +165,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       if (data.ogImageAssetId) yObj.set('ogImageAssetId', data.ogImageAssetId);
       if (data.ogImageWidth != null) yObj.set('ogImageWidth', data.ogImageWidth);
       if (data.ogImageHeight != null) yObj.set('ogImageHeight', data.ogImageHeight);
-      if (data.faviconAssetId) yObj.set('faviconAssetId', data.faviconAssetId);
+      if (faviconAssetId) yObj.set('faviconAssetId', faviconAssetId);
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
       getObjects().set(objectId, yObj);
@@ -145,6 +188,9 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
     const handle = getHandle(objectId);
     if (!handle || handle.kind !== 'bookmark') return;
 
+    const faviconAssetId = await resolveFaviconAssetId(data);
+    if (!hasActiveRoom()) return;
+
     // Upgrade existing bookmark with metadata
     transact(() => {
       const yObj = getObjects().get(objectId);
@@ -155,7 +201,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       if (data.ogImageAssetId) yObj.set('ogImageAssetId', data.ogImageAssetId);
       if (data.ogImageWidth != null) yObj.set('ogImageWidth', data.ogImageWidth);
       if (data.ogImageHeight != null) yObj.set('ogImageHeight', data.ogImageHeight);
-      if (data.faviconAssetId) yObj.set('faviconAssetId', data.faviconAssetId);
+      if (faviconAssetId) yObj.set('faviconAssetId', faviconAssetId);
 
       const newH = computeBookmarkHeight(data);
       yObj.set('height', newH);

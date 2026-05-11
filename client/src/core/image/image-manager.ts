@@ -238,7 +238,7 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
     }
 
     case 'unfurled': {
-      handleUnfurlResult(msg.objectId, msg.data);
+      void handleUnfurlResult(msg.objectId, msg.data);
       break;
     }
 
