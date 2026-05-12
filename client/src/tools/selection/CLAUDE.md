@@ -23,7 +23,7 @@ SelectTool + transform engine + selection store + hit testing + transform render
 | `core/types/handles.ts` | HandleId taxonomy, type guards, `scaleOrigin`, `handleCursor` |
 | `core/spatial/` | Hit testing — see `core/spatial/CLAUDE.md` |
 | `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderScaleEntry` (entry-based), `renderTranslatedEntry` (edge-pin fallback) |
-| `renderer/layers/selection-overlay.ts` | Marquee, single-select bounds rect (doubles as highlight), multi-select per-object highlights + union rect, connector mode endpoint dots only |
+| `renderer/layers/selection-overlay.ts` | Marquee, single-select bounds rect (doubles as highlight), multi-select per-object highlights + union rect, connector mode endpoint dots only. `shouldHideHandlesForEditing` keeps handles VISIBLE for shape/note label editing (label DOM lives strictly inside the padded bbox) and hides them only when the editor occupies the full bbox (`text` standalone, `code`). |
 
 ---
 
@@ -36,9 +36,10 @@ type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endp
 type DownHit =
   | { kind: 'background' }
   | { kind: 'selectionGap' }
-  | { kind: 'object';   handle: ObjectHandle; isSelected: boolean }
-  | { kind: 'handle';   handleId: HandleId }
-  | { kind: 'endpoint'; connectorId: string; slot: Slot };
+  | { kind: 'object';     handle: ObjectHandle; isSelected: boolean }
+  | { kind: 'handle';     handleId: HandleId }
+  | { kind: 'endpoint';   connectorId: string; slot: Slot }
+  | { kind: 'openButton'; handle: ObjectHandle };           // bookmark Open chip
 
 const HIT_RADIUS_PX = 6;       // tolerance = HIT_RADIUS_PX + HIT_SLACK_PX = 8px screen
 const HIT_SLACK_PX = 2;
@@ -48,13 +49,13 @@ const CLICK_WINDOW_MS = 180;
 
 ### `begin()` flow
 
-1. `contextMenuController.hide()`.
+1. `contextMenuController.hide()`, then `clearBookmarkOpenHoverIfAny()`. The hover gets re-set below only on the openButton branch.
 2. Mode-specific priority: standard mode (selection + not editing) → `hitResizeHandle()` → `'handle'`. Connector mode → `hitEndpointDot()` → `'endpoint'`.
-3. Common: `hitTestObjects()` → `'object'` (carries `isSelected`).
+3. Common: `hitTestObjects()` → object hit. Bookmark hit + no shift/ctrl + `hitTestOpenButton()` → `'openButton'` (sets `hoveredOpenBookmarkId`). Otherwise → `'object'` (carries `isSelected`).
 4. No object hit: standard mode + inside selection bbox → `'selectionGap'`; else `'background'` (clears selection).
 5. `phase = 'pendingClick'` for all targets.
 
-**Single text/code re-click exception:** clicking a single-selected text/code/note calls `cancelHide()` immediately after `hide()` to prevent context menu flash.
+**Single editable re-click exception:** clicking a single-selected text/code/note/shape calls `cancelHide()` immediately after `hide()` to prevent context menu flash. Shape is included because label-less shapes create the label on first click — same edit-entry path.
 
 ### `pendingClick → Phase` (in `move()`)
 
@@ -62,10 +63,11 @@ Transition gated by `passMove` (`dist > MOVE_THRESHOLD_PX`). Gap/background also
 
 | DownHit kind | Transition | Notes |
 |---|---|---|
-| `handle`   | `scale` | `store.beginScale(handleId, downWorld)` |
-| `endpoint` | `endpointDrag` | Drill to single connector if multi-selected. Controller owns the gesture (RouteContext + buffer + bbox snapshots). |
+| `handle`     | `scale`        | `store.beginScale(handleId, downWorld)` |
+| `endpoint`   | `endpointDrag` | Drill to single connector if multi-selected. Controller owns the gesture (RouteContext + buffer + bbox snapshots). |
 | `object` (unselected) | `translate` | Selects first. Anchored connectors → `marquee` instead. |
 | `object` (selected)   | `translate` | Anchored connectors in connector mode → `marquee` instead. |
+| `openButton` | `translate`    | Drift on a pressed Open button = translate intent (user moving the bookmark). Hover stays painted; `ctx.translate(tdx, tdy)` in `objects.ts` carries the hovered chip with the card. |
 | `selectionGap`        | `translate` | Drag = translate entire selection. |
 | `background`          | `marquee`   | Empty area drag = marquee select. |
 
@@ -92,11 +94,24 @@ store.updateTranslate(worldX - downWorld[0], worldY - downWorld[1])
 
 ### `end()` finalization
 
-Click (no drag): handle → no-op; endpoint → drill to single; outside → shift/ctrl additive xor replace; in-selection → shift/ctrl subtractive xor (multi: drill, single text/note/shape: enter text edit, single code: enter code edit); gap → quick tap deselects; background → deselect.
+Click (no drag): handle → no-op; endpoint → drill to single; openButton → re-verify against fresh handle and re-test rect, then `openBookmarkUrl(id)` (the bookmark may have been deleted mid-press; drift >MOVE_THRESHOLD_PX would have promoted to translate already); outside → shift/ctrl additive xor replace; in-selection → shift/ctrl subtractive xor (multi: drill, single text/note/shape: enter text edit, single code: enter code edit); gap → quick tap deselects; background → deselect.
 
 Drag commit: `store.endTransform()` calls `ctrl.commit()` xor `ctrl.clear()` and resets the discriminant. `store.cancelTransform()` does the same for Esc.
 
+After every `end()` / `cancel()`: `rehoverFromLastCursor()` re-runs `handleHoverCursor` against `getLastCursorWorld()` so a just-committed bookmark scale immediately reflects in the hover indicator without requiring a cursor wiggle.
+
 **Modifiers:** Shift/Ctrl = additive/subtractive multi-select. Ctrl during endpoint drag suppresses snapping.
+
+### Hover & Cursor
+
+When idle, `move()` calls `handleHoverCursor(worldX, worldY)`. Priority (first match wins, all others fall through to default cursor):
+
+1. **Pan ownership guard.** `panTool.isActive()` → bail (panTool owns 'grabbing' during MMB/spacebar pan; camera subscription routes those through `onViewChange` → here, so don't clobber).
+2. Standard mode + selection + not editing → `hitResizeHandle` → `handleCursor(handle)`.
+3. Connector mode → `hitEndpointDot` → 'grab'.
+4. **Bookmark Open chip** (occlusion-aware via `pickTopmostPaint` — framed kinds paint `'ink'` on hit, so a bookmark winning the picker means the cursor is on visible bookmark pixels). On enter/leave, `invalidateWorldBBox(getOpenButtonWorldBBox(id))` so the base canvas repaints the chip's hover-fill. Cursor → 'pointer'.
+
+SelectTool exposes `getHoveredOpenBookmarkId(): string | null` — `objects.ts` hoists this once per frame into `_hoveredOpenBookmarkId` and `drawObject`'s bookmark branch passes `_hoveredOpenBookmarkId === handle.id` to `drawBookmark`. `clearBookmarkOpenHoverIfAny()` runs at the start of every `begin()` (re-set by the openButton branch), on `cancel()`, on `onPointerLeave()`, and whenever a higher-priority cursor wins.
 
 ---
 
@@ -134,17 +149,30 @@ type ScalableKind = Exclude<ObjectKind, 'connector'>;  // connectors → topolog
 shape:    HasFrame & HasBBox
 image:    HasFrame & HasBBox
 stroke:   GeoOf = HasPoints & HasBBox & {width?}        OutOf = HasBBox & {factor, fcx, fcy}
-text:     HasOrigin & HasBBox & {fontSize?, width?, align?, measured?, minW?}
+text:     HasOrigin & HasBBox & {fontSize, width?, align?, measured?, minW?}
                                                          OutOf = +HasFontSize & HasWidth & {layout}
-code:     HasOrigin & HasBBox & {fontSize?, width?, sourceLines?, lineNumbers?, …}
+code:     HasOrigin & HasBBox & {fontSize?, width?, source?, lineNumbers?, …}
                                                          OutOf = +HasFontSize & HasWidth & {layout}
 note:     HasOrigin & HasBBox & {scale?}                 OutOf = +HasScale
 bookmark: HasOrigin & HasBBox & {scale?}                 OutOf = +HasScale
 ```
 
+`text.fontSize` is **required** (no `?`) — every text behavior captures it, including translate/edgePin. Reason: `applyOffset` propagates `f.fontSize → o.fontSize` unconditionally so `fillDirty`'s italic-overhang pad math can read `out.fontSize` without branching on behavior.
+
 `KindWithBBoxGeo = Exclude<ObjectKind, 'connector'>` — every non-connector has `bbox`. Exported and shared with `selection-overlay.ts`.
 
-**Per-behavior freeze.** `freezeScaleEntry(kind, behavior, ...)` captures only fields the chosen behavior will read: `edgePin` delegates to `freezeTranslateEntry` (frame/origin/bbox only); `uniform` adds `fontSize`/`width`/`scale`; `reflow` additionally captures `align`/`measured`/`minW` (text) or `sourceLines`/`lineNumbers`/`headerVisible`/`outputVisible`/`output`/`minW` (code).
+**Per-behavior freeze.** `freezeScaleEntry(kind, behavior, ...)` captures only fields the chosen behavior will read. `edgePin` delegates to `freezeTranslateEntry`; `uniform` adds the tracked scalar; `reflow` adds the layout inputs.
+
+| Behavior | Per-kind freeze (beyond origin/frame/bbox) |
+|---|---|
+| translate / edgePin (text)     | `fontSize` — propagated by `applyOffset` so `fillDirty`'s italic-pad reads `out.fontSize` unconditionally |
+| translate / edgePin (note, bookmark) | `scale` — propagated by `applyOffset` so `fillFrameFromBind`'s `ratio = out.scale / frozen.scale` works under translate (ratio = 1) |
+| translate / edgePin (others)   | nothing extra |
+| uniform (text/code)            | `fontSize`, `width` |
+| uniform (note/bookmark)        | `scale` |
+| uniform (stroke)               | `points`, `width` (only uniform commit reads them) |
+| reflow (text)                  | `align`, `measured`, `minW` |
+| reflow (code)                  | `source`, `lineNumbers`, `headerVisible`, `outputVisible`, `output`, `minW` |
 
 **Stroke OutMap** drops `points`/`width` entirely. Apply mutates only `o.bbox` and stores `factor`/`fcx`/`fcy` for `ctx.scale` preview rendering. Commit reads `frozen.points` directly. **No per-frame point allocation regardless of stroke length.**
 
@@ -218,7 +246,7 @@ function edgePinOffset(f, ctx, o) {
 ```
 One function replaces six. Stroke also goes through this — only `bbox` updates per frame, commit (`commitStrokeOffset`) derives final points from `frozen.points + bbox delta`.
 
-**Reflow:** `computeReflowWidth` + re-layout at new width. `reflowText` → `layoutMeasuredContent(frozen.measured, w, fontSize)` + `anchorFactor(align)`. `reflowCode` → `computeCodeLayout(frozen.sourceLines, fontSize, w, lineNumbers)`. Both use `frozen.minW` (from `getMinCharWidth`/`getCodeMinWidth` at begin).
+**Reflow:** `computeReflowWidth` + re-layout at new width. `reflowText` → `layoutMeasuredContent(frozen.measured, w, fontSize, o.layout)` (reuses the pre-allocated `TextLayout` buffer from `createOutFor`) + `anchorFactor(align)`. `reflowCode` → `layoutCodeSourceInto(frozen.source, fontSize, w, lineNumbers, o.layout)` (reuses the pre-allocated `CodeLayout` buffer). Both use `frozen.minW` (from `getMinCharWidth`/`getCodeMinWidth` at begin). The reflow buffer is allocated once at freeze; per-pointermove allocation is zero.
 
 ### TransformController
 
@@ -399,13 +427,15 @@ Marquee uses no tolerance (exact region intersect).
 Frame-top hoists:
 
 ```ts
-_textEditingId / _codeEditingId         // module-state snapshot — leaf draw fns read these
+_textEditingId / _codeEditingId             // module-state snapshot — leaf draw fns read these
+_hoveredOpenBookmarkId                       // from selectTool.getHoveredOpenBookmarkId(); drawObject's
+                                             // bookmark branch passes `_hoveredOpenBookmarkId === handle.id`
 const topology = getTransformTopology()
-const connEntries = topology?.byId          // null in idle / endpointDrag
+const connEntries = topology?.byId           // null in idle / endpointDrag
 const attachedSet = topology?.attachedConnectorIds  // ReadonlySet | null
-const epDragEntry = getEndpointDragEntry()  // EndpointDragEntry | null
+const epDragEntry = getEndpointDragEntry()   // EndpointDragEntry | null
 const epDragId    = epDragEntry?.id ?? null
-const tdx / tdy   = isTranslating ? ctrl.dx : 0   // hoisted scalar
+const tdx / tdy   = isTranslating ? ctrl.dx/dy : 0  // hoisted scalars
 ```
 
 Per object in ULID order:
@@ -538,9 +568,9 @@ interface Aggregate<V> { value: V | null; mixed: boolean; second: V | null }
 
 **Source-of-ids selection** (`getSelectedIds()` / `getTextSelectionIds()` / `getCodeIds()`) lives at the action layer in `selection-actions.ts`. It's "who's calling," not "what the field is." Trying to model it on the descriptor adds the wrong axis.
 
-**Correlated-union cast** at the dispatch boundary (`(f as AnyDescriptor).write[h.kind]`) — one cast per loop with `// biome-ignore` mirroring `transform.ts:714` and `object-query.ts:83`. The mapped table proves correctness at definition.
+**Correlated-union cast** at the dispatch boundary (`(f as AnyDescriptor).write[h.kind]`) — one cast per loop with `// biome-ignore`, mirroring the `APPLY_SCALE[kind][behavior]` cast in `transform.ts` and the `KIND[h.kind] as AnyCapability` cast in `object-query.ts`. The mapped table proves correctness at definition.
 
-**Adding a property** is now five mechanical edits, no control-flow change:
+**Adding a property** is four mechanical edits, no control-flow change:
 1. Append one `FieldDescriptor` entry to `selection-field-table.ts`.
 2. Add one line to `selection-actions.ts`: `export const setSelectedX = (v) => applyField(getSelectedIds(), X, v);`.
 3. Add one `foldField` call + one record field to `computeStyles` in `selection-utils.ts`.
