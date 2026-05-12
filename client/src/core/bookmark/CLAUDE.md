@@ -1,43 +1,36 @@
 # Bookmark Subsystem
 
-URL bookmarks — paste a URL, get a card with OG image, title, description, domain, and "Open" button. Offline paste creates a plain text object (never enters bookmark pipeline). Online failures also fall back to text objects. Loading state is local-only via HTML placeholder; Y.Doc receives a single atomic transaction once unfurl completes. No `unfurlStatus` field — other clients never see pending/loading states.
+URL bookmarks — paste a URL, get a card with OG image, title, description, domain, and "Open" button. Offline pastes never enter the pipeline (text fallback). Online failures also fall back to text. Loading state is local-only via HTML placeholder; Y.Doc receives **one atomic transaction** once unfurl completes. No `unfurlStatus` field — other clients never see pending state.
 
-## Y.Doc Schema (v3 — origin+scale)
+---
+
+## Y.Doc Schema
 
 ```typescript
 {
-  id: string;                          // ULID (pre-generated before Y.Doc write)
-  kind: 'bookmark';
-  url: string;                        // Normalized (http/https only, no fragment, no trailing /)
-  domain: string;                     // Hostname minus www. (stored, not derived in render path)
-  origin: [x, y];                    // Top-left position
-  height: number;                    // Card height at base scale (data-driven)
-  scale?: number;                    // Uniform scale factor (default 1)
+  id, kind: 'bookmark', ownerId, createdAt,
+  url: string,                 // Normalized (http/https only, no fragment, no trailing /)
+  domain: string,              // Hostname minus www. (stored, not derived in render path)
+  origin: [x, y],              // Top-left at base scale
+  height: number,              // Card height at base scale (data-driven via computeBookmarkHeight)
+  scale?: number,              // Uniform scale (default 1)
 
-  // Width is always BOOKMARK_WIDTH (300). Frame derived: [origin[0], origin[1], 300*scale, height*scale].
-  // No stored frame — frame is computed via computeBookmarkBBox() and cached in bookmarkFrameCache.
-
-  // Set by worker on successful unfurl (all optional — absent on minimal/failed bookmarks):
-  title?: string;
-  description?: string;
-  ogImageAssetId?: string;            // SHA-256 hex of OG image in R2
-  ogImageWidth?: number;              // Original image width (from binary header parsing)
-  ogImageHeight?: number;             // Original image height (from binary header parsing)
-  faviconAssetId?: string;            // SHA-256 hex of favicon in R2
-
-  ownerId: string;
-  createdAt: number;
+  // Set by worker on successful unfurl (all optional):
+  title?: string,
+  description?: string,
+  ogImageAssetId?: string,     // SHA-256 hex in R2
+  ogImageWidth?: number,
+  ogImageHeight?: number,
+  faviconAssetId?: string,     // Raster favicons only — SVGs rasterized client-side before write
 }
 ```
 
-**No `unfurlStatus` field.** Bookmark state is determined by which optional fields are present:
-- Full card: `ogImageAssetId` present (with or without `title`)
-- Text card: `title` present, no OG image
-- No minimal card — offline/failed unfurls create text objects instead of bookmarks
+Width is fixed at `BOOKMARK_WIDTH = 300`. Frame is derived: `[origin[0], origin[1], 300*scale, height*scale]`. No stored frame — computed via `computeBookmarkBBox()` and cached in `bookmarkFrameCache`. Read via `getBookmarkFrame(id) → FrameTuple | null`.
 
-**Height is data-driven** — computed from `computeBookmarkHeight(data)` using OG image aspect ratio, title line count, and description line count.
-
-**Rendering uses ctx.translate + ctx.scale** — same pattern as sticky notes. `drawBookmark()` translates to origin, scales by `scale`, then renders at local coordinates `(0, 0, BOOKMARK_WIDTH, height)`.
+**Card variant is determined by which fields are present:**
+- Full card → `ogImageAssetId` present (with or without title)
+- Text card → `title` present, no OG image
+- No minimal/failed visual — offline/failed unfurls become text objects, never bookmarks
 
 ---
 
@@ -45,566 +38,358 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
 
 | File | Purpose |
 |------|---------|
-| `client/src/lib/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()` (hover-aware), text wrapping, height computation, two card layouts (full + text), Open-button hit-test + world-bbox helpers |
-| `client/src/lib/bookmark/bookmark-actions.ts` | Side-effecting actions: `openBookmarkUrl(id)` — two-pass URL validation, `window.open(_blank, noopener,noreferrer)` |
-| `client/src/lib/bookmark/bookmark-unfurl.ts` | Lifecycle coordinator: pending map, worker commands, atomic Y.Doc writes, placeholder management |
-| `client/src/lib/bookmark/bookmark-placeholder.ts` | HTML loading elements: spinner + domain label, camera-tracked positioning |
-| `worker/src/unfurl.ts` | Cloudflare Worker: Zod validation, SSRF guard, HTMLRewriter parse, image fetch/R2 store, edge cache |
-| `packages/shared/src/utils/url-utils.ts` | `normalizeUrl()`, `isValidHttpUrl()`, `extractDomain()`, `prettifyDomain()` |
-| `packages/shared/src/accessors/object-accessors.ts` | `getBookmarkProps()`, `getBookmarkUrl()` — typed Y.Map accessors |
-| `packages/shared/src/utils/image-validation.ts` | `validateImage()`, `parseImageDimensions()` — binary header parsing for width/height |
+| `core/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()` (hover-aware), text wrapping, height computation, two card layouts, Open-button hit-test + world-bbox helpers, `computeBookmarkBBox`, `getBookmarkFrame`, `BOOKMARK_WIDTH`, `bookmarkCache` |
+| `core/bookmark/bookmark-actions.ts` | `openBookmarkUrl(id)` — two-pass URL validation, `window.open(_blank, noopener,noreferrer)` |
+| `core/bookmark/bookmark-unfurl.ts` | Lifecycle: pending map, `beginUnfurl`, `handleUnfurlResult`/`handleUnfurlFailed`, `canCreateBookmark`, `cleanupOnRoomTeardown`, SVG favicon rasterization |
+| `core/bookmark/bookmark-placeholder.ts` | HTML loading element (spinner + domain), camera-tracked positioning |
+| `worker/src/unfurl.ts` | CF Worker route — Zod validation, SSRF guard, HTMLRewriter, image fetch/R2 store, edge cache |
+| `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain`, `prettifyDomain` |
+| `core/accessors.ts` | `getBookmarkProps`, `getBookmarkUrl`, `getBookmarkAssetIds` |
 
 ---
 
 ## Data Flow
 
-### Paste → Placeholder → Unfurl → Atomic Y.Doc Write
+### Paste → Placeholder → Unfurl → Atomic Write
 
 ```
-User pastes URL
-  ↓
-clipboard-actions.ts: extractLeadingUrl(text)
-  ├── First line is valid HTTP(S) URL → createBookmarkFromUrl(url)
-  │     ├── canCreateBookmark() false (offline) → pasteUrlAsText(url) → text object, done
-  │     └── beginUnfurl(url, worldX, worldY)    [bookmark-unfurl.ts]
-  │           ├── objectId = ulid()              (pre-generated, not yet in Y.Doc)
-  │           ├── domain = extractDomain(url)
-  │           ├── pendingBookmarks.set(objectId, { url, domain, worldX, worldY })
-  │           ├── createPlaceholder(objectId, domain, wx, wy)   [bookmark-placeholder.ts]
-  │           │     └── HTML div: spinner + domain label, appended to editorHost
-  │           ├── postToPrimary({ type: 'unfurl', objectId, url })
-  │           ├── setActiveTool('select'), setSelection([objectId])
-  │           └── return objectId
-  │
-  └── Remainder after URL → pasteExternalText(remainder) as separate text object
+User pastes text
+  ↓ clipboard-actions.ts: extractLeadingUrl(text)  [module-private]
+  ↓ first line is HTTP(S) URL? → createBookmarkFromUrl(url)  [module-private]
+    ├── canCreateBookmark() false (offline) → pasteUrlAsText() → done
+    └── beginUnfurl(url, wx, wy)  [bookmark-unfurl.ts]
+          ├── objectId = ulid()  (pre-generated, not yet in Y.Doc)
+          ├── pendingBookmarks.set(objectId, { url, domain, wx, wy, objectId })
+          ├── createPlaceholder(objectId, domain, wx-150, wy-24)
+          └── postToPrimary({ type: 'unfurl', objectId, url })
 ```
 
-### Worker Fetch Pipeline
+### Worker → Y.Doc
 
 ```
-image-worker.ts (primary only):
-  └── unfurlDirect(objectId, url)  — single direct fetch, no IDB queue
-        ├── GET /api/unfurl?url=<encoded>
-        │     ↓
-        │   worker/unfurl.ts:
-        │     ├── Zod validation + SSRF guard (middleware via zValidator)
-        │     ├── Edge cache check (SHA-256 of normalized URL)
-        │     ├── Content-type branching:
-        │     │   ├── image/* → direct image storage, filename as title → 200
-        │     │   ├── text/html | application/xhtml+xml | application/xml → HTMLRewriter
-        │     │   └── anything else → 204
-        │     ├── HTMLRewriter: og:title, og:image, og:image:secure_url, twitter:*, <title>, favicon
-        │     │   (meta tags checked via `property || name` — handles both attribute styles)
-        │     ├── parseImageDimensions(bytes, mimeType) → { width, height } from binary headers
-        │     ├── Parallel image fetch → SHA-256 → R2 put (content-addressed dedup)
-        │     ├── Substance check: must have title OR ogImage → 200, else → 204
-        │     └── Response codes: 200 (success, cached 7d), 204 (no metadata), 400 (bad URL), 502 (fetch failed)
-        │
-        ├── 200 → post({ type: 'unfurled', objectId, data })
-        │     ↓
-        │   image-manager.ts → handleUnfurlResult(objectId, data)
-        │     ↓
-        │   bookmark-unfurl.ts:
-        │     Pending entry found:
-        │       ├── Substance check: has title OR ogImageAssetId?
-        │       │   ├── No → pasteUrlAsText(url, worldX, worldY, objectId) → text object fallback
-        │       │   └── Yes → computeBookmarkHeight(data) → frame centered on worldX, worldY
-        │       │         └── Y.Doc mutate: SINGLE ATOMIC TRANSACTION with ALL fields
-        │       ├── removePlaceholder(objectId)
-        │       └── pendingBookmarks.delete(objectId)
-        │
-        │     No pending entry (page refresh recovery):
-        │       └── Check Y.Doc for objectId → upgrade if found, discard if not
-        │
-        └── Non-200 (204, 4xx, 5xx, network error) → post({ type: 'unfurl-failed' })
-              ↓ handleUnfurlFailed(objectId):
-                ├── pasteUrlAsText(url, worldX, worldY, objectId) → text object fallback
-                ├── removePlaceholder(objectId)
-                └── pendingBookmarks.delete(objectId)
+image-worker.ts (primary):
+  unfurlDirect(objectId, url) → GET /api/unfurl?url=...
+    └── 200 → post 'unfurled' with data
+    └── non-200/error → post 'unfurl-failed'
+
+image-manager.ts: routes 'unfurled' → handleUnfurlResult, 'unfurl-failed' → handleUnfurlFailed
+
+handleUnfurlResult(objectId, data):
+  pending entry found?
+    ├── No substance (no title AND no ogImage) → pasteUrlAsText() → text fallback
+    └── Substance:
+          ├── resolveFaviconAssetId(data)  (SVG → rasterizeSvg → ingest → raster assetId)
+          ├── hasActiveRoom() && still pending?  (async work may have torn down room)
+          ├── height = computeBookmarkHeight(data); origin centered on paste point
+          └── transact(): SINGLE atomic Y.Map write with ALL fields
+          ├── removePlaceholder + pendingBookmarks.delete
+          └── (optional) auto-select if no tool active
+  no pending (page refresh recovery):
+    └── getHandle(objectId).kind === 'bookmark'? → upgrade existing fields atomically
+
+handleUnfurlFailed(objectId): pasteUrlAsText fallback + cleanup
 ```
 
-### Image Pipeline for Bookmark Assets
+### Image Pipeline for OG + Favicon
 
-Bookmark OG images and favicons flow through the **same decode pipeline** as regular images:
+Bookmark asset IDs flow through the **same decode pipeline as images**, but always at level 0 (ppsp = Infinity, no mip selection). Registration is observer-fed:
 
-```
-Bookmark written to Y.Doc (asset IDs now in Y.Map)
-  ↓
-Observer fires → snapshot published
-  ↓
-manageImageViewport() (per render tick):
-  ├── Spatial index query for visible bookmarks
-  ├── Extract ogImageAssetId + faviconAssetId from Y.Map
-  └── registerAssetInfo(assetId, ppsp=Infinity, ...)
-        ↓ (forces level 0, no mip levels)
-      Standard decode pipeline → worker decode → ImageBitmap
-        ↓
-      getBitmap(assetId) available for drawBookmark()
-```
+- `registerBookmarkMeta(id, yObj)` — called by RoomDocManager on insert/change; stores `{ ogId, favId }` in `bookmarkAssetIds` map
+- `unregisterMedia(id)` — on delete
+- `manageImageViewport()` — per frame, iterates visible bookmark `IndexEntry`s + reads `bookmarkAssetIds`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
+- `hydrateImages()` (zero-arg) — at room join, reads observer-populated caches; bookmark assets contribute at level 0 using the handle's bbox
 
-**Key difference from images:** Bookmarks always use `ppsp = Infinity` (full-resolution, no mip level selection). OG images are ≤300wu wide (card width), favicons 18×18.
-
-### Hydration (Room Join)
-
-```
-hydrateObjectsFromY()
-  ├── Y.Map walk → ObjectHandle with kind: 'bookmark', collected into mediaHandles[]
-  ├── BBox: frame-based with shadow padding (frame[2] * NOTE_SHADOW_PAD_RATIO)
-  └── hydrateImages(mediaHandles): per handle → collect ogImageAssetId + faviconAssetId at level 0 using handle.bbox
-```
-
-No main-thread scan for pending bookmarks — unfurls are direct fetch (no IDB queue).
+OG images ≤ 300wu (card width); favicons 18×18.
 
 ---
 
-## Pending Bookmarks (Local-Only State)
+## Pending Bookmarks (Local-Only)
 
 ```typescript
-// bookmark-unfurl.ts
-interface PendingBookmark {
-  url: string;
-  domain: string;
-  worldX: number;          // Paste position
-  worldY: number;
-  objectId: string;        // Pre-generated ULID
-}
-
-const pendingBookmarks = new Map<string, PendingBookmark>();
+const pendingBookmarks = new Map<string, { url, domain, worldX, worldY, objectId }>();
 ```
 
-This Map exists only on the creating client's main thread. Other clients never see it. Two cases in `handleUnfurlResult`:
+Lives on the creating client only. Other clients never see it. Possible terminal states:
 
-| Scenario | Behavior |
-|----------|----------|
-| Online paste, unfurl succeeds with substance | Single atomic Y.Doc write with full data |
-| Online paste, unfurl returns empty/fails | `pasteUrlAsText()` → text object fallback |
-| Offline paste | Never enters pipeline — `canCreateBookmark()` returns false → text object immediately |
-| Page refresh with stale IDB entry | No pending entry → check Y.Doc by objectId → upgrade if found |
+| Scenario | Outcome |
+|----------|---------|
+| Unfurl succeeds with substance | Single atomic Y.Doc write |
+| Unfurl empty/204 or 4xx/5xx | `pasteUrlAsText()` text fallback |
+| Offline at paste time | Bypassed entirely — `canCreateBookmark()` false → text immediately |
+| Room teardown mid-unfurl | `cleanupOnRoomTeardown()` clears map; late worker reply hits `hasActiveRoom() === false` and bails |
+| Page refresh with stale IDB | No pending entry → upgrade Y.Doc object if it exists, else discard |
 
 ---
 
-## HTML Placeholder (bookmark-placeholder.ts)
+## HTML Placeholder
 
-Loading placeholders are HTML elements appended to the editor host div, NOT canvas-rendered. They're visible only to the creating client.
+`bookmark-placeholder.ts`. Loading card is an HTML `<div>` appended to `editorHost`, **not** canvas-rendered. Visible only to the creating client. 300×48px white card, 8px radius, subtle shadow, spinner + domain label. Spinner keyframes injected once into `<head>`.
 
-```typescript
-interface PlaceholderEntry {
-  el: HTMLDivElement;     // DOM element
-  wx: number;             // World X position
-  wy: number;             // World Y position
-}
-
-const placeholders = new Map<string, PlaceholderEntry>();
-```
-
-**Visual:** 300×48px white card with 8px border-radius, subtle box-shadow, containing a 16px spinning circle + 12px domain text. Spinner uses CSS `@keyframes bk-spin` (injected once into `<head>`).
-
-**Positioning:** Each frame, `repositionAllPlaceholders()` (called from `manageImageViewport()`) applies camera transforms:
-
-```typescript
-const { scale, pan } = useCameraStore.getState();
+Position each frame via `repositionAllPlaceholders()` (called from `manageImageViewport`):
+```ts
 el.style.transform = `translate(${(wx - pan.x) * scale}px, ${(wy - pan.y) * scale}px) scale(${scale})`;
 ```
 
-**Lifecycle:**
-- Created by `beginUnfurl()` → `createPlaceholder(objectId, domain, wx, wy)`
-- Removed by `handleUnfurlResult()` or `handleUnfurlFailed()` → `removePlaceholder(objectId)`
-- All removed on room teardown → `removeAllPlaceholders()`
+Lifecycle: `createPlaceholder` (in `beginUnfurl`) → `removePlaceholder` (on result/fail) → `removeAllPlaceholders` (on room teardown).
 
 ---
 
-## Rendering (bookmark-render.ts)
+## Rendering (`bookmark-render.ts`)
 
-### Two Data-Driven Layouts
+### Two Layouts
 
-No pending/failed visual states — layout determined purely by which metadata fields are present. Offline/failed unfurls create text objects, not bookmarks.
-
-**Full Card** (has `ogImageAssetId`):
+**Full Card** (`ogImageAssetId` present):
 ```
-┌──────────────────────────────┐
-│          OG Image            │  ← Variable height (70–250wu, aspect-ratio-aware)
-│                  [Open ↗]    │  ← 78×28 button overlaid on image bottom-right
-├──────────────────────────────┤
-│ Title (bold 14px)            │  ← Max 2 lines, ellipsis (if present)
-│ Description (12px gray)      │  ← Max 3 lines, ellipsis (if present)
-│ 🔗 Github                    │  ← Favicon 18×18 + prettified site name (13px black)
-└──────────────────────────────┘
+┌──────────────────────┐
+│      OG Image        │  Variable height (70–250wu, aspect-ratio-aware)
+│            [Open ↗]  │  78×28 button overlaid on image bottom-right
+├──────────────────────┤
+│ Title (bold 14px)    │  Max 2 lines, ellipsis
+│ Description (12px)   │  Max 3 lines, gray, ellipsis
+│ 🔗 Github            │  18×18 favicon + prettified site name (13px black)
+└──────────────────────┘
 ```
 
-**Text Card** (has `title`, no OG image):
+**Text Card** (title only):
 ```
-┌──────────────────────────────┐
-│ Title (bold 14px)            │
-│ Description (12px gray)      │
-│ 🔗 Github         [Open ↗]   │  ← 78×28 button right-aligned in favicon row
-└──────────────────────────────┘
-```
-
-Title and description sections are separated by a `SECTION_GAP` (6wu); the same gap precedes the favicon row when any text is present.
-
-### Shadow + Body
-
-Shared with sticky notes via `renderNoteBody(ctx, x, y, w, h, CARD_FILL)` from `core/text/sticky-note.ts`. Draws a dual-layer Gaussian shadow cached per-`(w, h)` (rendered at exact body dimensions, no slicing) + white rounded rect fill (`#FFFFFF`, corner radius `w * NOTE_CORNER_RADIUS_RATIO`). Each unique bookmark height produces one cache entry (LRU-bound). `CARD_RADIUS` (used for OG image top-corner clip) is derived from the same corner-radius ratio — keeps the OG image clip lined up with the body curve and the shared shadow silhouette at the top corners.
-
-### OG Image Drawing
-
-Aspect-ratio-aware display height:
-
-```typescript
-function ogDisplayHeight(ogW: number, ogH: number): number {
-  if (ogW <= 0 || ogH <= 0) return MIN_OG_H;  // Defensive fallback
-  const natural = BOOKMARK_WIDTH * (ogH / ogW);  // Scale to card width
-  return Math.min(Math.max(natural, MIN_OG_H), MAX_OG_H);  // Clamp [70, 250]
-}
+┌──────────────────────┐
+│ Title (bold 14px)    │
+│ Description (12px)   │
+│ 🔗 Github  [Open ↗]  │  Open button right-aligned in favicon row
+└──────────────────────┘
 ```
 
-Clipped to top-rounded rectangle (`ctx.roundRect(x, y, w, displayH, [8, 8, 0, 0])`). Center-cropped vertically when natural height exceeds display height:
+`SECTION_GAP` (6wu) inserted only between adjacent non-empty sections.
 
-```typescript
-if (naturalH > displayH) {
-  const scale = w / bitmap.width;
-  const srcH = displayH / scale;
-  const srcY = (bitmap.height - srcH) / 2;    // Vertical center of source
-  ctx.drawImage(bitmap, 0, srcY, bitmap.width, srcH, x, y, w, displayH);
-}
-```
+### Body + Shadow
 
-Placeholder `#f5f5f5` rect while bitmap loading.
+`renderNoteBody(ctx, 0, 0, BOOKMARK_WIDTH, height, '#FFFFFF')` from `core/text/sticky-note.ts`. Shares the dual-layer Gaussian shadow cache (keyed by `(w, h)`) and corner-radius ratio with sticky notes — `CARD_RADIUS = getNoteCornerRadius(BOOKMARK_WIDTH)` so the OG image top-corner clip aligns with the body silhouette.
 
-### "Open" Button
+### OG Image
 
-78×28wu rounded rect (radius 6px). White `#FFFFFF` background (hover: `#e8e8e8`), 1px `#d1d5db` border. Left: "Open" text (600 13px Inter, `#374151`). Right: box-arrow icon (stroke `#374151`, lineWidth 1.8, round caps/joins).
+Aspect-ratio-aware display height: `BOOKMARK_WIDTH * (ogH / ogW)` clamped to `[MIN_OG_H=70, MAX_OG_H=250]`. Clipped to top-rounded rect, vertically center-cropped when natural > display. `#f5f5f5` placeholder while bitmap loads.
 
-- **Full card:** overlaid on OG image, `OPEN_BTN_MARGIN` (10wu) from bottom-right of image area
-- **Text card:** right-aligned in domain row, vertically centered with favicon
+### Open Button
 
-Painted in the **same `drawBookmark` pass** as the rest of the card via the `hoveredOpen` flag — exactly one Open-button emission per visible bookmark per frame, hover or not. Z-order works naturally: base-canvas occluders (filled shapes, images, overlapping bookmarks) stack above the button when they should. See [Open-Button Hover Pipeline](#open-button-hover-pipeline) below for the state/dispatch/invalidation flow.
-
-### Favicon + Display Name
-
-18×18wu favicon drawn via `getBitmap(props.faviconAssetId)` from `image-manager.ts`. Positioned at left edge of the favicon row, 6wu gap before the display name. The display name is the prettified site name (`prettifyDomain(domain)` → "Github", "Excalidraw", …), rendered in 13px regular Inter, black (`#1a1a1a`). It is **not** a link — no hover state, no click target. The prettified form is computed once per layout-cache fill and stored on `BookmarkLayout.displayDomain`.
+Painted in the **same `drawBookmark` pass** as the rest of the card via a `hoveredOpen` boolean — exactly one Open-button emission per visible bookmark per frame. Z-order works naturally: base-canvas occluders stack above it when they should. White (hover: `#e8e8e8`), 1px `#d1d5db` border, 13px text + box-arrow icon (`Path2D` constant).
 
 ### Layout Cache
 
 ```typescript
 interface BookmarkLayout {
-  titleLines: string[];       // Wrapped title, max 2 lines
-  descLines: string[];        // Wrapped description, max 3 lines
-  totalHeight: number;        // Computed total card height
-  hasOgImage: boolean;        // OG image available (!!ogImageAssetId)
-  ogDisplayH: number;         // Clamped display height [70, 250]
-  displayDomain: string;      // Prettified site name (prettifyDomain(domain))
+  titleLines: string[];      // ≤ TITLE_MAX_LINES (2)
+  descLines: string[];       // ≤ DESC_MAX_LINES (3)
+  totalHeight: number;
+  hasOgImage: boolean;
+  ogDisplayH: number;
+  displayDomain: string;     // prettifyDomain(domain), cached here
 }
 ```
 
-Module-level `Map<string, BookmarkLayout>` keyed by object ID. Computed on first render via `getLayout(id, props)`. **Text measurement uses the shared `measureTextCached()` from `core/text/text-system.ts`** — same offscreen canvas and font-state cache as text/note layout, no duplicate measurement context. `buildLayout(data)` is the single source of truth: cache wrapper (`getLayout`) and one-shot height path (`computeBookmarkHeight`) both call it.
+Module-level `Map<string, BookmarkLayout>` keyed by id. `buildLayout(data)` is the single source of truth — both `getLayout(id, props)` (cached) and `computeBookmarkHeight(data)` (one-shot pre-write) call it. Text measurement uses `measureTextCached()` from `core/text/text-system.ts` (same offscreen canvas as text/note).
 
-**Text wrapping** (`wrapText`) is robust against oversized single tokens: a word wider than the card character-breaks across as many lines as needed (subject to `maxLines`), so a long URL/hash inside a title can never overflow. Truncation uses binary search on prefix width, and char-break / truncation both clamp to UTF-16 surrogate-pair boundaries.
+`wrapText` is robust against oversized tokens (char-break) and clamps to UTF-16 surrogate boundaries. Truncation uses binary search on prefix width.
 
 **Invalidation:**
-- `bookmarkCache.evict(id)` — on object deletion (called from `renderer/object-cache.ts`)
-- `bookmarkCache.clear()` — full cache clear (called from `renderer/object-cache.ts` on room teardown)
-- Layout auto-recomputes on next render when Y.Map properties change (title, description, assets arrive via unfurl)
-
-### Height Computation
-
-```typescript
-// Height formulas (titleToDesc + textToDomain inserted iff the adjacent sections are non-empty):
-Full:      ogDisplayH + CARD_PADDING + titleH + titleToDesc + descH + textToDomain + FAVICON_SIZE + CARD_PADDING
-Text:      CARD_PADDING + titleH + titleToDesc + descH + textToDomain + FAVICON_SIZE + CARD_PADDING
-Defensive: CARD_PADDING + FAVICON_SIZE + CARD_PADDING
-
-// Where:
-titleH       = titleLines.length * TITLE_LINE_H   (19px per line)
-descH        = descLines.length * DESC_LINE_H     (16px per line)
-titleToDesc  = SECTION_GAP if (titleLines && descLines) else 0
-textToDomain = SECTION_GAP if (titleLines || descLines) else 0
-FAVICON_SIZE = 18                                  (favicon row height)
-```
-
-`computeBookmarkHeight(data)` is called before Y.Doc write (to set frame height). Delegates to the same `buildLayout(data)` used by `getLayout` — no duplicate wrap/measure path.
+- `bookmarkCache.evict(id)` — on delete (called from `renderer/object-cache.ts`)
+- `bookmarkCache.clear()` — on room teardown
+- Auto-recompute on next render after Y.Map change
 
 ### Hit-Test & Hover Helpers
 
-Exported types and functions for SelectTool integration:
+Exported for SelectTool integration. All return **MUTABLE module scratches** — consume synchronously or copy fields:
 
 ```typescript
-interface LocalRect { lx: number; ly: number; lw: number; lh: number }
-
-// Frame-local bounds of the "Open" button — card width is always BOOKMARK_WIDTH
-// in local space (scale applied at draw-transform level, not here). Returns a
-// module-scope MUTABLE scratch: copy fields if calling twice before consuming.
-getOpenButtonLocalBounds(layout) → LocalRect
-
-// World-space hit test against the Open button rect. Caller responsible for
-// occlusion (SelectTool gates on `pickTopmostPaint` first). Reads layout +
-// frame caches; both must be populated (layout/frame is null before first
-// render → returns false).
-hitTestOpenButton(handle, worldX, worldY) → boolean
-
-// World-space bbox of the Open button rect, padded for the 1px lineWidth at
-// the current scale (`0.5 × scale` per side; `AA_MARGIN` is added inside
-// `invalidateWorldBBox` for the device-pixel AA fringe). Returns a module-
-// scope MUTABLE scratch; `invalidateWorldBBox` consumes it synchronously
-// (slot reads, writes derived values into its own dirty buffer), so back-to-
-// back calls during a cross transition (`prev → invalidate → next →
-// invalidate`) are safe. Returns null when handle/props/layout/frame caches
-// are absent (pre-first-render or post-deletion) — caller bails the invalidate.
-getOpenButtonWorldBBox(id) → BBoxTuple | null
+getOpenButtonLocalBounds(layout): LocalRect              // frame-local (pre-scale)
+hitTestOpenButton(handle, worldX, worldY): boolean        // caller gates on pickTopmostPaint first
+getOpenButtonWorldBBox(id): BBoxTuple | null              // world-space, padded for 1px stroke
 ```
 
-`getOpenButtonLocalBounds` returns coordinates **frame-local** (relative to bookmark frame origin, pre-scale). Convert to world by `frame[0] + lx * scale`, `frame[1] + ly * scale`. The prettified display name is plain text — no hit-test bounds.
-
-### Open-Button Hover Pipeline
-
-Hover state and paint live on the **base canvas** alongside the rest of the bookmark. The overlay canvas never paints the hover button — Z-order works naturally so base-canvas occluders stack above it when they should, and there is exactly one Open-button emission per visible bookmark candidate per frame (hover or not).
-
-| Concern | Owner |
-|---|---|
-| State | `SelectTool.hoveredOpenBookmarkId: string \| null` (singleton instance field) |
-| Per-frame hoist | `objects.ts` module-level `_hoveredOpenBookmarkId`, written once at frame top via `selectTool.getHoveredOpenBookmarkId()` (same pattern as `_textEditingId` / `_codeEditingId`) |
-| Per-candidate dispatch | `case 'bookmark': drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id)` — monomorphic three-arg call; interned-string identity compare per visible bookmark, cheap-false when the field is null |
-| Transition invalidation | `invalidateWorldBBox(getOpenButtonWorldBBox(id))` from `SelectTool.handleHoverCursor` + `clearBookmarkOpenHoverIfAny` |
-
-**Transition table** (in `SelectTool.handleHoverCursor` set-branch + `clearBookmarkOpenHoverIfAny`):
-
-| From → To | Invalidation |
-|---|---|
-| `null → id` (enter) | one bbox of `id` |
-| `id → null` (leave) | one bbox of `id` |
-| `id1 → id2` (cross) | bbox of `id1`, then bbox of `id2` (scratch reused; `invalidateWorldBBox` is synchronous) |
-| `id → id` (cursor wiggle) | none — outer diff guard short-circuits before any work |
-
-Cursor wiggle within the same hovered button publishes **zero** dirty rects: the WYSIWYG invariant only requires invalidation when the painted pixels actually change, and the diff guard (`this.hoveredOpenBookmarkId !== topmost.id`) preserves that.
-
-**Gesture handoff (openButton-press → translate).** When the pointer presses on the Open button and drifts past `MOVE_THRESHOLD_PX`, `SelectTool` promotes phase to `translate` **without clearing hover state**. The renderer's translate path wraps the bookmark's `drawObject(ctx, handle)` in `ctx.save(); ctx.translate(tdx, tdy); ...; ctx.restore()`, which dispatches back into `case 'bookmark'` with `hoveredOpen = true` (still `_hoveredOpenBookmarkId === handle.id`) — so the hover-painted button rides the translate naturally and the cursor stays visually attached for the duration of the drag. On `end()`, `rehoverFromLastCursor()` re-evaluates against the post-commit frame: cursor still on the moved button → hover stays; cursor no longer on it → leave-transition fires.
-
-**Scale gestures clear hover** at `SelectTool.begin()` (`clearBookmarkOpenHoverIfAny()` runs before phase classification). Scale previews route through `renderScaleEntry` → recursive `drawObject` → `case 'bookmark'` with `hoveredOpen = false`, so scaling never shows the hover button.
-
-**Edge cases:**
-- **Deletion mid-hover** (local or remote): `getOpenButtonWorldBBox(staleId)` returns `null`, the invalidate is bailed; deletion's own bbox invalidation (via `evictGeometry` + deep observer) cleans up the full bookmark paint. `_hoveredOpenBookmarkId` may briefly point to a deleted ID, but `case 'bookmark'` only fires for handles still in the spatial index — self-correcting.
-- **Remote move of hovered bookmark**: deep observer updates `bookmarkFrameCache` + invalidates the full bookmark bbox → next frame draws bookmark + hover button at the new position in a single base-canvas pass.
-- **`onViewChange` / pan / zoom**: `rehoverFromLastCursor` → `handleHoverCursor`. Pan over the same hovered button → no invalidation. Pan off → one (leave). Pan onto a different button → two (cross). Same diff guard as cursor moves.
+`getOpenButtonWorldBBox` returns `null` when caches are empty (pre-first-render or post-deletion) — caller must bail the invalidate.
 
 ---
 
-## Cloudflare Worker Endpoint
+## Open-Button Hover Pipeline
 
-**Route:** `GET /api/unfurl?url=<encoded_url>`
+Hover state and paint both live on the **base canvas**. Overlay never paints it.
 
-**Middleware:** `zValidator('query', unfurlQuery)` — Zod v4 schema validates, normalizes URL via `normalizeUrl()`, and runs SSRF guard before handler.
+| Concern | Owner |
+|---|---|
+| State | `SelectTool.hoveredOpenBookmarkId: string \| null` |
+| Per-frame hoist | `objects.ts` module-level `_hoveredOpenBookmarkId`, written once at frame top via `selectTool.getHoveredOpenBookmarkId()` (same pattern as `_textEditingId`) |
+| Per-candidate dispatch | `case 'bookmark': drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id)` — one identity compare |
+| Transition invalidation | `invalidateWorldBBox(getOpenButtonWorldBBox(id))` from `handleHoverCursor` + `clearBookmarkOpenHoverIfAny` |
 
-### SSRF Guard (server-only, colocated in unfurl.ts)
+**Transitions** (set in `handleHoverCursor`, cleared via `clearBookmarkOpenHoverIfAny`):
+
+| From → To | Invalidation |
+|---|---|
+| `null → id` (enter) | one bbox |
+| `id → null` (leave) | one bbox |
+| `id1 → id2` (cross) | two bboxes (scratch reused; `invalidateWorldBBox` consumes synchronously) |
+| `id → id` (wiggle) | none — diff guard short-circuits |
+
+**Gesture handoff (openButton press → translate).** When the pointer drifts past `MOVE_THRESHOLD_PX` mid-press, phase promotes to `translate` **without clearing hover**. The renderer's translate path wraps `drawObject(ctx, handle)` in `ctx.translate(tdx, tdy)`, which re-dispatches into `case 'bookmark'` with `hoveredOpen = true` — hover rides the translate naturally. On `end()`, `rehoverFromLastCursor()` re-evaluates against the post-commit frame.
+
+**Scale gestures clear hover** at `SelectTool.begin()` before phase classification. Scale previews route through `renderScaleEntry` → recursive `drawObject` with `hoveredOpen = false`.
+
+**Edge cases:**
+- Deletion mid-hover → `getOpenButtonWorldBBox` returns `null`, invalidate bails; the deletion's own bbox invalidation cleans up the full bookmark paint
+- Remote move of hovered bookmark → observer updates frame cache + invalidates full bbox; next frame draws bookmark + hover button at new position in one pass
+- `onViewChange` / pan / zoom → `rehoverFromLastCursor` → `handleHoverCursor` — same diff guard as cursor moves
+
+---
+
+## Cloudflare Worker — `GET /api/unfurl?url=<encoded>`
+
+Middleware: `zValidator('query', unfurlQuery)` — Zod validates, `normalizeUrl()` transforms, SSRF guard rejects private hosts before handler.
+
+### SSRF Guard
 
 ```typescript
-function isPrivateHost(hostname: string): boolean
-// Blocks: localhost, [::1], .local, .internal
-// IPv4 private: 127.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x, 0.x
+isPrivateHost(hostname): blocks localhost, [::1], .local, .internal,
+  127.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x, 0.x
 ```
 
 ### Content-Type Branching
 
-After fetching the URL:
-- `image/*` → store as OG image via `fetchAndStoreImage()`, use URL filename as title
-- `text/html` | `application/xhtml+xml` | `application/xml` → HTMLRewriter parse
-- Anything else → minimal response `{ url, domain }`
+- `image/*` → direct image storage, filename as title → 200
+- `text/html | application/xhtml+xml | application/xml` → HTMLRewriter
+- Other → 204
 
 ### HTMLRewriter Extraction
 
-| Priority | Source | Field |
-|----------|--------|-------|
-| 1st | `og:title` | title |
-| 2nd | `twitter:title` | title |
-| 3rd | `<title>` text | title |
-| 1st | `og:description` | description |
-| 2nd | `twitter:description` | description |
-| 3rd | `<meta name="description">` | description |
-| 1st | `og:image:secure_url` | ogImage URL |
-| 2nd | `og:image` | ogImage URL |
-| 3rd | `twitter:image` | ogImage URL |
-| 1st | `apple-touch-icon` | favicon URL |
-| 2nd | `<link rel="icon">` / `shortcut icon` | favicon URL |
+Meta tags checked via `property || name` (both attribute styles). Priority order:
 
-Stream consumed with `.blob()` (not `.text()`).
+| Field | Sources (in order) |
+|---|---|
+| title | `og:title` → `twitter:title` → `<title>` |
+| description | `og:description` → `twitter:description` → `<meta name="description">` |
+| ogImage | `og:image:secure_url` → `og:image` → `twitter:image` |
+| favicon | `apple-touch-icon` → `<link rel="icon">` / `shortcut icon` |
+
+Body consumed via `.blob()` (not `.text()`).
 
 ### Image Processing
 
-`fetchAndStoreImage(assets, imageUrl, maxBytes)` → `{ assetId, width, height } | null`
-
-- Streamed with chunked size guard (OG: 5MB, favicon: 500KB)
-- Validated via `validateImage(bytes)` → PNG/JPEG/WebP/GIF/ICO
-- Dimensions parsed from binary headers via `parseImageDimensions(bytes, mimeType)`:
-  - PNG: IHDR bytes 16-23 (big-endian uint32)
-  - JPEG: scan SOF0/SOF2 markers for width/height
-  - WebP: VP8 (lossy), VP8L (lossless), VP8X (extended — alpha/EXIF/animation)
-  - GIF: bytes 6-9 (little-endian uint16)
-  - ICO: first image entry at bytes 6-7 (0 = 256)
+`fetchAndStoreImage(assets, url, maxBytes) → { assetId, width, height } | null`:
+- Chunked size guard: OG 5 MB, favicon 500 KB
+- `validateImage()` (PNG/JPEG/WebP/GIF/ICO) — SVG returned as `faviconSvgBase64` (rasterized client-side)
+- `parseImageDimensions(bytes, mimeType)` reads dimensions from binary headers (PNG IHDR, JPEG SOF, WebP VP8/VP8L/VP8X, GIF, ICO)
 - Content-addressed: `SHA-256(bytes)` → `assetId`, `R2.head()` dedup before write
 
-### Edge Cache
+### SVG Favicon Path (client-side)
 
-Synthetic key: `https://unfurl.avlo.internal/<sha256(normalizedUrl)>`. TTL: 7 days (`Cache-Control: public, max-age=604800`). `waitUntil(cache.put(response.clone()))` — non-blocking.
-
-### Response Codes
-
-| Status | Meaning | When | Cache? |
-|--------|---------|------|--------|
-| **200** | Unfurl succeeded with useful data | Has `title` OR `ogImageAssetId` | 7 days |
-| **204** | No useful metadata extracted | HTML parsed but no title/OG image, or non-HTML/non-image content | No |
-| **400** | Invalid URL | Zod validation / SSRF guard | No |
-| **502** | Upstream fetch failed | Network error, non-OK response, timeout | No |
-
-Only 200 responses are edge-cached. All logging prefixed with `[unfurl]`.
-
----
-
-## Image Worker Unfurl
-
-**Direct fetch, no IDB queue.** Offline pastes never enter the bookmark pipeline (`canCreateBookmark()` guard), so there's nothing to retry. All failures are final — create a text object.
-
-`unfurlDirect(objectId, url)` in `image-worker.ts` (primary only): single fetch to `/api/unfurl`, posts `'unfurled'` on 200 or `'unfurl-failed'` on any other status/error. Strips `url`/`domain` from server response (already known client-side).
-
----
-
-## Clipboard Integration
-
-### URL Detection (`extractLeadingUrl`)
-
-Checks if first line of pasted text is a valid HTTP(S) URL via `normalizeUrl()`. Returns `{ url, remainder }` or `null`.
-
-- Single URL → bookmark (online) or text object (offline)
-- URL + newline + text → bookmark/text + text object (split)
-- Multi-word text → standard text paste
-- `ftp://`, `file://` → standard text paste
-- Hostname without `.` (e.g. `http://forum`) → rejected by `normalizeUrl()`, standard text paste
-
-Both `pasteExternalText()` and `pasteExternalHtml()` check `extractLeadingUrl()` first. `createBookmarkFromUrl()` checks `canCreateBookmark()` (offline guard) before entering the unfurl pipeline; offline pastes call `pasteUrlAsText()` directly.
-
-### Internal Paste (Copy/Paste Between Clients)
-
-Bookmarks serialize as plain Y.Map props (url, domain, title, description, asset IDs). All data present on paste — no re-unfurl needed. Full metadata preserved across copy/paste.
-
----
-
-## Integration Points (Other Files)
-
-### Selection (`selection-utils.ts`, `selection-store.ts`)
-- `SelectionKind` includes `'bookmarksOnly'`
-- `KindCounts.bookmarks` tracked in composition
-- Returns `EMPTY_STYLES` (no controls — same as images)
-
-### Hit Testing (`hit-testing.ts`)
-- Marquee: `getBookmarkFrame(id)` → `rectsIntersect(frameTupleToWorldBounds(frame), rect)`
-- Point: `getBookmarkFrame(id)` → simple rect containment, `isFilled: true` (always opaque)
-- No special handle suppression — all handles (corner + side) active for any bookmark selection count
-
-### Selection Overlay (`selection-overlay.ts`)
-- Highlight: bbox-based `strokeRect` (includes shadow padding), not frame
-- Open-button hover is NOT painted here — `drawBookmark` paints it on the base canvas via the `hoveredOpen` flag. See [Open-Button Hover Pipeline](#open-button-hover-pipeline).
-
-### Transform (`transform.ts`, `SelectTool.ts`, `objects.ts`)
-Bookmarks use uniform scaling via `scale` property — same pattern as sticky notes.
-
-| Scenario | Corner Handles | Side Handles | Bookmark Behavior |
-|----------|---------------|--------------|-------------------|
-| bookmarksOnly | Visible | Visible | All handles: uniform scale |
-| mixed, corner | Visible | — | Uniform scale |
-| mixed, side | — | Visible | Edge-pin translate (bbox bounds) |
-
-- Uniform scale: `roundedScale = round(scale * absScale, 3dp)`, origin from bbox-center preservation
-- Edge-pin (mixed+side only): uses bbox bounds (includes shadow padding) since handles are at bbox positions
-- `transformFrameForTopology()` / `transformPositionForTopology()` — bookmark cases for connector rerouting
-- `drawScaledBookmarkPreview()` — ctx.scale-based preview rendering (matches `drawScaledNotePreview` pattern)
-
-### Connector Integration (`snap.ts`, `reroute-connector.ts`, `selection-store.ts`, `ConnectorTool.ts`)
-Bookmarks are connectable objects — rect frame, always treated as filled.
-
-- **Snap:** included in `findBestSnapTarget()` connectable kind filter + always-filled check
-- **Reroute:** `resolveEndpoint()` and `resolveNewEndpoint()` include bookmark in kind checks; uses `getBookmarkFrame(handle.id)` for frame lookup
-- **Topology:** `computeConnectorTopology()` includes bookmarks in both passes (anchored connector discovery + original frame collection); uses `getBookmarkFrame(handle.id)`
-- **ConnectorTool preview:** bookmark included in snap shape frame lookup for snap dot rendering
-
-### Eraser (`EraserTool.ts`)
-- `case 'bookmark':` — `getBookmarkFrame(id)` → `circleRectIntersect(wx, wy, radius, x, y, w, h)`
-
-### Bounds (`bounds.ts`)
-- `computeRawGeometryBounds`: bookmark in bbox-based branch (alongside notes) — handles are at bbox positions
-
-### BBox (`bbox.ts`)
-- `computeBookmarkBBox(id, props)` called from `computeBBoxFor()`. Frame derived from `origin + scale + height`, shadow padding `BOOKMARK_WIDTH * scale * NOTE_SHADOW_PAD_RATIO` (imported from sticky-note — single source of truth for shadow halo extent).
-
-### Object Cache (`object-cache.ts`)
-- No bookmark-specific case — bookmarks have no Path2D or ConnectorPaths geometry cache
-
-### Renderer (`objects.ts`)
-- `case 'bookmark': drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id)` in `drawObject` switch. The module-scope `_hoveredOpenBookmarkId` is hoisted once per frame at the top of `drawObjects()` via `selectTool.getHoveredOpenBookmarkId()` (same pattern as `_textEditingId` / `_codeEditingId`); leaf dispatch is a single interned-string identity compare per visible bookmark.
-- Scale preview: `drawScaledBookmarkPreview()` — ctx.scale-based uniform scale (matches note pattern). Mixed+side: edge-pin translate.
-
-### Room Doc Manager (`room-doc-manager.ts`)
-- Hydration: standard `computeBBoxFor()` (frame-based with shadow padding)
-- Observer: bbox recomputes on any Y.Map property change
-- Deletion: `bookmarkCache.evict(id)` via `removeObjectCaches`
-
-### Canvas Runtime (`CanvasRuntime.ts`)
-- `stop()` calls `cleanupOnRoomTeardown()` (clears placeholders + pending map)
-
-### Image Manager (`image-manager.ts`)
-- `handleWorkerMessage`: routes `'unfurled'` → `handleUnfurlResult()`, `'unfurl-failed'` → `handleUnfurlFailed()`
-- `manageImageViewport()`: registers bookmark OG image + favicon with `ppsp = Infinity`, calls `repositionAllPlaceholders()`
-- `hydrateImages(handles)`: receives pre-filtered image+bookmark handles from `hydrateObjectsFromY`; per bookmark handle, registers `ogImageAssetId` + `faviconAssetId` at level 0 using `handle.bbox`
-
-### Service Worker
-No changes needed. `/api/assets/*` cache-first handles OG images and favicons. `/api/unfurl` falls through as non-asset API.
-
----
-
-## Constants
+Server returns `faviconSvgBase64` for SVG favicons (avoids server-side rasterization). Client (`bookmark-unfurl.ts: resolveFaviconAssetId`):
 
 ```
-BOOKMARK_WIDTH     = 300       Card width (fixed)
-CARD_PADDING       = 14        Inner padding
-SECTION_GAP        = 6         Gap between title/description/favicon-row sections
-MIN_OG_H           = 70        Minimum OG image display height
-MAX_OG_H           = 250       Maximum OG image display height
-TITLE_FONT_SIZE    = 14        Bold Inter, #1a1a1a
-DESC_FONT_SIZE     = 12        Regular Inter, #6b7280
-DISPLAY_FONT_SIZE  = 13        Regular Inter, #1a1a1a (prettified site name)
-TITLE_LINE_H       = 19        Title line height
-DESC_LINE_H        = 16        Description line height
-TITLE_MAX_LINES    = 2
-DESC_MAX_LINES     = 3
-FAVICON_SIZE       = 18        18×18; also the favicon-row height
-FAVICON_GAP        = 6         Gap between favicon and display name
+base64 → Blob('image/svg+xml') → rasterizeSvg() (main-thread <img>+canvas) → PNG Blob
+       → ingest() (primary worker: hash + R2 upload + decode) → assetId
+```
+
+Failure is non-fatal — bookmark renders without favicon. Async work completes **before** the Y.Doc transact so the write stays atomic with only a raster `faviconAssetId`.
+
+### Edge Cache + Response Codes
+
+Synthetic key: `https://unfurl.avlo.internal/<sha256(normalizedUrl)>`. TTL 7d. `waitUntil(cache.put())`.
+
+| Status | Meaning | Cached |
+|---|---|---|
+| 200 | `title` OR `ogImageAssetId` present | 7d |
+| 204 | No useful metadata | No |
+| 400 | Zod/SSRF reject | No |
+| 502 | Upstream fetch failed | No |
+
+All worker logs prefixed `[unfurl]`.
+
+---
+
+## Integration Points
+
+### Hit Testing — `core/spatial/kind-capability.ts`
+`framedCap<'bookmark'>((h) => getBookmarkFrame(h.id))` — same dispatch as text/code/image/note. Bookmarks return `'fill'` (always opaque). All marquee + point picking flows through the spatial pipeline; **no per-bookmark cases in `EraserTool` or `snap.ts`**.
+
+### Selection
+- `SelectionKind` value: `'bookmark'` (the type is `ObjectKind | 'none' | 'mixed'`)
+- `KindCounts.bookmarks` in composition
+- `computeStyles()` returns `EMPTY_STYLES` (no toolbar controls)
+- Selection-overlay highlights via bbox-based `strokeRect` (includes shadow padding)
+- Open-button hover is **not** painted here — see Open-Button Hover Pipeline
+
+### Transform — `tools/selection/transform.ts`
+Origin + uniform scale, same pattern as sticky notes.
+
+| Scenario | Behavior |
+|---|---|
+| `'bookmark'` selection, corner or side | Uniform scale (`scaleOriginScale` + `commitOriginScale`) |
+| `'mixed'`, corner | Uniform scale |
+| `'mixed'`, side | Edge-pin translate (`edgePinOffset` + `commitOrigin`) |
+
+`OutOf<'bookmark'> = HasOrigin & HasScale & HasBBox`. Scale preview routes through `renderScaleEntry` → `case 'bookmark'`: `ctx.scale(ratio)` around `out.origin` + recursive `drawObject` (no dedicated preview fn).
+
+### Connector Topology — `tools/selection/connector-topology.ts`
+`fillFrameFromBind` for bookmark bind sides: `[origin.x, origin.y, frozen.w × ratio, frozen.h × ratio]` where `ratio = out.scale / frozen.scale`. Frame caches are populated during hydrate and only become `null` post-delete — see `connector-topology.ts:382`.
+
+### Connector Snap + Reroute — `core/connectors/`
+Bookmark is in `BINDABLE_KINDS` (`core/types/objects.ts`) — snap and reroute are kind-agnostic via `isBindableKind` / `frameOf`. No per-bookmark branches.
+
+### Frame Resolution — `core/geometry/frame-of.ts`
+`frameOf(handle)` dispatch includes `bookmark: (h) => getBookmarkFrame(h.id)`.
+
+### BBox — `core/geometry/bbox.ts`
+`case 'bookmark'` → `computeBookmarkBBox(id, props)`. Populates layout + frame caches as side effects. Shadow padding via `NOTE_SHADOW_*_RATIO` from `sticky-note.ts` (asymmetric — extends mostly downward).
+
+### Object Cache — `renderer/object-cache.ts`
+No bookmark-specific case (no Path2D/ConnectorPaths). Eviction routes `bookmarkCache.evict(id)` via `removeObjectCaches`.
+
+### Renderer — `renderer/layers/objects.ts`
+`case 'bookmark': drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id)` in `drawObject`. Hoist is one identity compare.
+
+### RoomDocManager
+- Hydrate: per-handle build calls `registerBookmarkMeta(id, yObj)` inline (no separate `mediaHandles[]` collection)
+- Observer: bbox recomputes on any Y.Map change; `registerBookmarkMeta` re-runs on update
+- Delete: `bookmarkCache.evict(id)` + `unregisterMedia(id)` via `removeObjectCaches`
+
+### CanvasRuntime
+- `stop()` → `cleanupOnRoomTeardown()` (clears placeholders + pending map)
+
+### Clipboard (`core/clipboard/clipboard-actions.ts`)
+- `extractLeadingUrl(text)` and `createBookmarkFromUrl(url)` are **module-private** — only `pasteUrlAsText` is exported
+- Both `pasteExternalText()` and `pasteExternalHtml()` check `extractLeadingUrl()` first
+- Internal paste: bookmarks serialize as plain Y.Map props — no re-unfurl, full metadata preserved
+
+### SelectTool — `tools/selection/SelectTool.ts`
+- `DownHit` includes `{ kind: 'openButton'; handle }` — set at pointerdown when `hitTestOpenButton` matches
+- Promotes to `translate` past `MOVE_THRESHOLD_PX` (hover preserved)
+- At pointerup with no drift: re-verifies (`getHandle` fresh + re-tests rect) then `openBookmarkUrl(id)` — synchronous from the user-gesture handler so popup blockers don't fire
+
+---
+
+## Constants (`bookmark-render.ts`)
+
+```
+BOOKMARK_WIDTH     = 300
+CARD_PADDING       = 14
+SECTION_GAP        = 6
+MIN_OG_H / MAX_OG_H = 70 / 250
+TITLE_FONT_SIZE    = 14  (bold)
+DESC_FONT_SIZE     = 12
+DISPLAY_FONT_SIZE  = 13
+TITLE_LINE_H       = 19;  DESC_LINE_H = 16
+TITLE_MAX_LINES    = 2;   DESC_MAX_LINES = 3
+FAVICON_SIZE       = 18;  FAVICON_GAP = 6
 CARD_FILL          = '#FFFFFF'
-CARD_RADIUS        = getNoteCornerRadius(BOOKMARK_WIDTH)   // 18 at base width, derived from sticky-note ratio so OG image top-corner clip aligns with shared shadow-body silhouette
-OPEN_BTN_W         = 78        Open button width
-OPEN_BTN_H         = 28        Open button height
-OPEN_BTN_RADIUS    = 6         Open button border radius
-OPEN_BTN_MARGIN    = 10        Margin from card edges
-PLACEHOLDER_H      = 48        HTML placeholder height (width = BOOKMARK_WIDTH)
+CARD_RADIUS        = getNoteCornerRadius(BOOKMARK_WIDTH)   // shared with sticky-note
+OPEN_BTN_W / H     = 78 / 28
+OPEN_BTN_RADIUS    = 6;   OPEN_BTN_MARGIN = 10
+PLACEHOLDER_H      = 48   (in bookmark-placeholder.ts)
 ```
-
----
-
-## Edge Cases
-
-| Scenario | Handling |
-|----------|----------|
-| **Online paste, unfurl succeeds** | HTML placeholder → worker fetch → atomic Y.Doc commit with all data → placeholder removed |
-| **Online paste, unfurl fails/empty** | HTML placeholder → worker returns non-200 or empty data → `pasteUrlAsText()` → text object → placeholder removed |
-| **Offline paste** | `canCreateBookmark()` returns false → `pasteUrlAsText()` → text object immediately, no placeholder ever |
-| **Page refresh with stale IDB entries** | No pending map entry → check Y.Doc by objectId → upgrade if found, discard if not |
-| **Internal paste** | All data copied as-is from Y.Doc. No re-unfurl. Full metadata preserved. |
-| **Undo after online commit** | Single atomic transaction → undo removes entire bookmark cleanly |
-| **Room teardown mid-unfurl** | `cleanupOnRoomTeardown()` clears placeholders + pending map. Worker result arrives → `hasActiveRoom()` false → discard |
-| **Multiple rapid pastes** | Each gets unique objectId, own placeholder. Independent lifecycles. |
-| **Multi-client** | Client A pastes URL → Client B sees nothing until bookmark appears fully formed (no pending state visible) |
 
 ---
 
 ## NOT Implemented
 
-- **Double-click behavior** — no editing mode (bookmarks are not editable)
-- **Context menu actions** — no bookmark-specific toolbar bar
-- **Re-unfurl** — no way to retry from UI (failures are final → text object)
-- **URL editing** — URL is immutable after creation
+- Double-click behavior (bookmarks are not editable)
+- Bookmark-specific context-menu toolbar
+- Re-unfurl from UI (failures are final → text object)
+- URL editing (immutable after creation)
