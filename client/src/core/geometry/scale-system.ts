@@ -159,13 +159,18 @@ export function scaleBBoxUniform(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx):
   return af;
 }
 
-/** Non-uniform scale a bbox: scale each edge independently around ctx origin, normalize for flip. */
-export function scaleBBoxEdges(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx): void {
-  const x1 = scaleAround(src[0], ctx.origin[0], ctx.sx);
-  const y1 = scaleAround(src[1], ctx.origin[1], ctx.sy);
-  const x2 = scaleAround(src[2], ctx.origin[0], ctx.sx);
-  const y2 = scaleAround(src[3], ctx.origin[1], ctx.sy);
-  setBBoxXYWH(out, Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+/** Minimum shape frame width/height during non-uniform scale (world units). Small enough that the cross-origin snap reads as smooth; large enough to keep connectors anchored to a collapsing shape well-defined. */
+export const MIN_SHAPE_FRAME_DIM = 5.0;
+
+/**
+ * Non-uniform scale a bbox: per-axis edges scaled around ctx origin via `computeReflowWidth`,
+ * clamped at `minW`/`minH` (pass 0 to disable; clamp pins the bbox edge nearer the origin and
+ * sizes the opposite to the minimum).
+ */
+export function scaleBBoxEdges(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx, minW: number, minH: number): void {
+  const [newX, newW] = computeReflowWidth(src[0], src[2] - src[0], ctx.origin[0], ctx.sx, minW);
+  const [newY, newH] = computeReflowWidth(src[1], src[3] - src[1], ctx.origin[1], ctx.sy, minH);
+  setBBoxXYWH(out, newX, newY, newW, newH);
 }
 
 /** Edge-pin [dx, dy] delta for a bbox under ctx. */

@@ -196,7 +196,7 @@ Translate has **no apply table** — `updateTranslate` calls `applyOffset` direc
 
 ### Apply atoms compose primitives from `core/geometry/`
 
-Two-liner shape/image: `scaleBBoxUniform`/`scaleBBoxEdges` then `derivePaddedFrame` rebuilds frame with **constant** stroke padding (output bbox = frame + constant pad — stroke doesn't scale).
+Two-liner shape/image: `scaleBBoxUniform`/`scaleBBoxEdges` then `derivePaddedFrame` rebuilds frame with **constant** stroke padding (output bbox = frame + constant pad — stroke doesn't scale). Shape `nonUniform` passes `MIN_SHAPE_FRAME_DIM + 2*pad` per axis into `scaleBBoxEdges` so `derivePaddedFrame` leaves the frame ≥ `MIN_SHAPE_FRAME_DIM` — connectors anchored to a shape collapsing through origin stay well-defined. Clamp reuses `computeReflowWidth`'s edge-pin (text/code reflow uses the same atom).
 
 Stroke `scaleStrokeBBox` is bbox-only; stores `factor`/`fcx`/`fcy` for `ctx.translate/scale/translate` preview.
 

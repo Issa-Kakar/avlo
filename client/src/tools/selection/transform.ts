@@ -43,6 +43,7 @@ import {
   computeReflowWidth,
   derivePaddedFrame,
   edgePinDelta,
+  MIN_SHAPE_FRAME_DIM,
   roundProp,
   scaleBBoxEdges,
   scaleBBoxUniform,
@@ -207,9 +208,15 @@ function scaleFrameUniform(f: HasFrame & HasBBox, ctx: ScaleCtx, o: HasFrame & H
   derivePaddedFrame(o.frame, o.bbox, f.frame, f.bbox);
 }
 
-/** Shape: scale bbox edges independently, derive frame with constant stroke padding. */
+/**
+ * Shape: scale bbox edges independently with per-axis min clamp, derive frame with constant stroke padding.
+ * Bbox-min = frame-min + 2 * pad so `derivePaddedFrame`'s pad subtraction leaves frame ≥ `MIN_SHAPE_FRAME_DIM`,
+ * which keeps connectors anchored to the shape well-defined even as the user crosses the scale origin.
+ */
 function scaleFrameNonUniform(f: HasFrame & HasBBox, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
-  scaleBBoxEdges(o.bbox, f.bbox, ctx);
+  const padX = f.frame[0] - f.bbox[0];
+  const padY = f.frame[1] - f.bbox[1];
+  scaleBBoxEdges(o.bbox, f.bbox, ctx, MIN_SHAPE_FRAME_DIM + 2 * padX, MIN_SHAPE_FRAME_DIM + 2 * padY);
   derivePaddedFrame(o.frame, o.bbox, f.frame, f.bbox);
 }
 
