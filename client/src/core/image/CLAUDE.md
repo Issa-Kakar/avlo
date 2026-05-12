@@ -426,14 +426,14 @@ Worker → Main:
 | { type: 'ingested', id, assetId, w, h, mime, bitmap: ImageBitmap, level: 0 }
 | { type: 'bitmap', assetId, bitmap: ImageBitmap, level: 0 | 1 | 2, gen: number }
 | { type: 'uploaded', assetId }
-| { type: 'unfurled', objectId, data: { title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId? } }
+| { type: 'unfurled', objectId, data: { title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId?, faviconSvgBase64? } }
 | { type: 'unfurl-failed', objectId, permanent: boolean }
 | { type: 'error', id?, assetId?, message: string, gen?: number }
 ```
 
 All bitmaps transferred via `Transferable[]` (zero-copy). Bitmap is neutered in the worker after transfer. `gen` enables main thread staleness check on receipt.
 
-**Unfurl routing:** `'unfurled'` → `handleUnfurlResult()`, `'unfurl-failed'` → `handleUnfurlFailed()` (both from `bookmark-unfurl.ts`). Worker's `unfurlDirect()` does a single direct fetch to `/api/unfurl?url=<encoded>`, strips `url`/`domain` from server response, posts result back. No IDB queue — offline pastes never enter the bookmark pipeline.
+**Unfurl routing:** `'unfurled'` → `handleUnfurlResult()`, `'unfurl-failed'` → `handleUnfurlFailed()` (both from `bookmark-unfurl.ts`). Worker's `unfurlDirect()` does a single direct fetch to `/api/unfurl?url=<encoded>`, strips `url`/`domain` from server response, posts result back. SVG favicons round-trip as `faviconSvgBase64` (server avoids rasterization); the client rasterizes via `rasterizeSvg` + `ingest` before the Y.Doc transact. No IDB queue — offline pastes never enter the bookmark pipeline.
 
 ---
 
@@ -453,9 +453,9 @@ app.use('/api/*', cors({
   allowMethods: ['GET', 'PUT', 'OPTIONS'],
   maxAge: 86400,
 }));
+app.get('/api/unfurl', zValidator('query', unfurlQuery), handleUnfurl);  // Zod-validated bookmark unfurl
 app.put('/api/assets/:key', handleUpload);
 app.get('/api/assets/:key', handleGetAsset);
-app.get('/api/unfurl', zValidator('query', unfurlQuery), handleUnfurl);  // Zod-validated bookmark unfurl
 app.use('*', partyserverMiddleware());  // Yjs WebSocket sync via PartyServer
 ```
 
@@ -543,11 +543,10 @@ Images return an empty `new Path2D()` — they don't use the geometry cache. Cac
 
 ## Hit Testing & Selection
 
-- **Point hit test:** Simple rect containment — images are always filled/opaque (no interior-transparent check)
-- **Marquee:** Rect intersection against frame
-- **Eraser:** Circle-rect intersection, interior hits count (same as shapes with fill)
-- **Selection kind:** `'imagesOnly'` supported. `computeStyles()` returns `EMPTY_STYLES` for images (no color/width/fill controls)
-- **Connector topology:** Images included — connectors can snap to image frames. `transformFrameForTopology()` has per-kind dispatch for images (always uniform, mixed+side = edge-pin).
+Hit testing flows through `core/spatial/kind-capability.ts` — `framedCap<'image'>((h) => getFrame(h.y))`, return `'fill'` (always opaque). No per-image cases in `EraserTool` or `snap.ts`; image is a `BINDABLE_KIND` so snap/reroute are kind-agnostic via `isBindableKind` / `frameOf`.
+
+- **Selection kind:** value is `'image'` (the type is `SelectionKind = ObjectKind | 'none' | 'mixed'`). `computeStyles()` returns `EMPTY_STYLES` for `kind === 'image'` (no color/width/fill controls).
+- **Connector topology:** Images included — `fillFrameFromBind()` in `tools/selection/connector-topology.ts` handles `case 'shape': case 'image'` together: `copyFrame(scratch, e.out.frame)`. Behavior (always uniform, mixed+side = edge-pin) is encoded by the `ScaleApplyTable` in `tools/selection/transform.ts`, not in topology.
 
 ---
 
@@ -555,7 +554,7 @@ Images return an empty `new Path2D()` — they don't use the geometry cache. Cac
 
 | Hook | Location | What |
 |------|----------|------|
-| `clearImageManager()` | `stop()` | Room teardown: close bitmaps, clear all state |
+| `clear()` (imported as `clearImageManager`) | `stop()` | Room teardown: close bitmaps, clear all state |
 | `handleDrop(e)` | Drop event | Filter `image/*` + `.svg` files → `createImageFromBlob()` per file |
 
 Upload queue and bitmap invalidation are self-managed:
@@ -570,7 +569,7 @@ After `pasteInternal()` creates image objects via Y.Doc mutation:
 
 ---
 
-## Accessors (`packages/shared/src/accessors/object-accessors.ts`)
+## Accessors (`client/src/core/accessors.ts`)
 
 ```typescript
 getAssetId(y: Y.Map) → string | null           // SHA-256 hex
@@ -578,15 +577,21 @@ getNaturalDimensions(y: Y.Map) → [w, h] | null // Original pixel dimensions
 getImageProps(y: Y.Map) → ImageProps | null     // { assetId, frame, naturalWidth, naturalHeight, mimeType }
 ```
 
+`opacity` is stored on the Y.Map (read via the common `getOpacity()` accessor) but is not on `ImageProps` — `drawImage` reads it directly via `getOpacity(handle.y)` before painting.
+
 ---
 
 ## Validation (`packages/shared/src/utils/image-validation.ts`)
 
-Used by both client worker (ingest) and server (upload). Shared package ensures consistency.
+Used by both client worker (ingest) and server (upload + bookmark unfurl). Shared package ensures consistency.
 
 ```typescript
 validateImage(bytes: Uint8Array): { valid: boolean; mimeType: string }
+parseImageDimensions(bytes: Uint8Array, mimeType: string): { width: number; height: number }
+isSvg(bytes: Uint8Array): boolean
 ```
+
+`validateImage` — magic-byte format check (≥ 12 bytes required, else `{ valid: false }`):
 
 | Format | Magic Bytes | mimeType |
 |--------|-------------|----------|
@@ -594,13 +599,11 @@ validateImage(bytes: Uint8Array): { valid: boolean; mimeType: string }
 | JPEG | `FF D8 FF` | `image/jpeg` |
 | WebP | `52 49 46 46 .... 57 45 42 50` | `image/webp` |
 | GIF | `47 49 46 38` | `image/gif` |
+| ICO | `00 00 01 00` | `image/x-icon` |
 
-Minimum 12 bytes required. Returns `{ valid: false, mimeType: '' }` for unrecognized formats.
+`parseImageDimensions` — parses width/height from binary headers per format (PNG IHDR, JPEG SOF0/SOF2 scan, WebP VP8/VP8L/VP8X, GIF, ICO first-entry). Used by bookmark unfurl for OG image dimensions.
 
-```typescript
-isSvg(bytes: Uint8Array): boolean
-```
-Checks first 256 bytes for `<?xml` or `<svg` prefix (after optional UTF-8 BOM). Used for MIME-less file drops.
+`isSvg` — checks first 256 bytes for `<?xml` or `<svg` prefix (after optional UTF-8 BOM). Used for MIME-less file drops and SVG favicon detection.
 
 ---
 
