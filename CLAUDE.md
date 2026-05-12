@@ -77,7 +77,7 @@ All paths relative to `client/src/` unless noted.
 |------|-------|
 | `types.ts` | `PointerTool` interface + `PreviewData` union |
 | `selection/SelectTool.ts` | Selection state machine, translate, scale, connector endpoints, code/text editing entry |
-| `selection/transform.ts` | `TransformController`, entry system, per-kind dispatch tables |
+| `selection/transform.ts` | `TransformController` (scale/translate/endpoint drag), entry system, per-kind dispatch tables |
 | `selection/types.ts` | Shared selection types (`TransformState`, entry/dispatch helpers) |
 | `selection/selection-utils.ts` | Composition, bounds, declarative `foldField` over the field table |
 | `selection/selection-actions.ts` | Mutation wrappers — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` |
@@ -218,7 +218,7 @@ Pointer event → InputManager → CanvasRuntime
 File-based with auto code splitting. Three routes; auto-generated `routeTree.gen.ts`.
 - `beforeLoad` calls `connectRoom(roomId)` — creates Y.Doc, starts providers, restores camera (not code-split — runs while component chunk downloads)
 - `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount
-- `key={roomId}` on Canvas forces full remount on room switch
+- `key={roomId}` on `RoomCanvas` forces full remount on room switch
 - `getRouteApi('/room/$roomId').useParams()` for `roomId` in components
 
 ---
@@ -258,14 +258,14 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
 
 ### Schemas
 
-All objects share `{ id (ULID), kind, ownerId, createdAt }`. Per-kind fields:
+All objects share `{ id (ULID), kind, ownerId, createdAt }`. **Color semantics:** `color` = stroke color (shape/stroke/connector) or text color (text); `fillColor` = background always; shapes use `labelColor` for label text. Per-kind fields:
 
 - **Stroke** (pen/highlighter) — `{ tool: 'pen'|'highlighter', color, width, opacity, points: [number,number][] }`
 - **Shape** (rect/ellipse/diamond/roundedRect) — `{ shapeType, color, width, opacity, fillColor?, frame: [x,y,w,h], content?: Y.XmlFragment, fontSize?, fontFamily?, labelColor? }`. Label fields added on first edit, removed if empty on close.
 - **Text** — `{ origin: [anchorX, baseline], fontSize, fontFamily, color, align, width: 'auto'|number, fillColor?, content: Y.XmlFragment }`. Frame derived (`getTextFrame(id)`). Delta attrs: bold, italic, highlight (`{color}` or presence → `'#ffd43b'`).
 - **Code** — `{ origin: [topLeftX, topLeftY], fontSize, width: number, language, content: Y.Text, lineNumbers?, title?, headerVisible?, outputVisible?, output? }`. Origin = top-left (unlike text). Frame via `getCodeFrame(id)`.
 - **Connector** — `{ connectorType: 'elbow'|'straight', start: ConnectorEndpoint, end: ConnectorEndpoint, startCap, endCap, color, width }`. **No geometry stored** — endpoints are point/anchor refs; routed polyline lives in `ConnectorRouter` cache (`getConnectorRoute(id)`). Always opacity 1.
-- **Note** — `{ origin: [topLeftX, topLeftY], scale, fontFamily, align, alignV, fillColor, content: Y.XmlFragment }`. No fontSize/width (derived from content + scale). Color hardcoded `#1a1a1a`.
+- **Note** — `{ origin: [topLeftX, topLeftY], scale, fontFamily, align, alignV, fillColor, content: Y.XmlFragment }`. No fontSize/width (derived from content + scale). Text color hardcoded `#1a1a1a`; `fillColor` per-instance, default `#FEF3AC`.
 - **Image** — `{ assetId: 64-hex, frame, naturalWidth, naturalHeight, mimeType, opacity? }`. Content-addressed (same file → same `assetId`).
 - **Bookmark** — `{ url, domain, origin, height, scale?, title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId? }`. Frame derived (`getBookmarkFrame(id)`). State implied by which optional fields are set.
 
@@ -298,7 +298,7 @@ All frame getters return `FrameTuple | null` (null before first layout). `comput
 
 **Geometry types** (`core/types/geometry.ts`): `BBoxTuple = [minX,minY,maxX,maxY]`, `FrameTuple = [x,y,w,h]`, `Point = [x,y]`. Object forms: `WorldBounds`, `Frame`. Converters: `tupleToFrame`, `frameToTuple`, `frameToWorldBounds`, `bboxTupleToWorldBounds`, `worldBoundsToBBoxTuple`, `worldBoundsToFrame`, `frameTupleIntersectsBounds`.
 
-**Bounds helpers** (`core/geometry/bounds.ts`): `expandBBox`, `unionBBox`, `pointsToBBox{,Mut}`, `translateBBox`, `frameToBbox{,Mut}`, `bboxToFrame{,Mut}`, `copyBbox`, `copyFrame`, `bboxCenter`, `bboxSize`, `frameCenter`, `fillFrameCenter`, `unionBounds`, `expandEnvelope`, `translateBounds`, `scaleBoundsAround`, `expandBounds`, `offsetPoint`, `offsetBBox`, `offsetFrame`, `offsetPoints`, `setBBoxXYWH`, `boundsIntersect`. Most have in-place `*Mut`/`*Into` mirrors — use them on hot paths.
+**Bounds helpers** (`core/geometry/bounds.ts`): `expandBBox`, `expandBBoxEnvelope`, `unionBBox`, `pointsToBBox{,Mut}`, `translateBBox`, `frameToBbox{,Mut}`, `bboxToFrame{,Mut}`, `copyBbox`, `copyFrame`, `bboxCenter`, `bboxSize`, `frameCenter`, `fillFrameCenter`, `unionBounds`, `expandEnvelope`, `translateBounds`, `scaleBoundsAround`, `expandBounds`, `offsetPoint`, `offsetBBox`, `offsetFrame`, `offsetPoints`, `setBBoxXYWH`, `boundsIntersect`. Most have in-place `*Mut`/`*Into` mirrors — use them on hot paths.
 
 **Typed Y.Map accessors** (`core/accessors.ts`): prefer over raw `.get()`.
 - Common: `getColor`, `getOpacity`, `getWidth`, `getFrame`, `getOrigin`, `getPoints`
