@@ -30,6 +30,7 @@ import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel, renderTe
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle } from '@/core/types/objects';
 import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
+import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { ConnectorEntry, EndpointDragEntry } from '@/tools/selection/connector-topology';
@@ -57,6 +58,10 @@ const _previewScratch: BBoxTuple = [0, 0, 0, 0];
 // per relevant object per frame.
 let _textEditingId: string | null = null;
 let _codeEditingId: string | null = null;
+// Per-frame bookmark Open-button hover id. Hoisted once at frame top from
+// SelectTool's singleton field; leaf bookmark dispatch reads as identity
+// compare (interned-string equality when set, cheap-false when null).
+let _hoveredOpenBookmarkId: string | null = null;
 
 export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array | null, clipCount: number): void {
   const spatialIndex = getSpatialIndex();
@@ -73,6 +78,7 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   // polling `useSelectionStore.getState()` per object.
   _textEditingId = sel.textEditingId;
   _codeEditingId = sel.codeEditingId;
+  _hoveredOpenBookmarkId = selectTool.getHoveredOpenBookmarkId();
 
   // Pre-resolve per-frame dispatch tokens. Topology mode → connEntries Map.get;
   // endpoint drag → string equality on epDragId. Both null when idle.
@@ -285,7 +291,7 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
       drawStickyNote(ctx, handle);
       break;
     case 'bookmark':
-      drawBookmark(ctx, handle);
+      drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id);
       break;
   }
 }

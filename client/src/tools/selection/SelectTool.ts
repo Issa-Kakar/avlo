@@ -1,6 +1,6 @@
 import { getConnectorType } from '@/core/accessors';
 import { openBookmarkUrl } from '@/core/bookmark/bookmark-actions';
-import { hitTestOpenButton } from '@/core/bookmark/bookmark-render';
+import { getOpenButtonWorldBBox, hitTestOpenButton } from '@/core/bookmark/bookmark-render';
 import { isAnchored } from '@/core/connectors/anchor-atoms';
 import type { Slot } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
@@ -13,6 +13,7 @@ import type { HandleId } from '@/core/types/handles';
 import { handleCursor } from '@/core/types/handles';
 import type { ObjectHandle } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { contextMenuController } from '@/runtime/ContextMenuController';
 import { getLastCursorWorld } from '@/runtime/cursor-tracking';
 import { isCtrlHeld, isCtrlOrMetaHeld, isShiftHeld } from '@/runtime/InputManager';
@@ -76,9 +77,8 @@ export class SelectTool implements PointerTool {
   private readonly marqueeBBox: BBoxTuple = [0, 0, 0, 0];
   private readonly marqueeCurrent: Point = [0, 0];
 
-  // Bookmark Open-button hover indicator. Drives both the overlay paint
-  // (selection-overlay reads `getHoveredOpenBookmarkId`) and `getPreview`'s
-  // null-bail decision so the overlay keeps painting when only hover is active.
+  // Bookmark Open-button hover indicator. Drives base-canvas hover-fill via
+  // objects.ts frame-top read of getHoveredOpenBookmarkId().
   private hoveredOpenBookmarkId: string | null = null;
 
   private updateMarqueeBBox(curX: number, curY: number): void {
@@ -97,8 +97,10 @@ export class SelectTool implements PointerTool {
 
   private clearBookmarkOpenHoverIfAny(): void {
     if (this.hoveredOpenBookmarkId !== null) {
+      const id = this.hoveredOpenBookmarkId;
       this.hoveredOpenBookmarkId = null;
-      invalidateOverlay();
+      const bbox = getOpenButtonWorldBBox(id);
+      if (bbox) invalidateWorldBBox(bbox);
     }
   }
 
@@ -292,17 +294,15 @@ export class SelectTool implements PointerTool {
             if (!passMove) break;
             // Drift on a pressed Open button is a translate intent — user is
             // moving the bookmark, exactly as if they'd clicked elsewhere on
-            // the card. Promote to translate; mirrors the 'object' case. Drop
-            // the hover indicator: bookmarkFrameCache won't update mid-gesture
-            // (writes commit only at gesture end), so a lingering hover paint
-            // would draw at the stale pre-drag frame while the bookmark
-            // renders at its live transform position.
+            // the card. Promote to translate; mirrors the 'object' case. Hover
+            // state stays set: ambient `ctx.translate(tdx, tdy)` in objects.ts
+            // carries the hover-painted button along with the bookmark, so the
+            // cursor stays attached to the button visually for the whole drag.
             const { handle } = this.downHit;
             const store = useSelectionStore.getState();
             const isSelected = store.selectedIds.includes(handle.id);
             if (isSelected) contextMenuController.hide();
             else store.setSelection([handle.id]);
-            this.clearBookmarkOpenHoverIfAny();
             this.phase = 'translate';
             useSelectionStore.getState().beginTranslate();
             break;
@@ -528,7 +528,7 @@ export class SelectTool implements PointerTool {
 
   getPreview(): PreviewData | null {
     const { selectedIds } = useSelectionStore.getState();
-    if (selectedIds.length === 0 && !this.marqueeActive && this.hoveredOpenBookmarkId === null) return null;
+    if (selectedIds.length === 0 && !this.marqueeActive) return null;
     return { kind: 'selection' };
   }
 
@@ -601,8 +601,14 @@ export class SelectTool implements PointerTool {
     const topmost = pickTopmostPaint([worldX, worldY], { px: HIT_RADIUS_PX });
     if (topmost && topmost.kind === 'bookmark' && hitTestOpenButton(topmost, worldX, worldY)) {
       if (this.hoveredOpenBookmarkId !== topmost.id) {
+        const prevId = this.hoveredOpenBookmarkId;
         this.hoveredOpenBookmarkId = topmost.id;
-        invalidateOverlay();
+        if (prevId !== null) {
+          const oldBbox = getOpenButtonWorldBBox(prevId);
+          if (oldBbox) invalidateWorldBBox(oldBbox);
+        }
+        const newBbox = getOpenButtonWorldBBox(topmost.id);
+        if (newBbox) invalidateWorldBBox(newBbox);
       }
       setCursorOverride('pointer');
       applyCursor();

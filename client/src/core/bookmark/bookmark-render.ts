@@ -297,8 +297,10 @@ export function getBookmarkFrame(id: string): FrameTuple | null {
 }
 
 // ---------------------------------------------------------------------------
-// "Open" button — always painted by drawBookmark in its non-hover state.
-// Hover state is painted on top by selection-overlay (see drawHoveredOpenButton).
+// "Open" button — drawBookmark paints hover xor non-hover in a single pass on
+// the base canvas. objects.ts threads `handle.id === _hoveredOpenBookmarkId`
+// per visible candidate, so Z-order works naturally (base-canvas occluders
+// stay on top of the button when they should).
 // ---------------------------------------------------------------------------
 
 const boxArrowPath = new Path2D('M1 11H11V7.5 M1 11V1H4.5 M5 7L11 1 M7.5 1H11V4');
@@ -334,7 +336,7 @@ function drawOpenButton(ctx: CanvasRenderingContext2D, bx: number, by: number, h
 // drawBookmark — two data-driven layouts (full / text)
 // ---------------------------------------------------------------------------
 
-export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle, hoveredOpen: boolean): void {
   const props = getBookmarkProps(handle.y);
   if (!props) {
     console.error('Bookmark props are null');
@@ -351,15 +353,15 @@ export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle
   renderNoteBody(ctx, 0, 0, BOOKMARK_WIDTH, props.height, CARD_FILL);
 
   if (layout.hasOgImage) {
-    drawFullCard(ctx, BOOKMARK_WIDTH, layout, props);
+    drawFullCard(ctx, BOOKMARK_WIDTH, layout, props, hoveredOpen);
   } else if (layout.titleLines.length > 0) {
-    drawTextCard(ctx, BOOKMARK_WIDTH, layout, props);
+    drawTextCard(ctx, BOOKMARK_WIDTH, layout, props, hoveredOpen);
   }
 
   ctx.restore();
 }
 
-function drawFullCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, props: BookmarkProps): void {
+function drawFullCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, props: BookmarkProps, hoveredOpen: boolean): void {
   const displayH = layout.ogDisplayH;
 
   // OG image (top, with rounded top corners)
@@ -387,7 +389,7 @@ function drawFullCard(ctx: CanvasRenderingContext2D, w: number, layout: Bookmark
       ctx.roundRect(0, 0, w, displayH, [CARD_RADIUS, CARD_RADIUS, 0, 0]);
       ctx.fill();
     }
-    drawOpenButton(ctx, w - OPEN_BTN_W - OPEN_BTN_MARGIN, displayH - OPEN_BTN_H - OPEN_BTN_MARGIN);
+    drawOpenButton(ctx, w - OPEN_BTN_W - OPEN_BTN_MARGIN, displayH - OPEN_BTN_H - OPEN_BTN_MARGIN, hoveredOpen);
   }
 
   const textX = CARD_PADDING;
@@ -400,10 +402,10 @@ function drawFullCard(ctx: CanvasRenderingContext2D, w: number, layout: Bookmark
   if (layout.titleLines.length || layout.descLines.length) cursorY += SECTION_GAP;
 
   // Bottom row: favicon + display name (Open button is on the image — don't double-draw)
-  drawBottomRow(ctx, textX, cursorY, textWidth, layout, props.faviconAssetId, false);
+  drawBottomRow(ctx, textX, cursorY, textWidth, layout, props.faviconAssetId, false, hoveredOpen);
 }
 
-function drawTextCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, props: BookmarkProps): void {
+function drawTextCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, props: BookmarkProps, hoveredOpen: boolean): void {
   const textX = CARD_PADDING;
   const textWidth = w - CARD_PADDING * 2;
   let cursorY = CARD_PADDING;
@@ -413,7 +415,7 @@ function drawTextCard(ctx: CanvasRenderingContext2D, w: number, layout: Bookmark
   cursorY = drawDescLines(ctx, textX, cursorY, layout.descLines);
   if (layout.titleLines.length || layout.descLines.length) cursorY += SECTION_GAP;
 
-  drawBottomRow(ctx, textX, cursorY, textWidth, layout, props.faviconAssetId, true);
+  drawBottomRow(ctx, textX, cursorY, textWidth, layout, props.faviconAssetId, true, hoveredOpen);
 }
 
 function drawTitleLines(ctx: CanvasRenderingContext2D, x: number, y: number, lines: string[]): number {
@@ -448,6 +450,7 @@ function drawBottomRow(
   layout: BookmarkLayout,
   faviconAssetId: string | undefined,
   showOpenButton: boolean,
+  hoveredOpen: boolean,
 ): void {
   let iconX = textX;
   if (faviconAssetId) {
@@ -464,7 +467,7 @@ function drawBottomRow(
   ctx.fillText(layout.displayDomain, iconX, rowY + FAVICON_SIZE / 2);
 
   if (showOpenButton) {
-    drawOpenButton(ctx, textX + rowWidth - OPEN_BTN_W, rowY + (FAVICON_SIZE - OPEN_BTN_H) / 2);
+    drawOpenButton(ctx, textX + rowWidth - OPEN_BTN_W, rowY + (FAVICON_SIZE - OPEN_BTN_H) / 2, hoveredOpen);
   }
 }
 
@@ -480,6 +483,14 @@ function drawBottomRow(
  * OPEN_BTN_W/OPEN_BTN_H in local space); only `lx`/`ly` mutate.
  */
 const _openBtnScratch: LocalRect = { lx: 0, ly: 0, lw: OPEN_BTN_W, lh: OPEN_BTN_H };
+
+/**
+ * MUTABLE scratch — `getOpenButtonWorldBBox` returns this same tuple every
+ * call. RenderLoop.invalidateWorldBBox consumes synchronously (reads slots
+ * [0..3], writes derived values into its own buffer), so back-to-back calls
+ * for a cross-transition (`prev → invalidate → next → invalidate`) are safe.
+ */
+const _openBtnWorldBBox: BBoxTuple = [0, 0, 0, 0];
 
 /**
  * Returns the Open button rect in frame-local coordinates (card is always
@@ -523,23 +534,27 @@ export function hitTestOpenButton(handle: ObjectHandle, worldX: number, worldY: 
 }
 
 /**
- * Paint the Open button in its hover state on top of the base canvas's already-
- * painted (non-hover) button. Called by selection-overlay before primary
- * selection visuals so bbox stroke + resize handles render above. Same
- * translate+scale math as `drawBookmark`, so pixels align exactly.
+ * World-space bbox of the Open button rect, padded for the 1px stroke at the
+ * current scale. `AA_MARGIN` is added inside `invalidateWorldBBox` (device
+ * pixels), so callers only pay world-space stroke pad here. Returns `null`
+ * when handle/props/layout/frame caches are missing (pre-first-render or
+ * post-deletion) — caller bails the invalidate. MUTATES `_openBtnWorldBBox`;
+ * see scratch comment.
  */
-export function drawHoveredOpenButton(ctx: CanvasRenderingContext2D, id: string): void {
+export function getOpenButtonWorldBBox(id: string): BBoxTuple | null {
   const handle = getHandle(id);
-  if (!handle || handle.kind !== 'bookmark') return;
+  if (!handle || handle.kind !== 'bookmark') return null;
   const props = getBookmarkProps(handle.y);
-  if (!props) return;
+  if (!props) return null;
   const layout = layoutCache.get(id);
   const frame = bookmarkFrameCache.get(id);
-  if (!layout || !frame) return;
+  if (!layout || !frame) return null;
   const r = getOpenButtonLocalBounds(layout);
-  ctx.save();
-  ctx.translate(frame[0], frame[1]);
-  ctx.scale(props.scale, props.scale);
-  drawOpenButton(ctx, r.lx, r.ly, true);
-  ctx.restore();
+  const s = props.scale;
+  const pad = 0.5 * s; // 1px lineWidth in pre-scale → 0.5*s world per side
+  _openBtnWorldBBox[0] = frame[0] + r.lx * s - pad;
+  _openBtnWorldBBox[1] = frame[1] + r.ly * s - pad;
+  _openBtnWorldBBox[2] = frame[0] + (r.lx + r.lw) * s + pad;
+  _openBtnWorldBBox[3] = frame[1] + (r.ly + r.lh) * s + pad;
+  return _openBtnWorldBBox;
 }
