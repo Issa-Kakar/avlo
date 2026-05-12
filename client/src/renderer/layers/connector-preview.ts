@@ -28,8 +28,8 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
 
   // Live style — device-ui-store is stable within a gesture.
   const uiState = useDeviceUIStore.getState();
-  const color = uiState.drawingSettings.color;
-  const width = uiState.connectorSize;
+  const color = uiState.connectorColor;
+  const width = uiState.connectorWidth;
   const startCap = uiState.connectorStartCap;
   const endCap = uiState.connectorEndCap;
   const isStraight = uiState.connectorType === 'straight';

@@ -181,7 +181,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
         if (highlightColor) {
           setSelectedHighlight(null);
         } else {
-          const deviceHighlight = useDeviceUIStore.getState().highlightColor;
+          const deviceHighlight = useDeviceUIStore.getState().textHighlightColor;
           setSelectedHighlight(deviceHighlight || '#ffd43b');
         }
       }

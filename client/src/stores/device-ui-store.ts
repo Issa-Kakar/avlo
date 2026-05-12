@@ -7,12 +7,14 @@ import { generateUserProfile } from '@/utils/generate-user-profile';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
 
-export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image' | 'code' | 'connector' | 'note';
+// 'image' is intentionally absent — image is a fire-and-forget toolbar action,
+// not a sustained mode (see Toolbar.tsx + keyboard-manager.ts).
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'code' | 'connector' | 'note';
 export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle';
 
-// Size types
-export type SizePreset = 4 | 7 | 10 | 13;
-export type ConnectorSizePreset = 2 | 4 | 6 | 8;
+// Stroke widths cover pen / highlighter / shape.
+export type StrokeWidth = 4 | 7 | 10 | 13;
+export type ConnectorWidth = 2 | 4 | 6 | 8;
 
 // Unified font size presets (used by context menu + store)
 export const TEXT_FONT_SIZE_PRESETS: readonly number[] = [10, 12, 14, 18, 24, 36, 48, 64, 80, 144];
@@ -23,22 +25,6 @@ export type TextAlign = 'left' | 'center' | 'right';
 // Font family options
 export type { FontFamily } from '@/core/accessors';
 export const TEXT_FONT_FAMILIES: readonly FontFamily[] = ['Grandstander', 'Inter', 'Lora', 'JetBrains Mono'];
-
-// Color palettes (module-level constants, not persisted)
-export const TEXT_COLOR_PALETTE: readonly string[] = [
-  '#262626',
-  '#EF4444',
-  '#F97316',
-  '#EAB308',
-  '#22C55E',
-  '#3B82F6',
-  '#8B5CF6',
-  '#6B7280',
-  '#FFFFFF',
-  '#EC4899',
-  '#06B6D4',
-  '#84CC16',
-];
 
 export const HIGHLIGHT_COLORS: readonly (string | null)[] = [
   null,
@@ -51,22 +37,15 @@ export const HIGHLIGHT_COLORS: readonly (string | null)[] = [
   '#b197fc',
 ];
 
-// Global drawing settings that all tools share
-export interface DrawingSettings {
-  size: SizePreset;
-  color: string;
-  opacity: number;
-  fill: boolean;
-}
-
 // Slot-based color storage — pen and highlighter each persist 3 colors
-// and an "active slot" pointer; the active slot's color flows into
-// drawingSettings.color whenever the active tool / slot changes.
+// and an "active slot" pointer. The active slot's color is read at gesture
+// begin (no shared mirror field).
 export type ColorSlots = readonly [string, string, string];
 export type SlotIndex = 0 | 1 | 2;
 
-// Connector variant = (type, startCap, endCap) preset triple
-export type ConnectorVariant = 'straight' | 'doubleArrow' | 'elbow';
+// Connector variant id — derived from (type, startCap, endCap) at render time;
+// not stored. See `components/toolbar/connector-variants.ts`.
+export type ConnectorVariantId = 'line' | 'arrow' | 'doubleArrow' | 'elbow';
 
 interface DeviceUIState {
   // User identity (persisted)
@@ -74,106 +53,94 @@ interface DeviceUIState {
   userName: string;
   userColor: string;
 
-  // Tool state
+  // Tool
   activeTool: Tool;
+  cursorOverride: string | null;
 
-  // UNIFIED drawing settings
-  drawingSettings: DrawingSettings;
-
-  // Per-tool color slots (3 each) — selected slot flows into drawingSettings.color
-  penColorSlots: ColorSlots;
+  // Pen — slots only; tool reads slots[active] at begin().
+  penSlots: ColorSlots;
   penActiveSlot: SlotIndex;
-  highlighterColorSlots: ColorSlots;
+
+  // Highlighter — slots + own opacity. Width is shared with pen via strokeWidth.
+  highlighterSlots: ColorSlots;
   highlighterActiveSlot: SlotIndex;
-
-  // Connector inspector state
-  connectorColor: string;
-  connectorVariant: ConnectorVariant;
-
-  // Inspector picker visibility (single-flag — only one picker open at a time)
-  isColorPickerOpen: boolean;
-
-  // Tool-specific settings
   highlighterOpacity: number;
-  textSize: number;
-  connectorSize: ConnectorSizePreset;
-  shapeVariant: ShapeVariant;
 
-  // Text-specific settings
+  // Shared between pen + highlighter.
+  strokeWidth: StrokeWidth;
+
+  // Shape — own color/fill/width (not shared with stroke).
+  shapeVariant: ShapeVariant;
+  shapeColor: string;
+  shapeFillColor: string;
+  shapeWidth: StrokeWidth;
+  shapeAlign: TextAlign;
+  shapeAlignV: TextAlignV;
+
+  // Connector — own everything; variant derived from (type, startCap, endCap).
+  connectorColor: string;
+  connectorWidth: ConnectorWidth;
+  connectorType: ConnectorType;
+  connectorStartCap: ConnectorCap;
+  connectorEndCap: ConnectorCap;
+
+  // Text
   textColor: string;
   textAlign: TextAlign;
+  textSize: number;
   textFontFamily: FontFamily;
-  highlightColor: string | null;
+  textHighlightColor: string | null;
   textFillColor: string | null;
 
-  // Note-specific settings
+  // Note
   noteAlign: TextAlign;
   noteAlignV: TextAlignV;
   noteFontFamily: FontFamily;
 
-  // Code-specific settings
+  // Code
   codeLineNumbers: boolean;
   codeHeaderVisible: boolean;
-
-  // Connector cap/type settings
-  connectorStartCap: ConnectorCap;
-  connectorEndCap: ConnectorCap;
-  connectorType: ConnectorType;
-
-  // Shape alignment
-  shapeAlign: TextAlign;
-  shapeAlignV: TextAlignV;
-
-  // Fill color (separate from fill toggle)
-  fillColor: string;
-
-  // Placeholder tools
-  image: { enabled: boolean };
-
-  // Cursor override
-  cursorOverride: string | null;
 
   // Actions
   setActiveTool: (tool: Tool) => void;
   setCursorOverride: (cursor: string | null) => void;
 
-  setDrawingSettings: (settings: Partial<DrawingSettings>) => void;
-  setDrawingSize: (size: SizePreset) => void;
-  setDrawingColor: (color: string) => void;
-  setDrawingOpacity: (opacity: number) => void;
-  setFillEnabled: (enabled: boolean) => void;
-
-  // Slot actions — picker visibility + per-slot setters
-  setColorPickerOpen: (open: boolean) => void;
-  toggleColorPicker: () => void;
-  setActiveSlot: (slot: SlotIndex) => void;
-  setActiveSlotColor: (color: string) => void;
-  setConnectorColor: (color: string) => void;
-  setConnectorVariant: (variant: ConnectorVariant) => void;
-
+  setPenActiveSlot: (slot: SlotIndex) => void;
+  setPenSlotColor: (color: string) => void;
+  setHighlighterActiveSlot: (slot: SlotIndex) => void;
+  setHighlighterSlotColor: (color: string) => void;
   setHighlighterOpacity: (opacity: number) => void;
-  setTextSize: (size: number) => void;
-  setCodeLineNumbers: (v: boolean) => void;
-  setCodeHeaderVisible: (v: boolean) => void;
-  setConnectorSize: (size: ConnectorSizePreset) => void;
+
+  setStrokeWidth: (width: StrokeWidth) => void;
+
+  setShapeMode: (variant: ShapeVariant) => void;
+  setShapeVariant: (variant: ShapeVariant) => void;
+  setShapeColor: (color: string) => void;
+  setShapeFillColor: (color: string) => void;
+  setShapeWidth: (width: StrokeWidth) => void;
+  setShapeAlign: (align: TextAlign) => void;
+  setShapeAlignV: (alignV: TextAlignV) => void;
+
+  setConnectorColor: (color: string) => void;
+  setConnectorWidth: (width: ConnectorWidth) => void;
+  setConnectorType: (type: ConnectorType) => void;
   setConnectorStartCap: (cap: ConnectorCap) => void;
   setConnectorEndCap: (cap: ConnectorCap) => void;
-  setConnectorType: (type: ConnectorType) => void;
-  setShapeVariant: (variant: ShapeVariant) => void;
+  setConnectorMode: (variant: ConnectorVariantId) => void;
 
   setTextColor: (color: string) => void;
   setTextAlign: (align: TextAlign) => void;
-  setFontFamily: (family: FontFamily) => void;
-  setHighlightColor: (color: string | null) => void;
+  setTextSize: (size: number) => void;
+  setTextFontFamily: (family: FontFamily) => void;
+  setTextHighlightColor: (color: string | null) => void;
   setTextFillColor: (color: string | null) => void;
+
   setNoteAlign: (align: TextAlign) => void;
   setNoteAlignV: (alignV: TextAlignV) => void;
   setNoteFontFamily: (family: FontFamily) => void;
-  setShapeAlign: (align: TextAlign) => void;
-  setShapeAlignV: (alignV: TextAlignV) => void;
-  setFillColor: (color: string) => void;
 
-  getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
+  setCodeLineNumbers: (v: boolean) => void;
+  setCodeHeaderVisible: (v: boolean) => void;
 }
 
 export const useDeviceUIStore = create<DeviceUIState>()(
@@ -184,226 +151,155 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       userColor: '',
 
       activeTool: 'pen',
+      cursorOverride: null,
 
-      drawingSettings: {
-        size: 4,
-        color: '#131619',
-        opacity: 1.0,
-        fill: false,
-      },
-
-      penColorSlots: ['#131619', '#2196F3', '#F44336'] as const,
+      penSlots: ['#131619', '#2196F3', '#F44336'] as const,
       penActiveSlot: 0,
-      highlighterColorSlots: ['#FFC73B', '#FF8FB1', '#B5D9F2'] as const,
+      highlighterSlots: ['#FFC73B', '#FF8FB1', '#B5D9F2'] as const,
       highlighterActiveSlot: 0,
-
-      connectorColor: '#131619',
-      connectorVariant: 'elbow' as ConnectorVariant,
-
-      isColorPickerOpen: false,
-
       highlighterOpacity: 0.45,
-      textSize: 24,
-      connectorSize: 4,
-      codeLineNumbers: true,
-      codeHeaderVisible: true,
-      connectorStartCap: 'none' as ConnectorCap,
-      connectorEndCap: 'arrow' as ConnectorCap,
-      connectorType: 'elbow' as ConnectorType,
+
+      strokeWidth: 4,
+
       shapeVariant: 'rectangle',
+      shapeColor: '#131619',
+      shapeFillColor: '#BFDBFE',
+      shapeWidth: 4,
       shapeAlign: 'center' as TextAlign,
       shapeAlignV: 'middle' as TextAlignV,
-      fillColor: '#BFDBFE',
+
+      connectorColor: '#131619',
+      connectorWidth: 4,
+      connectorType: 'elbow' as ConnectorType,
+      connectorStartCap: 'none' as ConnectorCap,
+      connectorEndCap: 'arrow' as ConnectorCap,
 
       textColor: '#262626',
       textAlign: 'left' as TextAlign,
+      textSize: 24,
       textFontFamily: 'Grandstander' as FontFamily,
-      highlightColor: null,
+      textHighlightColor: null,
       textFillColor: null,
 
       noteAlign: 'center' as TextAlign,
       noteAlignV: 'middle' as TextAlignV,
       noteFontFamily: 'Grandstander' as FontFamily,
 
-      image: { enabled: false },
+      codeLineNumbers: true,
+      codeHeaderVisible: true,
 
-      cursorOverride: null,
-
-      // Actions — when activeTool flips between pen/highlighter, push the
-      // new tool's active-slot color into drawingSettings.color so that
-      // DrawingTool (which freezes settings.color at begin()) picks it up.
-      setActiveTool: (tool) => {
-        const s = get();
-        if (tool === 'pen' && s.activeTool !== 'pen') {
-          set({
-            activeTool: tool,
-            drawingSettings: { ...s.drawingSettings, color: s.penColorSlots[s.penActiveSlot] },
-            isColorPickerOpen: false,
-          });
-        } else if (tool === 'highlighter' && s.activeTool !== 'highlighter') {
-          set({
-            activeTool: tool,
-            drawingSettings: { ...s.drawingSettings, color: s.highlighterColorSlots[s.highlighterActiveSlot] },
-            isColorPickerOpen: false,
-          });
-        } else {
-          set({ activeTool: tool, isColorPickerOpen: false });
-        }
-      },
+      setActiveTool: (tool) => set({ activeTool: tool }),
       setCursorOverride: (cursor) => {
         // Idempotent: bail if value unchanged. Eliminates per-frame state churn
-        // from callers that re-emit the same cursor (e.g., SelectTool's hover
-        // gate writing `null` every pointermove while not over a handle).
+        // from callers that re-emit the same cursor.
         if (get().cursorOverride === cursor) return;
         set({ cursorOverride: cursor });
         applyCursor();
       },
 
-      setDrawingSettings: (settings) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, ...settings },
-        })),
-
-      setDrawingSize: (size) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, size },
-        })),
-
-      setDrawingColor: (color) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, color },
-        })),
-
-      setDrawingOpacity: (opacity) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, opacity },
-        })),
-
-      setFillEnabled: (enabled) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, fill: enabled },
-        })),
-
+      setPenActiveSlot: (slot) => set({ penActiveSlot: slot }),
+      setPenSlotColor: (color) => {
+        const s = get();
+        const next = [...s.penSlots] as unknown as [string, string, string];
+        next[s.penActiveSlot] = color;
+        set({ penSlots: next as ColorSlots });
+      },
+      setHighlighterActiveSlot: (slot) => set({ highlighterActiveSlot: slot }),
+      setHighlighterSlotColor: (color) => {
+        const s = get();
+        const next = [...s.highlighterSlots] as unknown as [string, string, string];
+        next[s.highlighterActiveSlot] = color;
+        set({ highlighterSlots: next as ColorSlots });
+      },
       setHighlighterOpacity: (opacity) => set({ highlighterOpacity: opacity }),
-      setTextSize: (size) => set({ textSize: size }),
-      setCodeLineNumbers: (v) => set({ codeLineNumbers: v }),
-      setCodeHeaderVisible: (v) => set({ codeHeaderVisible: v }),
-      setConnectorSize: (size) => set({ connectorSize: size }),
+
+      setStrokeWidth: (width) => set({ strokeWidth: width }),
+
+      setShapeMode: (variant) => set({ activeTool: 'shape', shapeVariant: variant }),
+      setShapeVariant: (variant) => set({ shapeVariant: variant }),
+      setShapeColor: (color) => set({ shapeColor: color }),
+      setShapeFillColor: (color) => set({ shapeFillColor: color }),
+      setShapeWidth: (width) => set({ shapeWidth: width }),
+      setShapeAlign: (align) => set({ shapeAlign: align }),
+      setShapeAlignV: (alignV) => set({ shapeAlignV: alignV }),
+
+      setConnectorColor: (color) => set({ connectorColor: color }),
+      setConnectorWidth: (width) => set({ connectorWidth: width }),
+      setConnectorType: (type) => set({ connectorType: type }),
       setConnectorStartCap: (cap) => set({ connectorStartCap: cap }),
       setConnectorEndCap: (cap) => set({ connectorEndCap: cap }),
-      setConnectorType: (type) => set({ connectorType: type }),
-      setShapeVariant: (variant) => set({ shapeVariant: variant }),
+      setConnectorMode: (variant) => {
+        // Atomic — single set() per click, one subscriber notification.
+        // Elbow preserves caps by design (only the type flips).
+        switch (variant) {
+          case 'line':
+            return set({ connectorType: 'straight', connectorStartCap: 'none', connectorEndCap: 'none' });
+          case 'arrow':
+            return set({ connectorType: 'straight', connectorStartCap: 'none', connectorEndCap: 'arrow' });
+          case 'doubleArrow':
+            return set({ connectorType: 'straight', connectorStartCap: 'arrow', connectorEndCap: 'arrow' });
+          case 'elbow':
+            return set({ connectorType: 'elbow' });
+        }
+      },
 
       setTextColor: (color) => set({ textColor: color }),
       setTextAlign: (align) => set({ textAlign: align }),
-      setFontFamily: (family) => set({ textFontFamily: family }),
-      setHighlightColor: (color) => set({ highlightColor: color }),
+      setTextSize: (size) => set({ textSize: size }),
+      setTextFontFamily: (family) => set({ textFontFamily: family }),
+      setTextHighlightColor: (color) => set({ textHighlightColor: color }),
       setTextFillColor: (color) => set({ textFillColor: color }),
+
       setNoteAlign: (align) => set({ noteAlign: align }),
       setNoteAlignV: (alignV) => set({ noteAlignV: alignV }),
       setNoteFontFamily: (family) => set({ noteFontFamily: family }),
-      setShapeAlign: (align) => set({ shapeAlign: align }),
-      setShapeAlignV: (alignV) => set({ shapeAlignV: alignV }),
-      setFillColor: (color) => set({ fillColor: color }),
 
-      // Helper method to get current tool settings
-      getCurrentToolSettings: () => {
-        const state = get();
-        const { activeTool, drawingSettings, highlighterOpacity, textSize, connectorSize } = state;
-
-        // Base settings from unified drawing settings
-        const settings = {
-          size: drawingSettings.size as number,
-          color: drawingSettings.color,
-          opacity: drawingSettings.opacity,
-          fill: drawingSettings.fill,
-        };
-
-        // Override with tool-specific settings
-        switch (activeTool) {
-          case 'highlighter':
-            settings.opacity = highlighterOpacity;
-            break;
-          case 'text':
-            settings.size = textSize;
-            break;
-          case 'connector':
-            settings.size = connectorSize;
-            break;
-          // eraser uses fixed 10px radius - no size override needed
-          // pen/shape use unified settings
-        }
-
-        return settings;
-      },
-
-      setColorPickerOpen: (open) => set({ isColorPickerOpen: open }),
-      toggleColorPicker: () => set((s) => ({ isColorPickerOpen: !s.isColorPickerOpen })),
-
-      setActiveSlot: (slot) => {
-        const s = get();
-        if (s.activeTool === 'pen') {
-          if (s.penActiveSlot === slot) return;
-          set({
-            penActiveSlot: slot,
-            drawingSettings: { ...s.drawingSettings, color: s.penColorSlots[slot] },
-            isColorPickerOpen: false,
-          });
-        } else if (s.activeTool === 'highlighter') {
-          if (s.highlighterActiveSlot === slot) return;
-          set({
-            highlighterActiveSlot: slot,
-            drawingSettings: { ...s.drawingSettings, color: s.highlighterColorSlots[slot] },
-            isColorPickerOpen: false,
-          });
-        }
-      },
-
-      setActiveSlotColor: (color) => {
-        const s = get();
-        if (s.activeTool === 'pen') {
-          const next = [...s.penColorSlots] as unknown as [string, string, string];
-          next[s.penActiveSlot] = color;
-          set({
-            penColorSlots: next as ColorSlots,
-            drawingSettings: { ...s.drawingSettings, color },
-          });
-        } else if (s.activeTool === 'highlighter') {
-          const next = [...s.highlighterColorSlots] as unknown as [string, string, string];
-          next[s.highlighterActiveSlot] = color;
-          set({
-            highlighterColorSlots: next as ColorSlots,
-            drawingSettings: { ...s.drawingSettings, color },
-          });
-        }
-      },
-
-      setConnectorColor: (color) => set({ connectorColor: color }),
-      setConnectorVariant: (variant) => {
-        // Variant is the source of truth; (type, startCap, endCap) are derived.
-        const preset = CONNECTOR_VARIANT_PRESETS[variant];
-        set({
-          connectorVariant: variant,
-          connectorType: preset.type,
-          connectorStartCap: preset.startCap,
-          connectorEndCap: preset.endCap,
-        });
-      },
+      setCodeLineNumbers: (v) => set({ codeLineNumbers: v }),
+      setCodeHeaderVisible: (v) => set({ codeHeaderVisible: v }),
     }),
     {
-      name: 'avlo.toolbar.v5',
-      version: 3,
+      name: 'avlo.toolbar.v6',
+      version: 4,
     },
   ),
 );
 
-// Connector variant → (type, caps) preset table.
-// Keep this co-located with the store so setConnectorVariant stays a one-liner.
-const CONNECTOR_VARIANT_PRESETS: Record<ConnectorVariant, { type: ConnectorType; startCap: ConnectorCap; endCap: ConnectorCap }> = {
-  straight: { type: 'straight', startCap: 'none', endCap: 'none' },
-  doubleArrow: { type: 'straight', startCap: 'arrow', endCap: 'arrow' },
-  elbow: { type: 'elbow', startCap: 'none', endCap: 'arrow' },
-};
+// Stable action handler exports — Zustand actions are defined once inside
+// create(), so destructuring them here yields references that never change.
+// Import these directly in JSX so memoized children retain prop equality.
+export const {
+  setActiveTool,
+  setPenActiveSlot,
+  setPenSlotColor,
+  setHighlighterActiveSlot,
+  setHighlighterSlotColor,
+  setHighlighterOpacity,
+  setStrokeWidth,
+  setShapeMode,
+  setShapeVariant,
+  setShapeColor,
+  setShapeFillColor,
+  setShapeWidth,
+  setShapeAlign,
+  setShapeAlignV,
+  setConnectorColor,
+  setConnectorWidth,
+  setConnectorType,
+  setConnectorStartCap,
+  setConnectorEndCap,
+  setConnectorMode,
+  setTextColor,
+  setTextAlign,
+  setTextSize,
+  setTextFontFamily,
+  setTextHighlightColor,
+  setTextFillColor,
+  setNoteAlign,
+  setNoteAlignV,
+  setNoteFontFamily,
+  setCodeLineNumbers,
+  setCodeHeaderVisible,
+} = useDeviceUIStore.getState();
 
 // ============================================
 // USER IDENTITY INITIALIZATION
@@ -433,9 +329,6 @@ export function getUserProfile(): { userId: string; name: string; color: string 
 // CURSOR MANAGEMENT
 // ============================================
 
-/**
- * Compute the appropriate cursor based on active tool.
- */
 function computeBaseCursor(): string {
   const { activeTool } = useDeviceUIStore.getState();
   switch (activeTool) {
@@ -472,12 +365,7 @@ export function setCursorOverride(cursor: string | null): void {
   useDeviceUIStore.getState().setCursorOverride(cursor);
 }
 
-/**
- * Self-subscription for tool changes.
- * When activeTool changes and canvas is available, apply the new cursor.
- * This subscription is set up once at module initialization and lives
- * for the lifetime of the app.
- */
+// Self-subscription for tool changes: apply cursor, clear selection on leaving select.
 useDeviceUIStore.subscribe((state, prevState) => {
   if (state.activeTool !== prevState.activeTool) {
     applyCursor();
@@ -493,4 +381,4 @@ useDeviceUIStore.subscribe((state, prevState) => {
 export const selectTextColor = (s: DeviceUIState) => s.textColor;
 export const selectTextAlign = (s: DeviceUIState) => s.textAlign;
 export const selectTextSize = (s: DeviceUIState) => s.textSize;
-export const selectHighlightColor = (s: DeviceUIState) => s.highlightColor;
+export const selectTextHighlightColor = (s: DeviceUIState) => s.textHighlightColor;

@@ -1,6 +1,6 @@
 @import "./InspectorButton.css";
-@import "./ColorSlots.css";
-@import "./ColorPicker.css";
+@import "../color/ColorSlots.css";
+@import "../color/ColorPicker.css";
 
 .inspector {
   position: absolute;

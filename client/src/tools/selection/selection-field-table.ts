@@ -35,7 +35,7 @@ import { anchorFactor, getInlineStyles, getTextFrame } from '@/core/text/text-sy
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import { getHandle, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
-import { type ConnectorSizePreset, type SizePreset, useDeviceUIStore } from '@/stores/device-ui-store';
+import { type ConnectorWidth, type StrokeWidth, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind } from './types';
 
@@ -247,15 +247,16 @@ export function withEditorOr(whenEditor: (e: Editor) => void, otherwise: () => v
 // PERSIST SINKS (thin wrappers over device-ui-store)
 // ============================================================================
 
-const setDrawingColor = (v: string) => useDeviceUIStore.getState().setDrawingColor(v);
-const setDrawingSizePersist = (v: number) => useDeviceUIStore.getState().setDrawingSize(v as SizePreset);
-const setConnectorSizePersist = (v: number) => useDeviceUIStore.getState().setConnectorSize(v as ConnectorSizePreset);
+const setShapeColorPersist = (v: string) => useDeviceUIStore.getState().setShapeColor(v);
+const setShapeFillColorPersist = (v: string) => useDeviceUIStore.getState().setShapeFillColor(v);
+const setShapeWidthPersist = (v: number) => useDeviceUIStore.getState().setShapeWidth(v as StrokeWidth);
+const setStrokeWidthPersist = (v: number) => useDeviceUIStore.getState().setStrokeWidth(v as StrokeWidth);
+const setConnectorColorPersist = (v: string) => useDeviceUIStore.getState().setConnectorColor(v);
+const setConnectorWidthPersist = (v: number) => useDeviceUIStore.getState().setConnectorWidth(v as ConnectorWidth);
 const setTextSize = (v: number) => useDeviceUIStore.getState().setTextSize(v);
 const setTextColor = (v: string) => useDeviceUIStore.getState().setTextColor(v);
 const setTextFillColor = (v: string | null) => useDeviceUIStore.getState().setTextFillColor(v);
-const setFillColor = (v: string) => useDeviceUIStore.getState().setFillColor(v);
-const setFillEnabled = (v: boolean) => useDeviceUIStore.getState().setFillEnabled(v);
-const setTextFontFamily = (v: FontFamily) => useDeviceUIStore.getState().setFontFamily(v);
+const setTextFontFamily = (v: FontFamily) => useDeviceUIStore.getState().setTextFontFamily(v);
 const setNoteFontFamily = (v: FontFamily) => useDeviceUIStore.getState().setNoteFontFamily(v);
 const setTextAlign = (v: TextAlign) => useDeviceUIStore.getState().setTextAlign(v);
 const setNoteAlign = (v: TextAlign) => useDeviceUIStore.getState().setNoteAlign(v);
@@ -286,10 +287,10 @@ export const COLOR: FieldDescriptor<string> = {
     connector: (h, v) => h.y.set('color', v),
   },
   persist: {
-    stroke: setDrawingColor,
-    shape: setDrawingColor,
-    text: setDrawingColor,
-    connector: setDrawingColor,
+    // stroke: NO persist — pen/highlighter slots are independent of selected stroke color.
+    shape: setShapeColorPersist,
+    text: setTextColor,
+    connector: setConnectorColorPersist,
   },
 };
 
@@ -305,9 +306,9 @@ export const WIDTH: FieldDescriptor<number> = {
     connector: (h, v) => h.y.set('width', v),
   },
   persist: {
-    stroke: setDrawingSizePersist,
-    shape: setDrawingSizePersist,
-    connector: setConnectorSizePersist,
+    stroke: setStrokeWidthPersist,
+    shape: setShapeWidthPersist,
+    connector: setConnectorWidthPersist,
   },
 };
 
@@ -328,13 +329,9 @@ export const FILL_COLOR: FieldDescriptor<string | null> = {
     note: (h, v) => (v === null ? h.y.delete('fillColor') : h.y.set('fillColor', v)),
   },
   persist: {
+    // null = unfill the OBJECT only, not the device default.
     shape: (v) => {
-      if (v === null) {
-        setFillEnabled(false);
-      } else {
-        setFillColor(v);
-        setFillEnabled(true);
-      }
+      if (v !== null) setShapeFillColorPersist(v);
     },
     text: setTextFillColor,
     // note: omitted — note fill is per-object, not a device default

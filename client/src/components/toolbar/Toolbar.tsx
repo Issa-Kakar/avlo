@@ -15,10 +15,11 @@ import {
   IconText,
   IconUndo,
 } from '@/components/icons';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
-import * as A from './actions';
-import { ConnectorInspector } from './ConnectorInspector';
-import { PenInspector } from './PenInspector';
+import { openImageFilePicker } from '@/core/image/image-actions';
+import { getActiveRoomDoc, hasActiveRoom } from '@/runtime/room-runtime';
+import { setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
+import { ConnectorInspector } from './inspectors/ConnectorInspector';
+import { PenInspector } from './inspectors/PenInspector';
 import './Toolbar.css';
 
 interface ToolButtonProps {
@@ -37,17 +38,24 @@ const ToolButton = memo(function ToolButton({ isActive, tooltip, onClick, childr
 });
 
 // Pre-bound handlers so memoized ToolButton props are stable across renders.
-const clickSelect = () => A.selectTool('select');
-const clickPan = () => A.selectTool('pan');
-const clickNote = () => A.selectTool('note');
-const clickText = () => A.selectTool('text');
-const clickRect = () => A.selectShape('rectangle');
-const clickEllipse = () => A.selectShape('ellipse');
-const clickDiamond = () => A.selectShape('diamond');
-const clickConnector = () => A.selectTool('connector');
-const clickPen = () => A.selectTool('pen');
-const clickCode = () => A.selectTool('code');
-const clickEraser = () => A.selectTool('eraser');
+const clickSelect = () => setActiveTool('select');
+const clickPan = () => setActiveTool('pan');
+const clickNote = () => setActiveTool('note');
+const clickText = () => setActiveTool('text');
+const clickRect = () => setShapeMode('rectangle');
+const clickEllipse = () => setShapeMode('ellipse');
+const clickDiamond = () => setShapeMode('diamond');
+const clickConnector = () => setActiveTool('connector');
+const clickPen = () => setActiveTool('pen');
+const clickCode = () => setActiveTool('code');
+const clickEraser = () => setActiveTool('eraser');
+const clickImage = () => openImageFilePicker();
+const clickUndo = () => {
+  if (hasActiveRoom()) getActiveRoomDoc().undo();
+};
+const clickRedo = () => {
+  if (hasActiveRoom()) getActiveRoomDoc().redo();
+};
 
 export function Toolbar() {
   const activeTool = useDeviceUIStore((s) => s.activeTool);
@@ -91,7 +99,7 @@ export function Toolbar() {
         <ToolButton isActive={activeTool === 'code'} tooltip="Code" onClick={clickCode}>
           <IconCode className="icon" />
         </ToolButton>
-        <ToolButton isActive={false} tooltip="Image (I)" onClick={A.pickImage}>
+        <ToolButton isActive={false} tooltip="Image (I)" onClick={clickImage}>
           <IconImage className="icon" />
         </ToolButton>
         <ToolButton isActive={activeTool === 'eraser'} tooltip="Eraser (E)" onClick={clickEraser}>
@@ -103,10 +111,10 @@ export function Toolbar() {
       </div>
 
       <div className="toolbar-actions">
-        <ToolButton isActive={false} tooltip="Undo" onClick={A.undo}>
+        <ToolButton isActive={false} tooltip="Undo" onClick={clickUndo}>
           <IconUndo className="icon" />
         </ToolButton>
-        <ToolButton isActive={false} tooltip="Redo" onClick={A.redo}>
+        <ToolButton isActive={false} tooltip="Redo" onClick={clickRedo}>
           <IconRedo className="icon" />
         </ToolButton>
       </div>

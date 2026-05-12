@@ -70,7 +70,7 @@ export class ConnectorTool implements PointerTool {
     // Freeze settings from store at gesture start
     const state = useDeviceUIStore.getState();
     this.frozenColor = state.connectorColor;
-    this.frozenWidth = state.connectorSize;
+    this.frozenWidth = state.connectorWidth;
     this.frozenStartCap = state.connectorStartCap;
     this.frozenEndCap = state.connectorEndCap;
     this.frozenConnectorType = state.connectorType;

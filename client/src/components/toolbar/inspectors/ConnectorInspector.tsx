@@ -1,25 +1,43 @@
-import { memo, useMemo } from 'react';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
-import * as A from './actions';
-import { ColorSlots } from './ColorSlots';
-import { CONNECTOR_VARIANTS } from './constants';
+import { memo, useCallback, useMemo, useState } from 'react';
+import { setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
+import { ColorSlots } from '../color/ColorSlots';
+import { CONNECTOR_VARIANT_BUTTONS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
 import { InspectorButton } from './InspectorButton';
 import './Inspector.css';
 
 const NOOP = () => {};
 
+const VARIANT_HANDLERS: Record<ConnectorVariantId, () => void> = {
+  line: () => setConnectorMode('line'),
+  arrow: () => setConnectorMode('arrow'),
+  doubleArrow: () => setConnectorMode('doubleArrow'),
+  elbow: () => setConnectorMode('elbow'),
+};
+
 export function ConnectorInspector() {
-  const variant = useDeviceUIStore((s) => s.connectorVariant);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+
+  // Three narrow selectors → derived variant. Each fires only on its field change.
+  const type = useDeviceUIStore((s) => s.connectorType);
+  const startCap = useDeviceUIStore((s) => s.connectorStartCap);
+  const endCap = useDeviceUIStore((s) => s.connectorEndCap);
   const color = useDeviceUIStore((s) => s.connectorColor);
-  const isPickerOpen = useDeviceUIStore((s) => s.isColorPickerOpen);
+  const activeVariant = deriveConnectorVariant(type, startCap, endCap);
 
   // Stable single-element tuple so ColorSlots's React.memo holds across renders.
   const colors = useMemo<readonly [string]>(() => [color], [color]);
 
+  const handlePick = useCallback((c: string) => {
+    setConnectorColor(c);
+    setIsPickerOpen(false);
+  }, []);
+  const handleToggle = useCallback(() => setIsPickerOpen((v) => !v), []);
+  const handleClose = useCallback(() => setIsPickerOpen(false), []);
+
   return (
     <div className="inspector inspector-connector">
-      {CONNECTOR_VARIANTS.map(({ id, label }) => (
-        <InspectorButton key={id} isActive={variant === id} ariaLabel={label} onClick={VARIANT_HANDLERS[id]}>
+      {CONNECTOR_VARIANT_BUTTONS.map(({ id, label }) => (
+        <InspectorButton key={id} isActive={id === activeVariant} ariaLabel={label} onClick={VARIANT_HANDLERS[id]}>
           <ConnectorVariantIcon variant={id} />
         </InspectorButton>
       ))}
@@ -31,22 +49,16 @@ export function ConnectorInspector() {
         activeIndex={0}
         isPickerOpen={isPickerOpen}
         onSelectSlot={NOOP}
-        onTogglePicker={A.toggleColorPicker}
-        onPickColor={A.setConnectorColor}
-        onClosePicker={A.closeColorPicker}
+        onTogglePicker={handleToggle}
+        onPickColor={handlePick}
+        onClosePicker={handleClose}
       />
     </div>
   );
 }
 
-const VARIANT_HANDLERS: Record<'straight' | 'doubleArrow' | 'elbow', () => void> = {
-  straight: () => A.setConnectorVariant('straight'),
-  doubleArrow: () => A.setConnectorVariant('doubleArrow'),
-  elbow: () => A.setConnectorVariant('elbow'),
-};
-
 interface VariantIconProps {
-  variant: 'straight' | 'doubleArrow' | 'elbow';
+  variant: ConnectorVariantId;
 }
 
 // Crude placeholder geometry — to be redesigned. For now each path is
@@ -60,10 +72,18 @@ const VARIANT_STROKE = {
 };
 
 const ConnectorVariantIcon = memo(function ConnectorVariantIcon({ variant }: VariantIconProps) {
-  if (variant === 'straight') {
+  if (variant === 'line') {
     return (
       <svg className="insp-icon" viewBox="0 0 24 24" aria-hidden="true">
         <line x1="4" y1="12" x2="20" y2="12" {...VARIANT_STROKE} />
+      </svg>
+    );
+  }
+  if (variant === 'arrow') {
+    return (
+      <svg className="insp-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <line x1="4" y1="12" x2="18" y2="12" {...VARIANT_STROKE} />
+        <path d="M15 9L18 12L15 15" {...VARIANT_STROKE} />
       </svg>
     );
   }
