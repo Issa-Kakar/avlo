@@ -11,6 +11,8 @@ Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,i
 cd /home/issak/dev/avlo && npm run typecheck    # typecheck all workspaces (must run from repo root)
 cd /home/issak/dev/avlo && npm run dev          # client :3000 + worker :8787 — ask before starting
 ```
+> In the `avlo-parallel` worktree, swap the path to `/home/issak/dev/avlo-parallel` — each worktree operates on its own checked-out branch.
+
 - `@avlo/shared` → `packages/shared/src/*`
 - `@/*` → `client/src/*`
 
