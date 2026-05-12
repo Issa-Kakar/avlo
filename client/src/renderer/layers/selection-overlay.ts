@@ -55,34 +55,12 @@ const SELECTION_STYLE = {
   PRIMARY: 'rgba(29, 78, 216, 1)',
   PRIMARY_FILL: 'rgba(29, 78, 216, 0.15)',
   PRIMARY_MUTED: 'rgba(29, 78, 216, 0.7)',
-  // Base stroke widths in CSS pixels at scale=1. Sized for "crisp" — slightly
-  // thinner than a normal 2px hairline. World-space cap (`STROKE_WORLD_FACTOR`)
-  // takes over for highlights/box when zoomed far out (see
-  // `selectionStrokeWidthW`); the marquee keeps its plain `width / scale`
-  // behaviour (no cap) — its visual weight at low zoom was deliberate.
+  // Base stroke widths in CSS pixels — rendered as `basePx / scale` so they
+  // stay constant on screen across zoom levels.
   HIGHLIGHT_WIDTH_PX: 1.5,
-  BOX_WIDTH_PX: 1.5,
+  BOX_WIDTH_PX: 1.75,
   MARQUEE_WIDTH_PX: 1.5,
 } as const;
-
-/**
- * Selection-overlay stroke width in world units, capped so it doesn't grow
- * unboundedly as the user zooms out.
- *
- * Pure screen-space (`basePx / scale`) at normal zoom; clamped at
- * `basePx * STROKE_WORLD_FACTOR` world units below the threshold zoom. The
- * cap engages at `scale ≤ 1 / STROKE_WORLD_FACTOR` (i.e. 0.5 with factor 2),
- * so above that the overlay looks identical to the old pure-screen-space form.
- *
- * Below the threshold the line gets thinner ON SCREEN as the user zooms out
- * further — keeps highlights/bboxes from dominating small zoomed-out objects.
- * "Understanding of world space": the line tracks world units when zoomed-out
- * geometry is the limiting factor.
- */
-const STROKE_WORLD_FACTOR = 2;
-function selectionStrokeWidthW(basePx: number, scale: number): number {
-  return Math.min(basePx / scale, basePx * STROKE_WORLD_FACTOR);
-}
 
 /**
  * **Handle visibility while EDITING — DO NOT collapse to a generic "is editing"
@@ -168,7 +146,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   const visible = getVisibleBoundsTuple();
   ctx.save();
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-  ctx.lineWidth = selectionStrokeWidthW(SELECTION_STYLE.HIGHLIGHT_WIDTH_PX, scale);
+  ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH_PX / scale;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   for (const id of selectedIds) {
@@ -269,7 +247,7 @@ function selectionRectForOverlay(t: TransformState): BBoxTuple | null {
 function drawSelectionBox(ctx: CanvasRenderingContext2D, bounds: BBoxTuple, scale: number): void {
   ctx.save();
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-  ctx.lineWidth = selectionStrokeWidthW(SELECTION_STYLE.BOX_WIDTH_PX, scale);
+  ctx.lineWidth = SELECTION_STYLE.BOX_WIDTH_PX / scale;
   ctx.strokeRect(bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]);
   ctx.restore();
 }
