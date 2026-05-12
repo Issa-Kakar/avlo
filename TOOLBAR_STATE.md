@@ -1,4 +1,4 @@
-# Toolbar Redesign — Current State (2026-05-09)
+# Toolbar Redesign — Current State (2026-05-12)
 
 > **Not finalized.** The pen and connector inspectors have been rewritten from
 > scratch onto a slot-based color model that mirrors Mural's zoom-menu
@@ -332,6 +332,20 @@ spacing, threshold values, and the variant icon set are all in flux.**
   double-arrow chevron weight and the elbow corner radius) needs a real
   design pass. Likely candidate to redo against
   `docs/TOOLBAR_ICON_DESIGN.md` next.
+- **Eraser + Code icon polish**: both ported from svgrepo references in
+  the 2026-05-12 pass and still WIP. `IconEraser` (svgrepo "eraser") —
+  angled block split by a diagonal seam (cap + pad as separate filled
+  paths), baseline folds into the pad path extending right as a wipe
+  surface; direction is right but seam width and tail proportions need
+  tuning. `IconCode` (svgrepo "code-square") — filled squircle with
+  `</>` + slash cutouts via evenodd; chevrons + slash render too small
+  inside the 24-unit viewBox (each chevron ≈ 3.5 × 7 units) and need a
+  redesign pass to make `</>` legible without losing the brackets-look.
+  An interim chunky-rounded-rect + hexagonal-outline-cutout variant
+  (no slash, 1.5–22.5 outer rect, w=3 perpendicular arm thickness) was
+  tried and reverted — chevrons still didn't read clearly and the
+  hexagonal cutout made each chevron look like a hollow outline rather
+  than a `</>` glyph. Design direction is open.
 - **`isDark` threshold** (`palette.ts:isDark`, currently `< 0.25`). May
   need to widen to `0.3-0.35` if mid-dark colors (e.g. `#F44336` at
   ~0.41) read as needing the inset white stroke too.
@@ -360,6 +374,21 @@ spacing, threshold values, and the variant icon set are all in flux.**
 
 ## Recent Behavior Changes (since the last state doc)
 
+- 2026-05-12: `IconEraser` + `IconCode` rewritten from svgrepo
+  references (both still WIP, see Pending). `IconEraser` replaces the
+  prior slanted-cutout-grooves design with a two-filled-path angled
+  block — cap and pad are separate paths separated by a diagonal seam
+  (the gap renders as the eraser groove); the prior standalone baseline
+  `<rect>` is folded into the pad path's bottom edge, extending right
+  as a wipe surface (path 2 horizontal segment at y=19.5–21, x=11.57
+  → 21 → 9). `IconCode` replaces the prior thin-chunky-`<>`-brackets
+  design with svgrepo's "code-square" reference: filled squircle outer
+  (2–22, cubic-bezier corners) + three evenodd cutouts (slash, right
+  chevron, left chevron). An interim hexagonal-outline-cutout variant
+  (rounded-rect outer 1.5–22.5, no slash, w=3 chevron arm thickness,
+  inner V-cavity preserved at icon color) was prototyped and reverted —
+  chevrons still didn't read clearly at 24px and the design direction
+  is open.
 - 2026-05-09: Stroke-weight icons now visually distinct. W2/W3 were
   `drawWeight10` wrapped in `<g transform="scale(1.12)">` / `scale(1.24)`
   — same SVG at three sizes, not three weights. Replaced with Mural's
