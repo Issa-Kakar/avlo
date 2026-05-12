@@ -113,6 +113,7 @@ Tool switches, shape variants, delete, enter-to-edit, image picker.
 | `r` | shape: rectangle | Sets tool + variant |
 | `o` | shape: ellipse | Sets tool + variant |
 | `d` | shape: diamond | Sets tool + variant |
+| `3` | shape: triangle | Sets tool + variant |
 | `i` | image file picker | One-shot action, not a tool switch |
 
 #### Modifier Shortcuts (Cmd/Ctrl + Key)
@@ -120,7 +121,7 @@ Tool switches, shape variants, delete, enter-to-edit, image picker.
 | Shortcut | Action | Gesture Behavior |
 |----------|--------|-----------------|
 | `Cmd+C` | Copy selected | Works anytime |
-| `Cmd+X` | Cut selected | Works anytime |
+| `Cmd+X` | Cut selected | Blocked during active gesture |
 | `Cmd+V` | Paste | Handled via DOM paste event, not here |
 | `Cmd+D` | Duplicate selected | Blocked during active gesture |
 | `Cmd+A` | Select all | Cancels non-select tool gesture first |
@@ -139,7 +140,7 @@ Tool switches, shape variants, delete, enter-to-edit, image picker.
 | Key | Action | Conditions |
 |-----|--------|------------|
 | `Delete` / `Backspace` | Delete selected objects | Requires selection |
-| `Enter` | Edit selected text/shape/note | Single selection only, select tool only, text/shape/note kind |
+| `Enter` | Edit selected text/shape/note/code | Single selection, select tool only. text/shape/note → textTool; code → codeTool |
 | `Escape` | Cancel gesture → clear selection | Layered: gesture first, then selection |
 | `Space` (hold) | Ephemeral pan mode | See spacebar pan section |
 | `Arrow keys` (hold) | Continuous pan | See arrow key pan section |
@@ -147,7 +148,8 @@ Tool switches, shape variants, delete, enter-to-edit, image picker.
 ### Paste Handler
 
 `handlePaste(e: ClipboardEvent)`:
-- Same input focus guard as keydown
+- Same input focus + active-room guards as keydown
+- `e.preventDefault()` (clipboard-actions handles all paste paths itself)
 - Checks `clipboardData.files` for OS file paste (image types) → `pasteImage(file)`
 - Falls back to `pasteFromClipboard()` for all other paste paths
 - `Cmd+V` is intentionally NOT in `handleModifierShortcut()` — the DOM paste event fires naturally from the Cmd+V keypress, and using the paste event gives access to `clipboardData.files` for OS file paste
@@ -201,7 +203,7 @@ Guard 1 (input focus) catches Tiptap's contentEditable focus → Tiptap handles 
 Calls `toggleSelectedBold()`, `toggleSelectedItalic()`, or `setSelectedHighlight()` from `selection-actions.ts`. These work on text objects, shapes with labels, and mixed selections.
 
 ### Highlight Toggle Logic
-Keyboard-manager computes `computeUniformInlineStyles(selectedIds, objectsById)` live — doesn't read cached inline styles from the selection store (which returns `EMPTY_INLINE_STYLES` for mixed selections). If all selected text is already highlighted → remove. Otherwise → apply device-ui-store `highlightColor` (default `#ffd43b`).
+Keyboard-manager computes `computeUniformInlineStyles(selectedIds)` live — doesn't read cached inline styles from the selection store (which returns `EMPTY_INLINE_STYLES` for mixed selections). If all selected text is already highlighted → remove. Otherwise → apply device-ui-store `highlightColor` (default `#ffd43b`).
 
 ---
 
@@ -209,7 +211,7 @@ Keyboard-manager computes `computeUniformInlineStyles(selectedIds, objectsById)`
 
 Minimal module: `lastCursorWorld: [number, number] | null`.
 
-- `setLastCursorWorld(pos)` — called by `CanvasRuntime.handlePointerMove()` after screenToWorld conversion
+- `setLastCursorWorld(pos)` — called by `CanvasRuntime.handlePointerMove()` after screenToWorld conversion, and by `edge-scroll.ts` after each auto-pan tick
 - `getLastCursorWorld()` — read by clipboard paste for cursor-position placement
 
 Returns null if the cursor has never entered the canvas (paste falls back to viewport center).
@@ -275,13 +277,13 @@ Proximity is **squared** before applying to speed — fine-grained control at lo
 
 | Phase | Duration | Behavior |
 |-------|----------|----------|
-| **Delay** | 120ms | No scrolling — prevents accidental trigger |
-| **Ramp** | 300ms | easeInQuad acceleration (t² curve) |
-| **Full speed** | After 420ms | Proximity² × BASE_SPEED at full easing |
+| **Delay** | 50ms | No scrolling — prevents accidental trigger |
+| **Ramp** | 100ms | easeInQuad acceleration (t² curve) |
+| **Full speed** | After 150ms | Proximity² × BASE_SPEED at full easing |
 
 ### Speed
 
-`BASE_SPEED = 9` CSS px per 16ms tick (~540 CSS px/s max at proximity=1, full easing).
+`BASE_SPEED = 9.5` CSS px per 16ms tick (~570 CSS px/s max at proximity=1, full easing).
 
 All speeds are screen-space (÷ scale for world delta) — consistent visual speed regardless of zoom level.
 

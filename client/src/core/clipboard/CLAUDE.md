@@ -42,6 +42,8 @@ interface SerializedObject {
   props: SerializedProps;          // All Y.Map entries except content; id/kind/ownerId/createdAt typed
   content?: SerializedContent;     // Y.XmlFragment (text, shapes with labels, notes)
   textContent?: string;            // Y.Text (code blocks)
+  cachedStart?: Point;             // Connectors only — start endpoint from route at copy time (paste fallback)
+  cachedEnd?: Point;               // Connectors only — end endpoint from route at copy time (paste fallback)
 }
 
 type SerializedProps = { id: string; kind: ObjectKind; ownerId: string; createdAt: number } & Record<string, unknown>;
@@ -57,7 +59,7 @@ interface SerializedParagraph {
 }
 ```
 
-**Serialize flow:** `serializeObjects(ids)` iterates ObjectHandles from snapshot, serializes each Y.Map. Y.XmlFragment content → paragraph deltas (preserving bold/italic/highlight attributes). Y.Text content → plain string. BBox tracked from handle.bbox for bounds computation.
+**Serialize flow:** `serializeObjects(ids)` iterates ObjectHandles from snapshot, serializes each Y.Map. Y.XmlFragment content → paragraph deltas (preserving bold/italic/highlight attributes). Y.Text content → plain string. BBox tracked from handle.bbox for bounds computation. For connectors, the current route's first/last points are cloned into `cachedStart`/`cachedEnd` (router buffer is pooled, so clone is required) — used as paste-fallback when an anchored target shape isn't present (cross-room paste, or copy → delete → paste in same room).
 
 **Deserialize flow:** `deserializeFragment(content)` rebuilds Y.XmlFragment → Y.XmlElement('paragraph') → Y.XmlText with delta attributes. `extractPlainText(objects)` joins text content across objects for clipboard plain text.
 
@@ -100,9 +102,7 @@ The paste handler (`handlePaste` in keyboard-manager) also checks `clipboardData
 `pasteInternal(payload, offset?)` — full-fidelity object duplication.
 
 ### ID Remapping
-Every object gets a new ULID. An `idMap` (old→new) is built upfront and used for:
-- Object IDs
-- Connector anchor references (`startAnchor.id`, `endAnchor.id`) — remapped if target is in paste set, **stripped** if not
+Every object gets a new ULID. An `idMap` (old→new) is built upfront and used for object IDs. Connector endpoints (`start`/`end`) go through a richer dispatch — see Property Remapping below.
 
 ### Position Offset
 - **Explicit offset** (duplicate): uses provided `[dx, dy]`
@@ -119,8 +119,13 @@ Each property is handled per-key in a switch:
 - `frame` → `[x+dx, y+dy, w, h]`
 - `origin` → `[x+dx, y+dy]`
 - `points` → each point offset by `[dx, dy]`
-- `start`/`end` → offset by `[dx, dy]`
-- `startAnchor`/`endAnchor` → remap ID or strip
+- `start`/`end` (connector endpoint union, discriminated by `Array.isArray`):
+  - Free `Point` → offset by `[dx, dy]`
+  - `StoredAnchor` → 4-step fallback:
+    1. Target in paste set → write remapped anchor (id → idMap)
+    2. Else target still exists in canvas → keep anchor unchanged (rebinds correctly)
+    3. Else `cachedStart`/`cachedEnd` present → translate cached point and write as free Point (no dangling `anchor.id` leaks)
+    4. Else last-ditch → translated payload bbox center as free Point
 - Everything else → copied as-is
 
 ### Content Deserialization
@@ -180,6 +185,12 @@ Reads device-ui-store text preferences (fontSize, fontFamily, color, align, fill
 ### Paste Width Logic
 - **Short text** (< 65 chars): `width: 'auto'` — natural sizing, no wrapping box
 - **Longer text** (>= 65 chars): `width = max(300, fontSize * 34)` — ~65 chars per line at any font size
+
+### Horizontal Centering (Fixed-Width Pastes)
+For fixed-width pastes, origin is shifted so the text bbox is symmetric around the paste target's worldX:
+- `originX = worldX + pasteWidth * (anchorFactor(align) - 0.5)` — deterministic because `pasteWidth` is known up front.
+- Auto-width pastes leave origin at worldX (left/right alignment would need a post-layout measurement; center-align collapses to worldX via the same formula).
+- `ensureVisible()` uses the same symmetric box: `[worldX - pasteWidth/2, worldY, worldX + pasteWidth/2, worldY]`.
 
 ### Object Creation
 Creates Y.Map with: id, kind='text', origin, fontSize, fontFamily, color, align, width, content, optional fillColor, ownerId, createdAt.
@@ -283,7 +294,7 @@ PASTE_EXTENSIONS               Tiptap extensions for HTML parsing: Document, Par
 
 ### Keyboard Manager (`runtime/keyboard-manager.ts`)
 - `Cmd+C` → `copySelected()`
-- `Cmd+X` → `cutSelected()`
+- `Cmd+X` → `cutSelected()` (blocked during active gesture)
 - `Cmd+D` → `duplicateSelected()` (blocked during active gesture)
 - `Cmd+A` → `selectAll()` (cancels non-select tool gesture first)
 - `Cmd+V` handled via DOM paste event → `handlePaste()` → `pasteFromClipboard()`
