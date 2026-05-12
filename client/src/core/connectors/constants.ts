@@ -91,7 +91,7 @@ export const GUIDE_CONFIG = {
  */
 export const ROUTING_CONFIG = {
   /** Corner radius for arcTo rendering */
-  CORNER_RADIUS_W: 26,
+  CORNER_RADIUS_W: 22,
 
   /**
    * Arrow sizing: length = max(MIN, strokeWidth * FACTOR), width = length * ASPECT_RATIO.
@@ -196,4 +196,4 @@ export function computeApproachOffset(strokeWidth: number): number {
 }
 
 /** Visual clearance between endpoint and shape edge (prevents caps/arrows entering shapes). */
-export const EDGE_CLEARANCE_W = 11;
+export const EDGE_CLEARANCE_W = 6;

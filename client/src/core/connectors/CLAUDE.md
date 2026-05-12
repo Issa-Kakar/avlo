@@ -306,7 +306,7 @@ Single paint atom owns every connector stroke (committed render, transform previ
 | `drawConnectorDashGuide(ctx, from, to)` | Interior-straight guide. |
 | `isCenterSnap(snap)`, `resolveSnapContext(snap)` | Helpers — center check; `{handle, frame, shapeType}` resolution via `BINDABLE_KINDS` + `frameOf`. |
 
-`buildConnectorPaths({ points, count, strokeWidth, startCap, endCap })` (in `connector-paths.ts`) returns `{ polyline, startArrow, endArrow }`. Rounded corners via `arcTo`, radius clamped to `min(CORNER_RADIUS_W (26), lenIn/2, lenOut/2)`. Arrow size = `max(ARROW_MIN_LENGTH_W (6), strokeWidth * 3)`, capped at `segLen / 2`. Polyline trimmed before each arrow-capped end so the stroke doesn't poke through.
+`buildConnectorPaths({ points, count, strokeWidth, startCap, endCap })` (in `connector-paths.ts`) returns `{ polyline, startArrow, endArrow }`. Rounded corners via `arcTo`, radius clamped to `min(CORNER_RADIUS_W (22), lenIn/2, lenOut/2)`. Arrow size = `max(ARROW_MIN_LENGTH_W (6), strokeWidth * 3)`, capped at `segLen / 2`. Polyline trimmed before each arrow-capped end so the stroke doesn't poke through.
 
 ---
 
