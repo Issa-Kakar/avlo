@@ -389,6 +389,7 @@ const LB_GL = 12;
 const LB_ZW = 13;
 const LB_WJ = 14;
 const LB_CM = 15;
+const LB_B2 = 16;
 
 const LB_ASCII: Uint8Array = (() => {
   const a = new Uint8Array(128);
@@ -438,7 +439,9 @@ function getLBClass(cc: number): number {
   if (cc === 0x200b) return LB_ZW; // ZWSP → break opportunity (LB8)
   if (cc === 0x200c || cc === 0x200d) return LB_CM; // ZWNJ, ZWJ → combining
   if (cc === 0x2018 || cc === 0x2019 || cc === 0x201c || cc === 0x201d) return LB_QU; // smart quotes
-  if (cc === 0x2013 || cc === 0x2014) return LB_HY; // en/em dash
+  if (cc === 0x2014) return LB_B2; // em dash — UAX#14 B2 (break ÷ on both sides, LB17 keeps '——' together)
+  // En dash is UAX#14 BA, but we keep it as HY so LB25 (HY × NU) keeps `5–10` glued.
+  if (cc === 0x2013) return LB_HY;
   if (cc === 0x00ad) return LB_BA; // SHY
   return LB_AL;
 }
@@ -452,15 +455,23 @@ export function nextSoftBreak(text: string, start: number = 0): number {
     const prev = getLBClass(text.charCodeAt(i - 1));
     const curr = getLBClass(text.charCodeAt(i));
 
-    // Identify break candidates: prev allows break-after, or curr is OP.
+    // Identify break candidates: prev allows break-after, or curr opens break-before.
     // IS (. , : ;) is NOT a break-after class — LB29 (IS × AL/HL) and LB25
     // (numeric infix IS × NU) make the post-IS break opportunity vanish in
     // practice for word-internal text. Omitting IS here is equivalent to
     // applying both suppressions, while still allowing IS × OP via the OP
     // candidate below (e.g. ":[" stays breakable).
+    // B2 (em dash) opens a break on BOTH sides per UAX#14 — appears in both lists.
     const prevAllows =
-      prev === LB_HY || prev === LB_BA || prev === LB_SY || prev === LB_EX || prev === LB_CL || prev === LB_CP || prev === LB_ZW;
-    const currOpensBreak = curr === LB_OP;
+      prev === LB_HY ||
+      prev === LB_BA ||
+      prev === LB_SY ||
+      prev === LB_EX ||
+      prev === LB_CL ||
+      prev === LB_CP ||
+      prev === LB_ZW ||
+      prev === LB_B2;
+    const currOpensBreak = curr === LB_OP || curr === LB_B2;
     if (!prevAllows && !currOpensBreak) continue;
 
     // Apply UAX#14 suppressions in order.
@@ -470,6 +481,9 @@ export function nextSoftBreak(text: string, start: number = 0): number {
     if (curr === LB_GL && prev !== LB_SP && prev !== LB_BA && prev !== LB_HY) continue; // LB12a
     if (curr === LB_CL || curr === LB_CP || curr === LB_EX || curr === LB_IS || curr === LB_SY) continue; // LB13
     if (prev === LB_OP) continue; // LB14
+    // LB17 is `B2 SP* × B2`. SP cannot appear within a word token (tokenizer splits on it),
+    // so pairwise B2 × B2 is sufficient.
+    if (prev === LB_B2 && curr === LB_B2) continue; // LB17
     if (prev === LB_QU || curr === LB_QU) continue; // LB19
     // LB25: suppress break inside numeric expressions. HY×NU keeps signed numbers
     // glued (e.g. `:-2947.84` stays one chunk); SY×NU keeps fractions glued
