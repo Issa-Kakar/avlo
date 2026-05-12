@@ -31,6 +31,7 @@ import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';
 import { bboxCenter, bboxSize, translateBBox, translateFrame, translatePoint, translatePoints } from '../geometry/bounds';
 import { createImageFromBlob } from '../image/image-actions';
 import { enqueue } from '../image/image-manager';
+import { anchorFactor } from '../text/text-system';
 import { type BBoxTuple, bboxTupleToWorldBounds, type FrameTuple, type Point } from '../types/geometry';
 import type { ConnectorEndpoint, StoredAnchor } from '../types/objects';
 import {
@@ -393,11 +394,17 @@ function createPastedTextObject(fragment: Y.XmlFragment, charCount: number, posi
   const userId = getUserId();
   const pasteWidth: number | 'auto' = charCount < 65 ? 'auto' : Math.max(300, fontSize * 34);
 
+  // Horizontally center the text box on worldX. Deterministic only when the
+  // boxWidth is known (fixed-width pastes); auto-width left/right would need
+  // a layout measurement, so we leave origin at worldX there. Center-align
+  // collapses to worldX regardless of width (handled by the same formula).
+  const originX = typeof pasteWidth === 'number' ? worldX + pasteWidth * (anchorFactor(align) - 0.5) : worldX;
+
   transact(() => {
     const yObj = new Y.Map<unknown>();
     yObj.set('id', objectId);
     yObj.set('kind', 'text');
-    yObj.set('origin', [worldX, worldY]);
+    yObj.set('origin', [originX, worldY]);
     yObj.set('fontSize', fontSize);
     yObj.set('fontFamily', fontFamily);
     yObj.set('color', color);
@@ -418,9 +425,10 @@ function createPastedTextObject(fragment: Y.XmlFragment, charCount: number, posi
     invalidateOverlay();
   }
 
-  // Zoom-to-fit for fixed-width pastes (auto = short text, already near viewport)
+  // Zoom-to-fit for fixed-width pastes (auto = short text, already near viewport).
+  // Bbox is symmetric around worldX after the originX shift.
   if (typeof pasteWidth === 'number') {
-    ensureVisible([worldX, worldY, worldX + pasteWidth, worldY]);
+    ensureVisible([worldX - pasteWidth / 2, worldY, worldX + pasteWidth / 2, worldY]);
   }
 }
 
