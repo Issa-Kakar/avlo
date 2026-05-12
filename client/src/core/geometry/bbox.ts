@@ -8,12 +8,23 @@ import { computeNoteBBox, NOTE_SHADOW_BOTTOM_RATIO, NOTE_SHADOW_SIDE_RATIO, NOTE
 import { computeTextBBox } from '../text/text-system';
 import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
 import type { ObjectKind } from '../types/objects';
+import { copyBbox } from './bounds';
 
-export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown>): BBoxTuple {
+/**
+ * Write the bbox for `(id, kind, yMap)` into `out`. Hot-path entry — callers pass a
+ * pooled scratch tuple and pay zero allocation for stroke/shape/image/connector
+ * branches. Text/code/note/bookmark branches still allocate one tuple inside the
+ * subsystem helper (copied via `copyBbox`); pushing `*Into` into those helpers is
+ * a follow-up.
+ */
+export function computeBBoxForInto(id: string, kind: ObjectKind, yMap: Y.Map<unknown>, out: BBoxTuple): void {
   switch (kind) {
     case 'stroke': {
       const points = getPoints(yMap);
-      if (points.length < 1) return [0, 0, 0, 0];
+      if (points.length < 1) {
+        out[0] = out[1] = out[2] = out[3] = 0;
+        return;
+      }
 
       let minX = points[0][0],
         minY = points[0][1];
@@ -33,7 +44,11 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
       const width = getWidth(yMap, 1);
       const padding = width * 0.5 + 1;
 
-      return [minX - padding, minY - padding, maxX + padding, maxY + padding];
+      out[0] = minX - padding;
+      out[1] = minY - padding;
+      out[2] = maxX + padding;
+      out[3] = maxY + padding;
+      return;
     }
 
     case 'shape': {
@@ -41,16 +56,25 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
       const strokeWidth = getWidth(yMap, 1);
       const padding = strokeWidth * 0.5 + 1;
 
-      return [frame[0] - padding, frame[1] - padding, frame[0] + frame[2] + padding, frame[1] + frame[3] + padding];
+      out[0] = frame[0] - padding;
+      out[1] = frame[1] - padding;
+      out[2] = frame[0] + frame[2] + padding;
+      out[3] = frame[1] + frame[3] + padding;
+      return;
     }
 
     case 'text': {
       const props = getTextProps(yMap);
       if (!props) {
         const frame = getFrame(yMap) ?? [0, 0, 0, 0];
-        return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
+        out[0] = frame[0];
+        out[1] = frame[1];
+        out[2] = frame[0] + frame[2];
+        out[3] = frame[1] + frame[3];
+        return;
       }
-      return computeTextBBox(id, props);
+      copyBbox(computeTextBBox(id, props), out);
+      return;
     }
 
     case 'note': {
@@ -59,22 +83,35 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
         const origin = (yMap.get('origin') as Point | undefined) ?? [0, 0];
         const scale = (yMap.get('scale') as number) ?? 1;
         const w = NOTE_WIDTH * scale;
-        return [origin[0], origin[1], origin[0] + w, origin[1] + w];
+        out[0] = origin[0];
+        out[1] = origin[1];
+        out[2] = origin[0] + w;
+        out[3] = origin[1] + w;
+        return;
       }
-      return computeNoteBBox(id, props);
+      copyBbox(computeNoteBBox(id, props), out);
+      return;
     }
 
     case 'code':
-      return computeCodeBBox(id, yMap);
+      copyBbox(computeCodeBBox(id, yMap), out);
+      return;
 
     case 'image': {
       const frame = getFrame(yMap) ?? [0, 0, 0, 0];
-      return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
+      out[0] = frame[0];
+      out[1] = frame[1];
+      out[2] = frame[0] + frame[2];
+      out[3] = frame[1] + frame[3];
+      return;
     }
 
     case 'bookmark': {
       const props = getBookmarkProps(yMap);
-      if (props) return computeBookmarkBBox(id, props);
+      if (props) {
+        copyBbox(computeBookmarkBBox(id, props), out);
+        return;
+      }
       // Inline fallback when props incomplete
       const origin = (yMap.get('origin') as Point | undefined) ?? [0, 0];
       const scale = (yMap.get('scale') as number) ?? 1;
@@ -84,31 +121,35 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
       const padTop = w * NOTE_SHADOW_TOP_RATIO;
       const padSide = w * NOTE_SHADOW_SIDE_RATIO;
       const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
-      return [origin[0] - padSide, origin[1] - padTop, origin[0] + w + padSide, origin[1] + h + padBottom];
+      out[0] = origin[0] - padSide;
+      out[1] = origin[1] - padTop;
+      out[2] = origin[0] + w + padSide;
+      out[3] = origin[1] + h + padBottom;
+      return;
     }
 
     case 'connector': {
       // Read from local route cache — connector points no longer live in Y.Map.
       // Parallel to text/code/note/bookmark: each kind delegates to its subsystem cache.
       const points = getConnectorRoute(id);
-      if (!points || points.length < 2) return [0, 0, 0, 0];
-      return computeConnectorBBoxFromPoints(points, yMap);
+      if (!points || points.length < 2) {
+        out[0] = out[1] = out[2] = out[3] = 0;
+        return;
+      }
+      computeConnectorBBoxFromPointsInto(points, points.length, getWidth(yMap), getStartCap(yMap), getEndCap(yMap), out);
+      return;
     }
 
     default:
-      return [0, 0, 0, 0];
+      out[0] = out[1] = out[2] = out[3] = 0;
+      return;
   }
 }
 
-/**
- * Compute connector bbox from externally-provided points.
- * Reads width and cap info from the Y.Map (which is never stale for style props).
- * Use this when you have rerouted points that haven't been committed yet.
- */
-export function computeConnectorBBoxFromPoints(points: Point[], yMap: Y.Map<unknown>): BBoxTuple {
-  if (points.length < 2) return [0, 0, 0, 0];
+/** Cold-path wrapper: allocates a fresh tuple. Hot paths should call `computeBBoxForInto` with a pooled scratch. */
+export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown>): BBoxTuple {
   const out: BBoxTuple = [0, 0, 0, 0];
-  computeConnectorBBoxFromPointsInto(points, points.length, getWidth(yMap), getStartCap(yMap), getEndCap(yMap), out);
+  computeBBoxForInto(id, kind, yMap, out);
   return out;
 }
 

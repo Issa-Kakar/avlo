@@ -98,7 +98,7 @@ All paths relative to `client/src/` unless noted.
 | `types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
 | `types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `index.ts` | Type re-export barrel |
-| `geometry/bbox.ts` | `computeBBoxFor(id, kind, yMap)` — unified per-kind dispatch; `computeConnectorBBoxFromPoints{,Into}` |
+| `geometry/bbox.ts` | `computeBBoxFor{,Into}(id, kind, yMap[, out])` — unified per-kind dispatch (hot path uses `*Into` into a pooled scratch); `computeConnectorBBoxFromPointsInto` |
 | `geometry/bounds.ts` | BBox/frame tuple helpers, WorldBounds ops, mutating offset primitives (`offset*`, `copy*`, `*Mut`) |
 | `geometry/frame-of.ts` | `frameOf(handle)` — mapped dispatch to per-subsystem frame getter for any bindable kind |
 | `geometry/shape-path.ts` | Build Path2D from frame tuple |
@@ -177,9 +177,10 @@ tool-registry.ts (self-constructing singletons)
 Y.Doc (source of truth)
    ↓ observers (Y.Map.observeDeep)
 RoomDocManager.applyObjectChanges()
-   ├─ computeBBoxFor(id, kind, yMap)
+   ├─ computeBBoxForInto(id, kind, yMap, scratch)
+   ├─ upsertHandle (mutates handle.bbox in place; rbush update before mutation)
    ├─ evictGeometry(id) + per-kind layout cache evict
-   └─ invalidateWorldBBox(bbox)      [base canvas]
+   └─ invalidateIfVisible(bbox, vp) → invalidateWorldBBox      [base canvas]
          ↓
    RenderLoop (dirty-rect base)
    OverlayRenderLoop (full-clear overlay)
@@ -275,9 +276,11 @@ interface ObjectHandle {
   id: string;            // ULID
   kind: ObjectKind;
   y: Y.Map<unknown>;     // LIVE reference
-  bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally
+  bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally, mutated in place by observer
 }
 ```
+
+Wrapper persists across observer fires; only `bbox`'s four slots change (via `copyBbox`). Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
 
 ### Stored vs derived geometry
 
@@ -285,7 +288,7 @@ interface ObjectHandle {
 - **Derived from layout/origin/scale** (subsystem-cached, accessed via getter): text/note `getTextFrame(id)` (`core/text/text-system.ts`), code `getCodeFrame(id)` (`core/code/code-system.ts`), bookmark `getBookmarkFrame(id)` (`core/bookmark/bookmark-render.ts`).
 - **Connectors are a third class.** Y.Map stores endpoint refs only (`start`/`end`: point or `StoredAnchor`); the routed polyline lives in `ConnectorRouter`'s local cache, populated by the deep observer on every relevant input change. Read via `getConnectorRoute(id)`.
 
-All frame getters return `FrameTuple | null` (null before first layout). `computeBBoxFor(id, kind, yMap)` (`core/geometry/bbox.ts`) dispatches to the right subsystem on hydration + every observer fire.
+All frame getters return `FrameTuple | null` (null before first layout). `computeBBoxFor{,Into}` (`core/geometry/bbox.ts`) dispatches to the right subsystem — observer fires use `*Into` (writes into a pooled scratch); hydrate uses the allocating wrapper.
 
 **Global helpers** (use before reaching into a subsystem):
 - `frameOf(handle)` — `core/geometry/frame-of.ts` — single dispatch over every bindable kind.
@@ -315,13 +318,13 @@ All frame getters return `FrameTuple | null` (null before first layout). `comput
 
 Public fields (non-null from construction): `objectsById`, `spatialIndex`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (non-connectors first, connectors second so bindable frames exist for routing) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`).
 
-**`applyObjectChanges`** (deep observer body) — three phases, reusing private scratch sets (`_touchedIds`/`_deletedIds`/`_bboxChangedIds`/`_dirtyBBoxes`) — zero alloc per fire:
+**`applyObjectChanges`** (deep observer body) — three phases, reusing private scratch sets (`_touchedIds`/`_deletedIds`/`_bboxChangedIds`) + a single `_newBBoxScratch` tuple — zero alloc per fire on stroke/shape/image/connector branches (text/code/note/bookmark still leak one tuple from the subsystem helper — follow-up). Viewport read once at top via `getVisibleBoundsTuple()`; per-upsert `invalidateIfVisible` inlines the cull.
 
-- **A — deletions.** `spatial.remove` → `removeObjectCaches` → media unregister → push old bbox.
-- **B — touched.** Connector queued for reroute → skip (defer to C). Else bbox via `computeBBoxFor` (non-connector) or `router.computeBBox` (style-only connector) → upsert handle → evict on bbox change → bindable bbox change calls `router.onBindableChanged`.
-- **C — drain `router.drainRerouteQueue`.** Reroute → upsert → always evict.
+- **A — deletions.** `spatial.remove` → `removeObjectCaches` → media unregister → `invalidateIfVisible(handle.bbox)` → delete from map.
+- **B — touched.** Connector queued for reroute → skip (defer to C). Else write bbox into `_newBBoxScratch` (non-connector: `computeBBoxForInto`; style-only connector: `router.computeBBox`) → `upsertHandle` → bindable bbox change calls `router.onBindableChanged`.
+- **C — drain `router.drainRerouteQueue`.** `router.rerouteCanonical(id, yObj, _newBBoxScratch)` → `upsertHandle(..., alwaysEvict=true)`.
 
-Then `flushDirtyBBoxes` viewport-filters and calls `invalidateWorldBBox`.
+`upsertHandle` mutates `handle.bbox` in place; the wrapper persists for the id's lifetime. On `bboxChanged`: invalidate prev rect → `spatialIndex.update` → `copyBbox` → evict → invalidate new rect (order critical — rbush's `remove` destructures the old envelope synchronously, so `handle.bbox` must still hold the old values when `update` is called). On no-bbox-change with `alwaysEvict`: only evict + invalidate new rect. New rect is invalidated unconditionally (content may change visually without bbox change).
 
 Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
 

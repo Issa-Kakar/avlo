@@ -10,7 +10,8 @@ import * as Y from 'yjs';
 import { getCodeProps } from '@/core/accessors';
 import { codeSystem } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
-import { bboxEquals, computeBBoxFor } from '@/core/geometry/bbox';
+import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
+import { copyBbox } from '@/core/geometry/bounds';
 import { hydrateImages, registerBookmarkMeta, registerImageMeta, unregisterMedia } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
@@ -27,6 +28,11 @@ import { attach, detach } from './presence/presence';
 
 // Type alias for Y structures
 type YObjects = Y.Map<Y.Map<unknown>>;
+
+/** Viewport-cull then publish a dirty rect. `vp` is a scratch tuple from `getVisibleBoundsTuple()`. */
+function invalidateIfVisible(b: BBoxTuple, vp: Readonly<BBoxTuple>): void {
+  if (b[2] >= vp[0] && b[0] <= vp[2] && b[3] >= vp[1] && b[1] <= vp[3]) invalidateWorldBBox(b);
+}
 
 // Manager interface - public API
 export interface IRoomDocManager {
@@ -76,13 +82,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   readonly connectorRouter = new ConnectorRouter();
   private objectsObserver: ((events: Y.YEvent<Y.AbstractType<unknown>>[], tx: Y.Transaction) => void) | null = null;
 
-  // Reused observer scratch — cleared at top of each fire. Safe because observer
-  // is not reentrant (Y.Doc dispatches at end of transaction; applyObjectChanges
+  // Reused observer scratch — cleared/overwritten at top of each fire. Safe because the
+  // observer is not reentrant (Y.Doc dispatches at end of transaction; applyObjectChanges
   // does not trigger a new transaction).
   private readonly _touchedIds = new Set<string>();
   private readonly _deletedIds = new Set<string>();
   private readonly _bboxChangedIds = new Set<string>();
-  private readonly _dirtyBBoxes: BBoxTuple[] = [];
+  // Scratch bbox reused across every upsert in a single fire. `upsertHandle` copies its
+  // values into `handle.bbox` (or seeds a fresh tuple on first insert) — the scratch never
+  // leaks into `objectsById`.
+  private readonly _newBBoxScratch: BBoxTuple = [0, 0, 0, 0];
 
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
     this.roomId = roomId;
@@ -257,9 +266,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   private applyObjectChanges(): void {
-    const { _touchedIds: touched, _deletedIds: deleted, _bboxChangedIds: changed, _dirtyBBoxes: dirty, connectorRouter: router } = this;
-    dirty.length = 0;
+    const {
+      _touchedIds: touched,
+      _deletedIds: deleted,
+      _bboxChangedIds: changed,
+      _newBBoxScratch: scratch,
+      connectorRouter: router,
+    } = this;
     changed.clear();
+    const vp = getVisibleBoundsTuple();
 
     // === PHASE A: deletions === (router maps already updated in observer)
     for (const id of deleted) {
@@ -268,7 +283,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.spatialIndex.remove(id, handle.bbox);
       removeObjectCaches(id, handle.kind);
       if (handle.kind === 'image' || handle.kind === 'bookmark') unregisterMedia(id);
-      dirty.push(handle.bbox);
+      invalidateIfVisible(handle.bbox, vp);
       this.objectsById.delete(id);
     }
 
@@ -287,18 +302,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (kind === 'connector') {
         if (router.isQueuedForReroute(id)) continue; // defer to Phase C
         // Style-only branch: route unchanged, but bbox may shift (caps/width).
-        const newBBox: BBoxTuple = [0, 0, 0, 0];
-        if (!router.computeBBox(id, yObj, newBBox)) continue;
-        const { prevBBox, bboxChanged } = this.upsertHandle(id, kind, yObj, newBBox);
-        this.finalizeUpsert(id, prevBBox, newBBox, bboxChanged, false, dirty);
-        if (bboxChanged) changed.add(id);
+        if (!router.computeBBox(id, yObj, scratch)) continue;
+        if (this.upsertHandle(id, kind, yObj, scratch, vp, false)) changed.add(id);
         continue;
       }
 
       // Non-connector branch
-      const newBBox = computeBBoxFor(id, kind, yObj);
-      const { prevBBox, bboxChanged } = this.upsertHandle(id, kind, yObj, newBBox);
-      this.finalizeUpsert(id, prevBBox, newBBox, bboxChanged, false, dirty);
+      computeBBoxForInto(id, kind, yObj, scratch);
+      const bboxChanged = this.upsertHandle(id, kind, yObj, scratch, vp, false);
 
       // Media meta cache: idempotent re-register on every touch. AssetIds are
       // immutable post-creation and bookmarks are written atomically (offline/failed
@@ -323,59 +334,60 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     for (const id of router.drainRerouteQueue()) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
-      const newBBox = router.rerouteCanonical(id, yObj);
-      if (!newBBox) continue; // routing failed → leave handle as-is (next observer pass corrects)
-      const { prevBBox, bboxChanged } = this.upsertHandle(id, 'connector', yObj, newBBox);
-      this.finalizeUpsert(id, prevBBox, newBBox, bboxChanged, true, dirty); // route changed → always evict
+      if (!router.rerouteCanonical(id, yObj, scratch)) continue; // routing failed → leave handle as-is (next observer pass corrects)
+      const bboxChanged = this.upsertHandle(id, 'connector', yObj, scratch, vp, true); // route changed → always evict
       touched.add(id);
       if (bboxChanged) changed.add(id);
     }
 
     sel.onObjectsChanged(touched, changed);
-    this.flushDirtyBBoxes(dirty);
-  }
-
-  /** upsert tail: evict geometry on bbox change (or always, for rerouted connectors) and push dirty rects. */
-  private finalizeUpsert(
-    id: string,
-    prev: BBoxTuple | null,
-    next: BBoxTuple,
-    bboxChanged: boolean,
-    alwaysEvict: boolean,
-    dirty: BBoxTuple[],
-  ): void {
-    if (bboxChanged || alwaysEvict) evictGeometry(id);
-    if (bboxChanged && prev) dirty.push(prev);
-    dirty.push(next);
   }
 
   /**
-   * Insert/update a handle: spatial index + objectsById bookkeeping. Caller decides
-   * whether to evict geometry / push dirty rects / track selection — keyed off the
-   * returned `bboxChanged` flag.
+   * Insert/update a handle in place. On first insert, allocates the ObjectHandle once with
+   * its own owned `bbox` tuple cloned from `newBBox`. On update, mutates `handle.bbox` in
+   * place via `copyBbox` — provably safe because no downstream consumer holds a bbox ref
+   * across observer fires (transform/topology/image-manager snapshot at gesture begin;
+   * renderer and spatial index destructure on read).
+   *
+   * Ordering critical when `bboxChanged`: publish prev rect AND call `spatialIndex.update`
+   * BEFORE mutating `handle.bbox`. rbush's `remove` destructures the old bbox to locate the
+   * entry; if `handle.bbox` already holds the new values, the remove silently no-ops and
+   * leaves a stale entry.
+   *
+   * Returns `bboxChanged`. Caller drives selection bookkeeping + bindable propagation off
+   * the flag.
    */
   private upsertHandle(
     id: string,
     kind: ObjectKind,
     yObj: Y.Map<unknown>,
     newBBox: BBoxTuple,
-  ): { prevBBox: BBoxTuple | null; bboxChanged: boolean } {
-    const prev = this.objectsById.get(id);
-    const oldBBox = prev?.bbox ?? null;
-    this.objectsById.set(id, { id, kind, y: yObj, bbox: newBBox });
-    if (oldBBox) this.spatialIndex.update(id, oldBBox, newBBox, kind);
-    else this.spatialIndex.insert(id, newBBox, kind);
-    return { prevBBox: oldBBox, bboxChanged: !oldBBox || !bboxEquals(oldBBox, newBBox) };
-  }
+    vp: Readonly<BBoxTuple>,
+    alwaysEvict: boolean,
+  ): boolean {
+    const handle = this.objectsById.get(id);
 
-  private flushDirtyBBoxes(bboxes: BBoxTuple[]): void {
-    if (bboxes.length === 0) return;
-    const vp = getVisibleBoundsTuple();
-    for (const bbox of bboxes) {
-      if (bbox[2] >= vp[0] && bbox[0] <= vp[2] && bbox[3] >= vp[1] && bbox[1] <= vp[3]) {
-        invalidateWorldBBox(bbox);
-      }
+    if (!handle) {
+      const owned: BBoxTuple = [newBBox[0], newBBox[1], newBBox[2], newBBox[3]];
+      this.objectsById.set(id, { id, kind, y: yObj, bbox: owned });
+      this.spatialIndex.insert(id, owned, kind);
+      evictGeometry(id);
+      invalidateIfVisible(owned, vp);
+      return true;
     }
+
+    const bboxChanged = !bboxEquals(handle.bbox, newBBox);
+
+    if (bboxChanged) {
+      invalidateIfVisible(handle.bbox, vp); // prev area — handle.bbox still old
+      this.spatialIndex.update(id, handle.bbox, newBBox, kind); // rbush reads old envelope first
+      copyBbox(newBBox, handle.bbox); // commit in place
+    }
+    if (bboxChanged || alwaysEvict) evictGeometry(id);
+    invalidateIfVisible(handle.bbox, vp); // new area — always (content may have changed visually even when bbox identical)
+
+    return bboxChanged;
   }
 
   // ============================================================
@@ -415,11 +427,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).
     // Router takes `yObj` directly — no placeholder set. The handle enters
-    // `objectsById` exactly once with its real bbox.
+    // `objectsById` exactly once with its real bbox. Hydrate exception to the
+    // no-bbox-dummy rule: on routing failure, `bbox` stays `[0,0,0,0]` and the
+    // next observer fire (e.g. anchor shape hydrating) corrects it.
     for (const id of deferredConnectorIds) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
-      const bbox = this.connectorRouter.rerouteCanonical(id, yObj) ?? ([0, 0, 0, 0] as BBoxTuple);
+      const bbox: BBoxTuple = [0, 0, 0, 0];
+      this.connectorRouter.rerouteCanonical(id, yObj, bbox);
       const handle: ObjectHandle = { id, kind: 'connector', y: yObj, bbox };
       this.objectsById.set(id, handle);
       handles.push(handle);
