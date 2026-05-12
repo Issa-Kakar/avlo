@@ -45,7 +45,7 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
 
 | File | Purpose |
 |------|---------|
-| `client/src/lib/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()`, text wrapping, height computation, two card layouts (full + text), Open-button hit/hover helpers |
+| `client/src/lib/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()` (hover-aware), text wrapping, height computation, two card layouts (full + text), Open-button hit-test + world-bbox helpers |
 | `client/src/lib/bookmark/bookmark-actions.ts` | Side-effecting actions: `openBookmarkUrl(id)` — two-pass URL validation, `window.open(_blank, noopener,noreferrer)` |
 | `client/src/lib/bookmark/bookmark-unfurl.ts` | Lifecycle coordinator: pending map, worker commands, atomic Y.Doc writes, placeholder management |
 | `client/src/lib/bookmark/bookmark-placeholder.ts` | HTML loading elements: spinner + domain label, camera-tracked positioning |
@@ -278,6 +278,8 @@ Placeholder `#f5f5f5` rect while bitmap loading.
 - **Full card:** overlaid on OG image, `OPEN_BTN_MARGIN` (10wu) from bottom-right of image area
 - **Text card:** right-aligned in domain row, vertically centered with favicon
 
+Painted in the **same `drawBookmark` pass** as the rest of the card via the `hoveredOpen` flag — exactly one Open-button emission per visible bookmark per frame, hover or not. Z-order works naturally: base-canvas occluders (filled shapes, images, overlapping bookmarks) stack above the button when they should. See [Open-Button Hover Pipeline](#open-button-hover-pipeline) below for the state/dispatch/invalidation flow.
+
 ### Favicon + Display Name
 
 18×18wu favicon drawn via `getBitmap(props.faviconAssetId)` from `image-manager.ts`. Positioned at left edge of the favicon row, 6wu gap before the display name. The display name is the prettified site name (`prettifyDomain(domain)` → "Github", "Excalidraw", …), rendered in 13px regular Inter, black (`#1a1a1a`). It is **not** a link — no hover state, no click target. The prettified form is computed once per layout-cache fill and stored on `BookmarkLayout.displayDomain`.
@@ -340,14 +342,49 @@ getOpenButtonLocalBounds(layout) → LocalRect
 // render → returns false).
 hitTestOpenButton(handle, worldX, worldY) → boolean
 
-// Paint the Open button in its hover state on top of the base canvas's already-
-// painted non-hover button. Called by selection-overlay BEFORE selection
-// primary visuals so bbox stroke + resize handles render above. Same
-// translate+scale math as drawBookmark — pixels align exactly.
-drawHoveredOpenButton(ctx, id) → void
+// World-space bbox of the Open button rect, padded for the 1px lineWidth at
+// the current scale (`0.5 × scale` per side; `AA_MARGIN` is added inside
+// `invalidateWorldBBox` for the device-pixel AA fringe). Returns a module-
+// scope MUTABLE scratch; `invalidateWorldBBox` consumes it synchronously
+// (slot reads, writes derived values into its own dirty buffer), so back-to-
+// back calls during a cross transition (`prev → invalidate → next →
+// invalidate`) are safe. Returns null when handle/props/layout/frame caches
+// are absent (pre-first-render or post-deletion) — caller bails the invalidate.
+getOpenButtonWorldBBox(id) → BBoxTuple | null
 ```
 
 `getOpenButtonLocalBounds` returns coordinates **frame-local** (relative to bookmark frame origin, pre-scale). Convert to world by `frame[0] + lx * scale`, `frame[1] + ly * scale`. The prettified display name is plain text — no hit-test bounds.
+
+### Open-Button Hover Pipeline
+
+Hover state and paint live on the **base canvas** alongside the rest of the bookmark. The overlay canvas never paints the hover button — Z-order works naturally so base-canvas occluders stack above it when they should, and there is exactly one Open-button emission per visible bookmark candidate per frame (hover or not).
+
+| Concern | Owner |
+|---|---|
+| State | `SelectTool.hoveredOpenBookmarkId: string \| null` (singleton instance field) |
+| Per-frame hoist | `objects.ts` module-level `_hoveredOpenBookmarkId`, written once at frame top via `selectTool.getHoveredOpenBookmarkId()` (same pattern as `_textEditingId` / `_codeEditingId`) |
+| Per-candidate dispatch | `case 'bookmark': drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id)` — monomorphic three-arg call; interned-string identity compare per visible bookmark, cheap-false when the field is null |
+| Transition invalidation | `invalidateWorldBBox(getOpenButtonWorldBBox(id))` from `SelectTool.handleHoverCursor` + `clearBookmarkOpenHoverIfAny` |
+
+**Transition table** (in `SelectTool.handleHoverCursor` set-branch + `clearBookmarkOpenHoverIfAny`):
+
+| From → To | Invalidation |
+|---|---|
+| `null → id` (enter) | one bbox of `id` |
+| `id → null` (leave) | one bbox of `id` |
+| `id1 → id2` (cross) | bbox of `id1`, then bbox of `id2` (scratch reused; `invalidateWorldBBox` is synchronous) |
+| `id → id` (cursor wiggle) | none — outer diff guard short-circuits before any work |
+
+Cursor wiggle within the same hovered button publishes **zero** dirty rects: the WYSIWYG invariant only requires invalidation when the painted pixels actually change, and the diff guard (`this.hoveredOpenBookmarkId !== topmost.id`) preserves that.
+
+**Gesture handoff (openButton-press → translate).** When the pointer presses on the Open button and drifts past `MOVE_THRESHOLD_PX`, `SelectTool` promotes phase to `translate` **without clearing hover state**. The renderer's translate path wraps the bookmark's `drawObject(ctx, handle)` in `ctx.save(); ctx.translate(tdx, tdy); ...; ctx.restore()`, which dispatches back into `case 'bookmark'` with `hoveredOpen = true` (still `_hoveredOpenBookmarkId === handle.id`) — so the hover-painted button rides the translate naturally and the cursor stays visually attached for the duration of the drag. On `end()`, `rehoverFromLastCursor()` re-evaluates against the post-commit frame: cursor still on the moved button → hover stays; cursor no longer on it → leave-transition fires.
+
+**Scale gestures clear hover** at `SelectTool.begin()` (`clearBookmarkOpenHoverIfAny()` runs before phase classification). Scale previews route through `renderScaleEntry` → recursive `drawObject` → `case 'bookmark'` with `hoveredOpen = false`, so scaling never shows the hover button.
+
+**Edge cases:**
+- **Deletion mid-hover** (local or remote): `getOpenButtonWorldBBox(staleId)` returns `null`, the invalidate is bailed; deletion's own bbox invalidation (via `evictGeometry` + deep observer) cleans up the full bookmark paint. `_hoveredOpenBookmarkId` may briefly point to a deleted ID, but `case 'bookmark'` only fires for handles still in the spatial index — self-correcting.
+- **Remote move of hovered bookmark**: deep observer updates `bookmarkFrameCache` + invalidates the full bookmark bbox → next frame draws bookmark + hover button at the new position in a single base-canvas pass.
+- **`onViewChange` / pan / zoom**: `rehoverFromLastCursor` → `handleHoverCursor`. Pan over the same hovered button → no invalidation. Pan off → one (leave). Pan onto a different button → two (cross). Same diff guard as cursor moves.
 
 ---
 
@@ -463,6 +500,7 @@ Bookmarks serialize as plain Y.Map props (url, domain, title, description, asset
 
 ### Selection Overlay (`selection-overlay.ts`)
 - Highlight: bbox-based `strokeRect` (includes shadow padding), not frame
+- Open-button hover is NOT painted here — `drawBookmark` paints it on the base canvas via the `hoveredOpen` flag. See [Open-Button Hover Pipeline](#open-button-hover-pipeline).
 
 ### Transform (`transform.ts`, `SelectTool.ts`, `objects.ts`)
 Bookmarks use uniform scaling via `scale` property — same pattern as sticky notes.
@@ -499,7 +537,7 @@ Bookmarks are connectable objects — rect frame, always treated as filled.
 - No bookmark-specific case — bookmarks have no Path2D or ConnectorPaths geometry cache
 
 ### Renderer (`objects.ts`)
-- `case 'bookmark': drawBookmark(ctx, handle)` in `drawObject` switch
+- `case 'bookmark': drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id)` in `drawObject` switch. The module-scope `_hoveredOpenBookmarkId` is hoisted once per frame at the top of `drawObjects()` via `selectTool.getHoveredOpenBookmarkId()` (same pattern as `_textEditingId` / `_codeEditingId`); leaf dispatch is a single interned-string identity compare per visible bookmark.
 - Scale preview: `drawScaledBookmarkPreview()` — ctx.scale-based uniform scale (matches note pattern). Mixed+side: edge-pin translate.
 
 ### Room Doc Manager (`room-doc-manager.ts`)
