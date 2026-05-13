@@ -318,13 +318,58 @@ All frame getters return `FrameTuple | null` (null before first layout). `comput
 
 Public fields (non-null from construction): `objectsById`, `spatialIndex`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (non-connectors first, connectors second so bindable frames exist for routing) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`).
 
-**`applyObjectChanges`** (deep observer body) — three phases, reusing private scratch sets (`_touchedIds`/`_deletedIds`/`_bboxChangedIds`) + a single `_newBBoxScratch` tuple — zero alloc per fire on stroke/shape/image/connector branches (text/code/note/bookmark still leak one tuple from the subsystem helper — follow-up). Viewport read once at top via `getVisibleBoundsTuple()`; per-upsert `invalidateIfVisible` inlines the cull.
+### Observer Pipeline
 
-- **A — deletions.** `spatial.remove` → `removeObjectCaches` → media unregister → `invalidateIfVisible(handle.bbox)` → delete from map.
-- **B — touched.** Connector queued for reroute → skip (defer to C). Else write bbox into `_newBBoxScratch` (non-connector: `computeBBoxForInto`; style-only connector: `router.computeBBox`) → `upsertHandle` → bindable bbox change calls `router.onBindableChanged`.
-- **C — drain `router.drainRerouteQueue`.** `router.rerouteCanonical(id, yObj, _newBBoxScratch)` → `upsertHandle(..., alwaysEvict=true)`.
+`observeDeep` on `objects` is the single CRDT-driven update path. The body is **synchronous main-thread**, non-reentrant (Y dispatches at end-of-transaction and observers don't open a new one). By the time the callback returns, every subsystem cache referenced below is consistent and visible dirty rects are published — **no awaits, no microtasks, no race between Y change and renderable state**.
 
-`upsertHandle` mutates `handle.bbox` in place; the wrapper persists for the id's lifetime. On `bboxChanged`: invalidate prev rect → `spatialIndex.update` → `copyBbox` → evict → invalidate new rect (order critical — rbush's `remove` destructures the old envelope synchronously, so `handle.bbox` must still hold the old values when `update` is called). On no-bbox-change with `alwaysEvict`: only evict + invalidate new rect. New rect is invalidated unconditionally (content may change visually without bbox change).
+Two passes per fire: **inline routing** (per-event, routes content/anchor edits to subsystem hooks so subsystem state is fresh BEFORE the bulk phase reads it) then **`applyObjectChanges`** (three phases over the accumulated `touchedIds` + `deletedIds`).
+
+```
+observeDeep(events):                                // synchronous, non-reentrant, per Y transaction
+  reset touchedIds, deletedIds
+  for ev in events, categorize and inline-route:
+    top-level add         → touched += id; if connector → router.onConnectorAdded(id, y)
+    top-level delete      → deleted += id; router.onObjectDeleted(id)
+    YMap edit on object   → touched += id
+        connector & (start|end|connectorType keychange) → router.onConnectorEdited(id, y, …)
+        shape     & (shapeType keychange)               → router.onBindableChanged(id)
+    nested 'content' edit → touched += id
+        Y.Text         (code)            → codeSystem.handleContentChange(id, ev, lang)
+        Y.XmlFragment  (text|label|note) → textLayoutCache.invalidateContent(id, content)
+  if touched|deleted nonempty → applyObjectChanges()
+
+applyObjectChanges:                                 // _newBBoxScratch reused per fire
+  vp = getVisibleBoundsTuple()
+
+  // Phase A — deletions (router maps already updated inline above)
+  for id in deleted:
+    spatialIndex.remove(id, handle.bbox)
+    removeObjectCaches(id, kind)                    // geometry + text/code/bookmark
+    if image|bookmark: unregisterMedia(id)
+    invalidateIfVisible(handle.bbox, vp)
+    objectsById.delete(id)
+  selection.onObjectsDeleted(deleted)
+
+  // Phase B — touched non-connectors + style-only connectors
+  for id in touched:
+    if router.isQueuedForReroute(id): continue      // → Phase C
+    if connector: router.computeBBox(id, y, scratch)             // style-only (color/width/cap)
+    else:         computeBBoxForInto(id, kind, y, scratch)       // ★ populates subsystem caches
+    bboxChanged = upsertHandle(id, kind, y, scratch, vp)         // spatial + evict + dirty rect
+    if image:    registerImageMeta(id, y)
+    if bookmark: registerBookmarkMeta(id, y)
+    if bboxChanged & bindable(kind): router.onBindableChanged(id)
+
+  // Phase C — drain reroute queue (router-owned)
+  for id in router.drainRerouteQueue():
+    router.rerouteCanonical(id, y, scratch)         // route + bbox
+    upsertHandle(id, 'connector', y, scratch, vp, alwaysEvict=true)
+  selection.onObjectsChanged(touched, bboxChanged)
+```
+
+**Inline-before-bulk is load-bearing.** `handleContentChange` / `invalidateContent` / router events fire BEFORE Phase B so that `compute*BBox` reads already-fresh subsystem state and routes can be drained from the queue in Phase C in the same fire. No second pass.
+
+`upsertHandle` mutates `handle.bbox` in place; the wrapper persists for the id's lifetime. On `bboxChanged`: invalidate prev rect → `spatialIndex.update` → `copyBbox` → `evictGeometry` → invalidate new rect (order critical — rbush's `remove` destructures the old envelope synchronously, so `handle.bbox` must still hold the old values when `update` is called). On no-bbox-change with `alwaysEvict`: only evict + invalidate new rect. New rect is invalidated unconditionally (content may have changed visually without bbox change).
 
 Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
 
@@ -332,11 +377,45 @@ Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
 
 ## Cache Architecture
 
-- **Geometry** (`renderer/geometry-cache.ts`): Path2D (strokes/shapes) + ConnectorPaths. Auto-detects shapeType changes.
-- **Layout:** `textLayoutCache` (three-tier, SOA-pooled — allocation-free reflow), `codeSystem` (two-tier tokenization + layout), `bookmarkCache` (text wrapping).
-- **Connector routes** (`core/connectors/connector-router.ts`): local route cache owned by `RoomDocManager.connectorRouter`. Fresh `Point[]` per relevant input change.
-- **Unified eviction:** `removeObjectCaches(id, kind)` on delete, `clearAllObjectCaches()` on room teardown.
-- **Tool teardown:** Tools owning per-object DOM/state (TextTool, CodeTool) tear down on object deletion via `dispose()` chains.
+The ★ in Phase B is the **cache-population hook**. `computeBBoxForInto` (`core/geometry/bbox.ts`) dispatches per-kind, and the derived-frame branches populate their subsystem caches as a side effect:
+
+```ts
+computeBBoxForInto(id, kind, y, out) {
+  switch (kind) {
+    case 'stroke':    out := pointsToBBox + widthPad
+    case 'shape':     out := getFrame + widthPad
+    case 'image':     out := getFrame
+    case 'text':      out := computeTextBBox(id, props)      // populates textLayoutCache + frame
+    case 'note':      out := computeNoteBBox(id, props)      // populates textLayoutCache + frame
+    case 'code':      out := computeCodeBBox(id, y)          // populates codeSystem    + frame
+    case 'bookmark':  out := computeBookmarkBBox(id, props)  // populates bookmarkCache + frame
+    case 'connector': out := bboxFromCachedRoute             // route built in Phase C
+  }
+}
+```
+
+**Handle exists ⇒ caches populated.** Frame getters (`getTextFrame` / `getCodeFrame` / `getBookmarkFrame`) defensively return `null` via `?? null`, but the `null` is just the natural Map-miss return — it fires only when no handle exists in `objectsById` (caller is reading an id that was never observed or has been deleted, in which case the cache entry was removed alongside the handle). Within an id's lifetime, its caches stay populated.
+
+**Lazy exceptions** (populated on first read, not via observer):
+- `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common).
+- **Shape label layouts.** The `shape` branch of `computeBBoxForInto` reads frame only — the label layout populates on first `drawShapeLabel`.
+
+**Async exceptions** (cross a worker boundary; render coarser fallback meanwhile, self-publish dirty rects):
+- Image bitmaps — worker decode; `getBitmap(assetId)` returns `null` until ready. Frame-driven by `manageImageViewport` per `RenderLoop.tick`.
+- Code tier-2 Lezer spans — sync floor inside the observer is eager (instant color); worker upgrade arrives later via `codeSystem.applyWorkerSpans`. **Layout is already eager** — tier-2 is colors only.
+
+| Subsystem cache | Owner | Read API |
+|---|---|---|
+| `textLayoutCache` (tokenized / measured / layout / frame / note-derived fontSize) | `core/text/text-system.ts` | `getTextFrame`, `getLayout`, `getMeasuredContent`, `getInlineStyles` + note bridge |
+| `codeSystem` (source / spans / layout / output / frame) | `core/code/code-system.ts` | `getCodeFrame`, `getSpans`, `getSource`, `getOutputCache` |
+| `bookmarkCache` (layout + frame) | `core/bookmark/bookmark-render.ts` | `getBookmarkFrame` |
+| `connectorRouter.routes` (per-id pooled `Point[]` + reverse `shape→connectors`) | `core/connectors/connector-router.ts` (owned by RDM) | `getConnectorRoute`, `getAttachedConnectors` |
+| `geometryCache` (Path2D, ConnectorPaths) | `renderer/geometry-cache.ts` | `getPath`, `getConnectorPaths` |
+| image bitmaps + `imageMeta` / `bookmarkAssetIds` | `core/image/image-manager.ts` | `getBitmap(assetId)` |
+
+**Eviction.** `removeObjectCaches(id, kind)` (`renderer/object-cache.ts`) routes geometry + text/code/bookmark on delete; `clearAllObjectCaches()` on teardown. **Image is not in this dispatch** — Phase A calls `unregisterMedia(id)` separately. Connector routes evict via `router.removeConnector` from `onObjectDeleted`. Tool-owned per-object DOM (TextTool, CodeTool) tears down via its own `dispose()` chain.
+
+**Out-of-band dirty-rect publishers** (everything that isn't the deep observer): tool gestures (`tool.move/end` → `invalidate{World,Overlay,WorldBBox}`), image-manager bitmap-arrival handler, `codeSystem.applyWorkerSpans`, camera-store subscribers (pan/zoom).
 
 ---
 
