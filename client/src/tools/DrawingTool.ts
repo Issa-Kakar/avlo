@@ -86,7 +86,7 @@ export class DrawingTool implements PointerTool {
 
   begin(pointerId: number, worldX: number, worldY: number): void {
     const ui = useDeviceUIStore.getState();
-    const activeTool = ui.activeTool;
+    const activeTool = ui.tool.active;
 
     this.drawing = true;
     this.pointerId = pointerId;
@@ -99,19 +99,19 @@ export class DrawingTool implements PointerTool {
     if (activeTool === 'shape') {
       this.mode = 'shape';
       this.toolType = 'pen';
-      this.shapeType = SHAPE_VARIANT_TO_TYPE[ui.shapeVariant];
-      this.color = ui.shapeColor;
-      this.size = ui.shapeWidth;
+      this.shapeType = SHAPE_VARIANT_TO_TYPE[ui.shape.variant];
+      this.color = ui.shape.color;
+      this.size = ui.shape.width;
       this.opacity = 1;
-      this.fillColor = ui.shapeFillColor;
+      this.fillColor = ui.shape.fillColor;
       this.points = [];
     } else if (activeTool === 'highlighter') {
       this.mode = 'stroke';
       this.toolType = 'highlighter';
       this.shapeType = null;
-      this.color = ui.highlighterSlots[ui.highlighterActiveSlot];
+      this.color = ui.highlighter.slots[ui.highlighter.activeSlot];
       this.size = ui.strokeWidth;
-      this.opacity = ui.highlighterOpacity;
+      this.opacity = ui.highlighter.opacity;
       this.fillColor = null;
       this.points = [p];
       const [sx, sy] = worldToCanvas(worldX, worldY);
@@ -120,7 +120,7 @@ export class DrawingTool implements PointerTool {
       this.mode = 'stroke';
       this.toolType = 'pen';
       this.shapeType = null;
-      this.color = ui.penSlots[ui.penActiveSlot];
+      this.color = ui.pen.slots[ui.pen.activeSlot];
       this.size = ui.strokeWidth;
       this.opacity = 1;
       this.fillColor = null;

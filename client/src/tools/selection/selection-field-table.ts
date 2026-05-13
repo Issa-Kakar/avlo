@@ -35,7 +35,7 @@ import { anchorFactor, getInlineStyles, getTextFrame } from '@/core/text/text-sy
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import { getHandle, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
-import { type ConnectorWidth, type StrokeWidth, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind } from './types';
 
@@ -249,10 +249,10 @@ export function withEditorOr(whenEditor: (e: Editor) => void, otherwise: () => v
 
 const setShapeColorPersist = (v: string) => useDeviceUIStore.getState().setShapeColor(v);
 const setShapeFillColorPersist = (v: string) => useDeviceUIStore.getState().setShapeFillColor(v);
-const setShapeWidthPersist = (v: number) => useDeviceUIStore.getState().setShapeWidth(v as StrokeWidth);
-const setStrokeWidthPersist = (v: number) => useDeviceUIStore.getState().setStrokeWidth(v as StrokeWidth);
+const setShapeWidthPersist = (v: number) => useDeviceUIStore.getState().setShapeWidth(v);
+const setStrokeWidthPersist = (v: number) => useDeviceUIStore.getState().setStrokeWidth(v);
 const setConnectorColorPersist = (v: string) => useDeviceUIStore.getState().setConnectorColor(v);
-const setConnectorWidthPersist = (v: number) => useDeviceUIStore.getState().setConnectorWidth(v as ConnectorWidth);
+const setConnectorWidthPersist = (v: number) => useDeviceUIStore.getState().setConnectorWidth(v);
 const setTextSize = (v: number) => useDeviceUIStore.getState().setTextSize(v);
 const setTextColor = (v: string) => useDeviceUIStore.getState().setTextColor(v);
 const setTextFillColor = (v: string | null) => useDeviceUIStore.getState().setTextFillColor(v);

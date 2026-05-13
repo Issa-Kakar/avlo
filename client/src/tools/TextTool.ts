@@ -98,7 +98,7 @@ export class TextTool implements PointerTool {
     this.gestureActive = true;
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
-    const tool = useDeviceUIStore.getState().activeTool;
+    const tool = useDeviceUIStore.getState().tool.active;
     this.hitTextId = pickTopmostOfKind([worldX, worldY], { px: 8 }, tool === 'note' ? 'note' : 'text');
   }
 
@@ -117,7 +117,7 @@ export class TextTool implements PointerTool {
       this.mountEditor(this.hitTextId, false);
     } else {
       let [x, y] = this.downWorld;
-      if (useDeviceUIStore.getState().activeTool === 'note') {
+      if (useDeviceUIStore.getState().tool.active === 'note') {
         x -= NOTE_WIDTH / 2;
         y -= NOTE_WIDTH / 2;
       }
@@ -175,14 +175,14 @@ export class TextTool implements PointerTool {
     // Create label fields if shape without label
     const isNewLabel = handle.kind === 'shape' && !hasLabel(handle.y);
     if (isNewLabel) {
-      const { textSize, textFontFamily, textColor, shapeAlign, shapeAlignV } = useDeviceUIStore.getState();
+      const { text, shape } = useDeviceUIStore.getState();
       transact(() => {
         handle.y.set('content', new Y.XmlFragment());
-        handle.y.set('fontSize', textSize);
-        handle.y.set('fontFamily', textFontFamily);
-        handle.y.set('labelColor', textColor);
-        handle.y.set('align', shapeAlign);
-        handle.y.set('alignV', shapeAlignV);
+        handle.y.set('fontSize', text.size);
+        handle.y.set('fontFamily', text.fontFamily);
+        handle.y.set('labelColor', text.color);
+        handle.y.set('align', shape.align);
+        handle.y.set('alignV', shape.alignV);
       });
     }
 
@@ -217,8 +217,8 @@ export class TextTool implements PointerTool {
   private createTextObject(worldX: number, worldY: number): string {
     const objectId = ulid();
     const userId = getUserId();
-    const store = useDeviceUIStore.getState();
-    const isNoteMode = store.activeTool === 'note';
+    const ui = useDeviceUIStore.getState();
+    const isNoteMode = ui.tool.active === 'note';
 
     transact(() => {
       const yObj = new Y.Map<unknown>();
@@ -231,18 +231,18 @@ export class TextTool implements PointerTool {
       if (isNoteMode) {
         yObj.set('kind', 'note');
         yObj.set('scale', 1);
-        yObj.set('fontFamily', store.noteFontFamily);
-        yObj.set('align', store.noteAlign);
-        yObj.set('alignV', store.noteAlignV);
+        yObj.set('fontFamily', ui.note.fontFamily);
+        yObj.set('align', ui.note.align);
+        yObj.set('alignV', ui.note.alignV);
         yObj.set('fillColor', NOTE_FILL_COLOR);
       } else {
         yObj.set('kind', 'text');
-        yObj.set('fontSize', store.textSize);
-        yObj.set('fontFamily', store.textFontFamily);
-        yObj.set('color', store.textColor);
-        yObj.set('align', store.textAlign);
+        yObj.set('fontSize', ui.text.size);
+        yObj.set('fontFamily', ui.text.fontFamily);
+        yObj.set('color', ui.text.color);
+        yObj.set('align', ui.text.align);
         yObj.set('width', 'auto');
-        if (store.textFillColor) yObj.set('fillColor', store.textFillColor);
+        if (ui.text.fillColor) yObj.set('fillColor', ui.text.fillColor);
       }
 
       getObjects().set(objectId, yObj);
@@ -488,7 +488,7 @@ export class TextTool implements PointerTool {
       // Only consume canvas clicks when text tool is active — prevents creating
       // a new text object on click-off. Other tools (select, draw, etc.) should
       // receive the event so the click-off also starts their gesture.
-      const tool = useDeviceUIStore.getState().activeTool;
+      const tool = useDeviceUIStore.getState().tool.active;
       if (tool === 'text' || tool === 'note') {
         const canvas = getCanvasElement();
         if (canvas?.contains(target)) {

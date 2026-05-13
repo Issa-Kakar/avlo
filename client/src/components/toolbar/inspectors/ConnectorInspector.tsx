@@ -1,11 +1,9 @@
 import { memo, useCallback, useMemo, useState } from 'react';
-import { setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
+import { selectConnector, setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
 import { ColorSlots } from '../color/ColorSlots';
-import { CONNECTOR_VARIANT_BUTTONS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
+import { CONNECTOR_VARIANT_IDS, CONNECTOR_VARIANT_SPECS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
 import { InspectorButton } from './InspectorButton';
 import './Inspector.css';
-
-const NOOP = () => {};
 
 const VARIANT_HANDLERS: Record<ConnectorVariantId, () => void> = {
   line: () => setConnectorMode('line'),
@@ -17,11 +15,8 @@ const VARIANT_HANDLERS: Record<ConnectorVariantId, () => void> = {
 export function ConnectorInspector() {
   const [isPickerOpen, setIsPickerOpen] = useState(false);
 
-  // Three narrow selectors → derived variant. Each fires only on its field change.
-  const type = useDeviceUIStore((s) => s.connectorType);
-  const startCap = useDeviceUIStore((s) => s.connectorStartCap);
-  const endCap = useDeviceUIStore((s) => s.connectorEndCap);
-  const color = useDeviceUIStore((s) => s.connectorColor);
+  // One cluster selector covers all four fields we read.
+  const { type, startCap, endCap, color } = useDeviceUIStore(selectConnector);
   const activeVariant = deriveConnectorVariant(type, startCap, endCap);
 
   // Stable single-element tuple so ColorSlots's React.memo holds across renders.
@@ -36,8 +31,13 @@ export function ConnectorInspector() {
 
   return (
     <div className="inspector inspector-connector">
-      {CONNECTOR_VARIANT_BUTTONS.map(({ id, label }) => (
-        <InspectorButton key={id} isActive={id === activeVariant} ariaLabel={label} onClick={VARIANT_HANDLERS[id]}>
+      {CONNECTOR_VARIANT_IDS.map((id) => (
+        <InspectorButton
+          key={id}
+          isActive={id === activeVariant}
+          ariaLabel={CONNECTOR_VARIANT_SPECS[id].label}
+          onClick={VARIANT_HANDLERS[id]}
+        >
           <ConnectorVariantIcon variant={id} />
         </InspectorButton>
       ))}
@@ -48,7 +48,6 @@ export function ConnectorInspector() {
         colors={colors}
         activeIndex={0}
         isPickerOpen={isPickerOpen}
-        onSelectSlot={NOOP}
         onTogglePicker={handleToggle}
         onPickColor={handlePick}
         onClosePicker={handleClose}

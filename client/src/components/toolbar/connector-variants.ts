@@ -1,26 +1,30 @@
 import type { ConnectorCap, ConnectorType } from '@/core/connectors/types';
-import type { ConnectorVariantId } from '@/stores/device-ui-store';
 
-export type { ConnectorVariantId };
+interface ConnectorVariantSpec {
+  readonly label: string;
+  readonly type: ConnectorType;
+  readonly startCap: ConnectorCap;
+  readonly endCap: ConnectorCap;
+}
 
-export const CONNECTOR_VARIANT_BUTTONS: readonly { id: ConnectorVariantId; label: string }[] = [
-  { id: 'line', label: 'Straight line' },
-  { id: 'arrow', label: 'Arrow' },
-  { id: 'doubleArrow', label: 'Double arrow' },
-  { id: 'elbow', label: 'Elbow arrow' },
-] as const;
+// Ordered: drives both the iteration order of the button row and the type union.
+export const CONNECTOR_VARIANT_IDS = ['line', 'arrow', 'doubleArrow', 'elbow'] as const;
+export type ConnectorVariantId = (typeof CONNECTOR_VARIANT_IDS)[number];
 
-/**
- * Active toolbar variant for the current connector state, or null if no
- * button matches (e.g. straight with start=arrow, end=none).
- *
- * Elbow swallows all elbow cap configurations by design — clicking the elbow
- * button preserves caps; only the type flips. Straight maps strictly by caps.
- */
+export const CONNECTOR_VARIANT_SPECS: Record<ConnectorVariantId, ConnectorVariantSpec> = {
+  line: { label: 'Straight line', type: 'straight', startCap: 'none', endCap: 'none' },
+  arrow: { label: 'Arrow', type: 'straight', startCap: 'none', endCap: 'arrow' },
+  doubleArrow: { label: 'Double arrow', type: 'straight', startCap: 'arrow', endCap: 'arrow' },
+  elbow: { label: 'Elbow arrow', type: 'elbow', startCap: 'none', endCap: 'arrow' },
+};
+
+// Elbow swallows all elbow cap configurations by design (click preserves caps; only type flips).
+// Straight is matched by exact cap pair against the spec table.
 export function deriveConnectorVariant(type: ConnectorType, startCap: ConnectorCap, endCap: ConnectorCap): ConnectorVariantId | null {
   if (type === 'elbow') return 'elbow';
-  if (startCap === 'arrow' && endCap === 'arrow') return 'doubleArrow';
-  if (startCap === 'none' && endCap === 'arrow') return 'arrow';
-  if (startCap === 'none' && endCap === 'none') return 'line';
+  for (const id of CONNECTOR_VARIANT_IDS) {
+    const v = CONNECTOR_VARIANT_SPECS[id];
+    if (v.type === type && v.startCap === startCap && v.endCap === endCap) return id;
+  }
   return null;
 }

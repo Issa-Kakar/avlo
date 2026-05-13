@@ -8,8 +8,9 @@ interface Props {
   activeIndex: number;
   isPickerOpen: boolean;
 
-  /** Called when the user clicks a non-active slot. Receives the new index. */
-  onSelectSlot: (index: number) => void;
+  /** Called when the user clicks a non-active slot. Receives the new index.
+   * Optional — only meaningful when `colors.length > 1`. */
+  onSelectSlot?: (index: number) => void;
   /** Called when the user clicks the already-active slot — toggles the picker. */
   onTogglePicker: () => void;
   /** Called from the picker grid / custom-color button. */
@@ -43,7 +44,7 @@ export const ColorSlots = memo(function ColorSlots({
             isActive={isActive}
             isPickerOpen={isPickerOpen}
             ariaLabel={`Color slot ${i + 1}`}
-            onClick={isActive ? onTogglePicker : () => onSelectSlot(i)}
+            onClick={isActive ? onTogglePicker : onSelectSlot ? () => onSelectSlot(i) : onTogglePicker}
           />
         );
       })}

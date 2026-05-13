@@ -45,7 +45,7 @@ const getCodeIds = (): string[] => {
 
 const clampInt = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, Math.round(n)));
 
-const currentTextFontSize = (): number => useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
+const currentTextFontSize = (): number => useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().text.size;
 
 const currentCodeFontSize = (): number => useSelectionStore.getState().selectedStyles.fontSize ?? 14;
 

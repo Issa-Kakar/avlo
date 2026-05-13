@@ -20,7 +20,7 @@ export const ColorSlot = memo(function ColorSlot({ color, isActive, isPickerOpen
     <button
       className={`color-slot ${isActive ? 'is-active' : ''}`}
       data-dark={dark || undefined}
-      style={isActive ? ({ ['--slot-tint' as string]: color, backgroundColor: color } as React.CSSProperties) : { backgroundColor: color }}
+      style={slotStyle(color, isActive)}
       aria-label={ariaLabel}
       aria-haspopup={isActive ? 'dialog' : undefined}
       aria-expanded={isActive ? isPickerOpen : undefined}
@@ -30,3 +30,11 @@ export const ColorSlot = memo(function ColorSlot({ color, isActive, isPickerOpen
     </button>
   );
 });
+
+// CSS custom property — typed via cast because React.CSSProperties doesn't
+// list app-specific custom properties. Centralized so the cast lives in
+// one place rather than at every call site.
+function slotStyle(color: string, isActive: boolean): React.CSSProperties {
+  if (!isActive) return { backgroundColor: color };
+  return { '--slot-tint': color, backgroundColor: color } as React.CSSProperties;
+}

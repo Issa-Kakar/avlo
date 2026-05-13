@@ -139,7 +139,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case 'a':
       e.preventDefault();
-      if (gestureActive && useDeviceUIStore.getState().activeTool !== 'select') tool!.cancel();
+      if (gestureActive && useDeviceUIStore.getState().tool.active !== 'select') tool!.cancel();
       selectAll();
       return;
 
@@ -181,7 +181,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
         if (highlightColor) {
           setSelectedHighlight(null);
         } else {
-          const deviceHighlight = useDeviceUIStore.getState().textHighlightColor;
+          const deviceHighlight = useDeviceUIStore.getState().text.highlightColor;
           setSelectedHighlight(deviceHighlight || '#ffd43b');
         }
       }
@@ -263,7 +263,7 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
 
   // Enter — start editing the single selected text/shape/note (textTool) or code block (codeTool).
   // Omitting the entry point lets the editor default the cursor to the end of the document.
-  if (key === 'enter' && useDeviceUIStore.getState().activeTool === 'select') {
+  if (key === 'enter' && useDeviceUIStore.getState().tool.active === 'select') {
     if (selectedIds.length !== 1) return;
     const handle = getHandle(selectedIds[0]);
     if (!handle) return;

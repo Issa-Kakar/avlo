@@ -27,12 +27,8 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
   const hasRoute = pointsCount >= 2;
 
   // Live style — device-ui-store is stable within a gesture.
-  const uiState = useDeviceUIStore.getState();
-  const color = uiState.connectorColor;
-  const width = uiState.connectorWidth;
-  const startCap = uiState.connectorStartCap;
-  const endCap = uiState.connectorEndCap;
-  const isStraight = uiState.connectorType === 'straight';
+  const { color, width, startCap, endCap, type } = useDeviceUIStore.getState().connector;
+  const isStraight = type === 'straight';
 
   // 1. Polyline + arrow caps — shared paint atom with objects.ts.
   if (hasRoute) {

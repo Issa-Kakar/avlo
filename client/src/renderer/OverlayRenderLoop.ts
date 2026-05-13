@@ -28,13 +28,10 @@ export class OverlayRenderLoop {
     this.cameraUnsubscribe = subscribeCamera(() => this.invalidateAll());
 
     // Evict any live preview when tool switches
-    let lastTool = useDeviceUIStore.getState().activeTool;
-    this.toolUnsubscribe = useDeviceUIStore.subscribe((state) => {
-      if (state.activeTool !== lastTool) {
-        lastTool = state.activeTool;
-        this.invalidateAll();
-      }
-    });
+    this.toolUnsubscribe = useDeviceUIStore.subscribe(
+      (s) => s.tool.active,
+      () => this.invalidateAll(),
+    );
   }
 
   stop(): void {

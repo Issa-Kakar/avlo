@@ -76,7 +76,7 @@ export function getToolById(toolId: ToolId): PointerTool | undefined {
  * Returns undefined if current tool has no implementation.
  */
 export function getCurrentTool(): PointerTool | undefined {
-  return toolMap.get(useDeviceUIStore.getState().activeTool);
+  return toolMap.get(useDeviceUIStore.getState().tool.active);
 }
 
 /**

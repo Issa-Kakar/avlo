@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react';
 import { IconInspectorHighlighter, IconInspectorPen } from '@/components/icons';
 import {
   type SlotIndex,
+  selectActiveTool,
+  selectStrokeWidth,
   setActiveTool,
   setHighlighterActiveSlot,
   setHighlighterSlotColor,
@@ -11,7 +13,7 @@ import {
   useDeviceUIStore,
 } from '@/stores/device-ui-store';
 import { ColorSlots } from '../color/ColorSlots';
-import { SIZE_PRESETS, WEIGHT_ICONS } from '../weights';
+import { STROKE_WEIGHTS, type StrokeWeightOption, type StrokeWidthPreset } from '../weights';
 import { InspectorButton } from './InspectorButton';
 import './Inspector.css';
 
@@ -21,15 +23,14 @@ const clickHighlighter = () => setActiveTool('highlighter');
 export function PenInspector() {
   const [isPickerOpen, setIsPickerOpen] = useState(false);
 
-  const activeTool = useDeviceUIStore((s) => s.activeTool);
-  const currentWidth = useDeviceUIStore((s) => s.strokeWidth);
+  const activeTool = useDeviceUIStore(selectActiveTool);
+  const currentWidth = useDeviceUIStore(selectStrokeWidth);
 
-  // Pull the right slot column based on active tool. Each tool has its own
-  // independent active slot pointer; switching active tool replays that
-  // tool's slot column.
+  // Pull the right cluster based on active tool. Each tool has its own
+  // independent active slot pointer; switching tool replays that tool's
+  // slot column. The cluster ref only changes when its own fields change.
   const isPen = activeTool === 'pen';
-  const colors = useDeviceUIStore((s) => (isPen ? s.penSlots : s.highlighterSlots));
-  const activeSlot = useDeviceUIStore((s) => (isPen ? s.penActiveSlot : s.highlighterActiveSlot));
+  const tool = useDeviceUIStore((s) => (isPen ? s.pen : s.highlighter));
 
   const handleSelectSlot = useCallback(
     (slot: number) => {
@@ -61,16 +62,15 @@ export function PenInspector() {
 
       <div className="inspector-divider" />
 
-      {SIZE_PRESETS.map((size, i) => {
-        const Icon = WEIGHT_ICONS[i];
-        return <WeightOption key={size} size={size} isActive={currentWidth === size} Icon={Icon} />;
-      })}
+      {STROKE_WEIGHTS.map(({ width, Icon }) => (
+        <WeightOption key={width} width={width} isActive={currentWidth === width} Icon={Icon} />
+      ))}
 
       <div className="inspector-divider" />
 
       <ColorSlots
-        colors={colors}
-        activeIndex={activeSlot}
+        colors={tool.slots}
+        activeIndex={tool.activeSlot}
         isPickerOpen={isPickerOpen}
         onSelectSlot={handleSelectSlot}
         onTogglePicker={handleToggle}
@@ -82,15 +82,15 @@ export function PenInspector() {
 }
 
 interface WeightOptionProps {
-  size: 4 | 7 | 10 | 13;
+  width: StrokeWidthPreset;
   isActive: boolean;
-  Icon: (typeof WEIGHT_ICONS)[number];
+  Icon: StrokeWeightOption['Icon'];
 }
 
-function WeightOption({ size, isActive, Icon }: WeightOptionProps) {
+function WeightOption({ width, isActive, Icon }: WeightOptionProps) {
   // Per-button stable click via lookup so InspectorButton's memo holds.
   return (
-    <InspectorButton isActive={isActive} ariaLabel={`Stroke width ${size}`} onClick={WEIGHT_HANDLERS[size]}>
+    <InspectorButton isActive={isActive} ariaLabel={`Stroke width ${width}`} onClick={WEIGHT_HANDLERS[width]}>
       <Icon className="insp-icon" />
     </InspectorButton>
   );
@@ -98,7 +98,7 @@ function WeightOption({ size, isActive, Icon }: WeightOptionProps) {
 
 // Module-level handler table — keeps every WeightOption click reference
 // constant across renders, so InspectorButton's memo isn't defeated.
-const WEIGHT_HANDLERS: Record<4 | 7 | 10 | 13, () => void> = {
+const WEIGHT_HANDLERS: Record<StrokeWidthPreset, () => void> = {
   4: () => setStrokeWidth(4),
   7: () => setStrokeWidth(7),
   10: () => setStrokeWidth(10),

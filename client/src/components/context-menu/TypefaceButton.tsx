@@ -1,6 +1,6 @@
 import type { FontFamily } from '@/core/accessors';
 import { FONT_FAMILIES } from '@/core/text/text-system';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { selectTextFontFamily, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedFontFamily } from '@/tools/selection/selection-actions';
@@ -9,7 +9,6 @@ import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 const selectFontFamily = (s: SelectionStore) => s.selectedStyles.fontFamily;
-const selectDeviceFontFamily = (s: { textFontFamily: FontFamily }) => s.textFontFamily;
 
 const FONT_ITEMS: { family: FontFamily; display: string }[] = [
   { family: 'Grandstander', display: 'Draw' },
@@ -21,7 +20,7 @@ const FONT_ITEMS: { family: FontFamily; display: string }[] = [
 export function TypefaceButton() {
   const { open, containerRef, toggle, close } = useDropdown();
   const fontFamily = useSelectionStore(selectFontFamily);
-  const fallbackFamily = useDeviceUIStore(selectDeviceFontFamily);
+  const fallbackFamily = useDeviceUIStore(selectTextFontFamily);
   const effective = fontFamily ?? fallbackFamily;
 
   const current = FONT_ITEMS.find((f) => f.family === effective) ?? FONT_ITEMS[0];

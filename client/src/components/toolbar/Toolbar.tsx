@@ -58,8 +58,8 @@ const clickRedo = () => {
 };
 
 export function Toolbar() {
-  const activeTool = useDeviceUIStore((s) => s.activeTool);
-  const shapeVariant = useDeviceUIStore((s) => s.shapeVariant);
+  const activeTool = useDeviceUIStore((s) => s.tool.active);
+  const shapeVariant = useDeviceUIStore((s) => s.shape.variant);
   const isPen = activeTool === 'pen' || activeTool === 'highlighter';
   const isConnector = activeTool === 'connector';
 

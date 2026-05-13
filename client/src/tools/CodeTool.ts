@@ -159,10 +159,10 @@ export class CodeTool implements PointerTool {
   // =========================================================================
 
   private createCodeObject(worldX: number, worldY: number): void {
-    const uiState = useDeviceUIStore.getState();
-    const fontSize = uiState.textSize;
-    const lineNumbers = uiState.codeLineNumbers;
-    const headerVisible = uiState.codeHeaderVisible;
+    const ui = useDeviceUIStore.getState();
+    const fontSize = ui.text.size;
+    const lineNumbers = ui.code.lineNumbers;
+    const headerVisible = ui.code.headerVisible;
     const width = getDefaultWidth(fontSize);
     const lh = lineHeightFn(fontSize);
 
@@ -528,7 +528,7 @@ export class CodeTool implements PointerTool {
       if (menuElement?.contains(target)) return;
       this.commitAndClose();
       // Consume canvas clicks when code tool is active
-      if (useDeviceUIStore.getState().activeTool === 'code') {
+      if (useDeviceUIStore.getState().tool.active === 'code') {
         const canvas = getCanvasElement();
         if (canvas?.contains(target)) {
           e.stopPropagation();
