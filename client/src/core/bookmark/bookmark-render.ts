@@ -1,4 +1,5 @@
 import { prettifyDomain } from '@avlo/shared';
+import { readBookmarkRender } from '@/renderer/render-accessors';
 import { getHandle } from '@/runtime/room-runtime';
 import { getBookmarkProps } from '../accessors';
 import { getBitmap } from '../image/image-manager';
@@ -92,6 +93,13 @@ export const bookmarkCache = {
   clear() {
     layoutCache.clear();
     bookmarkFrameCache.clear();
+  },
+  /**
+   * Pure cache read for the renderer hot path. Bookmark layouts are immutable
+   * post-unfurl, so an existing entry is always valid; null means cold-miss.
+   */
+  getLayoutById(id: string): BookmarkLayout | null {
+    return layoutCache.get(id) ?? null;
   },
 };
 
@@ -337,36 +345,38 @@ function drawOpenButton(ctx: CanvasRenderingContext2D, bx: number, by: number, h
 // ---------------------------------------------------------------------------
 
 export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle, hoveredOpen: boolean): void {
-  const props = getBookmarkProps(handle.y);
-  if (!props) {
-    console.error('Bookmark props are null');
-    return;
-  }
-
-  const layout = getLayout(handle.id, props);
-  const s = props.scale;
+  const layout = bookmarkCache.getLayoutById(handle.id);
+  if (!layout) return; // cold-miss race — observer fills the cache before render
+  const r = readBookmarkRender(handle.y);
 
   ctx.save();
-  ctx.translate(props.origin[0], props.origin[1]);
-  ctx.scale(s, s);
+  ctx.translate(r.originX, r.originY);
+  ctx.scale(r.scale, r.scale);
 
-  renderNoteBody(ctx, 0, 0, BOOKMARK_WIDTH, props.height, CARD_FILL);
+  renderNoteBody(ctx, 0, 0, BOOKMARK_WIDTH, r.height, CARD_FILL);
 
   if (layout.hasOgImage) {
-    drawFullCard(ctx, BOOKMARK_WIDTH, layout, props, hoveredOpen);
+    drawFullCard(ctx, BOOKMARK_WIDTH, layout, r.ogImageAssetId, r.faviconAssetId, hoveredOpen);
   } else if (layout.titleLines.length > 0) {
-    drawTextCard(ctx, BOOKMARK_WIDTH, layout, props, hoveredOpen);
+    drawTextCard(ctx, BOOKMARK_WIDTH, layout, r.faviconAssetId, hoveredOpen);
   }
 
   ctx.restore();
 }
 
-function drawFullCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, props: BookmarkProps, hoveredOpen: boolean): void {
+function drawFullCard(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  layout: BookmarkLayout,
+  ogImageAssetId: string | undefined,
+  faviconAssetId: string | undefined,
+  hoveredOpen: boolean,
+): void {
   const displayH = layout.ogDisplayH;
 
   // OG image (top, with rounded top corners)
-  if (props.ogImageAssetId) {
-    const bitmap = getBitmap(props.ogImageAssetId);
+  if (ogImageAssetId) {
+    const bitmap = getBitmap(ogImageAssetId);
     if (bitmap) {
       ctx.save();
       ctx.beginPath();
@@ -402,10 +412,16 @@ function drawFullCard(ctx: CanvasRenderingContext2D, w: number, layout: Bookmark
   if (layout.titleLines.length || layout.descLines.length) cursorY += SECTION_GAP;
 
   // Bottom row: favicon + display name (Open button is on the image — don't double-draw)
-  drawBottomRow(ctx, textX, cursorY, textWidth, layout, props.faviconAssetId, false, hoveredOpen);
+  drawBottomRow(ctx, textX, cursorY, textWidth, layout, faviconAssetId, false, hoveredOpen);
 }
 
-function drawTextCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, props: BookmarkProps, hoveredOpen: boolean): void {
+function drawTextCard(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  layout: BookmarkLayout,
+  faviconAssetId: string | undefined,
+  hoveredOpen: boolean,
+): void {
   const textX = CARD_PADDING;
   const textWidth = w - CARD_PADDING * 2;
   let cursorY = CARD_PADDING;
@@ -415,7 +431,7 @@ function drawTextCard(ctx: CanvasRenderingContext2D, w: number, layout: Bookmark
   cursorY = drawDescLines(ctx, textX, cursorY, layout.descLines);
   if (layout.titleLines.length || layout.descLines.length) cursorY += SECTION_GAP;
 
-  drawBottomRow(ctx, textX, cursorY, textWidth, layout, props.faviconAssetId, true, hoveredOpen);
+  drawBottomRow(ctx, textX, cursorY, textWidth, layout, faviconAssetId, true, hoveredOpen);
 }
 
 function drawTitleLines(ctx: CanvasRenderingContext2D, x: number, y: number, lines: string[]): number {

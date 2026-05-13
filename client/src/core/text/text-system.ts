@@ -1379,6 +1379,16 @@ class TextLayoutCache {
     return this.cache.get(objectId)?.measured ?? null;
   }
 
+  /**
+   * Pure cache read for the renderer hot path. Returns the pooled `layout` buffer
+   * for `objectId` if an entry exists, else null. The observer pipeline guarantees
+   * the layout is fresh whenever `objectsById.get(id)` resolves, so the renderer
+   * skips the staleness probe.
+   */
+  getLayoutById(objectId: string): TextLayout | null {
+    return this.cache.get(objectId)?.layout ?? null;
+  }
+
   getInlineStyles(objectId: string): UniformStyles | null {
     return this.cache.get(objectId)?.tokenized?.uniformStyles ?? null;
   }

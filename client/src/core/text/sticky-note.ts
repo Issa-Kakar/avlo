@@ -9,9 +9,8 @@
  */
 
 import type * as Y from 'yjs';
-import { useSelectionStore } from '@/stores/selection-store';
+import { readNoteRender } from '@/renderer/render-accessors';
 import type { FontFamily, NoteProps } from '../accessors';
-import { getNoteProps } from '../accessors';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { ObjectHandle } from '../types/objects';
 import { FONT_FAMILIES } from './font-config';
@@ -509,23 +508,24 @@ export function renderNoteBody(ctx: CanvasRenderingContext2D, x: number, y: numb
 // STICKY NOTE RENDERER
 // =============================================================================
 
-export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle, isEditing: boolean): void {
   const { id, y } = handle;
-  const props = getNoteProps(y);
-  if (!props) return;
-
-  const { origin, scale: noteScale, fontFamily, fillColor, content, align, alignV } = props;
-
-  const layout = getNoteLayout(id, content, fontFamily);
-  const derivedFontSize = getNoteDerivedFontSize(id);
+  const layout = textLayoutCache.noteCachedLayout(id);
+  if (!layout) return; // cold-miss race — observer fills the cache before render
+  const r = readNoteRender(y);
+  const noteScale = r.scale;
+  const fontFamily = r.fontFamily;
+  const align = r.align;
+  const alignV = r.alignV;
+  const derivedFontSize = textLayoutCache.noteCachedDerivedFontSize(id) ?? NOTE_FONT_STEPS[0];
 
   ctx.save();
-  ctx.translate(origin[0], origin[1]);
+  ctx.translate(r.originX, r.originY);
   ctx.scale(noteScale, noteScale);
 
-  renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, fillColor);
+  renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, r.fillColor);
 
-  if (useSelectionStore.getState().textEditingId === id) {
+  if (isEditing) {
     ctx.restore();
     return;
   }

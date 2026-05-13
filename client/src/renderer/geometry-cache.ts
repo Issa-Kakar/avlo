@@ -5,11 +5,9 @@
  * Text, code, note, image, bookmark do NOT use this cache — their rendering
  * is handled by their respective layout systems (text-system, code-system, etc).
  *
- * Shape staleness: stores shapeType alongside geometry. getOrBuild auto-detects
- * shapeType changes (rect→diamond etc.) and rebuilds without external eviction.
- *
  * Eviction contract:
  * - BBox change → evictGeometry(id) — geometry is stale (points/frame changed)
+ * - Shape `shapeType` change → observer pre-evicts in room-doc-manager
  * - Object deleted → called via removeObjectCaches(id, kind) in object-cache.ts
  * - Room teardown → clearGeometry() via clearAllObjectCaches()
  */
@@ -28,12 +26,7 @@ export function isConnectorPaths(geom: CachedGeometry): geom is ConnectorPaths {
   return typeof geom === 'object' && 'polyline' in geom;
 }
 
-interface CacheEntry {
-  geometry: CachedGeometry;
-  shapeType?: string;
-}
-
-const cache = new Map<string, CacheEntry>();
+const cache = new Map<string, CachedGeometry>();
 
 function buildGeometry(handle: ObjectHandle): CachedGeometry {
   const { kind, y } = handle;
@@ -78,23 +71,10 @@ function buildGeometry(handle: ObjectHandle): CachedGeometry {
 }
 
 function getOrBuild(id: string, handle: ObjectHandle): CachedGeometry {
-  const entry = cache.get(id);
-  if (entry) {
-    if (handle.kind === 'shape') {
-      const currentType = getShapeType(handle.y);
-      if (entry.shapeType !== currentType) {
-        const geometry = buildGeometry(handle);
-        cache.set(id, { geometry, shapeType: currentType });
-        return geometry;
-      }
-    }
-    return entry.geometry;
-  }
+  const hit = cache.get(id);
+  if (hit) return hit;
   const geometry = buildGeometry(handle);
-  cache.set(id, {
-    geometry,
-    shapeType: handle.kind === 'shape' ? getShapeType(handle.y) : undefined,
-  });
+  cache.set(id, geometry);
   return geometry;
 }
 
@@ -106,7 +86,7 @@ export function getConnectorPaths(id: string, handle: ObjectHandle): ConnectorPa
   return getOrBuild(id, handle) as ConnectorPaths;
 }
 
-/** Evict geometry for one object (bbox changed → stale path) */
+/** Evict geometry for one object (bbox or shapeType changed → stale path) */
 export function evictGeometry(id: string): void {
   cache.delete(id);
 }

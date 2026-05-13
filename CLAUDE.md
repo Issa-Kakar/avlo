@@ -56,7 +56,8 @@ All paths relative to `client/src/` unless noted.
 | `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,All}` |
 | `OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
 | `types.ts` | `FRAME_CONFIG`, Perfect Freehand options, `getSvgPathFromStroke` |
-| `geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache, shapeType-aware staleness |
+| `geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache; observer-driven eviction (bbox change, `shapeType` keychange) |
+| `render-accessors.ts` | Per-kind `_map.get` readers (`readXxxRender(y)`) + per-kind module scratches. Two helpers split by Content subclass — `readPrim` (ContentAny via `arr[0]`) and `readY` (ContentType via `type`). Both check `!val.deleted` (tombstones survive `.delete(key)`). Zero alloc, monomorphic per subclass. Hot path only |
 | `object-cache.ts` | Unified eviction: `removeObjectCaches(id, kind)`, `clearAllObjectCaches()` |
 | `layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
 | `layers/selection-overlay.ts` | Selection highlights, bbox, circular handles (marquee owned by SelectTool) |
@@ -429,7 +430,12 @@ computeBBoxForInto(id, kind, y, out) {
 ### Object dispatch (`renderer/layers/objects.ts`)
 Switch on `handle.kind`: stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()`, bookmark via `drawBookmark()`. During scale (`renderScaleEntry`, behavior from `getScaleBehavior`): shape rebuilds frame; image bitmap at scaled frame; stroke uses cached Path2D with `ctx.scale(factor)`; text/code reflow on E/W sides else `ctx.scale(ratio)` on cached layout; note/bookmark `ctx.scale(out.scale/frozen.scale)` around `out.origin`. Edge-pin (multi-select side handle) falls back to `renderTranslatedEntry`. Details in `tools/selection/CLAUDE.md`.
 
-Per-frame hoisting in `drawObjects`: editing IDs, hovered Open-button id, translate `dx/dy`, topology `connEntries` Map, viewport bounds — read once, used per-object. Module scratches (`_candidateIds`, `_previewScratch`) for zero alloc.
+Per-frame hoisting in `drawObjects`: editing IDs (incl. `_textEditingId` threaded into `drawStickyNote`), hovered Open-button id, translate `dx/dy`, topology `connEntries` Map, viewport bounds — read once, used per-object. Module scratches (`_candidateIds`, `_previewScratch`) for zero alloc.
+
+### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
+Two helpers, one per Content subclass. `readPrim` reads `val.content.arr[0]` (ContentAny — every primitive/array/object key); `readY` reads `val.content.type` (ContentType — the single `'content'` key on shape labels). Both check `!val.deleted` (Yjs tombstones an Item rather than removing it from `_map` on `.delete(key)` — fillColor=null in `selection-field-table.ts`, empty-label close in `TextTool.ts`). Both bypass `Content.getContent()` so there's no `[this.type]` allocation for ContentType to depend on EA for. ~10 ns/key (vs ~109 ns for `y.get()`). `Y.Map._map` items always have `length === 1` (merges blocked by deleted-state asymmetry — proven from Yjs source), so `arr[0]` is correct without a `length - 1` lookup. One `readXxxRender(y)` per leaf draw fn writes into a per-kind module-level scratch returned by reference. Each `draw*` consumes its scratch before the next reader fires — no cross-reader hazards.
+
+Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById`, `noteCachedLayout`, `codeSystem.getLayoutById`, `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, fontSize, ...)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantees; see Cache Architecture). Geometry-cache trusts entries — `shapeType` keychange pre-evicts via `evictGeometry(id)` in the observer rather than a per-draw re-check. Defensive guards stripped on the hot path: bbox-size (`scaleFrameNonUniform` clamps to `MIN_SHAPE_FRAME_DIM + 2·pad`), `n < 2` (already in `paintConnectorFromPoints`), null `assetId`/`frame` on image (observer contract).
 
 ### Overlay loop animation
 `AnimationController` (`renderer/animation/`) is a push-based singleton: jobs return `true` from `frame()` to request another rAF; controller calls `invalidate()` from the loop. Built-in jobs: `CursorAnimationJob` (interpolated remote cursors), `EraserTrailAnimation` (decaying trail). Registered once in `OverlayRenderLoop.start()`.

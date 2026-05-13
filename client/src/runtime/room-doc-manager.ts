@@ -242,6 +242,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
               router.onConnectorEdited(id, yObj, startEnd);
             }
           } else if (kind === 'shape' && ev.keysChanged.has('shapeType')) {
+            evictGeometry(id); // pre-evict Path2D so renderer doesn't re-check per draw
             router.onBindableChanged(id);
           }
         }

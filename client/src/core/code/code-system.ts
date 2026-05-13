@@ -759,6 +759,17 @@ class CodeSystemCache {
     return this.entries.get(id)?.frame ?? null;
   }
 
+  /**
+   * Pure cache read for the renderer hot path. Returns the layout when an entry
+   * exists AND its layout is valid (post-bbox-compute or post-handleContentChange
+   * + reflow), else null. Observer pipeline guarantees validity for any handle
+   * that lives in `objectsById`.
+   */
+  getLayoutById(id: string): CodeLayout | null {
+    const e = this.entries.get(id);
+    return e && e.layoutValid ? e.layout : null;
+  }
+
   evict(id: string): void {
     this.entries.delete(id);
     requestRemove(id);
@@ -785,6 +796,11 @@ export function getCodeFrame(id: string): FrameTuple | null {
 /** Source-buffer accessor for transform freeze (E/W reflow gestures). */
 export function getCodeSource(id: string): CodeSource | null {
   return codeSystem.getSource(id);
+}
+
+/** Spans-buffer accessor mirror of getCodeSource. Used by the renderer hot path. */
+export function getCodeSpans(id: string): CodeSpans | null {
+  return codeSystem.getSpans(id);
 }
 
 /** Compute bbox for a code object — frame→bbox conversion. */
