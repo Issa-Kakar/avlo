@@ -110,47 +110,47 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
     persist(
       immer((set, get) => ({
         user: { id: '', name: '', color: '' },
-        tool: { active: 'select' as Tool, cursorOverride: null },
+        tool: { active: 'select', cursorOverride: null },
 
         strokeWidth: 4,
 
-        pen: { slots: ['#131619', '#2196F3', '#F44336'] as ColorSlots, activeSlot: 0 as SlotIndex },
+        pen: { slots: ['#131619', '#2196F3', '#F44336'], activeSlot: 0 },
         highlighter: {
-          slots: ['#FFC73B', '#FF8FB1', '#B5D9F2'] as ColorSlots,
-          activeSlot: 0 as SlotIndex,
+          slots: ['#FFC73B', '#FF8FB1', '#B5D9F2'],
+          activeSlot: 0,
           opacity: 0.45,
         },
 
         shape: {
-          variant: 'rectangle' as ShapeVariant,
+          variant: 'rectangle',
           color: '#131619',
           fillColor: '#BFDBFE',
           width: 4,
-          align: 'center' as TextAlign,
-          alignV: 'middle' as TextAlignV,
+          align: 'center',
+          alignV: 'middle',
         },
 
         connector: {
           color: '#131619',
           width: 4,
-          type: 'elbow' as ConnectorType,
-          startCap: 'none' as ConnectorCap,
-          endCap: 'arrow' as ConnectorCap,
+          type: 'elbow',
+          startCap: 'none',
+          endCap: 'arrow',
         },
 
         text: {
           color: '#262626',
-          align: 'left' as TextAlign,
+          align: 'left',
           size: 24,
-          fontFamily: 'Grandstander' as FontFamily,
+          fontFamily: 'Grandstander',
           highlightColor: null,
           fillColor: null,
         },
 
         note: {
-          align: 'center' as TextAlign,
-          alignV: 'middle' as TextAlignV,
-          fontFamily: 'Grandstander' as FontFamily,
+          align: 'center',
+          alignV: 'middle',
+          fontFamily: 'Grandstander',
         },
 
         code: { lineNumbers: true, headerVisible: true },

@@ -1,9 +1,16 @@
-# Toolbar Redesign — Current State (2026-05-12, post-store-refactor)
+# Toolbar Redesign — Current State (2026-05-12, post-nested-store-refactor)
 
-> **Not finalized.** The store/toolbar split landed this pass: per-tool flat
-> fields on `device-ui-store`, four connector variants derived from cap
-> triples, component-local picker state, and a re-organized
-> `inspectors/`+`color/` directory layout. Hex codes, icon weights, spacing,
+> **Not finalized.** Two passes landed today. First: per-tool flat fields
+> on `device-ui-store`, four connector variants derived from cap triples,
+> component-local picker state, re-organized `inspectors/`+`color/`
+> layout. Second (this pass): the flat fields have been nested by cluster,
+> `DeviceUIState`/`DeviceUIActions` split, middleware stack rebuilt as
+> `subscribeWithSelector(persist(immer(...)))`, persist `partialize`
+> excludes `tool.active`/`tool.cursorOverride`, default tool resets to
+> `'select'` on every load, cross-store import inverted (selection-store
+> reacts to device-ui-store, not the reverse), parallel-array code smells
+> in `weights.ts` / `connector-variants.ts` collapsed to keyed tables,
+> persist-sink width casts dropped. Hex codes, icon weights, spacing,
 > threshold values, and the connector variant icon set are all still in
 > active tuning.
 
@@ -54,14 +61,14 @@ stylesheet import.
 | `index.ts`                            | re-exports `{ Toolbar }`                                                                                                   |
 | `Toolbar.tsx`                         | main dock; dispatches `<PenInspector />` or `<ConnectorInspector />` based on `activeTool`. Direct imports for actions.    |
 | `Toolbar.css`                         | `:root` design tokens + main-pill + actions-pill + tooltip styling                                                         |
-| `weights.ts`                          | `SIZE_PRESETS: StrokeWidth[]` + `WEIGHT_ICONS` — index-aligned                                                              |
-| `connector-variants.ts`               | `ConnectorVariantId`, `CONNECTOR_VARIANT_BUTTONS` (4 entries), `deriveConnectorVariant(type, startCap, endCap)`            |
+| `weights.ts`                          | `STROKE_WEIGHTS: readonly StrokeWeightOption[]` (4 entries, each `{ width, Icon }`) + `StrokeWidthPreset` (UI-only union) |
+| `connector-variants.ts`               | `CONNECTOR_VARIANT_IDS` (ordered tuple) + `CONNECTOR_VARIANT_SPECS` (keyed table) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap)` — table-driven |
 | `inspectors/Inspector.css`            | shared inspector pill shell + divider; `@import`s the 3 primitive CSS files                                                |
 | `inspectors/InspectorButton.tsx/css`  | reusable square icon button with `is-active` state — used by tool toggles, weight buttons, connector variants              |
-| `inspectors/PenInspector.tsx`         | pen / highlighter toggle, 4 weight buttons, 3-slot color row + picker (local `useState`)                                   |
-| `inspectors/ConnectorInspector.tsx`   | 4 variant buttons (inlined SVGs) + 1-slot color row + picker (local `useState`). Variant derived from caps.                |
-| `color/ColorSlots.tsx/css`            | reusable column of 1–3 rounded-square slots; manages click semantics                                                       |
-| `color/ColorSlot.tsx`                 | single slot — checkmark + `--slot-tint` offset ring when active; `data-dark` triggers a white inset stroke                 |
+| `inspectors/PenInspector.tsx`         | pen / highlighter toggle, 4 weight buttons (iterates `STROKE_WEIGHTS`), 3-slot color row + picker (local `useState`). Reads `s.pen` xor `s.highlighter` as a single cluster selector based on `activeTool`. |
+| `inspectors/ConnectorInspector.tsx`   | 4 variant buttons (inlined SVGs) + 1-slot color row + picker (local `useState`). Variant derived from caps via `deriveConnectorVariant`. Reads `s.connector` as a single cluster selector. `ColorSlots.onSelectSlot` omitted (single-slot inspectors don't need slot-switching). |
+| `color/ColorSlots.tsx/css`            | reusable column of 1–3 rounded-square slots; `onSelectSlot` is optional (only meaningful when `colors.length > 1`); falls back to `onTogglePicker` when absent |
+| `color/ColorSlot.tsx`                 | single slot — checkmark + `--slot-tint` offset ring when active; `data-dark` triggers a white inset stroke. `slotStyle(color, isActive)` helper owns the one localized `React.CSSProperties` cast for the CSS custom property |
 | `color/ColorPicker.tsx/css`           | 24-swatch grid (6×4) + custom hex input + outside-click close; `data-dark` swatches get a brighter border                  |
 | `color/CheckIcon.tsx`                 | tiny memoized `<svg>` check, accepts `color` + `size` + `strokeWidth`                                                       |
 | `color/palette.ts`                    | `PALETTE` (24 colors), `PALETTE_COLS = 6`, `luminance`, `checkmarkColorFor`, `isDark`, `colorsEqual`                       |
@@ -93,16 +100,18 @@ stylesheet import.
 
 ### Stale references (still need a cleanup sweep)
 
-- `CLAUDE.md:137` — file map still reads
-  `components/ToolPanel.tsx (toolbar + inspector)`. Should point to
-  `components/toolbar/Toolbar.tsx` + the inspectors directory.
+- `CLAUDE.md:148` — file map still lists `ToolPanel.tsx` alongside
+  `TopBar.tsx`. Should point to `components/toolbar/Toolbar.tsx`
+  (and optionally mention the `inspectors/` directory).
 - `client/src/core/image/CLAUDE.md:184` — table row references
   `components/ToolPanel.tsx`.
 - `client/src/components/context-menu/CLAUDE.md:101` — exclusion-zone math
   still says `Top 72px = ToolPanel (48px) + padding`. The dock is vertical
   on the left now; flip/shift padding needs to be re-measured against the
   left edge (`12px` + `48px` pill + padding ≈ `64–72px` left exclusion).
-- `RoomPage.tsx` JSDoc header (line 1–4) still describes the old top dock.
+- `client/src/components/RoomPage.tsx:1-4` JSDoc header still describes
+  a "fixed top toolbar at 48px with Inspector extension." The dock is
+  vertical on the left now.
 
 ---
 
@@ -184,28 +193,33 @@ Direct module-level handlers in `Toolbar.tsx`:
 1. Pen toggle (`IconInspectorPen`, 30×30 button, 20×20 icon).
 2. Highlighter toggle (`IconInspectorHighlighter`).
 3. Divider.
-4. Stroke weights `W1..W4` — `StrokeWidth [4, 7, 10, 13]` mapped to
-   `IconStrokeWeight1..4` via index in `weights.ts`. Each icon is a
-   distinct hand-drawn squiggle (W1=Mural drawWeight10, W2=drawWeight20,
+4. Stroke weights `W1..W4` — rendered by mapping `STROKE_WEIGHTS`
+   (`[{ width: 4, Icon: IconStrokeWeight1 }, …]`) directly. Each icon is
+   a distinct hand-drawn squiggle (W1=Mural drawWeight10, W2=drawWeight20,
    W3=drawWeight40, W4=custom heavy). Pen and highlighter SHARE
-   `strokeWidth` — changing the width applies to both tools.
+   `strokeWidth` (top-level scalar on the store) — changing the width
+   applies to both tools.
 5. Divider.
 6. `<ColorSlots />` — 3 rounded squares. Pen and highlighter each persist
    their own slot column + active-slot pointer; switching active tool
-   swaps the slot column for the new tool. The slot column for the
+   swaps the cluster (`s.pen` xor `s.highlighter`). The cluster for the
    inactive tool is unaffected. `DrawingTool.begin()` reads
-   `penSlots[penActiveSlot]` or `highlighterSlots[highlighterActiveSlot]`
-   based on `activeTool` at gesture start — no shared mirror field.
+   `ui.pen.slots[ui.pen.activeSlot]` or
+   `ui.highlighter.slots[ui.highlighter.activeSlot]` based on
+   `ui.tool.active` at gesture start — no shared mirror field.
 
 ### Connector inspector contents
 
-1. **Four** variant buttons. Each calls `setConnectorMode(variant)`, an
-   atomic store action that writes a `(type, startCap, endCap)` triple in
-   one `set()`:
+1. **Four** variant buttons rendered by mapping `CONNECTOR_VARIANT_IDS`.
+   Each calls `setConnectorMode(variant)`, an atomic immer recipe that
+   looks up `CONNECTOR_VARIANT_SPECS[variant]` and writes the
+   `(type, startCap, endCap)` triple in one `set()`:
    - `line` → `straight / none / none`
    - `arrow` → `straight / none / arrow`
    - `doubleArrow` → `straight / arrow / arrow`
-   - `elbow` → `elbow` (**caps preserved** — only the type flips)
+   - `elbow` → `elbow` (**caps preserved** — only the type flips;
+     the spec table entry has `startCap: 'none', endCap: 'arrow'` but
+     the recipe skips those writes for the elbow case)
 
    Single subscriber notification per click, no three-write race.
 
@@ -222,9 +236,11 @@ Direct module-level handlers in `Toolbar.tsx`:
    `deriveConnectorVariant` is pure; called once per inspector render.
 
 3. Divider.
-4. `<ColorSlots count=1 />` over `connectorColor`. Picker behaves
-   identically to the pen inspector's picker (local `useState`,
-   close-on-pick via the inspector's `handlePick` closure).
+4. `<ColorSlots count=1 />` over `s.connector.color`. `onSelectSlot` is
+   omitted (the single slot is always active; clicking it falls back to
+   `onTogglePicker`). Picker behaves identically to the pen inspector's
+   picker (local `useState`, close-on-pick via the inspector's
+   `handlePick` closure).
 
 ### Color picker
 
@@ -253,38 +269,143 @@ while any inspector is open via
 
 ## State Integration (`useDeviceUIStore`)
 
-### Flat per-tool fields (persisted)
+### Shape: nested by cluster + flat actions
 
-The store no longer has a unified `drawingSettings`. Each tool reads its
-own fields at `begin()` time.
+State is split into a `DeviceUIState` (nested by tool cluster) plus a
+`DeviceUIActions` (flat — mirrors `selection-store.ts`). Both are exposed
+as the merged `DeviceUIStore`. Each cluster reads as a unit, so most
+consumers grab one cluster reference via a stable selector rather than
+N scalar selectors.
 
-| Field                                          | Type                | Purpose                                                              |
-| ---------------------------------------------- | ------------------- | -------------------------------------------------------------------- |
-| `penSlots`                                     | `ColorSlots`        | Pen's three persistent slot colors                                   |
-| `penActiveSlot`                                | `SlotIndex`         | Which pen slot is active                                             |
-| `highlighterSlots`                             | `ColorSlots`        | Highlighter's three persistent slot colors                           |
-| `highlighterActiveSlot`                        | `SlotIndex`         | Which highlighter slot is active                                     |
-| `highlighterOpacity`                           | `number` (0..1)     | Highlighter-only                                                     |
-| `strokeWidth`                                  | `StrokeWidth`       | **Shared** by pen + highlighter                                      |
-| `shapeVariant`                                 | `ShapeVariant`      | Active toolbar shape (rectangle/ellipse/diamond/triangle)            |
-| `shapeColor`                                   | `string`            | Stroke color for toolbar shapes (independent of pen)                 |
-| `shapeFillColor`                               | `string`            | Fill color for toolbar shapes (always applied — toolbar shapes are filled by default; snap-from-stroke commits unfilled) |
-| `shapeWidth`                                   | `StrokeWidth`       | Stroke width for toolbar shapes (independent of stroke tools)        |
-| `shapeAlign` / `shapeAlignV`                   | `TextAlign(V)`      | Shape label alignment                                                |
-| `connectorColor`                               | `string`            | Connector stroke color (independent of pen)                          |
-| `connectorWidth`                               | `ConnectorWidth`    | Connector stroke width (`2 \| 4 \| 6 \| 8`)                          |
-| `connectorType`                                | `ConnectorType`     | `'elbow' \| 'straight'` — used to derive variant                     |
-| `connectorStartCap` / `connectorEndCap`        | `ConnectorCap`      | `'none' \| 'arrow'` — used to derive variant                         |
-| `textColor` / `textAlign` / `textSize` / `textFontFamily` / `textHighlightColor` / `textFillColor` | various | Text-tool defaults |
-| `noteAlign` / `noteAlignV` / `noteFontFamily`  | various             | Note-tool defaults                                                   |
-| `codeLineNumbers` / `codeHeaderVisible`        | `boolean`           | Code-tool defaults                                                   |
-| `userId` / `userName` / `userColor`            | strings             | Identity (persisted)                                                 |
-| `activeTool` / `cursorOverride`                | `Tool` / `string?`  | Tool state                                                           |
+```ts
+interface DeviceUIState {
+  user: { id: string; name: string; color: string };
+  tool: { active: Tool; cursorOverride: string | null };
 
-Persisted store key: `'avlo.toolbar.v6'`, version `4`. Old localStorage
-entries are wiped on first load (schema is incompatible).
+  // Honest top-level scalar — shared by pen + highlighter.
+  strokeWidth: number;
+
+  pen:         { slots: ColorSlots; activeSlot: SlotIndex };
+  highlighter: { slots: ColorSlots; activeSlot: SlotIndex; opacity: number };
+  shape:       { variant; color; fillColor; width; align; alignV };
+  connector:   { color; width; type; startCap; endCap };
+  text:        { color; align; size; fontFamily; highlightColor; fillColor };
+  note:        { align; alignV; fontFamily };
+  code:        { lineNumbers; headerVisible };
+}
+```
+
+Notes:
+
+- `strokeWidth` is **deliberately top-level**, not under `pen` or
+  `highlighter` — both tools genuinely share it.
+- Store action signatures take `number` for widths (not `StrokeWidth` /
+  `ConnectorWidth` unions). The preset unions live UI-side only
+  (`StrokeWidthPreset` in `weights.ts`) for typing the inspector button
+  row and `WEIGHT_HANDLERS`. Off-preset widths (set via context-menu
+  drag-resize) persist correctly with no cast.
+
+### Middleware stack
+
+```ts
+create<DeviceUIStore>()(
+  subscribeWithSelector(
+    persist(
+      immer((set, get) => ({ ... })),
+      { name: 'avlo.toolbar.v1', version: 1, partialize, storage: createJSONStorage(localStorage) },
+    ),
+  ),
+);
+```
+
+Ordering rationale:
+
+- **`immer`** (innermost) transforms `set` to accept recipes that mutate
+  the draft. Every setter writes `state.cluster.field = v` directly —
+  no spread, no tuple cast (`Draft<ColorSlots>` strips `readonly` so
+  index writes typecheck).
+- **`persist`** sees plain post-immer state for serialization. Its
+  `partialize` drops `tool.active` and `tool.cursorOverride` from the
+  payload — `tool.active` resets to `'select'` on every load (the
+  standard whiteboard default), `cursorOverride` is ephemeral.
+- **`subscribeWithSelector`** (outermost) so internal and external
+  subscribers can observe scalar paths. Four live subscriptions on
+  this store:
+
+  1. `s.tool.active` → `applyCursor()` (self-subscription in
+     `device-ui-store.ts`)
+  2. `s.tool.cursorOverride` → `applyCursor()` (self-subscription;
+     lifts the manual `applyCursor()` call out of `setCursorOverride`
+     so the recipe stays pure)
+  3. `s.tool.active` → `useSelectionStore.getState().clearSelection()`
+     when previous value was `'select'` — **lives in `selection-store.ts`**,
+     not here. Selection-store is allowed to know about device-ui-store;
+     the reverse is not. This breaks the prior circular import.
+  4. `s.tool.active` → `overlayLoop.invalidateAll()` (lives in
+     `renderer/OverlayRenderLoop.ts`) — evicts any live preview on
+     tool switch. Replaces the prior whole-store subscription with
+     manual `lastTool` diff tracking.
+
+### Persist key
+
+`name: 'avlo.toolbar.v1'`, `version: 1`. Clean break from the prior
+`avlo.toolbar.v6` payloads — old entries are orphaned in localStorage
+but never read. No `migrate` function. First load after the refactor
+regenerates user identity via the post-create init block.
+
+### User identity init
+
+```ts
+if (!useDeviceUIStore.getState().user.id) {
+  const profile = generateUserProfile();
+  useDeviceUIStore.setState({ user: { id: ulid(), name: profile.name, color: profile.color } });
+}
+```
+
+Fires only on first-ever load (empty localStorage) or after a manual
+wipe. Once seeded, `user` persists across reloads (it's in the
+`partialize` payload).
+
+### No casts at the initial site
+
+The initial state inside `immer((set, get) => ({ ... }))` carries no
+`as X` annotations. Contextual typing through
+`create<DeviceUIStore>()` propagates the declared field types into the
+literal, so string literals narrow against their declared unions
+(`'select'` against `Tool`, `'rectangle'` against `ShapeVariant`,
+`'elbow'` against `ConnectorType`, etc.) and array literals narrow
+against `ColorSlots`. The only surviving CSS cast in the toolbar lives
+in `ColorSlot.tsx`'s `slotStyle()` helper — `React.CSSProperties`
+doesn't list app-specific CSS custom properties.
 
 ### Removed fields (since prior pass)
+
+**This pass (nested rewrite):**
+
+- `StrokeWidth` / `ConnectorWidth` preset unions in **store action
+  signatures** — widened to `number`. The preset unions survive UI-side
+  only (`StrokeWidthPreset` in `weights.ts`). Dropped the
+  `as StrokeWidth` / `as ConnectorWidth` casts in
+  `selection-field-table.ts` persist sinks.
+- `as unknown as [string, string, string]` cast in
+  `setPenSlotColor` / `setHighlighterSlotColor` — replaced by direct
+  immer draft index write (`state.pen.slots[state.pen.activeSlot] = color`).
+- `SIZE_PRESETS` + `WEIGHT_ICONS` parallel arrays in `weights.ts` →
+  single `STROKE_WEIGHTS` table of `{ width, Icon }`.
+- `CONNECTOR_VARIANT_BUTTONS` array in `connector-variants.ts` → keyed
+  `CONNECTOR_VARIANT_SPECS` table (ids, labels, caps, derivation all
+  read from it).
+- `NOOP` constant in `ConnectorInspector` — `ColorSlots.onSelectSlot`
+  is now optional and falls back to `onTogglePicker` when absent.
+- Whole-store `.subscribe()` callback for the `activeTool → applyCursor +
+  clearSelection` effect — replaced by selector-form
+  `subscribeWithSelector` subscriptions, with `clearSelection` moved
+  into `selection-store.ts` (one-way reaction; device-ui-store no
+  longer imports selection-store).
+- `selectDeviceFontFamily` local selector in `TypefaceButton` —
+  replaced by the exported `selectTextFontFamily` from device-ui-store.
+
+**Prior pass (flat per-tool fields):**
 
 - `drawingSettings` (with `size/color/opacity/fill`) — replaced by per-tool
   flat fields.
@@ -308,29 +429,36 @@ entries are wiped on first load (schema is incompatible).
 
 ### Sync rules
 
-- `setActiveTool(tool)` — no longer pushes any color into a shared mirror
-  field. Each tool's color comes from its own fields.
-- `setShapeMode(variant)` — atomic `{ activeTool: 'shape', shapeVariant }`.
-- `setConnectorMode(variant)` — atomic `(type, startCap, endCap)` write
-  per the variant table above.
-- `setPenSlotColor(color)` / `setHighlighterSlotColor(color)` — write
-  into the currently-active slot of that tool. No `drawingSettings.color`
-  side-effect (it doesn't exist anymore).
-- `DrawingTool.begin()` branches on `activeTool`:
-  - `'pen'` → `penSlots[penActiveSlot]` + `strokeWidth` + opacity 1 +
-    `fillColor: null`.
-  - `'highlighter'` → `highlighterSlots[highlighterActiveSlot]` +
-    `strokeWidth` + `highlighterOpacity` + `fillColor: null`.
-  - `'shape'` → `shapeColor` + `shapeWidth` + opacity 1 + `shapeFillColor`
-    (always set; toolbar shapes commit filled).
+All setters are immer recipes — multi-field writes are atomic by
+construction (single `set()` call, single subscriber notification).
+
+- `setActiveTool(tool)` — `state.tool.active = tool`. No mirror fields.
+- `setShapeMode(variant)` — atomic `state.tool.active = 'shape';
+  state.shape.variant = variant` in one recipe.
+- `setConnectorMode(variant)` — looks up `CONNECTOR_VARIANT_SPECS[variant]`,
+  writes `state.connector.type` (and `startCap`/`endCap` unless type is
+  `'elbow'` — elbow preserves caps).
+- `setPenSlotColor(color)` / `setHighlighterSlotColor(color)` —
+  `state.pen.slots[state.pen.activeSlot] = color` (or `highlighter`).
+  Direct draft-tuple index write, no clone, no cast.
+- `setCursorOverride(cursor)` — idempotent guard, then
+  `state.tool.cursorOverride = cursor`. Does **not** call `applyCursor()`
+  inline; the `subscribeWithSelector` subscription on `s.tool.cursorOverride`
+  applies the cursor as a side effect, keeping the recipe pure.
+- `DrawingTool.begin()` branches on `ui.tool.active`:
+  - `'pen'` → `ui.pen.slots[ui.pen.activeSlot]` + `ui.strokeWidth` +
+    opacity 1 + `fillColor: null`.
+  - `'highlighter'` → `ui.highlighter.slots[ui.highlighter.activeSlot]`
+    + `ui.strokeWidth` + `ui.highlighter.opacity` + `fillColor: null`.
+  - `'shape'` → `ui.shape.color` + `ui.shape.width` + opacity 1 +
+    `ui.shape.fillColor` (always set; toolbar shapes commit filled).
 
   Hold-snap from a stroke gesture commits the resulting shape unfilled
   (`fillColor` stays `null` from the stroke begin).
-- `ConnectorTool.begin()` reads `connectorColor` / `connectorWidth` /
-  `connectorType` / `connectorStartCap` / `connectorEndCap`. Connector
-  preview (`renderer/layers/connector-preview.ts`) reads the same fields
-  live each frame — `drawingSettings.color` no longer exists, so the
-  pre-refactor "preview drew in pen color" bug is structurally impossible.
+- `ConnectorTool.begin()` destructures the `connector` cluster in one
+  read: `const c = ui.connector; this.frozenColor = c.color; …`. The
+  preview (`renderer/layers/connector-preview.ts`) destructures the
+  same cluster each frame.
 
 ### Stable action handler exports
 
@@ -353,18 +481,33 @@ wrapper.
 
 ### Narrow component selectors
 
+Cluster selectors are stable module-level functions that return the
+existing nested object reference. Unrelated updates don't change the
+cluster's identity, so plain `Object.is` equality is correct and
+faster than `useShallow` for these cases.
+
 | Component                | Selectors                                                                                                                                                  |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Toolbar.tsx`            | `activeTool`, `shapeVariant`                                                                                                                                |
-| `PenInspector.tsx`       | `activeTool`, `strokeWidth`, conditional (`penSlots` xor `highlighterSlots`), conditional (`penActiveSlot` xor `highlighterActiveSlot`). Picker state local. |
-| `ConnectorInspector.tsx` | `connectorType`, `connectorStartCap`, `connectorEndCap`, `connectorColor`. Picker state local. Active variant derived from cap triple.                      |
+| `Toolbar.tsx`            | `s.tool.active`, `s.shape.variant` (two scalar selectors)                                                                                                  |
+| `PenInspector.tsx`       | `selectActiveTool`, `selectStrokeWidth`, plus one cluster selector that returns `s.pen` xor `s.highlighter` based on `activeTool`. Picker state local.     |
+| `ConnectorInspector.tsx` | `selectConnector` — single cluster selector. Destructures `{ type, startCap, endCap, color }`. Picker state local. Active variant derived from cap triple. |
+| `TypefaceButton.tsx`     | `selectTextFontFamily` (the exported module-level selector). No local helper.                                                                              |
+| `ContextMenu.tsx`        | `selectTextColor`, `selectTextSize` — resolve to `s.text.color` / `s.text.size`.                                                                            |
 | `ColorPicker.tsx`        | none — all data flows in via props                                                                                                                          |
 
-The three narrow cap selectors in `ConnectorInspector` mean a cap-only
-change fires only the relevant selector; the inspector re-renders, the
+Available cluster selectors (module-level, stable refs):
+`selectUser`, `selectPen`, `selectHighlighter`, `selectShape`,
+`selectConnector`, `selectText`, `selectNote`, `selectCode`.
+Plus scalar selectors: `selectActiveTool`, `selectStrokeWidth`,
+`selectTextColor`, `selectTextAlign`, `selectTextSize`,
+`selectTextHighlightColor`, `selectTextFontFamily`.
+
+The single cluster selector in `ConnectorInspector` replaces the four
+prior scalar selectors. A cap-only change still fires only the
+connector cluster's subscription; the inspector re-renders, the
 derivation runs (≈5 comparisons), and `<InspectorButton>`s see new
-`isActive` booleans. `Toolbar.tsx` doesn't subscribe to any of those
-fields, so it never re-renders on a connector cap change.
+`isActive` booleans. `Toolbar.tsx` doesn't subscribe to the connector
+cluster, so it never re-renders on a connector cap change.
 
 ---
 
@@ -494,7 +637,57 @@ spacing, threshold values, and the variant icon set are all in flux.**
 
 ## Recent Behavior Changes
 
-- **2026-05-12 (this pass — store + toolbar refactor)**.
+- **2026-05-12 (this pass — nested-store redesign)**.
+  - **Store interface**: split into `DeviceUIState` + `DeviceUIActions` +
+    merged `DeviceUIStore`. State nested by tool cluster (`user`, `tool`,
+    `pen`, `highlighter`, `shape`, `connector`, `text`, `note`, `code`);
+    `strokeWidth` stays top-level (genuinely shared by pen + highlighter).
+    Actions stay flat (mirrors `selection-store.ts`'s split). Cluster
+    selectors exposed at module scope (`selectPen`, `selectConnector`,
+    …) plus narrow scalar selectors. No casts at the initial site —
+    contextual typing through `create<DeviceUIStore>()` does the work.
+  - **Middleware**: `subscribeWithSelector(persist(immer(...)))`. Immer
+    enables direct draft mutation (`state.pen.slots[i] = color`) — the
+    `as unknown as [string, string, string]` cast goes away.
+    `subscribeWithSelector` enables selector-form subscriptions
+    everywhere (OverlayRenderLoop, self-subscribed cursor watchers,
+    selection-store reaction).
+  - **Persist**: key bumped to `'avlo.toolbar.v1'`, version `1`.
+    `partialize` excludes `tool.active` and `tool.cursorOverride`
+    (ephemeral). Default tool resets to `'select'` on every load —
+    standard whiteboard default. No `migrate` — clean break; old
+    `avlo.toolbar.v6` payloads are orphaned in localStorage.
+  - **Cross-store wiring inverted**: device-ui-store no longer imports
+    selection-store. The `leaving 'select' → clearSelection` reaction
+    moved into `selection-store.ts`'s module bottom as a one-way
+    `useDeviceUIStore.subscribe(s => s.tool.active, ...)`. Cursor
+    application (`applyCursor`) becomes two self-subscriptions on
+    `tool.active` + `tool.cursorOverride` — `setCursorOverride` is now
+    a pure recipe (no inline `applyCursor()` call).
+  - **OverlayRenderLoop**: `subscribe((state) => …)` whole-store
+    callback replaced with `subscribe(s => s.tool.active, …)` — drops
+    the manual `lastTool` diff (`subscribeWithSelector` does it).
+  - **Toolbar `weights.ts`**: `SIZE_PRESETS` + `WEIGHT_ICONS` parallel
+    arrays collapsed into a single `STROKE_WEIGHTS: readonly
+    StrokeWeightOption[]` table. `StrokeWidthPreset = 4 | 7 | 10 | 13`
+    is now a UI-only union (the store field is `number`).
+  - **Toolbar `connector-variants.ts`**: `CONNECTOR_VARIANT_BUTTONS`
+    array collapsed into `CONNECTOR_VARIANT_IDS` (ordered tuple) +
+    `CONNECTOR_VARIANT_SPECS` (keyed table). `ConnectorVariantId` moved
+    here from the store. `deriveConnectorVariant` is now table-driven
+    (loop over `CONNECTOR_VARIANT_IDS`, match against spec). The store
+    imports the spec table for `setConnectorMode`.
+  - **`ColorSlots`**: `onSelectSlot` prop is now optional. When absent
+    (single-slot inspectors), falls back to `onTogglePicker`. The `NOOP`
+    constant in `ConnectorInspector` is gone.
+  - **`ColorSlot`**: `slotStyle(color, isActive)` helper centralizes
+    the one localized `React.CSSProperties` cast for `--slot-tint`.
+  - **`selection-field-table.ts`**: `as StrokeWidth` / `as ConnectorWidth`
+    casts dropped from `setShapeWidthPersist` / `setStrokeWidthPersist`
+    / `setConnectorWidthPersist`. The persist sinks accept `number`
+    because the store action signatures now do.
+
+- **2026-05-12 (earlier — store + toolbar refactor)**.
   - **Store rewrite**: split unified `drawingSettings` into per-tool flat
     fields (`penSlots`, `highlighterSlots`, `strokeWidth`, `shapeColor`,
     `shapeFillColor`, `shapeWidth`, `connectorColor`, `connectorWidth`).
