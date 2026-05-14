@@ -46,6 +46,7 @@ All paths relative to `client/src/` unless noted.
 | `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
 | `cursor-tracking.ts` | Last cursor world position (for paste placement) |
 | `presence/presence.ts` | Awareness lifecycle, cursor send/receive, peer state (mutable Map) |
+| `presence/presence-pointer.ts` | Pure dispatch for the `document`-level local-cursor input path (move/out/blur/camera-sync) |
 | `viewport/zoom.ts` | Smooth zoom animations (step, pinch, zoom-to-fit, reset) |
 | `viewport/edge-scroll.ts` | Auto-pan near viewport edges during drags |
 | `viewport/arrow-key-pan.ts` | Continuous arrow key panning with easeInQuad acceleration |
@@ -202,15 +203,19 @@ Tool.begin/move/end()              → user gesture
 ### Event flow
 
 ```
-Pointer event → InputManager → CanvasRuntime
+Canvas pointer event → InputManager → CanvasRuntime
   ├─ screenToWorld(clientX, clientY)
-  ├─ updatePresenceCursor()
+  ├─ setLastCursorWorld()  (paste-at-cursor placement)
   ├─ updateEdgeScroll() (auto-pan near edges)
   └─ getCurrentTool().begin/move/end(worldX, worldY)
        ↓
   Tool updates internal state
     ├─ invalidateOverlay()      preview changed
     └─ invalidateWorldBBox()    geometry changed
+
+Document pointer event → InputManager → presence-pointer.ts
+  └─ screenToWorldInto() → updateCursor()   (local cursor broadcast — fires
+       over DOM chrome too, a separate path from the canvas chain above)
 ```
 
 ---
@@ -449,7 +454,7 @@ World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transfo
 
 Zustand store: `scale`, `pan`, `cssWidth`, `cssHeight`, `dpr`, `roomCameras`, `currentRoomId`. Per-room camera persistence via `setRoom(roomId)` — saves outgoing, restores incoming (localStorage, 1Hz debounce — no `persist` middleware).
 
-**Module-level functions:** `worldToCanvas`, `canvasToWorld`, `screenToWorld`, `screenToCanvas`, `worldToClient`, `getVisibleWorldBounds` (object form), `getVisibleBoundsTuple` (scratch readonly tuple — hot path), `setCanvasElement`, `getCanvasElement`, `capturePointer`, `releasePointer`, `isMobile`, `subscribeCamera`, `getViewTransform`, `createViewTransform`.
+**Module-level functions:** `worldToCanvas`, `canvasToWorld`, `screenToWorld`, `screenToWorldInto` (zero-alloc, writes into `out` — hot path), `screenToCanvas`, `worldToClient`, `getVisibleWorldBounds` (object form), `getVisibleBoundsTuple` (scratch readonly tuple — hot path), `setCanvasElement`, `getCanvasElement`, `capturePointer`, `releasePointer`, `isMobile`, `subscribeCamera`, `getViewTransform`, `createViewTransform`.
 
 Imperative: `useCameraStore.getState()`. Reactive: `useCameraStore(selector)`. Constants: `MIN_ZOOM`, `MAX_ZOOM`.
 

@@ -19,7 +19,7 @@ import { contextMenuController } from './ContextMenuController';
 import { setLastCursorWorld } from './cursor-tracking';
 import { InputManager } from './InputManager';
 import { isSpacebarPanMode } from './keyboard-manager';
-import { clearCursor, updateCursor } from './presence/presence';
+import { syncPresenceCursorOnCameraMove } from './presence/presence-pointer';
 import { SurfaceManager } from './SurfaceManager';
 import { canStartMMBPan, getCurrentTool, panTool } from './tool-registry';
 import { isEdgeScrolling, stopEdgeScroll, updateEdgeScroll } from './viewport/edge-scroll';
@@ -65,6 +65,8 @@ export class CanvasRuntime {
     this.cameraUnsub = subscribeCamera(() => {
       if (!isEdgeScrolling()) getCurrentTool()?.onViewChange();
       contextMenuController.onCameraMove();
+      // Unguarded — must run during edge-scroll (camera pans while pointer is still).
+      syncPresenceCursorOnCameraMove();
     });
 
     // 5. First-frame bootstrap
@@ -130,10 +132,7 @@ export class CanvasRuntime {
 
   handlePointerMove(e: PointerEvent): void {
     const world = screenToWorld(e.clientX, e.clientY);
-    if (world) {
-      setLastCursorWorld(world);
-      updateCursor(world[0], world[1]);
-    }
+    if (world) setLastCursorWorld(world);
 
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
       if (world) panTool.move(world[0], world[1]);
@@ -184,7 +183,6 @@ export class CanvasRuntime {
   }
 
   handlePointerLeave(_e: PointerEvent): void {
-    clearCursor();
     getCurrentTool()?.onPointerLeave();
   }
 

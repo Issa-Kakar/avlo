@@ -41,8 +41,10 @@ let dirty = false;
 let timer: number | null = null;
 let connected = false;
 let identitySent = false;
-let localCursor: [number, number] | undefined;
-let lastSentCursor: [number, number] | undefined;
+const localCursor: [number, number] = [0, 0];
+let hasLocalCursor = false;
+const lastSentCursor: [number, number] = [0, 0];
+let hasLastSentCursor = false;
 
 const THROTTLE_MS = 50;
 const BACKPRESSURE_HIGH = 128 * 1024;
@@ -72,8 +74,13 @@ export function attach(provider: YProvider, onStatusChange?: (connected: boolean
       (clientId) => awareness.getStates().get(clientId) as Record<string, unknown> | undefined,
     );
     // Only invalidate overlay if there are (or were) remote cursors to draw
-    if (peerCursors.size > 0 || hadPeers) {
-      invalidateOverlay();
+    const hasPeers = peerCursors.size > 0;
+    if (hasPeers || hadPeers) invalidateOverlay();
+    // Solo-optimization catch-up: a peer appeared while we were alone, so our
+    // cursor was stored locally but never broadcast. Flush it now.
+    if (hasPeers && !hadPeers && hasLocalCursor) {
+      dirty = true;
+      scheduleSend();
     }
   };
 
@@ -92,8 +99,8 @@ export function attach(provider: YProvider, onStatusChange?: (connected: boolean
       onStatusChange?.(true);
     } else if (event.status === 'disconnected') {
       connected = false;
-      localCursor = undefined;
-      lastSentCursor = undefined;
+      hasLocalCursor = false;
+      hasLastSentCursor = false;
       identitySent = false;
       if (timer !== null) {
         clearTimeout(timer);
@@ -159,8 +166,8 @@ export function detach(): void {
 
   // 4. Reset send state
   identitySent = false;
-  localCursor = undefined;
-  lastSentCursor = undefined;
+  hasLocalCursor = false;
+  hasLastSentCursor = false;
 
   // 5. Reset receive state
   peerCursors.clear();
@@ -180,8 +187,10 @@ export function updateCursor(worldX: number, worldY: number): void {
   const x = Math.round(worldX);
   const y = Math.round(worldY);
 
-  if (localCursor && localCursor[0] === x && localCursor[1] === y) return;
-  localCursor = [x, y];
+  if (hasLocalCursor && localCursor[0] === x && localCursor[1] === y) return;
+  localCursor[0] = x;
+  localCursor[1] = y;
+  hasLocalCursor = true;
 
   if (peerCursors.size === 0) return;
 
@@ -190,8 +199,8 @@ export function updateCursor(worldX: number, worldY: number): void {
 }
 
 export function clearCursor(): void {
-  if (!localCursor) return;
-  localCursor = undefined;
+  if (!hasLocalCursor) return;
+  hasLocalCursor = false;
   dirty = true;
   scheduleSend();
 }
@@ -201,13 +210,24 @@ function scheduleSend(): void {
   timer = window.setTimeout(flush, THROTTLE_MS);
 }
 
+/** Snapshot `localCursor` → `lastSentCursor` in place after a wire send (or clear). */
+function markCursorSent(): void {
+  if (hasLocalCursor) {
+    lastSentCursor[0] = localCursor[0];
+    lastSentCursor[1] = localCursor[1];
+    hasLastSentCursor = true;
+  } else {
+    hasLastSentCursor = false;
+  }
+}
+
 function flush(): void {
   timer = null;
   if (!connected || !dirty || !currentAwareness) return;
 
   const cursorSame =
-    (!localCursor && !lastSentCursor) ||
-    (localCursor && lastSentCursor && localCursor[0] === lastSentCursor[0] && localCursor[1] === lastSentCursor[1]);
+    (!hasLocalCursor && !hasLastSentCursor) ||
+    (hasLocalCursor && hasLastSentCursor && localCursor[0] === lastSentCursor[0] && localCursor[1] === lastSentCursor[1]);
 
   if (cursorSame && identitySent) {
     dirty = false;
@@ -220,10 +240,10 @@ function flush(): void {
     return;
   }
 
-  const cursor = isMobile() ? undefined : localCursor ? { x: localCursor[0], y: localCursor[1] } : undefined;
+  const cursor = isMobile() ? undefined : hasLocalCursor ? { x: localCursor[0], y: localCursor[1] } : undefined;
 
   currentAwareness.setLocalStateField('cursor', cursor);
-  lastSentCursor = localCursor ? [localCursor[0], localCursor[1]] : undefined;
+  markCursorSent();
   dirty = false;
 }
 
@@ -248,10 +268,10 @@ function sendFullState(): void {
     userId: identity.userId,
     name: identity.name,
     color: identity.color,
-    cursor: localCursor ? { x: localCursor[0], y: localCursor[1] } : undefined,
+    cursor: hasLocalCursor ? { x: localCursor[0], y: localCursor[1] } : undefined,
   });
   identitySent = true;
-  lastSentCursor = localCursor ? [localCursor[0], localCursor[1]] : undefined;
+  markCursorSent();
   dirty = false;
 }
 

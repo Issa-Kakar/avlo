@@ -4,7 +4,8 @@
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `runtime/presence/presence.ts` | ~357 | All awareness logic: lifecycle, send (throttle + backpressure), receive (mutable Map), store sync |
+| `runtime/presence/presence.ts` | ~370 | All awareness logic: lifecycle, send (throttle + backpressure), receive (mutable Map), store sync |
+| `runtime/presence/presence-pointer.ts` | ~75 | Pure dispatch for the `document`-level local-cursor input path (move/out/blur/camera-sync). No listeners of its own — InputManager + CanvasRuntime own those |
 | `stores/presence-store.ts` | ~41 | Zustand store: `peerIdentities`, `peerCount` (identity-only, self-filtered) |
 | `renderer/animation/CursorAnimationJob.ts` | ~100 | AnimationJob: exponential smoothing + viewport cull + `drawImage` |
 | `renderer/animation/cursor-bitmap.ts` | ~135 | `OffscreenCanvas` → `ImageBitmap` per `color:name` key |
@@ -73,27 +74,48 @@ Mutated in-place by two paths:
 
 ## Send Path
 
+The local cursor is driven from a **`document`-level** pointer path, not the
+base-canvas pointer events. The canvas is conceptually a full-viewport surface
+underneath all DOM chrome, so the world position under the pointer is always
+well-defined — even when the toolbar / menus / editor overlays sit on top.
+`presence-pointer.ts` is pure dispatch (no listeners of its own): InputManager
+owns the `document` listeners, CanvasRuntime owns the camera trigger.
+
 ```
-CanvasRuntime.handlePointerMove(e)
-  → screenToWorld(e.clientX, e.clientY)
+InputManager (document 'pointermove')
+  → handlePresencePointerMove(e)
+  → screenToWorldInto(e.clientX, e.clientY, scratch)   // zero-alloc
   → updateCursor(worldX, worldY)
 
-CanvasRuntime.handlePointerLeave(_e)
-  → clearCursor()
+InputManager (document 'pointerout', relatedTarget === null → left the window)
+  → handlePresencePointerOut(e) → clearCursor()
+
+InputManager (window 'blur')
+  → handlePresenceBlur() → clearCursor()
+
+CanvasRuntime camera subscription (wheel-zoom / keyboard-pan / edge-scroll)
+  → syncPresenceCursorOnCameraMove()
+  → replays the last screen position through the new camera → updateCursor(...)
 ```
+
+`presence-pointer.ts` holds the only `updateCursor` / `clearCursor` call sites.
+The base-canvas `handlePointerMove` still runs `setLastCursorWorld` for
+paste-at-cursor placement (deliberately canvas-scoped) but no longer touches
+presence; `handlePointerLeave` no longer clears the cursor — moving onto DOM
+chrome must not vanish it, so clears come only from genuine window exit / blur.
 
 ### updateCursor(worldX, worldY)
 
 1. **Null guard:** Returns if `currentAwareness` is null (tab restore safety)
 2. **Quantize:** `Math.round(worldX)`, `Math.round(worldY)` → integer world units
-3. **Equality check:** Skip if same as `localCursor` tuple
-4. **Alone optimization:** If `peerCursors.size === 0`, stores locally but doesn't schedule send. No Zustand `getState()` — direct module-local map size check.
+3. **Equality check:** Skip if unchanged vs the `localCursor` scratch tuple (`hasLocalCursor` gates the first write). `localCursor` / `lastSentCursor` are stable module tuples mutated in place + boolean flags — zero allocation per move.
+4. **Alone optimization:** If `peerCursors.size === 0`, stores locally but doesn't schedule send. No Zustand `getState()` — direct module-local map size check. When a peer later joins, `updateHandler` flushes the parked cursor (see Receive Path → Solo→Join Catch-Up).
 5. **Dirty + schedule:** Sets `dirty = true`, calls `scheduleSend()`
 
 ### clearCursor()
 
-1. Returns early if `localCursor` already undefined
-2. Sets `localCursor = undefined`, `dirty = true`
+1. Returns early if `hasLocalCursor` is already false
+2. Sets `hasLocalCursor = false`, `dirty = true`
 3. Calls `scheduleSend()`
 
 ### scheduleSend() → flush()
@@ -148,10 +170,22 @@ Builds `Map<userId, PeerIdentity>` from all `peerCursors` values, calls `usePres
 ```typescript
 const hadPeers = peerCursors.size > 0;
 processBatch(...);
-if (peerCursors.size > 0 || hadPeers) invalidateOverlay();
+const hasPeers = peerCursors.size > 0;
+if (hasPeers || hadPeers) invalidateOverlay();
 ```
 
 The `hadPeers` check ensures one final frame when the last peer disconnects — clears their cursor visual. `invalidateOverlay()` is idempotent within a RAF frame.
+
+### Solo→Join Catch-Up
+
+```typescript
+if (hasPeers && !hadPeers && hasLocalCursor) {
+  dirty = true;
+  scheduleSend();
+}
+```
+
+The alone-optimization (`updateCursor` step 4) stores the cursor locally but never broadcasts while `peerCursors` is empty. When the first peer appears, the parked cursor would otherwise stay invisible until the next pointer move — this flushes it immediately. `scheduleSend()` no-ops if disconnected/pending; `flush()` de-dups against `lastSentCursor` — safe and idempotent.
 
 ---
 
@@ -233,7 +267,7 @@ statusHandler({status: 'connected'})
 ```
 statusHandler({status: 'disconnected'})
   → connected = false
-  → Clear: localCursor, lastSentCursor, identitySent, timer, dirty
+  → Clear: hasLocalCursor, hasLastSentCursor, identitySent, timer, dirty
   → peerCursors.clear()
   → rebuildStore()                    // Empty store
   → awareness.setLocalState(null)     // Signal departure
