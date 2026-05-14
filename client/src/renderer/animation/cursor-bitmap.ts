@@ -10,19 +10,47 @@
 
 const cache = new Map<string, ImageBitmap>();
 
-// Cursor dimensions (CSS pixels, rendered at 2× for retina)
+// Rendered on OffscreenCanvas at 2× for retina.
 const SCALE = 2;
-const POINTER_H = 18;
+
+/**
+ * Pointer outline — the IconSelect arrow (see `components/icons/index.tsx`),
+ * a filled SVG path in a 24-unit viewBox, reused here verbatim so the peer
+ * cursor matches the toolbar's select icon exactly. Reverse-engineered
+ * geometry — four vertices, symmetric about the 45° diagonal:
+ *   tip    (3.69, 3.69)    hotspot, on the diagonal
+ *   notch  (15.72, 15.72)  concave, on the diagonal, recessed ~2.7u toward the tip
+ *   wings  (23.82, 11.45) + its mirror (11.45, 23.82), ±8.7u off the axis
+ * Every corner is cubic-rounded; the tip carries the largest round.
+ */
+const SELECT_CURSOR_PATH = new Path2D(
+  'm15.533 16.072-2.764 5.243c-.514.974-1.933.895-2.33-.129L5.068 7.264c-.529-1.372.824-2.726 2.196-2.196l13.923 5.372c1.025.396 1.103 1.815.13 2.329l-5.245 2.765c-.23.12-.417.308-.538.538Z',
+);
+const TIP_VB = 3.689; // tip vertex, viewBox units (x === y — it sits on the diagonal)
+const SPAN_VB = 20.13; // tip vertex → far vertex extent, viewBox units
+
+/** viewBox units → CSS px. Lifts the cursor to ~23px — a touch larger, and far wider than before. */
+const POINTER_SCALE = 1.15;
+
+// Tip vertex (the hotspot) in the bitmap — also the drawImage offset.
+const TIP_X = 3;
+const TIP_Y = 3;
+
+/** Pointer's far extent in the bitmap (vertex hull — the rounded path sits inside it). */
+const POINTER_MAX = TIP_X + SPAN_VB * POINTER_SCALE;
+
+// Label — rounded rect placed down the pointer's 45° axis from the tip, so
+// its convex top-left corner faces the concave notch across a small gap.
 const LABEL_FONT_SIZE = 12;
-const LABEL_PAD_H = 8;
-const LABEL_PAD_V = 3;
-const LABEL_GAP_X = 6;
-const LABEL_GAP_Y = 16;
+const LABEL_PAD_H = 10;
+const LABEL_PAD_V = 5;
+const LABEL_RADIUS = 7;
+const LABEL_GAP_X = 16; // tip → label corner. X === Y keeps the label corner
+const LABEL_GAP_Y = 16; // on the pointer's 45° axis, square-on to the notch.
 const LABEL_FONT = `500 ${LABEL_FONT_SIZE}px "Inter", system-ui, sans-serif`;
 
-// Pointer tip offset — slight left bias so hotspot aligns naturally
-const TIP_X = 1;
-const TIP_Y = 1;
+// Room for the 1px outline bleed on the far / bottom edges of the bitmap.
+const EDGE_PAD = 2;
 
 /** Luminance-based text color (WCAG relative luminance). */
 function textColorFor(bg: string): string {
@@ -46,47 +74,42 @@ function renderBitmap(color: string, name: string): ImageBitmap {
   const textW = measureLabel(name);
   const labelW = textW + LABEL_PAD_H * 2;
   const labelH = LABEL_FONT_SIZE + LABEL_PAD_V * 2;
+  const labelX = TIP_X + LABEL_GAP_X;
+  const labelY = TIP_Y + LABEL_GAP_Y;
 
-  const totalW = Math.ceil(Math.max(TIP_X + POINTER_H, TIP_X + LABEL_GAP_X + labelW) + 2);
-  const totalH = Math.ceil(TIP_Y + POINTER_H + LABEL_GAP_Y + labelH + 2);
+  const totalW = Math.ceil(Math.max(POINTER_MAX, labelX + labelW) + EDGE_PAD);
+  const totalH = Math.ceil(Math.max(POINTER_MAX, labelY + labelH) + EDGE_PAD);
 
   const oc = new OffscreenCanvas(totalW * SCALE, totalH * SCALE);
   const ctx = oc.getContext('2d')!;
   ctx.scale(SCALE, SCALE);
 
-  // --- Pointer (Figma-style) ---
+  // --- Label (drawn first — the pointer sits on top) ---
   ctx.beginPath();
-  ctx.moveTo(TIP_X, TIP_Y);
-  ctx.lineTo(TIP_X, TIP_Y + POINTER_H);
-  ctx.lineTo(TIP_X + 4.5, TIP_Y + POINTER_H - 3.5);
-  ctx.lineTo(TIP_X + 11, TIP_Y + POINTER_H - 7);
-  ctx.closePath();
-
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-  ctx.lineWidth = 1;
-  ctx.lineJoin = 'round';
-  ctx.stroke();
-
-  // --- Label pill ---
-  const lx = TIP_X + LABEL_GAP_X;
-  const ly = TIP_Y + LABEL_GAP_Y;
-  const radius = labelH / 2;
-
-  ctx.beginPath();
-  ctx.roundRect(lx, ly, labelW, labelH, radius);
+  ctx.roundRect(labelX, labelY, labelW, labelH, LABEL_RADIUS);
   ctx.fillStyle = color;
   ctx.fill();
   ctx.strokeStyle = 'rgba(0,0,0,0.15)';
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Label text
   ctx.fillStyle = textColorFor(color);
   ctx.font = LABEL_FONT;
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(name, lx + LABEL_PAD_H, ly + labelH / 2);
+  ctx.fillText(name, labelX + LABEL_PAD_H, labelY + labelH / 2);
+
+  // --- Pointer: the IconSelect arrow, scaled, tip vertex pinned to (TIP_X, TIP_Y) ---
+  ctx.save();
+  ctx.translate(TIP_X - TIP_VB * POINTER_SCALE, TIP_Y - TIP_VB * POINTER_SCALE);
+  ctx.scale(POINTER_SCALE, POINTER_SCALE);
+  ctx.fillStyle = color;
+  ctx.fill(SELECT_CURSOR_PATH);
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = 1 / POINTER_SCALE; // → 1 CSS px after the scale
+  ctx.lineJoin = 'round';
+  ctx.stroke(SELECT_CURSOR_PATH);
+  ctx.restore();
 
   return oc.transferToImageBitmap();
 }
@@ -109,7 +132,7 @@ export function clearBitmapCache(): void {
   cache.clear();
 }
 
-/** Bitmap offset: pointer tip is at (TIP_X, TIP_Y) of the bitmap. */
+/** Bitmap offset: pointer tip vertex is at (TIP_X, TIP_Y) of the bitmap. */
 export const CURSOR_BITMAP_OFFSET_X = TIP_X;
 export const CURSOR_BITMAP_OFFSET_Y = TIP_Y;
 export const CURSOR_BITMAP_SCALE = SCALE;

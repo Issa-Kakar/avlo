@@ -7,7 +7,7 @@
 | `runtime/presence/presence.ts` | ~357 | All awareness logic: lifecycle, send (throttle + backpressure), receive (mutable Map), store sync |
 | `stores/presence-store.ts` | ~41 | Zustand store: `peerIdentities`, `peerCount` (identity-only, self-filtered) |
 | `renderer/animation/CursorAnimationJob.ts` | ~100 | AnimationJob: exponential smoothing + viewport cull + `drawImage` |
-| `renderer/animation/cursor-bitmap.ts` | ~115 | `OffscreenCanvas` → `ImageBitmap` per `color:name` key |
+| `renderer/animation/cursor-bitmap.ts` | ~135 | `OffscreenCanvas` → `ImageBitmap` per `color:name` key |
 
 ---
 
@@ -193,8 +193,8 @@ When all peers settle, `frame()` returns `false` → AnimationController stops r
 ### Cursor Bitmap
 
 - Rendered on `OffscreenCanvas` at 2x scale for retina
-- **Pointer shape:** Figma-style tail-less cursor, ~18px tall, filled with user color, dark outline. Tip offset at (1, 1).
-- **Label pill:** `roundRect` with user color fill, luminance-based text color (WCAG), Inter 12px 500 weight. 6px horizontal gap, 16px vertical gap from pointer tip.
+- **Pointer shape:** the `IconSelect` arrow (`components/icons/index.tsx`) — a filled SVG path in a 24-unit viewBox, reused verbatim as a module-level `Path2D` (`SELECT_CURSOR_PATH`) so the peer cursor matches the toolbar icon exactly. Four cubic-rounded vertices, symmetric about the 45° diagonal: tip (hotspot, on the diagonal), concave notch (on the diagonal, recessed), and a mirror-pair of wings. Drawn scaled by `POINTER_SCALE` (≈23px), filled with user color + 1px dark outline. Tip vertex (the hotspot / `drawImage` offset) pinned to bitmap (3, 3); `TIP_VB`/`SPAN_VB` are the viewBox tip/extent used for the transform + sizing.
+- **Label:** `roundRect` (`LABEL_RADIUS` = 7) with user color fill, luminance-based text color (WCAG), Inter 12px 500 weight. `LABEL_PAD_H`/`LABEL_PAD_V` = 10/5; `LABEL_GAP_X` === `LABEL_GAP_Y` = 16 places the label's top-left corner down the pointer's 45° axis so its convex corner faces the concave notch across a small gap. Drawn before the pointer so the pointer sits on top.
 - **Cache key:** `${color}:${name}`. On miss: renders synchronously (cheap single offscreen canvas draw).
 - **Fonts:** Always loaded before canvas exists (`main.tsx` awaits `ensureFontsLoaded()`).
 - `clearBitmapCache()` called on room disconnect via `detach()`.
