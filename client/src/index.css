@@ -1,5 +1,15 @@
 @import "tailwindcss";
 
+/* The one sanctioned global UI token. Extend THIS @theme block for genuinely
+   shared design values — never hand-roll a :root block in a component CSS file.
+   Tailwind v4 emits both a `--font-ui` custom property (use as var(--font-ui))
+   and a `font-ui` utility class. Figtree (the canon UI font) is already loaded
+   by index.html via Google Fonts — a stopgap until a self-hosted woff2 subset
+   replaces it, matching the four self-hosted content fonts below. */
+@theme {
+  --font-ui: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
 html {
   overflow: hidden;
 }

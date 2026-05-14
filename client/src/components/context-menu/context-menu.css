@@ -9,13 +9,13 @@
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   box-shadow:
     0 2px 12px rgba(0, 0, 0, 0.08),
     0 1px 3px rgba(0, 0, 0, 0.06);
   gap: 2px;
   user-select: none;
-  font-family: var(--font-stack);
+  font-family: var(--font-ui);
 }
 
 /* ===== Base Button ===== */
@@ -29,12 +29,12 @@
   padding: 0 6px;
   background: transparent;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   color: #374151;
   cursor: pointer;
-  font-family: var(--font-stack);
-  font-size: var(--text-sm);
-  transition: background var(--transition-fast);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  transition: background 150ms ease;
   outline: none;
 }
 
@@ -144,8 +144,8 @@
   background: transparent;
   border: none;
   color: #374151;
-  font-family: var(--font-stack);
-  font-size: var(--text-sm);
+  font-family: var(--font-ui);
+  font-size: 13px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
@@ -184,7 +184,7 @@
   padding: 0;
   outline: none;
   border-radius: 3px;
-  transition: background var(--transition-fast);
+  transition: background 150ms ease;
 }
 
 .ctx-fontsize-arrow:hover {
@@ -242,7 +242,7 @@
   min-width: 160px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.1),
     0 1px 4px rgba(0, 0, 0, 0.06);
@@ -259,10 +259,10 @@
   padding: 0 8px;
   background: transparent;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   color: #374151;
-  font-family: var(--font-stack);
-  font-size: var(--text-sm);
+  font-family: var(--font-ui);
+  font-size: 13px;
   cursor: pointer;
   outline: none;
 }
@@ -329,11 +329,11 @@
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   cursor: pointer;
   outline: none;
-  font-family: var(--font-stack);
-  transition: background var(--transition-fast);
+  font-family: var(--font-ui);
+  transition: background 150ms ease;
 }
 
 .ctx-size-label-btn:hover {
@@ -361,7 +361,7 @@
   border: 1.5px solid rgba(0, 0, 0, 0.08);
   cursor: pointer;
   padding: 0;
-  transition: transform var(--transition-fast);
+  transition: transform 150ms ease;
 }
 
 .ctx-color-swatch:hover {
@@ -395,7 +395,7 @@
   align-items: center;
   justify-content: center;
   background: #fff;
-  transition: transform var(--transition-fast);
+  transition: transform 150ms ease;
 }
 
 .ctx-color-swatch-nofill:hover {
@@ -417,11 +417,11 @@
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   cursor: pointer;
   outline: none;
-  font-family: var(--font-stack);
-  transition: background var(--transition-fast);
+  font-family: var(--font-ui);
+  transition: background 150ms ease;
 }
 
 .ctx-btn-type:hover {
@@ -562,7 +562,7 @@
   padding: 0;
   position: relative;
   overflow: hidden;
-  transition: transform var(--transition-fast);
+  transition: transform 150ms ease;
 }
 .ctx-highlight-swatch:hover {
   transform: scale(1.15);

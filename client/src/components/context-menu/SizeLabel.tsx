@@ -39,15 +39,7 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
     <div ref={containerRef} style={{ position: 'relative' }}>
       <button className="ctx-size-label-btn" onMouseDown={toggle}>
         <svg width={svgW} height={16} viewBox={`0 0 ${svgW} 16`} fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
-          <text
-            x="0"
-            y="12"
-            fill="#111827"
-            fontSize="14"
-            fontWeight="500"
-            fontFamily="var(--font-stack)"
-            textRendering="geometricPrecision"
-          >
+          <text x="0" y="12" fill="#111827" fontSize="14" fontWeight="500" fontFamily="var(--font-ui)" textRendering="geometricPrecision">
             Size
           </text>
           {label && (
@@ -57,7 +49,7 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
               fill="#111827"
               fontSize="14"
               fontWeight="500"
-              fontFamily="var(--font-stack)"
+              fontFamily="var(--font-ui)"
               textRendering="geometricPrecision"
             >
               {label}

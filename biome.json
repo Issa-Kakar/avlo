@@ -35,6 +35,7 @@
     }
   },
   "css": {
+    "parser": { "tailwindDirectives": true },
     "formatter": {}
   },
   "linter": {

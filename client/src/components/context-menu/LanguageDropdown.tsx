@@ -36,20 +36,12 @@ export function LanguageDropdown() {
             fontSize="10"
             fontWeight="500"
             letterSpacing="0.03em"
-            fontFamily="var(--font-stack)"
+            fontFamily="var(--font-ui)"
             textRendering="geometricPrecision"
           >
             LANGUAGE
           </text>
-          <text
-            x="0"
-            y="24"
-            fill="#1F2937"
-            fontSize="13"
-            fontWeight="600"
-            fontFamily="var(--font-stack)"
-            textRendering="geometricPrecision"
-          >
+          <text x="0" y="24" fill="#1F2937" fontSize="13" fontWeight="600" fontFamily="var(--font-ui)" textRendering="geometricPrecision">
             {LANGUAGE_LABELS[current]}
           </text>
         </svg>

@@ -52,7 +52,7 @@ import.
 |---|---|
 | `index.ts` | Re-exports `{ Toolbar }`. Single export — no barrel sprawl. |
 | `Toolbar.tsx` | Vertical main pill (13 buttons + 2 actions). Dispatches `<PenInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. |
-| `Toolbar.css` | `:root` design tokens + main-pill + actions-pill + tooltip styling. |
+| `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + actions-pill + tooltip styling. |
 | `weights.ts` | `STROKE_WEIGHTS: readonly StrokeWeightOption[]` (4 entries `{ width, Icon }`) + `StrokeWidthPreset = 4 \| 7 \| 10 \| 13` (UI-only union; store field is `number`). |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId \| null`. Pure, table-driven. |
 | `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s the 3 primitive CSS files. |
@@ -386,7 +386,9 @@ and re-drawn hand-crafted weights (the stroke-weight squiggles).
 
 ## Design Tokens
 
-`:root` block in `Toolbar.css` (single source of truth):
+Scoped to the `.toolbar-wrap` rule in `Toolbar.css` (single source of truth —
+inherited by every toolbar descendant, deliberately *not* in the page-global
+`:root`, so they can't bleed into other components):
 
 ```css
 --dock-bg:        #101720
@@ -425,9 +427,12 @@ intentional exceptions (≤24 closures total, all bounded).
 
 ## RoomPage Wiring
 
-`RoomPage.tsx:14` — `import { Toolbar } from './toolbar';`
-`RoomPage.tsx:63` — `<Toolbar />` rendered inside `.canvas-container`
-alongside `<TopBar />`, `<UserAvatarCluster />`, `<ZoomControls />`.
+`RoomPage.tsx` imports `{ Toolbar } from './toolbar'` and renders `<Toolbar />`
+inside its single Tailwind shell `<div>`, alongside `<Canvas />`, `<TopBar />`,
+the `.micro-cluster-right` cluster, and `<ZoomControls />`. The old
+`.app-container > .workspace > .canvas-container` nest is gone — the shell is
+one `position: relative` div; the toolbar itself is `position: fixed`, so it
+never depended on that nest.
 
 `Toolbar.tsx` renders the inspector inside `.toolbar-main` so the
 inspector's `top: 50%; transform: translateY(-50%)` centers against the
@@ -441,10 +446,8 @@ inspector's `top: 50%; transform: translateY(-50%)` centers against the
 Carried over from the old horizontal top dock (`ToolPanel.tsx/css`,
 deleted). Update opportunistically when working in the relevant file:
 
-- `CLAUDE.md:148` (root) — file map still lists `ToolPanel.tsx`. Should point to `components/toolbar/Toolbar.tsx`.
 - `client/src/core/image/CLAUDE.md:184` — references `components/ToolPanel.tsx`.
 - `client/src/components/context-menu/CLAUDE.md:101` — "Top 72px = ToolPanel (48px) + padding". The dock is vertical-left now; the relevant exclusion math is `12px + 48px pill + padding ≈ 64-72px` on the left edge.
-- `client/src/components/RoomPage.tsx:1-4` — JSDoc still says "fixed top toolbar at 48px with Inspector extension."
 
 These do not affect runtime; they just lie to a future reader.
 

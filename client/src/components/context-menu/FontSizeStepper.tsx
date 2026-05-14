@@ -24,7 +24,7 @@ export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize 
               fill="#374151"
               fontSize="15"
               fontWeight="500"
-              fontFamily="var(--font-stack)"
+              fontFamily="var(--font-ui)"
               textRendering="geometricPrecision"
               textAnchor="middle"
             >

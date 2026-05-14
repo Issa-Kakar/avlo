@@ -145,7 +145,7 @@ All paths relative to `client/src/` unless noted.
 
 ### Routes + UI
 `routes/__root.tsx`, `routes/index.tsx`, `routes/room.$roomId.tsx` (calls `connectRoom` in `beforeLoad`).
-`components/Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `TopBar.tsx`, `ToolPanel.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`, `Toast.tsx`, `ErrorBoundary.tsx`, `icons/`, `context-menu/` (own CLAUDE.md).
+`components/Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `TopBar.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`, `icons/`, `toolbar/`, `context-menu/` (own CLAUDE.md).
 Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
 
 ---
