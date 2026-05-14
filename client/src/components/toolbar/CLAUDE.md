@@ -55,13 +55,16 @@ import.
 | `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + actions-pill + tooltip styling. |
 | `weights.ts` | `STROKE_WEIGHTS: readonly StrokeWeightOption[]` (4 entries `{ width, Icon }`) + `StrokeWidthPreset = 4 \| 7 \| 10 \| 13` (UI-only union; store field is `number`). |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId \| null`. Pure, table-driven. |
-| `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s the 3 primitive CSS files. |
+| `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s the 4 `color/*` primitive CSS files. |
 | `inspectors/InspectorButton.tsx/css` | Memoized 30×30 square icon button with `is-active` state. Used by pen/highlighter toggles, weight buttons, connector variants. |
-| `inspectors/PenInspector.tsx` | Pen/highlighter toggle (2), divider, 4 weight buttons (iterates `STROKE_WEIGHTS`), divider, 3-slot color row + picker. Picker state is component-local `useState`. Reads `s.pen` xor `s.highlighter` via a single inline cluster selector. `WEIGHT_HANDLERS` is module-level so button props stay stable. |
-| `inspectors/ConnectorInspector.tsx` | 4 variant buttons (inline SVGs at viewBox center 12,12), divider, single-slot color + picker. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` module-level. `ColorSlots.onSelectSlot` omitted (single-slot inspector falls back to `onTogglePicker`). |
-| `color/ColorSlots.tsx/css` | Memoized column of 1–3 rounded-square slots; `onSelectSlot` optional. Renders picker as a sibling when `isPickerOpen`. |
-| `color/ColorSlot.tsx` | Single slot. `checkmark + offset-ring-in-slot-color when active; data-dark` triggers white inset stroke. `slotStyle(color, isActive)` helper centralizes the lone `React.CSSProperties` cast for the `--slot-tint` custom property. |
-| `color/ColorPicker.tsx/css` | 24-swatch grid (6×4) + custom-hex input (`+` action toggles, validated against `/^#([0-9a-f]{3}\|[0-9a-f]{6})$/i`) + disabled eyedropper button. Outside-click close — clicks inside `.color-slots` parent don't close. |
+| `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
+| `inspectors/ConnectorInspector.tsx` | 4 variant buttons (inline SVGs at viewBox center 12,12), divider, `<ColorField>` + picker. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` module-level. |
+| `inspectors/WeightSelector.tsx` | Memoized **controlled** 4-button stroke-weight row (`value` / `onChange`). Returns a fragment so the buttons stay direct flex children of `.inspector`. Per-preset `useMemo` handler table — built to also drive `connector.width` later. |
+| `color/ColorSlots.tsx/css` | Memoized pen/highlighter **3-slot** column — definitionally 3-slot, iterates `SLOT_INDICES`. Owns a `usePickerDismiss` wrapper containing the slots + picker. `ColorSlots.css` is column-only (`.color-slots`). |
+| `color/ColorField.tsx/css` | Memoized connector single-color field — sibling of `ColorSlots`, also built on `ColorButton`. One trigger button (no checkmark) + picker. Owns a `usePickerDismiss` wrapper. |
+| `color/ColorButton.tsx/css` | The shared swatch-button **primitive** (renamed from `ColorSlot`). `selected?` → checkmark + active ring; `expanded?` → picker-trigger aria — **decoupled**. `colorButtonStyle(color, selected)` centralizes the lone `React.CSSProperties` cast for `--slot-tint`. |
+| `color/ColorPicker.tsx/css` | 24-swatch grid (6×4) + custom-hex input (`+` action toggles, validated against `/^#([0-9a-f]{3}\|[0-9a-f]{6})$/i`) + disabled eyedropper button. **Purely presentational** — outside-click dismissal owned by the wrapper's `usePickerDismiss`. |
+| `color/use-picker-dismiss.ts` | `usePickerDismiss(isOpen, onClose) → ref` — shared outside-click hook. The ref's element must wrap both the trigger button(s) and the picker. |
 | `color/CheckIcon.tsx` | Memoized `<svg>` check; props `color`, `size`, `strokeWidth`. |
 | `color/palette.ts` | `PALETTE` (24 colors), `PALETTE_COLS = 6`, `luminance`, `checkmarkColorFor`, `isDark` (threshold < 0.25), `colorsEqual` (case-insensitive, handles 3/6 hex). |
 
@@ -85,21 +88,21 @@ RoomPage
    └─ .toolbar-wrap                                 fixed left:12px, viewport-centered (top:50%)
       ├─ .toolbar-main (pill, position:relative)
       │   ├─ 13× <ToolButton>                       React.memo; module-level onClicks
-      │   ├─ {isPen && <PenInspector />}            .inspector absolute, centered against main pill
-      │   └─ {isConnector && <ConnectorInspector />}
+      │   ├─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered vs main pill
+      │   └─ {activeTool === 'connector' && <ConnectorInspector />}
       └─ .toolbar-actions (pill)                   Undo, Redo
 ```
 
-`PenInspector` body:
+`PenInspector` body (`tool: StrokeTool` prop):
 ```
 .inspector
 ├─ <InspectorButton> Pen
 ├─ <InspectorButton> Highlighter
 ├─ .inspector-divider
-├─ 4× <InspectorButton> stroke weight (iterates STROKE_WEIGHTS)
+├─ <WeightSelector value onChange>                  4× <InspectorButton>, returns a fragment
 ├─ .inspector-divider
-└─ <ColorSlots colors=tool.slots count=3>
-   ├─ 3× <ColorSlot>                                active = checkmark + tinted offset ring
+└─ <ColorSlots slots=cluster.slots activeSlot>       cluster = s.strokeTools[tool]
+   ├─ 3× <ColorButton>                              selected = checkmark + tinted offset ring
    └─ {isPickerOpen && <ColorPicker />}            isPickerOpen = local useState
 ```
 
@@ -108,8 +111,8 @@ RoomPage
 .inspector
 ├─ 4× <InspectorButton>                            line / arrow / doubleArrow / elbow (inlined SVGs)
 ├─ .inspector-divider
-└─ <ColorSlots colors=[connector.color] count=1>
-   ├─ 1× <ColorSlot>
+└─ <ColorField color=connector.color>
+   ├─ 1× <ColorButton>                              expanded only — no checkmark
    └─ {isPickerOpen && <ColorPicker />}
 ```
 
@@ -130,7 +133,7 @@ RoomPage
 ### Active-slot anatomy
 
 Composite `box-shadow` (read CSS — easier than prose). `--slot-tint` is set
-inline by `ColorSlot.tsx`'s `slotStyle()` as a CSS custom property:
+inline by `ColorButton.tsx`'s `colorButtonStyle()` as a CSS custom property:
 
 - Gap ring: `0 0 0 2px var(--dock-bg)` separates the fill from the next layer.
 - Offset ring: `0 0 0 4px var(--slot-tint)` — same color as the slot.
@@ -179,15 +182,20 @@ data model — the toolbar mostly just visualizes and mutates it.
 type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan'
           | 'select' | 'shape' | 'code' | 'connector' | 'note';
 type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle';
-type ColorSlots = readonly [string, string, string];
-type SlotIndex = 0 | 1 | 2;
+type StrokeTool = 'pen' | 'highlighter';                     // subset of Tool
+type SlotColors = readonly [string, string, string];         // was `ColorSlots`
+type SlotIndex  = 0 | 1 | 2;
+const SLOT_INDICES = [0, 1, 2];                              // readonly SlotIndex[] — iterate this
+const HIGHLIGHTER_OPACITY = 0.45;                            // fixed; pen is always 1
+const isStrokeTool = (t: Tool): t is StrokeTool => …;        // dodges core/accessors' getStrokeTool
+interface StrokeCluster { slots: SlotColors; activeSlot: SlotIndex }   // module-local
+interface StrokeStyle   { color: string; width: number; opacity: number }   // exported
 
 interface DeviceUIState {
   user:        { id: string; name: string; color: string };
   tool:        { active: Tool; cursorOverride: string | null };
   strokeWidth: number;          // top-level — shared by pen + highlighter
-  pen:         { slots: ColorSlots; activeSlot: SlotIndex };
-  highlighter: { slots: ColorSlots; activeSlot: SlotIndex; opacity: number };
+  strokeTools: Record<StrokeTool, StrokeCluster>;   // replaces `pen` + `highlighter`; no stored opacity
   shape:       { variant; color; fillColor; width; align; alignV };
   connector:   { color; width; type; startCap; endCap };
   text:        { color; align; size; fontFamily; highlightColor; fillColor };
@@ -196,14 +204,20 @@ interface DeviceUIState {
 }
 ```
 
+`resolveStrokeStyle(s, tool) → StrokeStyle` is the consumer-facing read —
+it collapses the slot indirection (`c.slots[c.activeSlot]` + `strokeWidth` +
+per-tool opacity) so `DrawingTool` never touches slots. `StrokeCluster` is
+module-local; only `StrokeStyle` is exported.
+
 **No `as` casts at the initial-state site.** Contextual typing through
 `create<DeviceUIStore>()` propagates declared field types into the literal
-(e.g. `'rectangle'` narrows to `ShapeVariant`, `'elbow'` to `ConnectorType`).
-The only surviving toolbar CSS cast lives in `ColorSlot.tsx`'s `slotStyle()`
-for the `--slot-tint` custom property.
+(e.g. `'rectangle'` narrows to `ShapeVariant`, `'elbow'` to `ConnectorType`,
+`StrokeCluster` into the `strokeTools` literal). The only surviving toolbar
+CSS cast lives in `ColorButton.tsx`'s `colorButtonStyle()` for the
+`--slot-tint` custom property.
 
 **Why `strokeWidth` is top-level.** Pen and highlighter genuinely share it
-— width changes apply to both. Putting it under `pen` or `highlighter`
+— width changes apply to both. Putting it inside a `strokeTools` cluster
 would lie about the model and force a mirror.
 
 ### Middleware stack
@@ -213,7 +227,7 @@ create<DeviceUIStore>()(
   subscribeWithSelector(
     persist(
       immer((set, get) => ({ ... })),
-      { name: 'avlo.toolbar.v1', version: 1, partialize, storage: createJSONStorage(localStorage) },
+      { name: 'avlo.toolbar.v2', version: 2, partialize, storage: createJSONStorage(localStorage) },
     ),
   ),
 );
@@ -221,17 +235,17 @@ create<DeviceUIStore>()(
 
 | Layer | Why |
 |---|---|
-| `immer` (innermost) | Setters mutate the draft directly: `state.pen.slots[state.pen.activeSlot] = color`. `Draft<ColorSlots>` strips `readonly` so index writes typecheck without `as unknown as [string, string, string]`. Multi-field writes in one recipe = one subscriber notification. |
+| `immer` (innermost) | Setters mutate the draft directly: `state.strokeTools[tool].slots[c.activeSlot] = color`. `Draft<SlotColors>` strips `readonly` so index writes typecheck without `as unknown as [string, string, string]`. Multi-field writes in one recipe = one subscriber notification. |
 | `persist` | Sees plain post-immer state. `partialize` drops `tool.active` and `tool.cursorOverride` — load always resets to `'select'`; override is ephemeral. |
 | `subscribeWithSelector` (outermost) | Enables selector-form `subscribe((s) => s.path, fn)`. Internal cursor subscriptions + overlay-loop + selection-store reaction all rely on this. |
 
 ### Persist key
 
-`name: 'avlo.toolbar.v1'`, `version: 1`. No `migrate`. Earlier `avlo.toolbar.v6`
-payloads are orphaned in localStorage and never read. **Bumping the key is
-the standard cheap "throw old payloads away" — there is no migration
-contract to preserve.** First load after a bump regenerates user identity
-through the init block.
+`name: 'avlo.toolbar.v2'`, `version: 2`. No `migrate`. Earlier `avlo.toolbar.v1`
+payloads (the pre-`strokeTools` `pen`/`highlighter` shape) are orphaned in
+localStorage and never read. **Bumping the key is the standard cheap "throw
+old payloads away" — there is no migration contract to preserve.** First load
+after a bump regenerates user identity through the init block.
 
 ### Subscriptions (live)
 
@@ -248,7 +262,7 @@ through the init block.
 - `setActiveTool(tool)` — `state.tool.active = tool`.
 - `setShapeMode(variant)` — atomic `state.tool.active = 'shape'` + `state.shape.variant = variant`.
 - `setConnectorMode(variant)` — looks up `CONNECTOR_VARIANT_SPECS[variant]`. For `'elbow'` it writes **only** `state.connector.type = 'elbow'` (caps preserved). For straight variants it writes the full `(type, startCap, endCap)` triple. Single subscriber notification per click.
-- `setPenSlotColor` / `setHighlighterSlotColor` — direct draft index write on the active slot.
+- `setStrokeSlotColor(tool, color)` / `setStrokeActiveSlot(tool, slot)` — both `tool`-keyed; `setStrokeSlotColor` is a direct draft index write on that tool's active slot.
 - `setCursorOverride` — idempotent guard then recipe. Cursor application is the subscription's job, not the setter's.
 - Width setters take `number` (not `StrokeWidth` / `ConnectorWidth` unions). The preset unions live UI-side only (`StrokeWidthPreset` in `weights.ts`). Off-preset widths (e.g. from a future drag-resize) persist with no cast.
 
@@ -307,8 +321,13 @@ plain `Object.is` is correct (no `useShallow` needed for cluster reads).
 
 | Kind | Names |
 |---|---|
-| Cluster | `selectUser`, `selectPen`, `selectHighlighter`, `selectShape`, `selectConnector`, `selectText`, `selectNote`, `selectCode` |
+| Cluster | `selectUser`, `selectShape`, `selectConnector`, `selectText`, `selectNote`, `selectCode` |
 | Scalar | `selectActiveTool`, `selectStrokeWidth`, `selectTextColor`, `selectTextAlign`, `selectTextSize`, `selectTextHighlightColor`, `selectTextFontFamily` |
+
+`resolveStrokeStyle(s, tool)` is not a selector (it takes a second arg) but
+lives beside them — it's the stroke-tool read consumers use *instead of* a
+`selectPen` / `selectHighlighter` pair. The pen inspector reads its cluster
+with an inline `(s) => s.strokeTools[tool]` selector.
 
 ### Public constants
 
@@ -317,6 +336,8 @@ plain `Object.is` is correct (no `useShallow` needed for cluster reads).
 | `TEXT_FONT_SIZE_PRESETS` | `[10,12,14,18,24,36,48,64,80,144]` — context menu + store |
 | `TEXT_FONT_FAMILIES` | `['Grandstander','Inter','Lora','JetBrains Mono']` |
 | `HIGHLIGHT_COLORS` | 8-entry list `[null, ...7 yellows/blues/etc.]` for the text highlight picker |
+| `SLOT_INDICES` | `[0,1,2]` typed `readonly SlotIndex[]` — `ColorSlots` iterates it directly (no slice/cast) |
+| `HIGHLIGHTER_OPACITY` | `0.45` — highlighter's fixed draw opacity; `resolveStrokeStyle` returns it for the highlighter tool, `1` for pen |
 
 ---
 
@@ -325,7 +346,7 @@ plain `Object.is` is correct (no `useShallow` needed for cluster reads).
 | Component | Selectors used | Picker state |
 |---|---|---|
 | `Toolbar.tsx` | `s.tool.active`, `s.shape.variant` — 2 scalar selectors | — |
-| `PenInspector.tsx` | `selectActiveTool`, `selectStrokeWidth`, plus an inline cluster selector that returns `s.pen` xor `s.highlighter` based on `activeTool` | `useState` |
+| `PenInspector.tsx` | `selectStrokeWidth` + an inline `(s) => s.strokeTools[tool]` cluster selector (`tool` is a prop, not read from the store) | `useState` |
 | `ConnectorInspector.tsx` | `selectConnector` — single cluster selector; destructures `{ type, startCap, endCap, color }` | `useState` |
 
 The cluster selector in `ConnectorInspector` replaces the four prior
@@ -335,10 +356,11 @@ cluster's subscription; the inspector re-renders, the derivation runs
 booleans. `Toolbar.tsx` doesn't subscribe to the connector cluster, so it
 never re-renders on a connector cap change.
 
-`PenInspector` reads `s.pen` xor `s.highlighter` inline — the cluster ref
-only changes when its own fields change, so switching tools or editing a
-slot updates the right column without forcing the inspector to subscribe
-to both clusters at once.
+`PenInspector` takes its tool as a prop — `Toolbar.tsx`'s `isStrokeTool`
+guard narrows `activeTool` to `StrokeTool` inside the `&&` and passes it,
+no cast. The inspector then reads `s.strokeTools[tool]` inline — the
+cluster ref only changes when that tool's own fields change, so editing a
+slot updates the right column without subscribing to both clusters.
 
 ---
 
@@ -346,7 +368,7 @@ to both clusters at once.
 
 | Consumer | Read pattern | Notes |
 |---|---|---|
-| `DrawingTool.begin()` | `useDeviceUIStore.getState()` once at gesture start; branches on `ui.tool.active`. Pen reads `ui.pen.slots[ui.pen.activeSlot] + ui.strokeWidth + opacity 1 + fillColor:null`. Highlighter reads the highlighter cluster + `ui.strokeWidth`. Shape reads `ui.shape.color/width/fillColor + variant`. | Settings frozen for the duration of the gesture. Hold-snap from a stroke commits the resulting shape **unfilled** (fillColor stays null). |
+| `DrawingTool.begin()` | `useDeviceUIStore.getState()` once at gesture start; branches on `ui.tool.active`. The `isStrokeTool` branch calls `resolveStrokeStyle(ui, activeTool)` → `{ color, width, opacity }` (one branch for pen + highlighter; no slot access, no cast — `activeTool` is narrowed to `StrokeTool`). Shape reads `ui.shape.color/width/fillColor + variant`. | Settings frozen for the duration of the gesture. Hold-snap from a stroke commits the resulting shape **unfilled** (fillColor stays null). |
 | `ConnectorTool.begin()` | `useDeviceUIStore.getState().connector` once; destructures `{ color, width, startCap, endCap, type }` into frozen private fields. | Re-read once mid-move at `probeSnap` for connector type only (acceptable — the user can change it mid-gesture; routing follows). |
 | `connector-preview.ts:drawConnectorPreview` | `useDeviceUIStore.getState().connector` per frame | Live style during preview. The doc-comment notes "device-ui-store is stable within a gesture" — true; the live read is for the few cases where it changes between gestures. |
 | `CodeTool.begin()` | `useDeviceUIStore.getState()` reads `text` and `code` clusters for defaults | |
@@ -365,8 +387,8 @@ Toolbar main pill : IconSelect, IconPan, IconStickyNote, IconText,
                     IconRectangle, IconEllipse, IconDiamond, IconArrow,
                     IconPen, IconCode, IconImage, IconEraser
 Toolbar actions   : IconUndo, IconRedo
-PenInspector      : IconInspectorPen, IconInspectorHighlighter,
-                    IconStrokeWeight1, IconStrokeWeight2, IconStrokeWeight3, IconStrokeWeight4
+PenInspector      : IconInspectorPen, IconInspectorHighlighter
+WeightSelector    : IconStrokeWeight1, IconStrokeWeight2, IconStrokeWeight3, IconStrokeWeight4
 ConnectorInspector: 4 inline SVGs (line / arrow / doubleArrow / elbow),
                     NOT in icons/index.tsx — they live inside ConnectorInspector.tsx
                     as a single memoized component (ConnectorVariantIcon) so
@@ -412,16 +434,19 @@ during refactoring.
 | Component | Memo | Click handlers |
 |---|---|---|
 | `ToolButton` (13 in `Toolbar.tsx`) | `React.memo` | Module-level pre-bound consts (`clickSelect`, `clickPan`, …). |
-| `InspectorButton` | `React.memo` | Sourced from module-level `WEIGHT_HANDLERS` / `VARIANT_HANDLERS` tables. No inline arrows reach the memoized child. |
-| `ColorSlots` | `React.memo` | `ConnectorInspector` wraps its single color in `useMemo<readonly [string]>(() => [color], [color])` so the memo holds across renders that don't change color. Each inspector passes stable `useCallback` handlers. |
-| `ColorSlot` | `React.memo` | Active-vs-inactive `onClick` choice is composed inline inside `ColorSlots` — non-active slots see a fresh closure each render but it's bounded to ≤3 closures per inspector. |
+| `InspectorButton` | `React.memo` | Sourced from `VARIANT_HANDLERS` (module-level) or `WeightSelector`'s `useMemo` handler table. No inline arrows reach the memoized child. |
+| `WeightSelector` | `React.memo` | Controlled. `useMemo` per-preset handler table keyed on the `onChange` prop — callers pass a stable module-level store action (`setStrokeWidth`). |
+| `ColorSlots` | `React.memo` | Iterates `SLOT_INDICES`; `PenInspector` passes stable `useCallback` handlers. Non-active slots compose a fresh `onClick` closure each render — bounded to ≤2 per inspector. |
+| `ColorField` | `React.memo` | Single `ColorButton`; all handlers are stable `useCallback`s from `ConnectorInspector` — no `useMemo`-wrapped array needed (the old `useMemo<readonly [string]>` is gone). |
+| `ColorButton` | `React.memo` | The shared swatch primitive. `selected` / `expanded` are plain booleans. |
 | `ColorPicker`, inner `Swatch` | `React.memo` | Swatch click is an inline arrow; bounded to 24 closures per picker open. |
 | `CheckIcon` | `React.memo` | — |
 
 **Invariant:** every onClick passed to a memoized child should be a
-module-level const, a destructured-store handler, or sourced from a
-module-level lookup table. The slot/swatch inline arrows are the
-intentional exceptions (≤24 closures total, all bounded).
+module-level const, a destructured-store handler, or sourced from a stable
+lookup table (`VARIANT_HANDLERS` module-level; `WeightSelector`'s via
+`useMemo`). The slot/swatch inline arrows are the intentional exceptions
+(≤24 closures total, all bounded).
 
 ---
 
@@ -477,17 +502,19 @@ change breaks one of these, do it deliberately, not accidentally.**
    `Object.is` cluster reads work and lets the connector inspector use
    one selector for four fields.
 3. **Atomic multi-field writes.** `setShapeMode`, `setConnectorMode`,
-   `setPenSlotColor`, etc. write all their fields in one immer recipe →
+   `setStrokeSlotColor`, etc. write all their fields in one immer recipe →
    one subscriber notification. Don't split them into multiple `set()`
    calls.
 4. **Connector variant is derived, not stored.** `deriveConnectorVariant`
    is the only source. Adding a "current variant" field is a regression
    that re-introduces the three-write race `setConnectorMode` eliminates.
-5. **Pen and highlighter slot columns are independent.** Each tool has
-   its own `slots` + `activeSlot`. `DrawingTool.begin()` reads the
-   right one based on `tool.active`. No shared "current color" mirror.
+5. **Pen and highlighter slot columns are independent.** `strokeTools`
+   keys a `StrokeCluster` (`slots` + `activeSlot`) per `StrokeTool`.
+   `resolveStrokeStyle(s, tool)` resolves the right one at gesture begin.
+   No shared "current color" mirror; opacity is the `HIGHLIGHTER_OPACITY`
+   constant, not stored state.
 6. **`strokeWidth` is top-level**, shared by pen + highlighter. Don't
-   move it under either cluster.
+   move it under `strokeTools` or a cluster.
 7. **Picker state is component-local.** Each inspector owns its own
    `useState`. Don't lift it back into the store.
 8. **Image is a one-shot, not a sustained tool.** `'image'` is
@@ -540,7 +567,7 @@ the prompt.**
 - **`ShapeVariant` union** — has `'triangle'` declared but not exposed
   in the toolbar. A "mixed shape menu" button is a likely path forward
   for surfacing roundedRect / triangle / etc. from one slot.
-- **Persist key bump** — flip `'avlo.toolbar.v1'` / `version: 1` if the
+- **Persist key bump** — flip `'avlo.toolbar.v2'` / `version: 2` if the
   state shape changes incompatibly. There's no migrate fn; old payloads
   are discarded.
 - **Eyedropper** — rendered but disabled in `ColorPicker.tsx`. Wire to

@@ -1,70 +1,54 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useState } from 'react';
 import { CheckIcon } from './CheckIcon';
 import { checkmarkColorFor, colorsEqual, isDark, PALETTE, PALETTE_COLS } from './palette';
 
 interface Props {
   /** The currently-selected color (gets the checkmark in the grid). */
   currentColor: string;
-  onPick: (color: string) => void;
-  onClose: () => void;
+  onPickColor: (color: string) => void;
 }
 
 interface SwatchProps {
   color: string;
   isActive: boolean;
-  onPick: (color: string) => void;
+  onPickColor: (color: string) => void;
 }
 
-const Swatch = memo(function Swatch({ color, isActive, onPick }: SwatchProps) {
+const Swatch = memo(function Swatch({ color, isActive, onPickColor }: SwatchProps) {
   return (
     <button
       className={`picker-swatch ${isActive ? 'is-active' : ''}`}
       data-dark={isDark(color) || undefined}
       style={{ backgroundColor: color }}
       aria-label={`Color ${color}`}
-      onClick={() => onPick(color)}
+      onClick={() => onPickColor(color)}
     >
       {isActive && <CheckIcon color={checkmarkColorFor(color)} size={13} />}
     </button>
   );
 });
 
-/** 24-color grid + custom-hex entry. Closes on outside click. */
-export const ColorPicker = memo(function ColorPicker({ currentColor, onPick, onClose }: Props) {
-  const rootRef = useRef<HTMLDivElement>(null);
+/** 24-color grid + custom-hex entry. Purely presentational — the owning ColorSlots /
+ * ColorField wrapper handles outside-click dismissal via usePickerDismiss. */
+export const ColorPicker = memo(function ColorPicker({ currentColor, onPickColor }: Props) {
   const [hexDraft, setHexDraft] = useState('');
   const [showHex, setShowHex] = useState(false);
-
-  useEffect(() => {
-    const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current) return;
-      const target = e.target as Node;
-      // Clicks inside the picker OR inside the slots column shouldn't close
-      // (the slot's own toggle handler manages those).
-      if (rootRef.current.contains(target)) return;
-      const slotsRoot = rootRef.current.closest('.color-slots');
-      if (slotsRoot && slotsRoot.contains(target)) return;
-      onClose();
-    };
-    document.addEventListener('mousedown', onMouseDown);
-    return () => document.removeEventListener('mousedown', onMouseDown);
-  }, [onClose]);
 
   const submitHex = () => {
     const v = hexDraft.trim();
     const normalized = v.startsWith('#') ? v : `#${v}`;
     if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(normalized)) {
-      onPick(normalized);
+      onPickColor(normalized);
       setHexDraft('');
       setShowHex(false);
     }
   };
 
   return (
-    <div ref={rootRef} className="color-picker" role="dialog" aria-label="Pick a color">
+    <div className="color-picker" role="dialog" aria-label="Pick a color">
       <div className="picker-grid" style={{ gridTemplateColumns: `repeat(${PALETTE_COLS}, 1fr)` }}>
         {PALETTE.map((c) => (
-          <Swatch key={c} color={c} isActive={colorsEqual(c, currentColor)} onPick={onPick} />
+          <Swatch key={c} color={c} isActive={colorsEqual(c, currentColor)} onPickColor={onPickColor} />
         ))}
       </div>
 

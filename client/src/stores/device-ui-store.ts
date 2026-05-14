@@ -37,9 +37,30 @@ export const HIGHLIGHT_COLORS: readonly (string | null)[] = [
 
 // Slot-based color storage — pen and highlighter each persist 3 colors
 // and an "active slot" pointer. The active slot's color is read at gesture
-// begin (no shared mirror field).
-export type ColorSlots = readonly [string, string, string];
+// begin (no shared mirror field). Opacity is NOT stored — it's a module
+// constant (HIGHLIGHTER_OPACITY); pen is always 1.
+export type SlotColors = readonly [string, string, string];
 export type SlotIndex = 0 | 1 | 2;
+export const SLOT_INDICES = [0, 1, 2] as const satisfies readonly SlotIndex[];
+
+export type StrokeTool = 'pen' | 'highlighter';
+export const isStrokeTool = (t: Tool): t is StrokeTool => t === 'pen' || t === 'highlighter';
+
+// Highlighter draws at a fixed opacity, not user-tunable, so it's a constant
+// not stored state; pen is always 1.
+export const HIGHLIGHTER_OPACITY = 0.45;
+
+// Per-tool slot cluster — module-local; consumers go through resolveStrokeStyle.
+interface StrokeCluster {
+  slots: SlotColors;
+  activeSlot: SlotIndex;
+}
+/** The resolved draw style a DrawingTool gesture freezes at begin(). */
+export interface StrokeStyle {
+  color: string;
+  width: number;
+  opacity: number;
+}
 
 // === State Interface ===
 
@@ -50,8 +71,7 @@ export interface DeviceUIState {
   // Shared by pen + highlighter. Honest top-level scalar — not "owned" by either tool.
   strokeWidth: number;
 
-  pen: { slots: ColorSlots; activeSlot: SlotIndex };
-  highlighter: { slots: ColorSlots; activeSlot: SlotIndex; opacity: number };
+  strokeTools: Record<StrokeTool, StrokeCluster>;
   shape: { variant: ShapeVariant; color: string; fillColor: string; width: number; align: TextAlign; alignV: TextAlignV };
   connector: { color: string; width: number; type: ConnectorType; startCap: ConnectorCap; endCap: ConnectorCap };
   text: { color: string; align: TextAlign; size: number; fontFamily: FontFamily; highlightColor: string | null; fillColor: string | null };
@@ -67,11 +87,8 @@ export interface DeviceUIActions {
 
   setStrokeWidth(width: number): void;
 
-  setPenActiveSlot(slot: SlotIndex): void;
-  setPenSlotColor(color: string): void;
-  setHighlighterActiveSlot(slot: SlotIndex): void;
-  setHighlighterSlotColor(color: string): void;
-  setHighlighterOpacity(opacity: number): void;
+  setStrokeActiveSlot(tool: StrokeTool, slot: SlotIndex): void;
+  setStrokeSlotColor(tool: StrokeTool, color: string): void;
 
   setShapeMode(variant: ShapeVariant): void;
   setShapeVariant(variant: ShapeVariant): void;
@@ -114,11 +131,9 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
 
         strokeWidth: 4,
 
-        pen: { slots: ['#131619', '#2196F3', '#F44336'], activeSlot: 0 },
-        highlighter: {
-          slots: ['#FFC73B', '#FF8FB1', '#B5D9F2'],
-          activeSlot: 0,
-          opacity: 0.45,
+        strokeTools: {
+          pen: { slots: ['#131619', '#2196F3', '#F44336'], activeSlot: 0 },
+          highlighter: { slots: ['#FFC73B', '#FF8FB1', '#B5D9F2'], activeSlot: 0 },
         },
 
         shape: {
@@ -173,25 +188,14 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
             state.strokeWidth = width;
           }),
 
-        setPenActiveSlot: (slot) =>
+        setStrokeActiveSlot: (tool, slot) =>
           set((state) => {
-            state.pen.activeSlot = slot;
+            state.strokeTools[tool].activeSlot = slot;
           }),
-        setPenSlotColor: (color) =>
+        setStrokeSlotColor: (tool, color) =>
           set((state) => {
-            state.pen.slots[state.pen.activeSlot] = color;
-          }),
-        setHighlighterActiveSlot: (slot) =>
-          set((state) => {
-            state.highlighter.activeSlot = slot;
-          }),
-        setHighlighterSlotColor: (color) =>
-          set((state) => {
-            state.highlighter.slots[state.highlighter.activeSlot] = color;
-          }),
-        setHighlighterOpacity: (opacity) =>
-          set((state) => {
-            state.highlighter.opacity = opacity;
+            const c = state.strokeTools[tool];
+            c.slots[c.activeSlot] = color;
           }),
 
         setShapeMode: (variant) =>
@@ -304,14 +308,13 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           }),
       })),
       {
-        name: 'avlo.toolbar.v1',
-        version: 1,
+        name: 'avlo.toolbar.v2',
+        version: 2,
         storage: createJSONStorage(() => localStorage),
         partialize: (s) => ({
           user: s.user,
           strokeWidth: s.strokeWidth,
-          pen: s.pen,
-          highlighter: s.highlighter,
+          strokeTools: s.strokeTools,
           shape: s.shape,
           connector: s.connector,
           text: s.text,
@@ -329,11 +332,8 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
 // Import these directly in JSX so memoized children retain prop equality.
 export const {
   setActiveTool,
-  setPenActiveSlot,
-  setPenSlotColor,
-  setHighlighterActiveSlot,
-  setHighlighterSlotColor,
-  setHighlighterOpacity,
+  setStrokeActiveSlot,
+  setStrokeSlotColor,
   setStrokeWidth,
   setShapeMode,
   setShapeVariant,
@@ -441,10 +441,19 @@ export const selectTextSize = (s: DeviceUIState) => s.text.size;
 export const selectTextHighlightColor = (s: DeviceUIState) => s.text.highlightColor;
 export const selectTextFontFamily = (s: DeviceUIState) => s.text.fontFamily;
 
+/** Resolve a stroke tool's draw style — the color/width/opacity a DrawingTool gesture
+ * freezes at begin(). Collapses the slot indirection so consumers never touch slots. */
+export function resolveStrokeStyle(s: DeviceUIState, tool: StrokeTool): StrokeStyle {
+  const c = s.strokeTools[tool];
+  return {
+    color: c.slots[c.activeSlot],
+    width: s.strokeWidth,
+    opacity: tool === 'highlighter' ? HIGHLIGHTER_OPACITY : 1,
+  };
+}
+
 // Cluster selectors — return existing object references; consumers can use these
 // directly because unrelated updates don't change the cluster's identity.
-export const selectPen = (s: DeviceUIState) => s.pen;
-export const selectHighlighter = (s: DeviceUIState) => s.highlighter;
 export const selectShape = (s: DeviceUIState) => s.shape;
 export const selectConnector = (s: DeviceUIState) => s.connector;
 export const selectText = (s: DeviceUIState) => s.text;

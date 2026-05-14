@@ -1,6 +1,6 @@
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { selectConnector, setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
-import { ColorSlots } from '../color/ColorSlots';
+import { ColorField } from '../color/ColorField';
 import { CONNECTOR_VARIANT_IDS, CONNECTOR_VARIANT_SPECS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
 import { InspectorButton } from './InspectorButton';
 import './Inspector.css';
@@ -18,9 +18,6 @@ export function ConnectorInspector() {
   // One cluster selector covers all four fields we read.
   const { type, startCap, endCap, color } = useDeviceUIStore(selectConnector);
   const activeVariant = deriveConnectorVariant(type, startCap, endCap);
-
-  // Stable single-element tuple so ColorSlots's React.memo holds across renders.
-  const colors = useMemo<readonly [string]>(() => [color], [color]);
 
   const handlePick = useCallback((c: string) => {
     setConnectorColor(c);
@@ -44,9 +41,8 @@ export function ConnectorInspector() {
 
       <div className="inspector-divider" />
 
-      <ColorSlots
-        colors={colors}
-        activeIndex={0}
+      <ColorField
+        color={color}
         isPickerOpen={isPickerOpen}
         onTogglePicker={handleToggle}
         onPickColor={handlePick}

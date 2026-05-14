@@ -17,7 +17,7 @@ import {
 } from '@/components/icons';
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { getActiveRoomDoc, hasActiveRoom } from '@/runtime/room-runtime';
-import { setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
+import { isStrokeTool, setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
 import { ConnectorInspector } from './inspectors/ConnectorInspector';
 import { PenInspector } from './inspectors/PenInspector';
 import './Toolbar.css';
@@ -60,8 +60,6 @@ const clickRedo = () => {
 export function Toolbar() {
   const activeTool = useDeviceUIStore((s) => s.tool.active);
   const shapeVariant = useDeviceUIStore((s) => s.shape.variant);
-  const isPen = activeTool === 'pen' || activeTool === 'highlighter';
-  const isConnector = activeTool === 'connector';
 
   return (
     <div className="toolbar-wrap">
@@ -90,10 +88,10 @@ export function Toolbar() {
         <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'diamond'} tooltip="Diamond (D)" onClick={clickDiamond}>
           <IconDiamond className="icon" />
         </ToolButton>
-        <ToolButton isActive={isConnector} tooltip="Connector (A)" onClick={clickConnector}>
+        <ToolButton isActive={activeTool === 'connector'} tooltip="Connector (A)" onClick={clickConnector}>
           <IconArrow className="icon" />
         </ToolButton>
-        <ToolButton isActive={isPen} tooltip="Pen (P)" onClick={clickPen}>
+        <ToolButton isActive={isStrokeTool(activeTool)} tooltip="Pen (P)" onClick={clickPen}>
           <IconPen className="icon" />
         </ToolButton>
         <ToolButton isActive={activeTool === 'code'} tooltip="Code" onClick={clickCode}>
@@ -106,8 +104,8 @@ export function Toolbar() {
           <IconEraser className="icon" />
         </ToolButton>
 
-        {isPen && <PenInspector />}
-        {isConnector && <ConnectorInspector />}
+        {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}
+        {activeTool === 'connector' && <ConnectorInspector />}
       </div>
 
       <div className="toolbar-actions">

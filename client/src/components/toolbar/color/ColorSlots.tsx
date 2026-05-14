@@ -1,54 +1,50 @@
 import { memo } from 'react';
+import { SLOT_INDICES, type SlotColors, type SlotIndex } from '@/stores/device-ui-store';
+import { ColorButton } from './ColorButton';
 import { ColorPicker } from './ColorPicker';
-import { ColorSlot } from './ColorSlot';
+import { usePickerDismiss } from './use-picker-dismiss';
 
 interface Props {
-  /** 1 or 3 colors. Each entry is a hex string. */
-  colors: readonly string[];
-  activeIndex: number;
+  slots: SlotColors;
+  activeSlot: SlotIndex;
   isPickerOpen: boolean;
-
-  /** Called when the user clicks a non-active slot. Receives the new index.
-   * Optional — only meaningful when `colors.length > 1`. */
-  onSelectSlot?: (index: number) => void;
-  /** Called when the user clicks the already-active slot — toggles the picker. */
+  onSelectSlot: (slot: SlotIndex) => void;
   onTogglePicker: () => void;
-  /** Called from the picker grid / custom-color button. */
   onPickColor: (color: string) => void;
-  /** Called when the picker's outside-click handler fires. */
   onClosePicker: () => void;
 }
 
-/** Vertical column of 1-3 rounded color slots + an optional picker
- * that floats out to the right of the column when isPickerOpen is true.
- * Behavior: clicking a non-active slot switches selection; clicking the
+/** The pen/highlighter 3-slot color column — definitionally 3-slot, iterates
+ * SLOT_INDICES directly. Renders the picker as a sibling when isPickerOpen; the
+ * wrapper contains both the slots and the picker so usePickerDismiss's containment
+ * check covers them. Clicking a non-active slot switches selection; clicking the
  * active slot toggles the picker. */
 export const ColorSlots = memo(function ColorSlots({
-  colors,
-  activeIndex,
+  slots,
+  activeSlot,
   isPickerOpen,
   onSelectSlot,
   onTogglePicker,
   onPickColor,
   onClosePicker,
 }: Props) {
-  const activeColor = colors[activeIndex];
+  const rootRef = usePickerDismiss(isPickerOpen, onClosePicker);
   return (
-    <div className="color-slots">
-      {colors.map((c, i) => {
-        const isActive = i === activeIndex;
+    <div className="color-slots" ref={rootRef}>
+      {SLOT_INDICES.map((i) => {
+        const isActive = i === activeSlot;
         return (
-          <ColorSlot
+          <ColorButton
             key={i}
-            color={c}
-            isActive={isActive}
-            isPickerOpen={isPickerOpen}
+            color={slots[i]}
             ariaLabel={`Color slot ${i + 1}`}
-            onClick={isActive ? onTogglePicker : onSelectSlot ? () => onSelectSlot(i) : onTogglePicker}
+            selected={isActive}
+            expanded={isActive ? isPickerOpen : undefined}
+            onClick={isActive ? onTogglePicker : () => onSelectSlot(i)}
           />
         );
       })}
-      {isPickerOpen && <ColorPicker currentColor={activeColor} onPick={onPickColor} onClose={onClosePicker} />}
+      {isPickerOpen && <ColorPicker currentColor={slots[activeSlot]} onPickColor={onPickColor} />}
     </div>
   );
 });

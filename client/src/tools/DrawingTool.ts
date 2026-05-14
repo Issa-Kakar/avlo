@@ -7,7 +7,7 @@ import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, transact } from '@/runtime/room-runtime';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { getUserId, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
+import { getUserId, isStrokeTool, resolveStrokeStyle, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { PointerTool, PreviewData, ShapeType } from './types';
 
 /** Toolbar shape variant → stored shapeType. */
@@ -105,24 +105,14 @@ export class DrawingTool implements PointerTool {
       this.opacity = 1;
       this.fillColor = ui.shape.fillColor;
       this.points = [];
-    } else if (activeTool === 'highlighter') {
+    } else if (isStrokeTool(activeTool)) {
+      const style = resolveStrokeStyle(ui, activeTool);
       this.mode = 'stroke';
-      this.toolType = 'highlighter';
+      this.toolType = activeTool;
       this.shapeType = null;
-      this.color = ui.highlighter.slots[ui.highlighter.activeSlot];
-      this.size = ui.strokeWidth;
-      this.opacity = ui.highlighter.opacity;
-      this.fillColor = null;
-      this.points = [p];
-      const [sx, sy] = worldToCanvas(worldX, worldY);
-      this.hold.start({ x: sx, y: sy });
-    } else {
-      this.mode = 'stroke';
-      this.toolType = 'pen';
-      this.shapeType = null;
-      this.color = ui.pen.slots[ui.pen.activeSlot];
-      this.size = ui.strokeWidth;
-      this.opacity = 1;
+      this.color = style.color;
+      this.size = style.width;
+      this.opacity = style.opacity;
       this.fillColor = null;
       this.points = [p];
       const [sx, sy] = worldToCanvas(worldX, worldY);

@@ -1,5 +1,7 @@
 @import "./InspectorButton.css";
+@import "../color/ColorButton.css";
 @import "../color/ColorSlots.css";
+@import "../color/ColorField.css";
 @import "../color/ColorPicker.css";
 
 .inspector {
