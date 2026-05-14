@@ -12,7 +12,7 @@
   --ring: #1d4ed8;
 
   position: fixed;
-  left: 12px;
+  left: 9px;
   top: 50%;
   transform: translateY(-50%);
   z-index: 380;

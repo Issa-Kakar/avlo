@@ -6,7 +6,7 @@
 
 .inspector {
   position: absolute;
-  left: calc(100% + 10px);
+  left: calc(100% + 7px);
   top: 50%;
   transform: translateY(-50%);
   display: flex;
