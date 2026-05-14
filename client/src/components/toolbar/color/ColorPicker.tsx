@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { CheckIcon } from './CheckIcon';
-import { checkmarkColorFor, colorsEqual, isDark, PALETTE, PALETTE_COLS } from './palette';
+import { checkmarkColorFor, colorsEqual, isNearBlack, PALETTE, PALETTE_COLS } from './palette';
 
 interface Props {
   /** The currently-selected color (gets the checkmark in the grid). */
@@ -17,18 +17,19 @@ interface SwatchProps {
 const Swatch = memo(function Swatch({ color, isActive, onPickColor }: SwatchProps) {
   return (
     <button
-      className={`picker-swatch ${isActive ? 'is-active' : ''}`}
-      data-dark={isDark(color) || undefined}
+      className="picker-swatch"
+      data-near-black={isNearBlack(color) || undefined}
       style={{ backgroundColor: color }}
       aria-label={`Color ${color}`}
       onClick={() => onPickColor(color)}
     >
+      {/* Selected swatch is marked by the checkmark alone — intentionally no outline ring. */}
       {isActive && <CheckIcon color={checkmarkColorFor(color)} size={13} />}
     </button>
   );
 });
 
-/** 24-color grid + custom-hex entry. Purely presentational — the owning ColorSlots /
+/** 23-color grid + custom-hex entry. Purely presentational — the owning ColorSlots /
  * ColorField wrapper handles outside-click dismissal via usePickerDismiss. */
 export const ColorPicker = memo(function ColorPicker({ currentColor, onPickColor }: Props) {
   const [hexDraft, setHexDraft] = useState('');

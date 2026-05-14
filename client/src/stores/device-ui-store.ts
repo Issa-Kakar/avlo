@@ -132,8 +132,8 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
         strokeWidth: 4,
 
         strokeTools: {
-          pen: { slots: ['#131619', '#2196F3', '#F44336'], activeSlot: 0 },
-          highlighter: { slots: ['#FFC73B', '#FF8FB1', '#B5D9F2'], activeSlot: 0 },
+          pen: { slots: ['#131619', '#2196F3', '#E53030'], activeSlot: 0 },
+          highlighter: { slots: ['#FFC73B', '#FFC0CB', '#B5D9F2'], activeSlot: 0 },
         },
 
         shape: {

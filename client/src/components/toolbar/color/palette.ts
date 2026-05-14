@@ -1,34 +1,38 @@
-// 24-color palette laid out as a 6×4 grid in the popover (row-major).
+// Palette for the picker grid (6 cols, row-major). 23 entries, not 24: the last
+// grid cell is intentionally empty. The shape fill picker will prepend a "none"
+// swatch, shifting all 23 up to land on a clean 6×4; pickers without a "none"
+// (pen, connector) show 6+6+6+5 until then.
+// The rightmost column is its own red ramp — a light pink, a clean red, a
+// dark red kept clear of the row-4 darks; its 4th cell is the empty one.
 // Source: Mural's zoom-menu color picker reference (zoommenustroke.png).
 export const PALETTE: readonly string[] = [
-  // Row 1 — grays + coral accent
+  // Row 1 — grays + ramp: light pink
   '#FFFFFF',
   '#E1E4E8',
   '#ABAFB7',
   '#6B7280',
   '#131619',
-  '#FFB0A1',
-  // Row 2 — pastels
+  '#FFC0CB',
+  // Row 2 — pastels + ramp: red
   '#FFD8B1',
   '#FFEFA6',
   '#C8E6BC',
   '#B5D9F2',
   '#C4B7E2',
-  '#FF8FB1',
-  // Row 3 — vivids
+  '#FF7370',
+  // Row 3 — vivids + ramp: dark red
   '#FF8A47',
   '#FFC73B',
   '#4CAF50',
   '#2196F3',
   '#9C27B0',
-  '#F44336',
-  // Row 4 — darks
+  '#E53030',
+  // Row 4 — darks (rightmost cell intentionally empty)
   '#8B4513',
   '#A77A2C',
   '#1B5E20',
   '#1F51FF',
-  '#4A148C',
-  '#B71C1C',
+  '#6A1B9A',
 ];
 
 export const PALETTE_COLS = 6;
@@ -63,6 +67,14 @@ export function checkmarkColorFor(hex: string): '#000' | '#FFF' {
  * the slot rect's edges remain readable. */
 export function isDark(hex: string): boolean {
   return luminance(hex) < 0.25;
+}
+
+/** Stricter than isDark: true only for near-black colors whose fill is nearly
+ * indistinguishable from the dock background itself (#101720, luminance ~0.09).
+ * The picker popout uses this — only black needs a visible contrast border;
+ * mid-darks like dark purple/red separate from the dock on fill alone. */
+export function isNearBlack(hex: string): boolean {
+  return luminance(hex) < 0.13;
 }
 
 /** Case-insensitive hex equality (handles '#abc' vs '#aabbcc' too). */

@@ -45,7 +45,7 @@ its own persist consumers via the same field table — out of scope to refactor
 ## File Map — `toolbar/`
 
 CSS is co-located with components. `inspectors/Inspector.css` `@import`s
-the three primitive CSS files so an inspector only needs one stylesheet
+the four primitive CSS files so an inspector only needs one stylesheet
 import.
 
 | File | Role |
@@ -60,13 +60,13 @@ import.
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
 | `inspectors/ConnectorInspector.tsx` | 4 variant buttons (inline SVGs at viewBox center 12,12), divider, `<ColorField>` + picker. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` module-level. |
 | `inspectors/WeightSelector.tsx` | Memoized **controlled** 4-button stroke-weight row (`value` / `onChange`). Returns a fragment so the buttons stay direct flex children of `.inspector`. Per-preset `useMemo` handler table — built to also drive `connector.width` later. |
-| `color/ColorSlots.tsx/css` | Memoized pen/highlighter **3-slot** column — definitionally 3-slot, iterates `SLOT_INDICES`. Owns a `usePickerDismiss` wrapper containing the slots + picker. `ColorSlots.css` is column-only (`.color-slots`). |
+| `color/ColorSlots.tsx/css` | Memoized pen/highlighter **3-slot** column — definitionally 3-slot, iterates `SLOT_INDICES`. Owns a `usePickerDismiss` wrapper containing the slots + picker. `ColorSlots.css` styles the column (`.color-slots`) and opts its slots out of `ColorButton`'s hover-scale. |
 | `color/ColorField.tsx/css` | Memoized connector single-color field — sibling of `ColorSlots`, also built on `ColorButton`. One trigger button (no checkmark) + picker. Owns a `usePickerDismiss` wrapper. |
 | `color/ColorButton.tsx/css` | The shared swatch-button **primitive** (renamed from `ColorSlot`). `selected?` → checkmark + active ring; `expanded?` → picker-trigger aria — **decoupled**. `colorButtonStyle(color, selected)` centralizes the lone `React.CSSProperties` cast for `--slot-tint`. |
-| `color/ColorPicker.tsx/css` | 24-swatch grid (6×4) + custom-hex input (`+` action toggles, validated against `/^#([0-9a-f]{3}\|[0-9a-f]{6})$/i`) + disabled eyedropper button. **Purely presentational** — outside-click dismissal owned by the wrapper's `usePickerDismiss`. |
+| `color/ColorPicker.tsx/css` | 23-swatch grid (6 cols, last cell empty) + custom-hex input (`+` action toggles, validated against `/^#([0-9a-f]{3}\|[0-9a-f]{6})$/i`) + disabled eyedropper button. **Purely presentational** — outside-click dismissal owned by the wrapper's `usePickerDismiss`. |
 | `color/use-picker-dismiss.ts` | `usePickerDismiss(isOpen, onClose) → ref` — shared outside-click hook. The ref's element must wrap both the trigger button(s) and the picker. |
 | `color/CheckIcon.tsx` | Memoized `<svg>` check; props `color`, `size`, `strokeWidth`. |
-| `color/palette.ts` | `PALETTE` (24 colors), `PALETTE_COLS = 6`, `luminance`, `checkmarkColorFor`, `isDark` (threshold < 0.25), `colorsEqual` (case-insensitive, handles 3/6 hex). |
+| `color/palette.ts` | `PALETTE` (23 colors), `PALETTE_COLS = 6`, `luminance`, `checkmarkColorFor`, `isDark` (< 0.25, slot inset), `isNearBlack` (< 0.13, picker border), `colorsEqual` (case-insensitive, handles 3/6 hex). |
 
 The `color/` primitives are scoped here today but designed to move to a
 shared location if/when the context menu adopts them.
@@ -127,7 +127,7 @@ RoomPage
 | `<768px` inspector | `left: calc(100% + 6px)` |
 | `InspectorButton` | 30×30, 7px radius, 20×20 icon |
 | Color slot | 24×24, 6px radius, 12px vertical gap, 6px/4px container padding |
-| Color picker | `left: calc(100% + 12px); top:-8px`; 22×22 swatches in 6×4 grid, 10px gap, 10px container padding |
+| Color picker | `left: calc(100% + 12px); top:-8px`; 22×22 swatches, 6-col grid (23 swatches → 6+6+6+5), 10px gap, 10px container padding |
 | Tooltip | CSS pseudo-element on `.tool-btn`, suppressed while any `.inspector` is mounted via `.toolbar-wrap:has(.inspector) .toolbar-main .tool-btn::after { display: none; }` |
 
 ### Active-slot anatomy
@@ -439,14 +439,14 @@ during refactoring.
 | `ColorSlots` | `React.memo` | Iterates `SLOT_INDICES`; `PenInspector` passes stable `useCallback` handlers. Non-active slots compose a fresh `onClick` closure each render — bounded to ≤2 per inspector. |
 | `ColorField` | `React.memo` | Single `ColorButton`; all handlers are stable `useCallback`s from `ConnectorInspector` — no `useMemo`-wrapped array needed (the old `useMemo<readonly [string]>` is gone). |
 | `ColorButton` | `React.memo` | The shared swatch primitive. `selected` / `expanded` are plain booleans. |
-| `ColorPicker`, inner `Swatch` | `React.memo` | Swatch click is an inline arrow; bounded to 24 closures per picker open. |
+| `ColorPicker`, inner `Swatch` | `React.memo` | Swatch click is an inline arrow; bounded to 23 closures per picker open. |
 | `CheckIcon` | `React.memo` | — |
 
 **Invariant:** every onClick passed to a memoized child should be a
 module-level const, a destructured-store handler, or sourced from a stable
 lookup table (`VARIANT_HANDLERS` module-level; `WeightSelector`'s via
 `useMemo`). The slot/swatch inline arrows are the intentional exceptions
-(≤24 closures total, all bounded).
+(≤23 closures total, all bounded).
 
 ---
 
@@ -537,10 +537,16 @@ Listing the most likely-to-be-tweaked surfaces so an agent knows where
 to look. **This list is not a roadmap — the actual change will come from
 the prompt.**
 
-- **Palette** (`color/palette.ts:PALETTE`) — 24 hex codes eyeballed from
-  Mural's `zoommenustroke.png`. Every entry is up for adjustment.
+- **Palette** (`color/palette.ts:PALETTE`) — 23 hex codes eyeballed from
+  Mural's `zoommenustroke.png`; the rightmost column is its own red ramp
+  (light pink → red → dark red, rows 1-3), 4th cell left empty. Every
+  entry is up for adjustment.
 - **`isDark` threshold** (`color/palette.ts:isDark`, `< 0.25`) — drives
-  the white inset stroke on dark slots/swatches.
+  the white inset stroke on dark slot buttons (`ColorButton`).
+- **`isNearBlack` threshold** (`color/palette.ts:isNearBlack`, `< 0.13`) —
+  drives the picker swatch's contrast border (white at 0.55, matching
+  ColorButton's dark-slot edge — a border not an inset, so the swatch keeps
+  its size). Tighter than `isDark` on purpose: only near-black blends in.
 - **`checkmarkColorFor` threshold** (`palette.ts`, `> 0.55`) — separate
   from `isDark` because contrast threshold and "needs an edge stroke
   against the dock" are different perceptual questions.

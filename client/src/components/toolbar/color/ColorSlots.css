@@ -6,3 +6,13 @@
   gap: 12px;
   padding: 6px 0 4px;
 }
+
+/* The 3-slot column is a switcher you click between, not a grid you browse, so
+   it opts out of ColorButton.css's hover-scale — fine for the picker's swatch
+   grid, but on three well-separated slots the slot just grows as you click it,
+   reading as lag, not feedback. No replacement hover affordance: three slots
+   this far apart don't need one, and the active slot's tinted ring already
+   carries the only state that matters. */
+.color-slots .color-button:hover {
+  transform: none;
+}

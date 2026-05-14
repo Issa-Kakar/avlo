@@ -46,14 +46,14 @@
   transform: scale(1.08);
 }
 
-/* Dark swatches need a brighter border to remain visible on the dock. */
-.picker-swatch[data-dark] {
-  border-color: rgba(255, 255, 255, 0.45);
-}
-
-.picker-swatch.is-active {
-  outline: 1.5px solid #fff;
-  outline-offset: -1.5px;
+/* Near-black swatches need a visible edge — their fill is nearly the dock
+   color itself. Matches ColorButton's dark-slot edge: white at 0.55, so black
+   reads the same in the picker as in a slot. It's a border, not the slot's
+   inset box-shadow — an inset would sit 1px inside this swatch's own border
+   and read undersized — but a 0.55 border over the near-black fill composites
+   to the same grey the slot's 0.55 inset does. */
+.picker-swatch[data-near-black] {
+  border-color: rgba(255, 255, 255, 0.55);
 }
 
 .picker-swatch:focus-visible {
