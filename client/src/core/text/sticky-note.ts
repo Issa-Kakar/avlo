@@ -43,11 +43,11 @@ const NOTE_PADDING_RATIO = 20 / 280;
 const NOTE_CORNER_RADIUS_RATIO = 0.06;
 // Asymmetric shadow pads — the shadow is directional (mostly downward), so
 // top/sides need only a small halo while the bottom contains the downward tail.
-// Cache canvas, bbox, and visible halo extent all key off these. Exported so
-// bookmarks track the exact same ratios (dirty-rect invariant).
-export const NOTE_SHADOW_TOP_RATIO = 0.06; // ~7.5wu — fringe from drop's blur tail
-export const NOTE_SHADOW_SIDE_RATIO = 0.075; // ~9.4wu — fits drop's gaussian tail (1.5·blur)
-export const NOTE_SHADOW_BOTTOM_RATIO = 0.12; // ~15wu — fits drop's blur + offset with headroom
+// Bookmarks track their own ratios (see bookmark-render.ts) — the shadow cache
+// is now per-kind and no longer shared.
+const NOTE_SHADOW_TOP_RATIO = 0.06;
+const NOTE_SHADOW_SIDE_RATIO = 0.075;
+const NOTE_SHADOW_BOTTOM_RATIO = 0.12;
 
 const BASE_CONTENT_WIDTH = NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO);
 const NOTE_FONT_STEPS: number[] = [
@@ -74,7 +74,7 @@ export function getNoteContentWidth(scale: number): number {
   return NOTE_WIDTH * scale * (1 - 2 * NOTE_PADDING_RATIO);
 }
 
-export function getNoteCornerRadius(w: number): number {
+function getNoteCornerRadius(w: number): number {
   return w * NOTE_CORNER_RADIUS_RATIO;
 }
 
@@ -377,39 +377,19 @@ export function getNoteDerivedFontSize(objectId: string): number {
 }
 
 // =============================================================================
-// SHADOW SYSTEM — directional drop shadow, asymmetric cache (no slicing)
+// SHADOW SYSTEM — single-entry cache, fixed dimensions
 // =============================================================================
 //
-// Real drop shadows under gravity reach long below, minimal at the sides,
-// none above. Native canvas `shadowBlur` is gaussian + isotropic, so blur
-// alone always spreads side-to-side. Two coupled knobs make the shadow
-// directional without resorting to a (canvas-unsupported) spread:
+// Notes are always rendered at NOTE_WIDTH × NOTE_WIDTH inside `ctx.scale(noteScale)`,
+// so the cache content is dimension-invariant — one canvas, baked once per DPR,
+// drawn with one `drawImage` per note. No LRU, no keying.
 //
-//   - small blur            keeps side spread tight
-//   - offsetY ≥ blur·1.2    pushes the gaussian's mass clearly below body
-//                           (so above-extent collapses to ~0)
-//
-// One body silhouette is filled twice — once with a wider drop shadow for
-// the downward tail, once with a tight contact shadow that touches the body
-// edge and covers any tiny gap left by drop's near edge. The same path is
-// then punched. Single roundRect path → no expanded ring → no AA stroke.
-//
-// Cache canvas is asymmetric: top/sides hold the small halo, bottom holds
-// the long downward extent. Saves cache memory and keeps bbox tight.
-//
-// Per-dimension LRU, max 16 entries. Notes always render at (125,125) → 1
-// entry shared forever. Bookmarks render at (300, height) → one per unique
-// height. Cleared on DPR change.
+// Shadow design: dual gaussian (drop + contact) over the same body path, then
+// punched with the same path. The matching paths eliminate AA stroke fringe.
+// Asymmetric pad — bottom holds the long downward tail, top/sides hold a tight
+// halo. Drop offset > blur pushes the gaussian's mass below the body so the
+// above-body extent collapses to ~0.
 
-const SHADOW_CACHE_MAX = 16;
-const _shadowCache = new Map<string, OffscreenCanvas>();
-let _shadowCacheDpr = 0;
-
-// All ratios of body width — proportions hold across note (125wu) and bookmark
-// (300wu). Drop: visible extent below ≈ blur·1.2 + offset ≈ 9 %, side ≈ 5 %,
-// above ≈ 0. Contact: anchors the shadow at the body edge so the halo reads as
-// resting on a surface, not floating. Alphas tuned for natural paper-on-desk
-// density: combined peak ≈ 0.16 on white (vs ~0.28 when over-cranked).
 const SHADOW_DROP_BLUR_RATIO = 0.04;
 const SHADOW_DROP_OFFSET_RATIO = 0.045;
 const SHADOW_DROP_COLOR = 'rgba(0,0,0,0.11)';
@@ -417,33 +397,18 @@ const SHADOW_CONTACT_BLUR_RATIO = 0.013;
 const SHADOW_CONTACT_OFFSET_RATIO = 0.008;
 const SHADOW_CONTACT_COLOR = 'rgba(0,0,0,0.07)';
 
-function ensureShadow(w: number, h: number, dpr: number): OffscreenCanvas {
-  if (_shadowCacheDpr !== dpr) {
-    _shadowCache.clear();
-    _shadowCacheDpr = dpr;
-  }
+let _noteShadow: OffscreenCanvas | null = null;
+let _noteShadowDpr = 0;
 
-  const key = `${w.toFixed(2)}|${h.toFixed(2)}`;
-  const hit = _shadowCache.get(key);
-  if (hit) {
-    // LRU touch — re-insert at the end of insertion order.
-    _shadowCache.delete(key);
-    _shadowCache.set(key, hit);
-    return hit;
-  }
+function ensureNoteShadow(dpr: number): OffscreenCanvas {
+  if (_noteShadow && _noteShadowDpr === dpr) return _noteShadow;
 
-  // Evict oldest entries until we have headroom for the new one.
-  while (_shadowCache.size >= SHADOW_CACHE_MAX) {
-    const oldest = _shadowCache.keys().next().value;
-    if (oldest === undefined) break;
-    _shadowCache.delete(oldest);
-  }
-
+  const w = NOTE_WIDTH;
   const padTop = w * NOTE_SHADOW_TOP_RATIO;
   const padSide = w * NOTE_SHADOW_SIDE_RATIO;
   const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
   const totalW = w + 2 * padSide;
-  const totalH = h + padTop + padBottom;
+  const totalH = w + padTop + padBottom;
   const r = getNoteCornerRadius(w);
 
   const canvas = new OffscreenCanvas(Math.ceil(totalW * dpr), Math.ceil(totalH * dpr));
@@ -455,7 +420,7 @@ function ensureShadow(w: number, h: number, dpr: number): OffscreenCanvas {
   // path each time means the punch removes every black pixel deposited by the
   // fills, leaving only the gaussian halo around the original body silhouette.
   ctx.beginPath();
-  ctx.roundRect(padSide, padTop, w, h, r);
+  ctx.roundRect(padSide, padTop, w, w, r);
 
   // Drop — the long downward tail.
   ctx.shadowColor = SHADOW_DROP_COLOR;
@@ -478,29 +443,35 @@ function ensureShadow(w: number, h: number, dpr: number): OffscreenCanvas {
   ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
 
-  _shadowCache.set(key, canvas);
+  _noteShadow = canvas;
+  _noteShadowDpr = dpr;
   return canvas;
 }
 
-function drawNoteShadow(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
+// Pre-computed pad values for hot path — all derived from NOTE_WIDTH (constant).
+const NOTE_PAD_TOP = NOTE_WIDTH * NOTE_SHADOW_TOP_RATIO;
+const NOTE_PAD_SIDE = NOTE_WIDTH * NOTE_SHADOW_SIDE_RATIO;
+const NOTE_PAD_BOTTOM = NOTE_WIDTH * NOTE_SHADOW_BOTTOM_RATIO;
+const NOTE_SHADOW_TOTAL_W = NOTE_WIDTH + 2 * NOTE_PAD_SIDE;
+const NOTE_SHADOW_TOTAL_H = NOTE_WIDTH + NOTE_PAD_TOP + NOTE_PAD_BOTTOM;
+const NOTE_CORNER_R = getNoteCornerRadius(NOTE_WIDTH);
+
+function drawNoteShadow(ctx: CanvasRenderingContext2D, x: number, y: number): void {
   const dpr = window.devicePixelRatio || 1;
-  const canvas = ensureShadow(w, h, dpr);
-  const padTop = w * NOTE_SHADOW_TOP_RATIO;
-  const padSide = w * NOTE_SHADOW_SIDE_RATIO;
-  const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
-  ctx.drawImage(canvas, x - padSide, y - padTop, w + 2 * padSide, h + padTop + padBottom);
+  const canvas = ensureNoteShadow(dpr);
+  ctx.drawImage(canvas, x - NOTE_PAD_SIDE, y - NOTE_PAD_TOP, NOTE_SHADOW_TOTAL_W, NOTE_SHADOW_TOTAL_H);
 }
 
 // =============================================================================
 // BODY RENDERER
 // =============================================================================
 
-export function renderNoteBody(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, fillColor: string): void {
-  drawNoteShadow(ctx, x, y, w, h);
+function renderNoteBody(ctx: CanvasRenderingContext2D, x: number, y: number, fillColor: string): void {
+  drawNoteShadow(ctx, x, y);
 
   ctx.fillStyle = fillColor;
   ctx.beginPath();
-  ctx.roundRect(x, y, w, h, getNoteCornerRadius(w));
+  ctx.roundRect(x, y, NOTE_WIDTH, NOTE_WIDTH, NOTE_CORNER_R);
   ctx.fill();
 }
 
@@ -523,7 +494,7 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
   ctx.translate(r.originX, r.originY);
   ctx.scale(noteScale, noteScale);
 
-  renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, r.fillColor);
+  renderNoteBody(ctx, 0, 0, r.fillColor);
 
   if (isEditing) {
     ctx.restore();

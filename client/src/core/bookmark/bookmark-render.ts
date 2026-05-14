@@ -3,13 +3,6 @@ import { readBookmarkRender } from '@/renderer/render-accessors';
 import { getHandle } from '@/runtime/room-runtime';
 import { getBookmarkProps } from '../accessors';
 import { getBitmap } from '../image/image-manager';
-import {
-  getNoteCornerRadius,
-  NOTE_SHADOW_BOTTOM_RATIO,
-  NOTE_SHADOW_SIDE_RATIO,
-  NOTE_SHADOW_TOP_RATIO,
-  renderNoteBody,
-} from '../text/sticky-note';
 import { buildFontString, measureTextCached } from '../text/text-system';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { BookmarkProps, ObjectHandle } from '../types/objects';
@@ -33,11 +26,22 @@ const DESC_MAX_LINES = 3;
 const FAVICON_SIZE = 18;
 const FAVICON_GAP = 6;
 const CARD_FILL = '#FFFFFF';
-const CARD_RADIUS = getNoteCornerRadius(BOOKMARK_WIDTH);
+// Fixed corner radius, independent of card height. Capped at 12wu so the 3-slice
+// shadow cache supports the realistic bookmark min height (~71wu); see shadow
+// section below.
+const BOOKMARK_CORNER_RADIUS = 10;
+const CARD_RADIUS = BOOKMARK_CORNER_RADIUS;
 const OPEN_BTN_W = 78;
 const OPEN_BTN_H = 28;
 const OPEN_BTN_RADIUS = 6;
 const OPEN_BTN_MARGIN = 10;
+
+// Asymmetric shadow pad ratios — bookmark-local (was shared with notes; now
+// each kind owns its own cache and pads). Exported so the bbox fallback in
+// `geometry/bbox.ts` reads from a single source of truth.
+export const BOOKMARK_SHADOW_TOP_RATIO = 0.06;
+export const BOOKMARK_SHADOW_SIDE_RATIO = 0.075;
+export const BOOKMARK_SHADOW_BOTTOM_RATIO = 0.12;
 
 const TITLE_COLOR = '#1a1a1a';
 const DESC_COLOR = '#6b7280';
@@ -57,6 +61,155 @@ const TITLE_FONT = buildFontString(true, false, TITLE_FONT_SIZE, 'Inter');
 const DESC_FONT = buildFontString(false, false, DESC_FONT_SIZE, 'Inter');
 const DISPLAY_FONT = buildFontString(false, false, DISPLAY_FONT_SIZE, 'Inter');
 const OPEN_BTN_FONT = '600 13px Inter, sans-serif'; // 600 isn't in our normal/bold matrix
+
+// ---------------------------------------------------------------------------
+// Shadow system — vertical 3-slice cache (single canvas, ALL bookmarks)
+// ---------------------------------------------------------------------------
+//
+// Width is constant (BOOKMARK_WIDTH = 300) and corner radius is constant
+// (BOOKMARK_CORNER_RADIUS). Height varies. The shadow's horizontal cross-section
+// is therefore identical at every height; only the vertical side strips need
+// to stretch with the body. After R + 1.5·blur (~28wu) of distance from either
+// horizontal body edge, the shadow becomes fully translation-invariant in y —
+// every row down the side is pixel-identical.
+//
+// Bake once: top cap (corner + tail + 1 invariant row) + 2 invariant rows +
+// bottom cap (corner + tail + 1 invariant row). Draw three drawImage calls per
+// bookmark: top cap → middle (stretched vertically) → bottom cap. No horizontal
+// stretching (BAKE_W → BAKE_W is 1:1 in world units), so the rounded corner
+// curves in the cache land on the exact destination pixels of the body's curve
+// — no curve mismatch, no AA fringe.
+//
+// Seam invariant: cap's last source row is the FIRST invariant body row, and
+// the middle samples invariant rows after that. Since invariant rows are
+// pixel-identical, the cap → middle and middle → cap transitions are exact
+// continuations — no visible seam regardless of how `midDestH` stretches.
+//
+// Memory: one OffscreenCanvas (~210K device pixels at DPR=2 ≈ 0.85 MB),
+// independent of how many bookmarks are on screen.
+
+const BOOKMARK_SHADOW_DROP_BLUR_RATIO = 0.04;
+const BOOKMARK_SHADOW_DROP_OFFSET_RATIO = 0.045;
+const BOOKMARK_SHADOW_DROP_COLOR = 'rgba(0,0,0,0.11)';
+const BOOKMARK_SHADOW_CONTACT_BLUR_RATIO = 0.013;
+const BOOKMARK_SHADOW_CONTACT_OFFSET_RATIO = 0.008;
+const BOOKMARK_SHADOW_CONTACT_COLOR = 'rgba(0,0,0,0.07)';
+
+const SHADOW_PAD_TOP = BOOKMARK_WIDTH * BOOKMARK_SHADOW_TOP_RATIO; //         18
+const SHADOW_PAD_SIDE = BOOKMARK_WIDTH * BOOKMARK_SHADOW_SIDE_RATIO; //       22.5
+const SHADOW_PAD_BOTTOM = BOOKMARK_WIDTH * BOOKMARK_SHADOW_BOTTOM_RATIO; //   36
+const SHADOW_DROP_BLUR = BOOKMARK_WIDTH * BOOKMARK_SHADOW_DROP_BLUR_RATIO; // 12
+const SHADOW_GAUSSIAN_TAIL = SHADOW_DROP_BLUR * 1.5; //                       18 (drop dominates contact's 5.85)
+
+// +1 on each cap height places the last cap source row in the invariant zone,
+// making the cap → middle seam pixel-identical (vs 1 row of residual corner
+// influence without the +1). Bake body has 2 extra rows so MID_BAKE_H = 2
+// invariant rows sit comfortably between caps.
+const SHADOW_CAP_TOP_H = SHADOW_PAD_TOP + BOOKMARK_CORNER_RADIUS + SHADOW_GAUSSIAN_TAIL + 1; //  47
+const SHADOW_CAP_BOT_H = SHADOW_PAD_BOTTOM + BOOKMARK_CORNER_RADIUS + SHADOW_GAUSSIAN_TAIL + 1; // 65
+const SHADOW_MID_BAKE_H = 2;
+const SHADOW_BAKE_BODY_H = 2 * (BOOKMARK_CORNER_RADIUS + SHADOW_GAUSSIAN_TAIL) + SHADOW_MID_BAKE_H + 2; // 60
+const SHADOW_BAKE_W = BOOKMARK_WIDTH + 2 * SHADOW_PAD_SIDE; //                                       345
+const SHADOW_BAKE_H = SHADOW_PAD_TOP + SHADOW_BAKE_BODY_H + SHADOW_PAD_BOTTOM; //                    114
+// Minimum body height for clean 3-slice. Below this, `midDestH` clamps to 0
+// and caps render back-to-back; bbox compensates so dirty rects stay valid.
+// Realistic bookmark min ≈ 71 (text-only with 1 title line), so this is 13wu
+// of headroom against the practical floor.
+const SHADOW_H_MIN_SUPPORTED = 2 * (BOOKMARK_CORNER_RADIUS + SHADOW_GAUSSIAN_TAIL + 1); //          58
+
+let _bookmarkShadow: OffscreenCanvas | null = null;
+let _bookmarkShadowDpr = 0;
+
+function ensureBookmarkShadow(dpr: number): OffscreenCanvas {
+  if (_bookmarkShadow && _bookmarkShadowDpr === dpr) return _bookmarkShadow;
+
+  const canvas = new OffscreenCanvas(Math.ceil(SHADOW_BAKE_W * dpr), Math.ceil(SHADOW_BAKE_H * dpr));
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = '#000';
+
+  // Single body path — used for both shadow casters AND the punch. The
+  // destination body fill in `renderBookmarkBody` uses the SAME radius
+  // (BOOKMARK_CORNER_RADIUS), so the cache's punched silhouette and the
+  // destination body silhouette coincide pixel-perfectly.
+  ctx.beginPath();
+  ctx.roundRect(SHADOW_PAD_SIDE, SHADOW_PAD_TOP, BOOKMARK_WIDTH, SHADOW_BAKE_BODY_H, BOOKMARK_CORNER_RADIUS);
+
+  // Drop — the long downward tail.
+  ctx.shadowColor = BOOKMARK_SHADOW_DROP_COLOR;
+  ctx.shadowBlur = SHADOW_DROP_BLUR;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = BOOKMARK_WIDTH * BOOKMARK_SHADOW_DROP_OFFSET_RATIO;
+  ctx.fill();
+
+  // Contact — tight halo anchored at the body edge.
+  ctx.shadowColor = BOOKMARK_SHADOW_CONTACT_COLOR;
+  ctx.shadowBlur = BOOKMARK_WIDTH * BOOKMARK_SHADOW_CONTACT_BLUR_RATIO;
+  ctx.shadowOffsetY = BOOKMARK_WIDTH * BOOKMARK_SHADOW_CONTACT_OFFSET_RATIO;
+  ctx.fill();
+
+  // Punch — same path, no expansion. Removes every opaque fill pixel; only the
+  // gaussian halo around the body silhouette survives.
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  _bookmarkShadow = canvas;
+  _bookmarkShadowDpr = dpr;
+  return canvas;
+}
+
+function drawBookmarkShadow(ctx: CanvasRenderingContext2D, x: number, y: number, h: number): void {
+  const dpr = window.devicePixelRatio || 1;
+  const cache = ensureBookmarkShadow(dpr);
+
+  // For h ≥ SHADOW_H_MIN_SUPPORTED: midDestH = h - SHADOW_H_MIN_SUPPORTED ≥ 0,
+  // total drawn height = h + padTop + padBottom exactly. Bbox covers it.
+  // For h < SHADOW_H_MIN_SUPPORTED (unreachable in practice): midDestH = 0,
+  // caps render back-to-back, total drawn height = SHADOW_H_MIN_SUPPORTED +
+  // padTop + padBottom. `computeBookmarkBBox` clamps to match.
+  const midDestH = h > SHADOW_H_MIN_SUPPORTED ? h - SHADOW_H_MIN_SUPPORTED : 0;
+
+  const dx = x - SHADOW_PAD_SIDE;
+  const dy = y - SHADOW_PAD_TOP;
+  const srcW = SHADOW_BAKE_W * dpr;
+
+  // Top cap — no stretching (BAKE_W → BAKE_W is 1:1 in world units; cache
+  // contains the rounded top corners and gaussian decay below them).
+  ctx.drawImage(cache, 0, 0, srcW, SHADOW_CAP_TOP_H * dpr, dx, dy, SHADOW_BAKE_W, SHADOW_CAP_TOP_H);
+
+  // Middle — vertical stretch only. Source = 2 invariant rows (identical
+  // pixel content along the column), so stretching them produces a uniform
+  // strip with stable bilinear sampling at the seams.
+  if (midDestH > 0) {
+    ctx.drawImage(cache, 0, SHADOW_CAP_TOP_H * dpr, srcW, SHADOW_MID_BAKE_H * dpr, dx, dy + SHADOW_CAP_TOP_H, SHADOW_BAKE_W, midDestH);
+  }
+
+  // Bottom cap — no stretching.
+  ctx.drawImage(
+    cache,
+    0,
+    (SHADOW_CAP_TOP_H + SHADOW_MID_BAKE_H) * dpr,
+    srcW,
+    SHADOW_CAP_BOT_H * dpr,
+    dx,
+    dy + SHADOW_CAP_TOP_H + midDestH,
+    SHADOW_BAKE_W,
+    SHADOW_CAP_BOT_H,
+  );
+}
+
+function renderBookmarkBody(ctx: CanvasRenderingContext2D, x: number, y: number, h: number, fillColor: string): void {
+  drawBookmarkShadow(ctx, x, y, h);
+
+  ctx.fillStyle = fillColor;
+  ctx.beginPath();
+  ctx.roundRect(x, y, BOOKMARK_WIDTH, h, BOOKMARK_CORNER_RADIUS);
+  ctx.fill();
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -283,9 +436,11 @@ export function computeBookmarkHeight(data: LayoutInput): number {
 /**
  * Compute bbox for a bookmark from its props. Populates layout + frame caches
  * as a side effect; subsequent `getBookmarkFrame(id)` reads from the frame cache.
- * Bbox is asymmetric — shadow extends mostly downward, so top/sides need only a
- * thin halo while the bottom holds the long downward tail (single source of
- * truth: NOTE_SHADOW_*_RATIO constants from sticky-note).
+ * Frame describes the body (origin + width + height); bbox extends by the
+ * asymmetric shadow pad. The painted shadow extent clamps to
+ * SHADOW_H_MIN_SUPPORTED for very short bookmarks (unreachable in practice but
+ * defensive): if `props.height < SHADOW_H_MIN_SUPPORTED`, `drawBookmarkShadow`
+ * paints to `y + SHADOW_H_MIN_SUPPORTED + padBottom`, so bbox must cover that.
  */
 export function computeBookmarkBBox(id: string, props: BookmarkProps): BBoxTuple {
   getLayout(id, props);
@@ -294,10 +449,11 @@ export function computeBookmarkBBox(id: string, props: BookmarkProps): BBoxTuple
   const h = props.height * s;
   const frame: FrameTuple = [props.origin[0], props.origin[1], w, h];
   bookmarkFrameCache.set(id, frame);
-  const padTop = w * NOTE_SHADOW_TOP_RATIO;
-  const padSide = w * NOTE_SHADOW_SIDE_RATIO;
-  const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
-  return [frame[0] - padSide, frame[1] - padTop, frame[0] + w + padSide, frame[1] + h + padBottom];
+  const padTop = w * BOOKMARK_SHADOW_TOP_RATIO;
+  const padSide = w * BOOKMARK_SHADOW_SIDE_RATIO;
+  const padBottom = w * BOOKMARK_SHADOW_BOTTOM_RATIO;
+  const paintedH = props.height < SHADOW_H_MIN_SUPPORTED ? SHADOW_H_MIN_SUPPORTED * s : h;
+  return [frame[0] - padSide, frame[1] - padTop, frame[0] + w + padSide, frame[1] + paintedH + padBottom];
 }
 
 export function getBookmarkFrame(id: string): FrameTuple | null {
@@ -353,7 +509,7 @@ export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle
   ctx.translate(r.originX, r.originY);
   ctx.scale(r.scale, r.scale);
 
-  renderNoteBody(ctx, 0, 0, BOOKMARK_WIDTH, r.height, CARD_FILL);
+  renderBookmarkBody(ctx, 0, 0, r.height, CARD_FILL);
 
   if (layout.hasOgImage) {
     drawFullCard(ctx, BOOKMARK_WIDTH, layout, r.ogImageAssetId, r.faviconAssetId, hoveredOpen);

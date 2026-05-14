@@ -1,10 +1,16 @@
 import type * as Y from 'yjs';
 import { getBookmarkProps, getEndCap, getFrame, getNoteProps, getPoints, getStartCap, getTextProps, getWidth } from '../accessors';
-import { BOOKMARK_WIDTH, computeBookmarkBBox } from '../bookmark/bookmark-render';
+import {
+  BOOKMARK_SHADOW_BOTTOM_RATIO,
+  BOOKMARK_SHADOW_SIDE_RATIO,
+  BOOKMARK_SHADOW_TOP_RATIO,
+  BOOKMARK_WIDTH,
+  computeBookmarkBBox,
+} from '../bookmark/bookmark-render';
 import { computeCodeBBox } from '../code/code-system';
 import { getConnectorRoute } from '../connectors/connector-router';
 import type { ConnectorCap } from '../connectors/types';
-import { computeNoteBBox, NOTE_SHADOW_BOTTOM_RATIO, NOTE_SHADOW_SIDE_RATIO, NOTE_SHADOW_TOP_RATIO, NOTE_WIDTH } from '../text/sticky-note';
+import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
 import { computeTextBBox } from '../text/text-system';
 import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
 import type { ObjectKind } from '../types/objects';
@@ -118,9 +124,9 @@ export function computeBBoxForInto(id: string, kind: ObjectKind, yMap: Y.Map<unk
       const height = (yMap.get('height') as number) ?? 60;
       const w = BOOKMARK_WIDTH * scale;
       const h = height * scale;
-      const padTop = w * NOTE_SHADOW_TOP_RATIO;
-      const padSide = w * NOTE_SHADOW_SIDE_RATIO;
-      const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
+      const padTop = w * BOOKMARK_SHADOW_TOP_RATIO;
+      const padSide = w * BOOKMARK_SHADOW_SIDE_RATIO;
+      const padBottom = w * BOOKMARK_SHADOW_BOTTOM_RATIO;
       out[0] = origin[0] - padSide;
       out[1] = origin[1] - padTop;
       out[2] = origin[0] + w + padSide;

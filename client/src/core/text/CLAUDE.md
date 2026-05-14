@@ -19,7 +19,7 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 | File | Purpose |
 |------|---------|
 | `core/text/text-system.ts` | Layout engine, cache, text/label renderers, text BBox |
-| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), per-dimension shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox` |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
 | `core/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
 | `core/text/font-loader.ts` | `ensureFontsLoaded()` / `areFontsLoaded()` |
@@ -552,7 +552,7 @@ drawStickyNote(ctx, handle):
   2. getNoteLayout(id, content, fontFamily) -> layout at base dimensions
   3. getNoteDerivedFontSize(id) -> derived font size
   4. ctx.translate(origin) + ctx.scale(noteScale)
-  5. renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, fillColor) -- always drawn, even during editing
+  5. renderNoteBody(ctx, 0, 0, fillColor) -- always drawn, even during editing
   6. if textEditingId === id -> return (DOM overlay handles text)
   7. Alignment at base dimensions:
      padding = getNotePadding(1), contentWidth = getNoteContentWidth(1)
@@ -571,43 +571,37 @@ Key differences from `renderTextLayout`:
 - Vertical offset via `getNoteContentOffsetY` (not baseline positioning)
 - Clips overflow at content area boundary
 
-### Shadow System — Directional Drop Shadow, Asymmetric Cache
+### Shadow System — Directional Drop Shadow, Single-Entry Cache
 
 Real drop shadows under gravity reach *long below*, *barely on the sides*, *not above*. Native canvas `shadowBlur` is gaussian + isotropic — blur alone always spreads side-to-side. Two knobs make it directional:
 
-1. **Small blur (`0.04·w`)** — keeps side spread tight (~5 %).
-2. **OffsetY ≥ blur · 1.2 (`0.06·w`)** — pushes the gaussian's mass below the body. Above-extent collapses to ~0.
+1. **Small blur (`0.04·w`)** — keeps side spread tight.
+2. **OffsetY > blur (`0.045·w` vs `0.04·w`)** — pushes the gaussian's mass below the body. Above-extent collapses to ~0.
 
 Spread (à la CSS `box-shadow`) was tried and abandoned: the only way to fake it in canvas is to draw a wider rounded-rect fill, but then either you leave the expanded fill in (visible black ring around the body) or you punch the expanded silhouette (transparent ring around the body where the real body fill doesn't reach). Both visibly broken. Instead, a **contact layer** is filled on top of the drop layer using the *same* body path — it anchors the shadow at the body edge so the visible halo reads as connected to the body even when drop's near edge is faint.
 
 Crucial: both layers fill the **identical** body path. The final `destination-out` punch on that same path removes every black pixel deposited by the fills, leaving only the gaussian halo. No mismatched paths → no surviving opaque pixels → no black AA stroke.
 
-Rendered on a DPR-scaled `OffscreenCanvas` with **asymmetric pad** — top/sides small, bottom large — so the cache canvas isn't wasted on transparent pixels above the body where no shadow lives. Cached by `(w, h)` in an LRU map (max 16 entries, cleared on DPR change).
+| Layer | blur ratio | offsetY ratio | color |
+|-------|-----------|--------------|-------|
+| Drop | 0.04 | 0.045 | `rgba(0,0,0,0.11)` |
+| Contact | 0.013 | 0.008 | `rgba(0,0,0,0.07)` |
 
-| Layer | blur ratio | offsetY ratio | alpha | Visible extent below | Visible extent side |
-|-------|-----------|--------------|-------|---------------------|---------------------|
-| Drop | 0.04 | 0.06 | 0.20 | ~11 % of body width | ~5 % |
-| Contact | 0.015 | 0.012 | 0.10 | ~3 % | ~2 % |
+**Single-entry cache.** Notes always render inside `ctx.scale(noteScale)` at fixed base dimensions `(NOTE_WIDTH, NOTE_WIDTH)`, so the cache content is dimension-invariant — one DPR-scaled `OffscreenCanvas` (`_noteShadow`), baked once by `ensureNoteShadow(dpr)`, drawn with a single `drawImage` per note. `_noteShadowDpr` tracks the DPR; a mismatch re-bakes. No keying, no LRU, no eviction. Bookmarks keep their own 3-slice cache (`core/bookmark/CLAUDE.md`) since their height varies — the two no longer share shadow code.
 
-**Pad ratios (single source of truth, exported from sticky-note.ts):**
+The cache uses an **asymmetric pad** — top/sides hold a tight halo, bottom holds the long downward tail — so the canvas isn't wasted on transparent pixels above the body.
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `NOTE_SHADOW_TOP_RATIO` | 0.06 | Slight halo from contact's blur tail |
-| `NOTE_SHADOW_SIDE_RATIO` | 0.08 | Fits drop's gaussian tail (1.5·blur) |
-| `NOTE_SHADOW_BOTTOM_RATIO` | 0.15 | Fits drop's blur·1.5 + offset with headroom |
+| `NOTE_SHADOW_TOP_RATIO` | 0.06 | Slight halo from drop's blur tail |
+| `NOTE_SHADOW_SIDE_RATIO` | 0.075 | Fits drop's gaussian tail (1.5·blur) |
+| `NOTE_SHADOW_BOTTOM_RATIO` | 0.12 | Fits drop's blur·1.5 + offset with headroom |
 
-`computeNoteBBox`, `computeBookmarkBBox`, and the bookmark fallback in `bbox.ts` all read these exported constants — the dirty-rect invariant requires bbox pad ≥ painted shadow pad on every side.
+`computeNoteBBox` pads the bbox by these ratios (via `getNoteShadowPad*`) — the dirty-rect invariant requires bbox pad ≥ painted shadow pad on every side.
 
 Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punch matches the body's `roundRect` **exactly** — because the cached canvas is sized at the body's exact dimensions, the punched silhouette aligns 1:1 with the body fill drawn next by `renderNoteBody`. No corner wedge possible.
 
-**Cache shape:**
-- Notes always render inside `ctx.scale(noteScale)` at base dimensions `(NOTE_WIDTH, NOTE_WIDTH)` → all notes share one cache entry forever.
-- Bookmarks render inside `ctx.scale(s)` at `(BOOKMARK_WIDTH, props.height)` → one entry per unique height. Typical boards have <20 distinct heights, well under the 16-entry LRU bound; oldest entries evict on overflow and re-render on next use.
-
-**Cache invalidation:** `_shadowCacheDpr` tracks the DPR — mismatch clears all entries. No per-id invalidation needed: same `(w, h)` → same shadow.
-
-**`renderNoteBody(ctx, x, y, w, h, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `w * NOTE_CORNER_RADIUS_RATIO`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge.
+**`renderNoteBody(ctx, x, y, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `NOTE_CORNER_R`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge. Module-private — not shared with bookmarks.
 
 ### Alignment System
 
