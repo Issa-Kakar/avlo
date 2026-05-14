@@ -18,7 +18,10 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 
 | File | Purpose |
 |------|---------|
-| `core/text/text-system.ts` | Layout engine, cache, text/label renderers, text BBox |
+| `core/text/text-system.ts` | Layout engine, three-tier cache, text renderer, text BBox |
+| `core/text/line-break.ts` | UAX #14 soft-break machinery (`nextSoftBreak`) — pure char-code logic, leaf module |
+| `core/text/text-measure.ts` | Measure context, font-string builders, measured font metrics, measurement caches — shared boundary (code-system, bookmark-render, transform, TextTool, sticky-note) |
+| `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + `renderShapeLabel` + `layoutIntoLabelScratch` |
 | `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
 | `core/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
@@ -107,11 +110,11 @@ TextLayout (SOA: lineRunStart, lineAdvanceWidth, lineAlignmentWidth, lineBaselin
 
 All three stages are **parallel-array (SOA) buffers**: `out?` parameters let callers reuse a buffer across re-tokenize / re-measure / re-flow. Capacities double on grow; counts reset between calls. Renderers iterate via `for (let li=0; li<lineCount; li++) { for (let r=lineRunStart[li]; r<lineRunStart[li+1]; r++) ... }`. Per-line / per-run object allocations are eliminated entirely after the first call.
 
-Primary API: `textLayoutCache.getLayout()` (auto-wires per-id buffers). `layoutMeasuredContent()` is exported for reflow during E/W transforms; the `out` param lets the transform's `Entry<'text'>.out.layout` be reused per pointermove. `layoutIntoLabelScratch()` writes into a single module-level scratch shared across all labeled shapes per frame.
+Primary API: `textLayoutCache.getLayout()` (auto-wires per-id buffers). `layoutMeasuredContent()` is exported for reflow during E/W transforms; the `out` param lets the transform's `Entry<'text'>.out.layout` be reused per pointermove. `layoutIntoLabelScratch()` (in `shape-label.ts`) writes into a single module-level scratch shared across all labeled shapes per frame.
 
 ### Font Metrics
 
-Per-family, measured from canvas `fontBoundingBoxAscent/Descent` (not hardcoded):
+Per-family, measured from canvas `fontBoundingBoxAscent/Descent` (not hardcoded). Live in `text-measure.ts` alongside the measure context and font-string builders:
 
 | Function | Returns |
 |----------|---------|
@@ -129,12 +132,12 @@ Highlight extraction: `attrs.highlight` with `{ color: '#hex' }` → that color;
 
 ### Stage 2: Measurement
 
-Canvas `measureText()` via singleton offscreen canvas. Caches:
+Canvas `measureText()` via singleton offscreen canvas. The measure context, font-string builders, and the caches below all live in `text-measure.ts` (shared measurement boundary — no dependency on text-system):
 - `MEASURE_BY_FONT: Map<font, Map<text, width>>` — two-level cache, no concat-key allocation per call. Soft-cap at 200k entries (clears on overflow).
 - `SPACE_WIDTH_CACHE` — per-font space char width.
 - `CHAR_ENDS_CACHE: Map<text, Uint32Array>` — grapheme end-offsets (font-independent). Powers `sliceTextToFit`'s grapheme-aligned binary search.
 
-All cleared on `textLayoutCache.clear()`. Per-token measure pre-builds the four (bold × italic) font strings once via exported `buildFontMatrix(fontSize, fontFamily)` and indexes via `fontFromMatrix(F, bold, italic)` — eliminates O(segments) `buildFontString` calls; sticky-note's Phase B reuses both helpers when projecting 100px measurements onto the derived font size. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`). Token kind for word vs whitespace dispatch in the flow engine reads `tokenKind[ti]` directly — no per-segment whitespace flag is stored.
+All cleared on `textLayoutCache.clear()` via `clearMeasurementCaches()`. Per-token measure pre-builds the four (bold × italic) font strings once via exported `buildFontMatrix(fontSize, fontFamily)` and indexes via `fontFromMatrix(F, bold, italic)` — eliminates O(segments) `buildFontString` calls; sticky-note's Phase B reuses both helpers when projecting 100px measurements onto the derived font size. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`). Token kind for word vs whitespace dispatch in the flow engine reads `tokenKind[ti]` directly — no per-segment whitespace flag is stored.
 
 ### Stage 3: Flow Engine
 
@@ -222,7 +225,7 @@ Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `s
 
 Pass 0: fillRect background (if fillColor). Per line: compute `startX` via `anchorFactor(align)` + `getLineStartX()`. Pass 1: highlight roundRects (radius `fontSize * 0.25`; fixed mode clamps to container). Pass 2: fillText, `textBaseline = 'alphabetic'`. Fixed mode uses `alignmentWidth` for line width; auto uses `advanceWidth`.
 
-### `renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)`
+### `renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)` — `shape-label.ts`
 
 H+V alignment within text box. Vertical via `getNoteContentOffsetY()`. Overflow clips via `ctx.clip()`.
 
@@ -232,7 +235,7 @@ H+V alignment within text box. Vertical via `getNoteContentOffsetY()`. Overflow 
 anchorFactor(align)   // left=0, center=0.5, right=1
 getLineStartX(originX, boxWidth, lineW, align)
   // left: boxLeftX, center: boxLeftX+(boxWidth-lineW)/2, right: boxLeftX+(boxWidth-lineW)
-computeLabelTextBox(shapeType, frame)
+computeLabelTextBox(shapeType, frame)   // shape-label.ts — writes + returns a shared module scratch
   // Max inscribed rect inset by LABEL_PADDING=10.
   // ellipse: (a/sqrt2)x2 x (b/sqrt2)x2 centered; diamond: w/2 x h/2 centered; rect: simple inset
 ```

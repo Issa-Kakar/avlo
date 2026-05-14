@@ -1,45 +1,53 @@
 /**
  * TEXT LAYOUT SYSTEM
  *
+ * The canonical "read this to understand text" module — pipeline + cache.
  * Three-stage pipeline: Tokenize → Measure → Layout
  *
  *   Y.XmlFragment
  *       ↓ parseAndTokenize()
- *   TokenizedContent (SOA)                  §3
+ *   TokenizedContent (SOA)                  §2
  *       ↓ measureTokenizedContent()
- *   MeasuredContent (SOA)                   §4
+ *   MeasuredContent (SOA)                   §3
  *       ↓ layoutMeasuredContent()
- *   TextLayout (SOA)                        §5
+ *   TextLayout (SOA)                        §4
  *       ↓
- *   renderTextLayout()   canvas output  ┐
- *   computeTextBBox()    spatial index  ┘   §7
+ *   renderTextLayout()   canvas output      §6
+ *   computeTextBBox()    spatial index      §7
  *
- * TextLayoutCache (§6) orchestrates all three stages with three-tier invalidation:
+ * TextLayoutCache (§5) orchestrates all three stages with three-tier invalidation:
  *   content change  → re-tokenize + re-measure + re-layout
  *   fontSize change → re-measure + re-layout
  *   width change    → re-layout only
  *
  * Pooling: TokenizedContent / MeasuredContent / TextLayout are parallel-array (SOA)
  * buffers reused across re-tokenize / re-measure / re-flow on a per-id basis.
+ *
+ * Extracted siblings (kept out so this file stays the focused canonical read):
+ *   line-break.ts   — UAX #14 soft-break machinery (nextSoftBreak)
+ *   text-measure.ts — measure context, font-string builders, font metrics, measure caches
+ *   shape-label.ts  — computeLabelTextBox + renderShapeLabel + label scratch
  */
 
 import * as Y from 'yjs';
 import type { FontFamily, TextAlign, TextAlignV, TextProps, TextWidth } from '../accessors';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
-import { FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
-import { areFontsLoaded } from './font-loader';
+import { FONT_FAMILIES } from './font-config';
+import { nextSoftBreak } from './line-break';
+import {
+  buildFontMatrix,
+  clearMeasurementCaches,
+  fontFromMatrix,
+  getBaselineToTopRatio,
+  getCharEnds,
+  getItalicOverhangPad,
+  getSpaceWidth,
+  measureTextCached,
+} from './text-measure';
 
 export type { FontFamily, TextAlign, TextAlignV, TextProps, TextWidth } from '../accessors';
 export type { FontFamilyConfig } from './font-config';
 export { FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
-
-/** Vertical offset for constrained-box content alignment (matches CSS clamp behavior).
- *  Shared by sticky-note rendering and shape-label rendering. */
-export function getNoteContentOffsetY(alignV: TextAlignV, maxContentH: number, contentH: number): number {
-  if (alignV === 'top') return 0;
-  const space = Math.max(0, maxContentH - contentH);
-  return alignV === 'middle' ? space / 2 : space;
-}
 
 // =============================================================================
 // §1  TYPES — Pipeline data model (SOA)
@@ -128,239 +136,7 @@ export interface TextLayout {
 }
 
 // =============================================================================
-// §2  INFRASTRUCTURE — Shared utilities
-// =============================================================================
-
-// --- Measurement context (singleton offscreen canvas) ---
-
-let measureCtx: CanvasRenderingContext2D | null = null;
-let _measureCtxFont = '';
-
-function getMeasureContext(): CanvasRenderingContext2D {
-  if (!measureCtx) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Failed to create measurement context');
-    measureCtx = ctx;
-    _measureCtxFont = '';
-  }
-  return measureCtx;
-}
-
-function setMeasureFont(font: string): void {
-  if (_measureCtxFont !== font) {
-    getMeasureContext().font = font;
-    _measureCtxFont = font;
-  }
-}
-
-// --- Font string builder ---
-
-export function buildFontString(bold: boolean, italic: boolean, fontSize: number, fontFamily: FontFamily = 'Grandstander'): string {
-  const weight = bold ? FONT_WEIGHTS.bold : FONT_WEIGHTS.normal;
-  const style = italic ? 'italic' : 'normal';
-  return `${style} ${weight} ${fontSize}px ${FONT_FAMILIES[fontFamily].fallback}`;
-}
-
-/** Pre-build the four (bold × italic) font strings for a given (fontSize, fontFamily). */
-export function buildFontMatrix(fontSize: number, fontFamily: FontFamily): readonly [string, string, string, string] {
-  return [
-    buildFontString(false, false, fontSize, fontFamily),
-    buildFontString(false, true, fontSize, fontFamily),
-    buildFontString(true, false, fontSize, fontFamily),
-    buildFontString(true, true, fontSize, fontFamily),
-  ] as const;
-}
-
-export function fontFromMatrix(F: readonly [string, string, string, string], bold: boolean, italic: boolean): string {
-  return F[(bold ? 2 : 0) | (italic ? 1 : 0)];
-}
-
-// --- Font metrics (measured, not approximated) ---
-
-const _measuredAscentRatio = new Map<FontFamily, number>();
-const _measuredDescentRatio = new Map<FontFamily, number>();
-const _baselineToTopRatio = new Map<FontFamily, number>();
-const _minCharWidthRatio = new Map<FontFamily, number>();
-
-const FALLBACK_ASCENT_RATIO = 0.8;
-const FALLBACK_DESCENT_RATIO = 0.2;
-
-export function getMeasuredAscentRatio(fontFamily: FontFamily = 'Grandstander'): number {
-  const cached = _measuredAscentRatio.get(fontFamily);
-  if (cached !== undefined) return cached;
-
-  if (!areFontsLoaded()) {
-    console.warn('[text-system] getMeasuredAscentRatio called before fonts loaded! Using fallback.');
-    return FALLBACK_ASCENT_RATIO;
-  }
-
-  const ctx = getMeasureContext();
-  const testSize = 100;
-  const font = buildFontString(false, false, testSize, fontFamily);
-  setMeasureFont(font);
-  const metrics = ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
-
-  const ratio = metrics.fontBoundingBoxAscent / testSize;
-  _measuredAscentRatio.set(fontFamily, ratio);
-  return ratio;
-}
-
-export function getMeasuredDescentRatio(fontFamily: FontFamily = 'Grandstander'): number {
-  const cached = _measuredDescentRatio.get(fontFamily);
-  if (cached !== undefined) return cached;
-  if (!areFontsLoaded()) return FALLBACK_DESCENT_RATIO;
-  getBaselineToTopRatio(fontFamily); // side-populates descent cache
-  return _measuredDescentRatio.get(fontFamily) ?? FALLBACK_DESCENT_RATIO;
-}
-
-export function getBaselineToTopRatio(fontFamily: FontFamily = 'Grandstander'): number {
-  const cached = _baselineToTopRatio.get(fontFamily);
-  if (cached !== undefined) return cached;
-
-  const { lineHeightMultiplier } = FONT_FAMILIES[fontFamily];
-  if (!areFontsLoaded()) {
-    return (lineHeightMultiplier - 1) / 2 + FALLBACK_ASCENT_RATIO;
-  }
-
-  const ctx = getMeasureContext();
-  const testSize = 100;
-  const font = buildFontString(false, false, testSize, fontFamily);
-  setMeasureFont(font);
-  const m = ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
-
-  const ascent = m.fontBoundingBoxAscent;
-  const contentArea = ascent + m.fontBoundingBoxDescent;
-  const lineHeight = testSize * lineHeightMultiplier;
-  const ratio = ((lineHeight - contentArea) / 2 + ascent) / testSize;
-
-  if (!_measuredAscentRatio.has(fontFamily)) {
-    _measuredAscentRatio.set(fontFamily, ascent / testSize);
-  }
-  if (!_measuredDescentRatio.has(fontFamily)) {
-    _measuredDescentRatio.set(fontFamily, m.fontBoundingBoxDescent / testSize);
-  }
-
-  _baselineToTopRatio.set(fontFamily, ratio);
-  return ratio;
-}
-
-// --- Minimum character width (for text reflow clamping) ---
-
-export function getMinCharWidthRatio(fontFamily: FontFamily = 'Grandstander'): number {
-  const cached = _minCharWidthRatio.get(fontFamily);
-  if (cached !== undefined) return cached;
-  if (!areFontsLoaded()) return 0.7;
-  const ctx = getMeasureContext();
-  const font = buildFontString(true, false, 100, fontFamily);
-  setMeasureFont(font);
-  const ratio = ctx.measureText('W').width / 100;
-  _minCharWidthRatio.set(fontFamily, ratio);
-  return ratio;
-}
-
-export function getMinCharWidth(fontSize: number, fontFamily: FontFamily = 'Grandstander'): number {
-  return getMinCharWidthRatio(fontFamily) * fontSize;
-}
-
-const ITALIC_PAD_RATIO = 0.45;
-let _italicPadFactor: number | null = null;
-
-export function getItalicOverhangPad(fontSize: number): number {
-  if (_italicPadFactor === null) _italicPadFactor = ITALIC_PAD_RATIO * getMinCharWidthRatio('Inter');
-  const v = fontSize * _italicPadFactor;
-  return v < 2 ? 2 : v;
-}
-
-export function resetFontMetrics(): void {
-  _measuredAscentRatio.clear();
-  _measuredDescentRatio.clear();
-  _baselineToTopRatio.clear();
-  _minCharWidthRatio.clear();
-  _italicPadFactor = null;
-}
-
-// =============================================================================
-// §2.5  MEASUREMENT CACHES — Two-level, allocation-free
-// =============================================================================
-
-/**
- * Two-level measure cache: outer keyed by font, inner keyed by text.
- * Eliminates per-call concat key allocation; preserves O(1) hit cost.
- */
-const MEASURE_BY_FONT = new Map<string, Map<string, number>>();
-let measureEntryCount = 0;
-const MEASURE_SOFT_CAP = 200_000;
-
-function softEvictMeasure(): void {
-  // Cheap path: clear the whole table on cap. CHAR_ENDS_CACHE and SPACE_WIDTH_CACHE
-  // are independent — they cache typed arrays / single floats and don't depend on this LRU.
-  MEASURE_BY_FONT.clear();
-  measureEntryCount = 0;
-}
-
-export function measureTextCached(font: string, text: string): number {
-  let inner = MEASURE_BY_FONT.get(font);
-  if (inner) {
-    const w = inner.get(text);
-    if (w !== undefined) return w;
-  } else {
-    inner = new Map();
-    MEASURE_BY_FONT.set(font, inner);
-  }
-  const ctx = getMeasureContext();
-  setMeasureFont(font);
-  const w = ctx.measureText(text).width;
-  inner.set(text, w);
-  if (++measureEntryCount > MEASURE_SOFT_CAP) softEvictMeasure();
-  return w;
-}
-
-const SPACE_WIDTH_CACHE = new Map<string, number>();
-
-function getSpaceWidth(font: string): number {
-  let w = SPACE_WIDTH_CACHE.get(font);
-  if (w !== undefined) return w;
-  w = measureTextCached(font, ' ');
-  SPACE_WIDTH_CACHE.set(font, w);
-  return w;
-}
-
-// --- Grapheme boundaries (font-independent) ---
-
-const CHAR_ENDS_CACHE = new Map<string, Uint32Array>();
-
-/** Char-index end-offsets for each grapheme cluster of `text`. `out[0] = 0`,
- *  `out[i+1]` = end of i-th grapheme. Used by `sliceTextToFit` to align cuts on
- *  grapheme boundaries (LB9-correct: never splits CM/ZWJ/ZWNJ/surrogate pairs). */
-function getCharEnds(text: string): Uint32Array {
-  const hit = CHAR_ENDS_CACHE.get(text);
-  if (hit) return hit;
-  // First pass: count graphemes so we can size the typed array exactly. Avoids the
-  // intermediate string[] that the old getGraphemes carried just for its length.
-  const offsets: number[] = [0];
-  let ci = 0;
-  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    for (const { segment } of seg.segment(text)) {
-      ci += segment.length;
-      offsets.push(ci);
-    }
-  } else {
-    for (const cp of text) {
-      ci += cp.length;
-      offsets.push(ci);
-    }
-  }
-  const out = new Uint32Array(offsets);
-  CHAR_ENDS_CACHE.set(text, out);
-  return out;
-}
-
-// =============================================================================
-// §3  STAGE 1: TOKENIZE — Y.XmlFragment → TokenizedContent (SOA, in-place)
+// §2  TOKENIZE — Y.XmlFragment → TokenizedContent (SOA, in-place)
 // =============================================================================
 
 // Whitespace producing word-break opportunities. Excludes the NBSP family
@@ -370,133 +146,6 @@ function getCharEnds(text: string): Uint32Array {
 // break opportunity via the ZW class instead.
 const WS_FIRST_CHAR = /^[\t\n\v\f\r 　]/;
 const TOKENIZE_SPLIT_RE = /([\t\n\v\f\r 　]+|[^\t\n\v\f\r 　]+)/g;
-
-// UAX#14 line-break classes used by `nextSoftBreak`. Values are arbitrary; only
-// pairwise comparisons matter. AL is the default.
-const LB_AL = 0;
-const LB_NU = 1;
-const LB_OP = 2;
-const LB_CL = 3;
-const LB_CP = 4;
-const LB_EX = 5;
-const LB_IS = 6;
-const LB_SY = 7;
-const LB_QU = 8;
-const LB_HY = 9;
-const LB_BA = 10;
-const LB_SP = 11;
-const LB_GL = 12;
-const LB_ZW = 13;
-const LB_WJ = 14;
-const LB_CM = 15;
-const LB_B2 = 16;
-
-const LB_ASCII: Uint8Array = (() => {
-  const a = new Uint8Array(128);
-  for (let i = 0; i < 128; i++) a[i] = LB_AL;
-  for (let i = 48; i <= 57; i++) a[i] = LB_NU; // 0–9
-  // Whitespace — appears as its own token; classification matters only for
-  // pairs straddling the same token (rare), but we set SP for completeness.
-  a[9] = LB_SP;
-  a[10] = LB_SP;
-  a[11] = LB_SP;
-  a[12] = LB_SP;
-  a[13] = LB_SP;
-  a[32] = LB_SP;
-  // OP — open punctuation
-  a[40] = LB_OP; // (
-  a[91] = LB_OP; // [
-  a[123] = LB_OP; // {
-  // CP — close paren
-  a[41] = LB_CP; // )
-  // CL — close punctuation
-  a[93] = LB_CL; // ]
-  a[125] = LB_CL; // }
-  // EX — exclamation/question
-  a[33] = LB_EX; // !
-  a[63] = LB_EX; // ?
-  // IS — infix separators
-  a[44] = LB_IS; // ,
-  a[46] = LB_IS; // .
-  a[58] = LB_IS; // :
-  a[59] = LB_IS; // ;
-  // SY — slashes
-  a[47] = LB_SY; // /
-  // HY — hyphen
-  a[45] = LB_HY; // -
-  // BA — break-after misc
-  a[37] = LB_BA; // %
-  // QU — quotes
-  a[34] = LB_QU; // "
-  a[39] = LB_QU; // '
-  return a;
-})();
-
-function getLBClass(cc: number): number {
-  if (cc < 128) return LB_ASCII[cc];
-  if (cc === 0x00a0 || cc === 0x202f || cc === 0x2007) return LB_GL; // NBSP family → glue
-  if (cc === 0xfeff || cc === 0x2060) return LB_WJ; // ZWNBSP, WJ → word joiner
-  if (cc === 0x200b) return LB_ZW; // ZWSP → break opportunity (LB8)
-  if (cc === 0x200c || cc === 0x200d) return LB_CM; // ZWNJ, ZWJ → combining
-  if (cc === 0x2018 || cc === 0x2019 || cc === 0x201c || cc === 0x201d) return LB_QU; // smart quotes
-  if (cc === 0x2014) return LB_B2; // em dash — UAX#14 B2 (break ÷ on both sides, LB17 keeps '——' together)
-  // En dash is UAX#14 BA, but we keep it as HY so LB25 (HY × NU) keeps `5–10` glued.
-  if (cc === 0x2013) return LB_HY;
-  if (cc === 0x00ad) return LB_BA; // SHY
-  return LB_AL;
-}
-
-/** Find end of first soft-wrap sub-segment of `text[start..]` per UAX#14.
- *  Returns a char index in `text` (or `text.length` if no break). The returned
- *  index always lies on a grapheme boundary because LB9 suppresses break-before
- *  combining marks (CM, ZWJ, ZWNJ). */
-export function nextSoftBreak(text: string, start: number = 0): number {
-  for (let i = start + 1; i < text.length; i++) {
-    const prev = getLBClass(text.charCodeAt(i - 1));
-    const curr = getLBClass(text.charCodeAt(i));
-
-    // Identify break candidates: prev allows break-after, or curr opens break-before.
-    // IS (. , : ;) is NOT a break-after class — LB29 (IS × AL/HL) and LB25
-    // (numeric infix IS × NU) make the post-IS break opportunity vanish in
-    // practice for word-internal text. Omitting IS here is equivalent to
-    // applying both suppressions, while still allowing IS × OP via the OP
-    // candidate below (e.g. ":[" stays breakable).
-    // B2 (em dash) opens a break on BOTH sides per UAX#14 — appears in both lists.
-    const prevAllows =
-      prev === LB_HY ||
-      prev === LB_BA ||
-      prev === LB_SY ||
-      prev === LB_EX ||
-      prev === LB_CL ||
-      prev === LB_CP ||
-      prev === LB_ZW ||
-      prev === LB_B2;
-    const currOpensBreak = curr === LB_OP || curr === LB_B2;
-    if (!prevAllows && !currOpensBreak) continue;
-
-    // Apply UAX#14 suppressions in order.
-    if (curr === LB_CM) continue; // LB9: never split a grapheme cluster
-    if (prev === LB_WJ || curr === LB_WJ) continue; // LB11
-    if (prev === LB_GL) continue; // LB12
-    if (curr === LB_GL && prev !== LB_SP && prev !== LB_BA && prev !== LB_HY) continue; // LB12a
-    if (curr === LB_CL || curr === LB_CP || curr === LB_EX || curr === LB_IS || curr === LB_SY) continue; // LB13
-    if (prev === LB_OP) continue; // LB14
-    // LB17 is `B2 SP* × B2`. SP cannot appear within a word token (tokenizer splits on it),
-    // so pairwise B2 × B2 is sufficient.
-    if (prev === LB_B2 && curr === LB_B2) continue; // LB17
-    if (prev === LB_QU || curr === LB_QU) continue; // LB19
-    // LB25: suppress break inside numeric expressions. HY×NU keeps signed numbers
-    // glued (e.g. `:-2947.84` stays one chunk); SY×NU keeps fractions glued
-    // (e.g. `5/3`). HY×AL still breaks (e.g. `cross-hatch`) — LB25 doesn't apply.
-    // IS×NU and NU×NU are already suppressed by their LHS not being in prevAllows.
-    if ((prev === LB_HY || prev === LB_SY) && curr === LB_NU) continue; // LB25
-    if ((prev === LB_AL || prev === LB_NU) && curr === LB_OP) continue; // LB30 (AL/NU × OP)
-    if ((prev === LB_CL || prev === LB_CP) && (curr === LB_AL || curr === LB_NU)) continue; // LB30 (CL/CP × AL/NU)
-
-    return i;
-  }
-  return text.length;
-}
 
 /** Compute spaceMode for a whitespace token's text: 1 if all chars === ' ', else 2. */
 function classifySpaceText(text: string): number {
@@ -710,7 +359,7 @@ export function parseAndTokenize(fragment: Y.XmlFragment, out?: TokenizedContent
 }
 
 // =============================================================================
-// §4  STAGE 2: MEASURE — TokenizedContent → MeasuredContent (SOA, in-place)
+// §3  MEASURE — TokenizedContent → MeasuredContent (SOA, in-place)
 // =============================================================================
 
 function createMeasuredContent(): MeasuredContent {
@@ -841,7 +490,7 @@ export function measureTokenizedContent(
 }
 
 // =============================================================================
-// §5  STAGE 3: LAYOUT — MeasuredContent → TextLayout (SOA, in-place)
+// §4  LAYOUT — MeasuredContent → TextLayout (SOA, in-place)
 // =============================================================================
 
 const SLICE_RESULT = { head: '', tail: '', headW: 0 };
@@ -1225,7 +874,7 @@ export function layoutMeasuredContent(content: MeasuredContent, width: TextWidth
 }
 
 // =============================================================================
-// §6  CACHE — Three-tier orchestration (tokenize → measure → layout)
+// §5  CACHE — Three-tier orchestration (tokenize → measure → layout)
 // =============================================================================
 
 interface CacheEntry {
@@ -1356,10 +1005,7 @@ class TextLayoutCache {
 
   clear(): void {
     this.cache.clear();
-    MEASURE_BY_FONT.clear();
-    measureEntryCount = 0;
-    SPACE_WIDTH_CACHE.clear();
-    CHAR_ENDS_CACHE.clear();
+    clearMeasurementCaches();
   }
 
   has(objectId: string): boolean {
@@ -1453,7 +1099,7 @@ class TextLayoutCache {
 export const textLayoutCache = new TextLayoutCache();
 
 // =============================================================================
-// §7  OUTPUT — Alignment, rendering, spatial index
+// §6  OUTPUT — Alignment, rendering, spatial index
 // =============================================================================
 
 export function anchorFactor(align: TextAlign): number {
@@ -1471,43 +1117,15 @@ export function getLineStartX(originX: number, boxWidth: number, lineVisualWidth
   return left + (boxWidth - lineVisualWidth);
 }
 
-const LABEL_PADDING = 8;
-const SQRT2_OVER_2 = Math.SQRT2 / 2;
-
-export function computeLabelTextBox(shapeType: string, frame: FrameTuple): FrameTuple {
-  const [fx, fy, fw, fh] = frame;
-  const pad = LABEL_PADDING;
-  switch (shapeType) {
-    case 'ellipse': {
-      const iw = fw * SQRT2_OVER_2,
-        ih = fh * SQRT2_OVER_2;
-      const cx = fx + fw / 2,
-        cy = fy + fh / 2;
-      return [cx - iw / 2 + pad, cy - ih / 2 + pad, Math.max(0, iw - 2 * pad), Math.max(0, ih - 2 * pad)];
-    }
-    case 'diamond': {
-      const iw = fw / 2,
-        ih = fh / 2;
-      const cx = fx + fw / 2,
-        cy = fy + fh / 2;
-      return [cx - iw / 2 + pad, cy - ih / 2 + pad, Math.max(0, iw - 2 * pad), Math.max(0, ih - 2 * pad)];
-    }
-    case 'triangle': {
-      // Apex-up triangle. Largest inscribed axis-aligned rect that fits with its
-      // top edge at the triangle's mid-height: width tapers as `(v/h) · w`, so
-      // at v = h/2 the available width is exactly w/2. Place the rect in the
-      // lower (wider) half — it just kisses both slanted edges at the top.
-      const iw = fw / 2,
-        ih = fh / 2;
-      const cx = fx + fw / 2;
-      return [cx - iw / 2 + pad, fy + fh / 2 + pad, Math.max(0, iw - 2 * pad), Math.max(0, ih - 2 * pad)];
-    }
-    default:
-      return [fx + pad, fy + pad, Math.max(0, fw - 2 * pad), Math.max(0, fh - 2 * pad)];
-  }
+/** Vertical offset for constrained-box content alignment (matches CSS clamp behavior).
+ *  Shared by sticky-note rendering and shape-label rendering. */
+export function getNoteContentOffsetY(alignV: TextAlignV, maxContentH: number, contentH: number): number {
+  if (alignV === 'top') return 0;
+  const space = Math.max(0, maxContentH - contentH);
+  return alignV === 'middle' ? space / 2 : space;
 }
 
-// --- Renderers ---
+// --- Renderer ---
 
 export function renderTextLayout(
   ctx: CanvasRenderingContext2D,
@@ -1585,94 +1203,8 @@ export function renderTextLayout(
   ctx.restore();
 }
 
-export function renderShapeLabel(
-  ctx: CanvasRenderingContext2D,
-  layout: TextLayout,
-  textBox: FrameTuple,
-  color: string,
-  fontFamily: FontFamily,
-  align: TextAlign = 'center',
-  alignV: TextAlignV = 'middle',
-): void {
-  const [tbx, tby, tbw, tbh] = textBox;
-  if (tbw <= 0 || tbh <= 0 || layout.lineCount === 0) return;
-
-  const { fontSize, lineHeight, lineCount } = layout;
-  const contentHeight = lineCount * lineHeight;
-  const baselineToTop = fontSize * getBaselineToTopRatio(fontFamily);
-  const needsClip = contentHeight > tbh;
-
-  const vOffset = getNoteContentOffsetY(alignV, tbh, contentHeight);
-  const contentTopY = needsClip ? tby : tby + vOffset;
-  const firstBaselineY = contentTopY + baselineToTop;
-
-  if (needsClip) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(tbx, tby, tbw, tbh);
-    ctx.clip();
-  }
-
-  ctx.textBaseline = 'alphabetic';
-  ctx.textRendering = 'optimizeSpeed';
-
-  const shapeAnchorX = tbx + anchorFactor(align) * tbw;
-  const hlR = fontSize * 0.25;
-  let lastFont = '';
-  for (let li = 0; li < lineCount; li++) {
-    const startRun = layout.lineRunStart[li];
-    const endRun = layout.lineRunStart[li + 1];
-    if (startRun === endRun) continue;
-    const lineY = firstBaselineY + layout.lineBaselineY[li];
-    const lineW = layout.lineAlignmentWidth[li];
-    const startX = getLineStartX(shapeAnchorX, tbw, lineW, align);
-
-    // Pass 1: highlights
-    for (let r = startRun; r < endRun; r++) {
-      const hl = layout.runHighlight[r];
-      if (!hl) continue;
-      ctx.fillStyle = hl;
-      const hlX = startX + layout.runAdvanceX[r];
-      const hlY = lineY - baselineToTop;
-      const runW = layout.runAdvanceWidth[r];
-      const hlEnd = hlX + runW;
-      const clL = Math.max(hlX, tbx);
-      const clR = Math.min(hlEnd, tbx + tbw);
-      if (clR > clL) {
-        const rL = clL > hlX ? 0 : hlR,
-          rR = clR < hlEnd ? 0 : hlR;
-        ctx.beginPath();
-        ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
-        ctx.fill();
-      }
-    }
-
-    // Pass 2: text
-    ctx.fillStyle = color;
-    for (let r = startRun; r < endRun; r++) {
-      const f = layout.runFont[r];
-      if (f !== lastFont) {
-        ctx.font = f;
-        lastFont = f;
-      }
-      ctx.fillText(layout.runText[r], startX + layout.runAdvanceX[r], lineY);
-    }
-  }
-
-  if (needsClip) ctx.restore();
-}
-
-// --- Module-scope label scratch (one buffer for ALL labeled shapes per frame) ---
-const _labelScratch = createTextLayout();
-
-/** Layout into a shared module-level scratch buffer. Used by renderer's transform-preview path
- *  for shape labels (drawShapeLabelWithFrame) — eliminates per-shape per-frame allocation. */
-export function layoutIntoLabelScratch(measured: MeasuredContent, width: TextWidth, fontSize: number): TextLayout {
-  return layoutMeasuredContent(measured, width, fontSize, _labelScratch);
-}
-
 // =============================================================================
-// §8  SPATIAL INDEX — Derived frame / BBox for text objects
+// §7  SPATIAL — Derived frame / BBox for text objects
 // =============================================================================
 
 export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {

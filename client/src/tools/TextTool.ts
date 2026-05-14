@@ -37,6 +37,7 @@ import {
 } from '@/core/accessors';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { TextCollaboration } from '@/core/text/extensions';
+import { computeLabelTextBox } from '@/core/text/shape-label';
 import {
   getNoteContentWidth,
   getNoteDerivedFontSize,
@@ -45,7 +46,8 @@ import {
   NOTE_FILL_COLOR,
   NOTE_WIDTH,
 } from '@/core/text/sticky-note';
-import { anchorFactor, computeLabelTextBox, FONT_FAMILIES, getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-system';
+import { getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-measure';
+import { anchorFactor, FONT_FAMILIES } from '@/core/text/text-system';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, transact } from '@/runtime/room-runtime';

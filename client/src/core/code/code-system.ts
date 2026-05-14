@@ -22,7 +22,7 @@ import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import type { CodeLanguage } from '../accessors';
 import { getCodeProps } from '../accessors';
-import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-system';
+import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-measure';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 
 import {

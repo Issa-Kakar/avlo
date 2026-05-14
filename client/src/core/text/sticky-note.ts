@@ -14,19 +14,16 @@ import type { FontFamily, NoteProps } from '../accessors';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { ObjectHandle } from '../types/objects';
 import { FONT_FAMILIES } from './font-config';
+import { nextSoftBreak } from './line-break';
+import { buildFontMatrix, fontFromMatrix, getBaselineToTopRatio, measureTextCached } from './text-measure';
 import type { MeasuredContent, TextLayout } from './text-system';
 import {
   anchorFactor,
-  buildFontMatrix,
   createTextLayout,
-  fontFromMatrix,
-  getBaselineToTopRatio,
   getLineStartX,
   getNoteContentOffsetY,
   layoutMeasuredContent,
-  measureTextCached,
   measureTokenizedContent,
-  nextSoftBreak,
   parseAndTokenize,
   sliceTextToFit,
   textLayoutCache,

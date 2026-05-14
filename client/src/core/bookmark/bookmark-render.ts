@@ -3,7 +3,7 @@ import { readBookmarkRender } from '@/renderer/render-accessors';
 import { getHandle } from '@/runtime/room-runtime';
 import { getBookmarkProps } from '../accessors';
 import { getBitmap } from '../image/image-manager';
-import { buildFontString, measureTextCached } from '../text/text-system';
+import { buildFontString, measureTextCached } from '../text/text-measure';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { BookmarkProps, ObjectHandle } from '../types/objects';
 
