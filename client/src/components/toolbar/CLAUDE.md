@@ -435,12 +435,12 @@ inherited by every toolbar descendant, deliberately *not* in the page-global
 `:root`, so they can't bleed into other components):
 
 ```css
---dock-bg:        #101720
+--dock-bg:        #171717
 --dock-border:    #4a4a4a
 --dock-hover:     #383838
 --accent:         #1f51ff
---icon-muted:     #f5f5f5
---icon-selected:  #f5f5f5
+--icon-muted:     #ffffff
+--icon-selected:  #ffffff
 --divider:        #4a4a4a
 --ring:           #1d4ed8
 ```
