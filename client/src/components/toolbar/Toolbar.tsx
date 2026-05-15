@@ -2,22 +2,20 @@ import { memo, type ReactNode } from 'react';
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { getActiveRoomDoc, hasActiveRoom } from '@/runtime/room-runtime';
 import { isStrokeTool, setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
-import {
-  IconArrow,
-  IconCode,
-  IconDiamond,
-  IconEllipse,
-  IconEraser,
-  IconImage,
-  IconPan,
-  IconPen,
-  IconRectangle,
-  IconRedo,
-  IconSelect,
-  IconStickyNote,
-  IconText,
-  IconUndo,
-} from './icons';
+import { IconArrow } from './icons/IconArrow';
+import { IconCode } from './icons/IconCode';
+import { IconDiamond } from './icons/IconDiamond';
+import { IconEllipse } from './icons/IconEllipse';
+import { IconEraser } from './icons/IconEraser';
+import { IconImage } from './icons/IconImage';
+import { IconPan } from './icons/IconPan';
+import { IconPen } from './icons/IconPen';
+import { IconRectangle } from './icons/IconRectangle';
+import { IconRedo } from './icons/IconRedo';
+import { IconSelect } from './icons/IconSelect';
+import { IconStickyNote } from './icons/IconStickyNote';
+import { IconText } from './icons/IconText';
+import { IconUndo } from './icons/IconUndo';
 import { ConnectorInspector } from './inspectors/ConnectorInspector';
 import { PenInspector } from './inspectors/PenInspector';
 import './Toolbar.css';

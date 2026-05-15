@@ -10,7 +10,8 @@ import {
   useDeviceUIStore,
 } from '@/stores/device-ui-store';
 import { ColorSlots } from '../color/ColorSlots';
-import { IconInspectorHighlighter, IconInspectorPen } from '../icons';
+import { IconInspectorHighlighter } from '../icons/IconInspectorHighlighter';
+import { IconInspectorPen } from '../icons/IconInspectorPen';
 import { InspectorButton } from './InspectorButton';
 import { WeightSelector } from './WeightSelector';
 import './Inspector.css';

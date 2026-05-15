@@ -2,7 +2,7 @@ import { type FC, type SVGProps, useCallback, useState } from 'react';
 import { selectConnector, setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
 import { ColorField } from '../color/ColorField';
 import { CONNECTOR_VARIANT_IDS, CONNECTOR_VARIANT_SPECS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
-import { IconConnectorArrow, IconConnectorDoubleArrow, IconConnectorElbow, IconConnectorLine } from '../icons';
+import { IconConnectorArrow, IconConnectorDoubleArrow, IconConnectorElbow, IconConnectorLine } from '../icons/ConnectorVariantIcons';
 import { InspectorButton } from './InspectorButton';
 import './Inspector.css';
 

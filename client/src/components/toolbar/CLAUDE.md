@@ -55,7 +55,7 @@ import.
 | `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + actions-pill + tooltip styling. |
 | `weights.ts` | `STROKE_WEIGHTS: readonly StrokeWeightOption[]` (4 entries `{ width, Icon }`) + `StrokeWidthPreset = 4 \| 7 \| 10 \| 13` (UI-only union; store field is `number`). |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId \| null`. Pure, table-driven. |
-| `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). |
+| `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). No barrel — consumers import each icon directly. |
 | `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s the 4 `color/*` primitive CSS files. |
 | `inspectors/InspectorButton.tsx/css` | Memoized 30×30 square icon button with `is-active` state. Used by pen/highlighter toggles, weight buttons, connector variants. |
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
@@ -381,17 +381,18 @@ slot updates the right column without subscribing to both clusters.
 
 ## Icons
 
-All toolbar icons live in `components/toolbar/icons/`. One icon per file with
-their name as the filename (`IconSelect.tsx`, `IconPan.tsx`, …) plus two
-grouped exceptions — `StrokeWeightIcons.tsx` and `ConnectorVariantIcons.tsx`
-— which keep tight design families together while still exporting each
-member as a separate component. `icons/index.ts` is the barrel that every
-toolbar consumer imports from (`from './icons'` from the toolbar root,
-`from '../icons'` from `inspectors/`).
+All toolbar icons live in `components/toolbar/icons/`. One icon per file
+with their name as the filename (`IconSelect.tsx`, `IconPan.tsx`, …) plus
+two grouped exceptions — `StrokeWeightIcons.tsx` and
+`ConnectorVariantIcons.tsx` — which keep tight design families together
+while still exporting each member as a separate component. **No barrel** —
+consumers import each icon directly (`from './icons/IconSelect'`, etc.) so
+the file system itself is the canonical export list. Grouped files are
+imported as `from './icons/StrokeWeightIcons'` etc., picking the members
+out in a single statement.
 
 ```
 icons/
-├── index.ts                          # barrel
 ├── IconSelect.tsx                    ┐
 ├── IconPan.tsx                       │
 ├── IconStickyNote.tsx                │
@@ -623,8 +624,7 @@ When the prompt asks you to tweak something here:
 - If you add a new persisted field, update `partialize` (additive — old
   payloads silently lack new fields and pick up the literal defaults).
 - If you delete an icon from `components/toolbar/icons/`, grep for
-  consumers first and update `icons/index.ts`. The deleted-ToolPanel
-  didn't take its icons with it.
+  consumers first. The deleted-ToolPanel didn't take its icons with it.
 - Don't add comments that explain WHAT well-named code does. Reserve
   comments for hidden invariants (the existing comments in this surface
   are good models — e.g. the `setConnectorMode` elbow-skips-caps
