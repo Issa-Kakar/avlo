@@ -36,9 +36,10 @@ export const ColorButton = memo(function ColorButton({ color, ariaLabel, onClick
 });
 
 // CSS custom property — typed via cast because React.CSSProperties doesn't
-// list app-specific custom properties. Centralized so the cast lives in
-// one place rather than at every call site.
-function colorButtonStyle(color: string, selected: boolean): React.CSSProperties {
+// list app-specific custom properties. Centralized so the cast lives in one
+// place rather than at every call site; exported because ColorPicker's
+// swatches reuse it to get the same `--slot-tint` active ring.
+export function colorButtonStyle(color: string, selected: boolean): React.CSSProperties {
   if (!selected) return { backgroundColor: color };
   return { '--slot-tint': color, backgroundColor: color } as React.CSSProperties;
 }

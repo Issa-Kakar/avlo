@@ -56,6 +56,17 @@
   border-color: rgba(255, 255, 255, 0.55);
 }
 
+/* Active swatch: dock-bg gap ring + the swatch's own color — the same composite
+   as ColorButton.is-active, so a picked color reads like the active slot.
+   --slot-tint is set inline by colorButtonStyle(). No dark-variant override
+   needed: the rings sit outside the 1px border, which already carries the
+   near-black edge (above). */
+.picker-swatch.is-active {
+  box-shadow:
+    0 0 0 2px var(--dock-bg, #101720),
+    0 0 0 4px var(--slot-tint);
+}
+
 .picker-swatch:focus-visible {
   outline: 2px solid var(--ring, #1d4ed8);
   outline-offset: 2px;

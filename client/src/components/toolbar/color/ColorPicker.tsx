@@ -1,5 +1,6 @@
 import { memo, useState } from 'react';
 import { CheckIcon } from './CheckIcon';
+import { colorButtonStyle } from './ColorButton';
 import { checkmarkColorFor, colorsEqual, isNearBlack, PALETTE, PALETTE_COLS } from './palette';
 
 interface Props {
@@ -17,13 +18,13 @@ interface SwatchProps {
 const Swatch = memo(function Swatch({ color, isActive, onPickColor }: SwatchProps) {
   return (
     <button
-      className="picker-swatch"
+      className={`picker-swatch ${isActive ? 'is-active' : ''}`}
       data-near-black={isNearBlack(color) || undefined}
-      style={{ backgroundColor: color }}
+      style={colorButtonStyle(color, isActive)}
       aria-label={`Color ${color}`}
       onClick={() => onPickColor(color)}
     >
-      {/* Selected swatch is marked by the checkmark alone — intentionally no outline ring. */}
+      {/* Active swatch: checkmark + the active slot's tinted offset ring (ColorPicker.css). */}
       {isActive && <CheckIcon color={checkmarkColorFor(color)} size={13} />}
     </button>
   );
