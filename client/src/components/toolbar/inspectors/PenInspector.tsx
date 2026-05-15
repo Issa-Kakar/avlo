@@ -1,5 +1,4 @@
 import { useCallback, useState } from 'react';
-import { IconInspectorHighlighter, IconInspectorPen } from '@/components/icons';
 import {
   type SlotIndex,
   type StrokeTool,
@@ -11,6 +10,7 @@ import {
   useDeviceUIStore,
 } from '@/stores/device-ui-store';
 import { ColorSlots } from '../color/ColorSlots';
+import { IconInspectorHighlighter, IconInspectorPen } from '../icons';
 import { InspectorButton } from './InspectorButton';
 import { WeightSelector } from './WeightSelector';
 import './Inspector.css';

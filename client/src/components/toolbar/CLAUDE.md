@@ -32,7 +32,7 @@ renderer/layers/connector-preview.ts ← reads connector cluster live
 tools/DrawingTool.ts               ← reads pen/highlighter/shape at begin
 tools/ConnectorTool.ts             ← reads connector cluster at begin
 tools/selection/selection-field-table.ts ← persist sinks
-components/icons/index.tsx         ← toolbar icon source
+components/toolbar/icons/          ← toolbar icon source (one icon per file)
 components/RoomPage.tsx            ← mount site
 ```
 
@@ -55,10 +55,11 @@ import.
 | `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + actions-pill + tooltip styling. |
 | `weights.ts` | `STROKE_WEIGHTS: readonly StrokeWeightOption[]` (4 entries `{ width, Icon }`) + `StrokeWidthPreset = 4 \| 7 \| 10 \| 13` (UI-only union; store field is `number`). |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId \| null`. Pure, table-driven. |
+| `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). |
 | `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s the 4 `color/*` primitive CSS files. |
 | `inspectors/InspectorButton.tsx/css` | Memoized 30×30 square icon button with `is-active` state. Used by pen/highlighter toggles, weight buttons, connector variants. |
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
-| `inspectors/ConnectorInspector.tsx` | 4 variant buttons (inline SVGs at viewBox center 12,12), divider, `<ColorField>` + picker. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` module-level. |
+| `inspectors/ConnectorInspector.tsx` | 4 variant buttons sourced from `../icons` via `VARIANT_ICONS` lookup table, divider, `<ColorField>` + picker. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
 | `inspectors/WeightSelector.tsx` | Memoized **controlled** 4-button stroke-weight row (`value` / `onChange`). Returns a fragment so the buttons stay direct flex children of `.inspector`. Per-preset `useMemo` handler table — built to also drive `connector.width` later. |
 | `color/ColorSlots.tsx/css` | Memoized pen/highlighter **3-slot** column — definitionally 3-slot, iterates `SLOT_INDICES`. Owns a `usePickerDismiss` wrapper containing the slots + picker. `ColorSlots.css` styles the column (`.color-slots`) and opts its slots out of `ColorButton`'s hover-scale. |
 | `color/ColorField.tsx/css` | Memoized connector single-color field — sibling of `ColorSlots`, also built on `ColorButton`. One trigger button (no checkmark) + picker. Owns a `usePickerDismiss` wrapper. |
@@ -380,24 +381,44 @@ slot updates the right column without subscribing to both clusters.
 
 ## Icons
 
-`components/icons/index.tsx` — 28 exports. The toolbar uses:
+All toolbar icons live in `components/toolbar/icons/`. One icon per file with
+their name as the filename (`IconSelect.tsx`, `IconPan.tsx`, …) plus two
+grouped exceptions — `StrokeWeightIcons.tsx` and `ConnectorVariantIcons.tsx`
+— which keep tight design families together while still exporting each
+member as a separate component. `icons/index.ts` is the barrel that every
+toolbar consumer imports from (`from './icons'` from the toolbar root,
+`from '../icons'` from `inspectors/`).
 
 ```
-Toolbar main pill : IconSelect, IconPan, IconStickyNote, IconText,
-                    IconRectangle, IconEllipse, IconDiamond, IconArrow,
-                    IconPen, IconCode, IconImage, IconEraser
-Toolbar actions   : IconUndo, IconRedo
-PenInspector      : IconInspectorPen, IconInspectorHighlighter
-WeightSelector    : IconStrokeWeight1, IconStrokeWeight2, IconStrokeWeight3, IconStrokeWeight4
-ConnectorInspector: 4 inline SVGs (line / arrow / doubleArrow / elbow),
-                    NOT in icons/index.tsx — they live inside ConnectorInspector.tsx
-                    as a single memoized component (ConnectorVariantIcon) so
-                    they can stay in tight design lock with the toolbar.
+icons/
+├── index.ts                          # barrel
+├── IconSelect.tsx                    ┐
+├── IconPan.tsx                       │
+├── IconStickyNote.tsx                │
+├── IconText.tsx                      │
+├── IconRectangle.tsx                 │  main pill (12 individual files)
+├── IconEllipse.tsx                   │
+├── IconDiamond.tsx                   │
+├── IconArrow.tsx                     │  ← connector tool button (the diagonal arrow)
+├── IconPen.tsx                       │
+├── IconCode.tsx                      │
+├── IconImage.tsx                     │
+├── IconEraser.tsx                    ┘
+├── IconUndo.tsx                      ┐  actions
+├── IconRedo.tsx                      ┘
+├── IconInspectorPen.tsx              ┐  pen inspector
+├── IconInspectorHighlighter.tsx      ┘
+├── StrokeWeightIcons.tsx             # IconStrokeWeight1..4 (shared squiggle lineage)
+└── ConnectorVariantIcons.tsx         # IconConnectorLine / Arrow / DoubleArrow / Elbow
+                                      #   (shared VARIANT_STROKE, hosted by ConnectorInspector
+                                      #    via a `Record<ConnectorVariantId, FC>` lookup)
 ```
 
-**Defined but unreferenced** (kept around as raw material — feel free to
-delete if confirmed unused after a refactor): `IconHighlighter`, `IconFill`,
-`IconLine`.
+Zoom/help icons (`IconZoomPlus`, `IconZoomMinus`, `IconZoomToFit`, `IconHelp`,
+`IconMouseSettings`) live in the sibling `components/icons/index.tsx` and
+are consumed by `ZoomControls.tsx` — **not toolbar icons; don't move them
+here.** TopBar's logo/sidebar/kebab icons are their own files under
+`components/icons/`.
 
 Reference design notes for the icon system live in
 `docs/TOOLBAR_ICON_DESIGN.md` — chunky filled-path approach inspired by
@@ -550,12 +571,12 @@ the prompt.**
 - **`checkmarkColorFor` threshold** (`palette.ts`, `> 0.55`) — separate
   from `isDark` because contrast threshold and "needs an edge stroke
   against the dock" are different perceptual questions.
-- **Connector variant icons** — inlined in `ConnectorInspector.tsx`
-  (`ConnectorVariantIcon`), placeholder geometry, viewBox 0–24 with
-  bbox center at (12, 12). All four want a design pass.
-- **Stroke-weight icons** (`IconStrokeWeight1..4` in `icons/index.tsx`)
-  — W2/W3 currently use Mural's `drawWeight20` / `drawWeight40` paths;
-  W1 and W4 are custom. Geometry is up for tuning.
+- **Connector variant icons** (`icons/ConnectorVariantIcons.tsx`) —
+  `IconConnectorLine/Arrow/DoubleArrow/Elbow`, placeholder geometry,
+  viewBox 0–24 with bbox center at (12, 12). All four want a design pass.
+- **Stroke-weight icons** (`icons/StrokeWeightIcons.tsx`,
+  `IconStrokeWeight1..4`) — W2/W3 currently use Mural's `drawWeight20`
+  / `drawWeight40` paths; W1 and W4 are custom. Geometry is up for tuning.
 - **Eraser + Code icons** — both ported from svgrepo, still WIP. The
   code icon's inner chevrons/slash render small inside the 24-unit
   viewBox.
@@ -601,8 +622,9 @@ When the prompt asks you to tweak something here:
   `Toolbar.tsx`'s inspector dispatch.
 - If you add a new persisted field, update `partialize` (additive — old
   payloads silently lack new fields and pick up the literal defaults).
-- If you delete an icon from `components/icons/index.tsx`, grep for
-  consumers first. The deleted-ToolPanel didn't take its icons with it.
+- If you delete an icon from `components/toolbar/icons/`, grep for
+  consumers first and update `icons/index.ts`. The deleted-ToolPanel
+  didn't take its icons with it.
 - Don't add comments that explain WHAT well-named code does. Reserve
   comments for hidden invariants (the existing comments in this surface
   are good models — e.g. the `setConnectorMode` elbow-skips-caps

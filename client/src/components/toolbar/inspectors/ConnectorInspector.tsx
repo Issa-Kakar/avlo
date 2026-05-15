@@ -1,7 +1,8 @@
-import { memo, useCallback, useState } from 'react';
+import { type FC, type SVGProps, useCallback, useState } from 'react';
 import { selectConnector, setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
 import { ColorField } from '../color/ColorField';
 import { CONNECTOR_VARIANT_IDS, CONNECTOR_VARIANT_SPECS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
+import { IconConnectorArrow, IconConnectorDoubleArrow, IconConnectorElbow, IconConnectorLine } from '../icons';
 import { InspectorButton } from './InspectorButton';
 import './Inspector.css';
 
@@ -10,6 +11,13 @@ const VARIANT_HANDLERS: Record<ConnectorVariantId, () => void> = {
   arrow: () => setConnectorMode('arrow'),
   doubleArrow: () => setConnectorMode('doubleArrow'),
   elbow: () => setConnectorMode('elbow'),
+};
+
+const VARIANT_ICONS: Record<ConnectorVariantId, FC<SVGProps<SVGSVGElement>>> = {
+  line: IconConnectorLine,
+  arrow: IconConnectorArrow,
+  doubleArrow: IconConnectorDoubleArrow,
+  elbow: IconConnectorElbow,
 };
 
 export function ConnectorInspector() {
@@ -28,16 +36,19 @@ export function ConnectorInspector() {
 
   return (
     <div className="inspector inspector-connector">
-      {CONNECTOR_VARIANT_IDS.map((id) => (
-        <InspectorButton
-          key={id}
-          isActive={id === activeVariant}
-          ariaLabel={CONNECTOR_VARIANT_SPECS[id].label}
-          onClick={VARIANT_HANDLERS[id]}
-        >
-          <ConnectorVariantIcon variant={id} />
-        </InspectorButton>
-      ))}
+      {CONNECTOR_VARIANT_IDS.map((id) => {
+        const Icon = VARIANT_ICONS[id];
+        return (
+          <InspectorButton
+            key={id}
+            isActive={id === activeVariant}
+            ariaLabel={CONNECTOR_VARIANT_SPECS[id].label}
+            onClick={VARIANT_HANDLERS[id]}
+          >
+            <Icon className="insp-icon" />
+          </InspectorButton>
+        );
+      })}
 
       <div className="inspector-divider" />
 
@@ -51,51 +62,3 @@ export function ConnectorInspector() {
     </div>
   );
 }
-
-interface VariantIconProps {
-  variant: ConnectorVariantId;
-}
-
-// Crude placeholder geometry — to be redesigned. For now each path is
-// laid out so its bbox center sits at (12, 12) inside the 0-24 viewBox.
-const VARIANT_STROKE = {
-  stroke: 'currentColor',
-  strokeWidth: 2.25,
-  strokeLinecap: 'round' as const,
-  strokeLinejoin: 'round' as const,
-  fill: 'none',
-};
-
-const ConnectorVariantIcon = memo(function ConnectorVariantIcon({ variant }: VariantIconProps) {
-  if (variant === 'line') {
-    return (
-      <svg className="insp-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <line x1="4" y1="12" x2="20" y2="12" {...VARIANT_STROKE} />
-      </svg>
-    );
-  }
-  if (variant === 'arrow') {
-    return (
-      <svg className="insp-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <line x1="4" y1="12" x2="18" y2="12" {...VARIANT_STROKE} />
-        <path d="M15 9L18 12L15 15" {...VARIANT_STROKE} />
-      </svg>
-    );
-  }
-  if (variant === 'doubleArrow') {
-    return (
-      <svg className="insp-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <line x1="6" y1="12" x2="18" y2="12" {...VARIANT_STROKE} />
-        <path d="M9 9L6 12L9 15" {...VARIANT_STROKE} />
-        <path d="M15 9L18 12L15 15" {...VARIANT_STROKE} />
-      </svg>
-    );
-  }
-  // Elbow w/ end-cap arrow. bbox x[6,18], y[8,16] → center (12, 12).
-  return (
-    <svg className="insp-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M6 8H13C14.1046 8 15 8.8954 15 10V16" {...VARIANT_STROKE} />
-      <path d="M12 13L15 16L18 13" {...VARIANT_STROKE} />
-    </svg>
-  );
-});

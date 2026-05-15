@@ -1,4 +1,4 @@
-import { IconStrokeWeight1, IconStrokeWeight2, IconStrokeWeight3, IconStrokeWeight4 } from '@/components/icons';
+import { IconStrokeWeight1, IconStrokeWeight2, IconStrokeWeight3, IconStrokeWeight4 } from './icons';
 
 // Preset widths exposed by the pen/highlighter button row.
 // The store field is `number` — these are the UI presets, not the value domain.

@@ -1,4 +1,7 @@
 import { memo, type ReactNode } from 'react';
+import { openImageFilePicker } from '@/core/image/image-actions';
+import { getActiveRoomDoc, hasActiveRoom } from '@/runtime/room-runtime';
+import { isStrokeTool, setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
 import {
   IconArrow,
   IconCode,
@@ -14,10 +17,7 @@ import {
   IconStickyNote,
   IconText,
   IconUndo,
-} from '@/components/icons';
-import { openImageFilePicker } from '@/core/image/image-actions';
-import { getActiveRoomDoc, hasActiveRoom } from '@/runtime/room-runtime';
-import { isStrokeTool, setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
+} from './icons';
 import { ConnectorInspector } from './inspectors/ConnectorInspector';
 import { PenInspector } from './inspectors/PenInspector';
 import './Toolbar.css';
