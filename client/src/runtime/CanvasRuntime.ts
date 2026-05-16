@@ -30,6 +30,7 @@ export interface RuntimeConfig {
   baseCanvas: HTMLCanvasElement;
   overlayCanvas: HTMLCanvasElement;
   editorHost: HTMLDivElement;
+  cursorHost: HTMLDivElement;
 }
 
 // --- Zoom constants ---
@@ -47,10 +48,10 @@ export class CanvasRuntime {
   private wheelTimestamps: number[] = [];
 
   start(config: RuntimeConfig): void {
-    const { container, baseCanvas, overlayCanvas, editorHost } = config;
+    const { container, baseCanvas, overlayCanvas, editorHost, cursorHost } = config;
 
     // 1. Surface manager: DOM refs, contexts, resize/DPR
-    this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost);
+    this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost, cursorHost);
     this.surfaceManager.start();
 
     // 2. Render loops

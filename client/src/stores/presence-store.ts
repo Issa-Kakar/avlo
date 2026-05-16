@@ -1,9 +1,9 @@
 /**
  * Presence Store — identity-only state for React components.
  *
- * Cursor positions never enter this store (they live in the mutable
- * PeerCursorState map in lib/presence.ts, read directly by
- * CursorAnimationJob at render time with zero Zustand overhead).
+ * Cursor positions never enter this store. They live in the SoA typed-array
+ * tables inside `PresenceCursorRenderer` and project to DOM `<img>` elements
+ * each rAF tick — Zustand overhead would be wasted on a non-React render path.
  */
 
 import { create } from 'zustand';

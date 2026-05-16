@@ -3,29 +3,15 @@
  *
  * Provider-owned awareness: YProvider creates the Awareness instance,
  * we attach to it via `attach(provider)` and detach via `detach()`.
- * All module-level state lives here. CursorAnimationJob reads
- * `getPeerCursors()` directly — zero Zustand overhead per frame.
+ * Peer-state ownership lives in the `PresenceCursorRenderer` module-level
+ * singleton — this file keeps the send path, receive dispatch, and lifecycle.
  */
 
 import type YProvider from 'y-partyserver/provider';
 import type { Awareness as YAwareness } from 'y-protocols/awareness';
-import { clearBitmapCache } from '@/renderer/animation/cursor-bitmap';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { isMobile } from '@/stores/camera-store';
 import { getUserProfile } from '@/stores/device-ui-store';
-import { type PeerIdentity, usePresenceStore } from '@/stores/presence-store';
-
-// ─── Types ───────────────────────────────────────────────────────────
-
-export interface PeerCursorState {
-  userId: string;
-  name: string;
-  color: string;
-  target: [number, number];
-  display: [number, number];
-  hasCursor: boolean;
-  isSettled: boolean;
-}
+import { PresenceCursorRenderer } from './presence-renderer';
 
 // ─── Module State ────────────────────────────────────────────────────
 
@@ -35,6 +21,7 @@ let currentProvider: YProvider | null = null;
 let cachedLocalClientId = -1;
 let updateHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }) => void) | null = null;
 let statusHandler: ((event: { status: string }) => void) | null = null;
+let cursorRenderer: PresenceCursorRenderer | null = null;
 
 // Send
 let dirty = false;
@@ -50,9 +37,6 @@ const THROTTLE_MS = 50;
 const BACKPRESSURE_HIGH = 128 * 1024;
 const BACKPRESSURE_CRITICAL = 512 * 1024;
 
-// Receive
-const peerCursors = new Map<number, PeerCursorState>();
-
 // ─── Lifecycle ───────────────────────────────────────────────────────
 
 /**
@@ -65,20 +49,22 @@ export function attach(provider: YProvider, onStatusChange?: (connected: boolean
   currentAwareness = awareness;
   cachedLocalClientId = awareness.clientID;
 
+  cursorRenderer = new PresenceCursorRenderer(cachedLocalClientId);
+  cursorRenderer.attach();
+
   updateHandler = (changes: { added: number[]; updated: number[]; removed: number[] }) => {
-    const hadPeers = peerCursors.size > 0;
-    processBatch(
+    if (!cursorRenderer) return;
+    const hadActive = cursorRenderer.hasActivePeers();
+    cursorRenderer.processAwarenessBatch(
       changes.added || [],
       changes.updated || [],
       changes.removed || [],
-      (clientId) => awareness.getStates().get(clientId) as Record<string, unknown> | undefined,
+      (cid) => awareness.getStates().get(cid) as Record<string, unknown> | undefined,
     );
-    // Only invalidate overlay if there are (or were) remote cursors to draw
-    const hasPeers = peerCursors.size > 0;
-    if (hasPeers || hadPeers) invalidateOverlay();
-    // Solo-optimization catch-up: a peer appeared while we were alone, so our
-    // cursor was stored locally but never broadcast. Flush it now.
-    if (hasPeers && !hadPeers && hasLocalCursor) {
+    const hasActive = cursorRenderer.hasActivePeers();
+    // Solo→Join catch-up: the alone-optimization stored our cursor locally but
+    // didn't broadcast. Flush now that a peer can see it.
+    if (hasActive && !hadActive && hasLocalCursor) {
       dirty = true;
       scheduleSend();
     }
@@ -88,10 +74,9 @@ export function attach(provider: YProvider, onStatusChange?: (connected: boolean
 
   statusHandler = (event: { status: string }) => {
     if (event.status === 'connected') {
-      // Clear stale peers from previous connection —
-      // awareness sync from DO will repopulate current ones
-      peerCursors.clear();
-      rebuildStore();
+      // Clear stale peers from previous connection — awareness sync from DO
+      // will repopulate current ones.
+      cursorRenderer?.clearAllPeers();
 
       connected = true;
       sendFullState();
@@ -108,9 +93,8 @@ export function attach(provider: YProvider, onStatusChange?: (connected: boolean
       }
       dirty = false;
 
-      // Clear peer state immediately on disconnect
-      peerCursors.clear();
-      rebuildStore();
+      // Clear peer visuals immediately on disconnect.
+      cursorRenderer?.clearAllPeers();
 
       try {
         awareness.setLocalState(null);
@@ -169,10 +153,11 @@ export function detach(): void {
   hasLocalCursor = false;
   hasLastSentCursor = false;
 
-  // 5. Reset receive state
-  peerCursors.clear();
-  rebuildStore();
-  clearBitmapCache();
+  // 5. Dispose renderer — frees slots, revokes blob URLs, empties peer store.
+  if (cursorRenderer) {
+    cursorRenderer.dispose();
+    cursorRenderer = null;
+  }
 
   currentAwareness = null;
   currentProvider = null;
@@ -192,7 +177,7 @@ export function updateCursor(worldX: number, worldY: number): void {
   localCursor[1] = y;
   hasLocalCursor = true;
 
-  if (peerCursors.size === 0) return;
+  if (!cursorRenderer?.hasActivePeers()) return;
 
   dirty = true;
   scheduleSend();
@@ -273,98 +258,4 @@ function sendFullState(): void {
   identitySent = true;
   markCursorSent();
   dirty = false;
-}
-
-// ─── Receive ─────────────────────────────────────────────────────────
-
-export function getPeerCursors(): ReadonlyMap<number, PeerCursorState> {
-  return peerCursors;
-}
-
-function processBatch(
-  added: number[],
-  updated: number[],
-  removed: number[],
-  getState: (clientId: number) => Record<string, unknown> | undefined,
-): void {
-  let identityDirty = false;
-
-  for (const clientId of added) {
-    if (clientId === cachedLocalClientId) continue;
-    if (processUpsert(clientId, getState(clientId))) identityDirty = true;
-  }
-  for (const clientId of updated) {
-    if (clientId === cachedLocalClientId) continue;
-    if (processUpsert(clientId, getState(clientId))) identityDirty = true;
-  }
-
-  for (const clientId of removed) {
-    if (clientId === cachedLocalClientId) continue;
-    if (peerCursors.has(clientId)) {
-      peerCursors.delete(clientId);
-      identityDirty = true;
-    }
-  }
-
-  if (identityDirty) rebuildStore();
-}
-
-function processUpsert(clientId: number, state: Record<string, unknown> | undefined): boolean {
-  if (!state?.userId) return false;
-
-  const userId = state.userId as string;
-  const name = (state.name as string) || 'Anonymous';
-  const color = (state.color as string) || '#808080';
-  const cursor = state.cursor as { x: number; y: number } | undefined;
-
-  let peer = peerCursors.get(clientId);
-  let identityChanged = false;
-
-  if (!peer) {
-    const tx = cursor ? Math.round(cursor.x) : 0;
-    const ty = cursor ? Math.round(cursor.y) : 0;
-    peer = {
-      userId,
-      name,
-      color,
-      target: [tx, ty],
-      display: [tx, ty],
-      hasCursor: !!cursor,
-      isSettled: true,
-    };
-    peerCursors.set(clientId, peer);
-    identityChanged = true;
-  } else {
-    if (peer.name !== name || peer.color !== color || peer.userId !== userId) {
-      peer.userId = userId;
-      peer.name = name;
-      peer.color = color;
-      identityChanged = true;
-    }
-  }
-
-  if (cursor) {
-    const tx = Math.round(cursor.x);
-    const ty = Math.round(cursor.y);
-    if (!peer.hasCursor) {
-      peer.display[0] = tx;
-      peer.display[1] = ty;
-    }
-    peer.target[0] = tx;
-    peer.target[1] = ty;
-    peer.hasCursor = true;
-    peer.isSettled = false;
-  } else {
-    peer.hasCursor = false;
-  }
-
-  return identityChanged;
-}
-
-function rebuildStore(): void {
-  const identities = new Map<string, PeerIdentity>();
-  for (const peer of peerCursors.values()) {
-    identities.set(peer.userId, { name: peer.name, color: peer.color });
-  }
-  usePresenceStore.getState().setPeers(identities);
 }

@@ -25,6 +25,7 @@ export const Canvas: React.FC<CanvasProps> = ({ className }) => {
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const editorHostRef = useRef<HTMLDivElement>(null);
+  const cursorHostRef = useRef<HTMLDivElement>(null);
 
   // 1. Create and start CanvasRuntime
   // Runtime handles: render loops, input, snapshot subscription, cursor updates, editor host
@@ -33,10 +34,11 @@ export const Canvas: React.FC<CanvasProps> = ({ className }) => {
     const baseCanvas = baseCanvasRef.current;
     const overlayCanvas = overlayCanvasRef.current;
     const editorHost = editorHostRef.current;
-    if (!container || !baseCanvas || !overlayCanvas || !editorHost) return;
+    const cursorHost = cursorHostRef.current;
+    if (!container || !baseCanvas || !overlayCanvas || !editorHost || !cursorHost) return;
 
     const runtime = new CanvasRuntime();
-    runtime.start({ container, baseCanvas, overlayCanvas, editorHost });
+    runtime.start({ container, baseCanvas, overlayCanvas, editorHost, cursorHost });
 
     return () => {
       runtime.stop();
@@ -87,6 +89,17 @@ export const Canvas: React.FC<CanvasProps> = ({ className }) => {
             inset: 0,
             zIndex: 3,
             pointerEvents: 'none',
+          }}
+        />
+        <div
+          ref={cursorHostRef}
+          className="cursor-host"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 4,
+            pointerEvents: 'none',
+            contain: 'layout style',
           }}
         />
       </div>

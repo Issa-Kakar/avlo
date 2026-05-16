@@ -24,6 +24,7 @@ const MAX_CANVAS_DIMENSION = 16384;
 let baseCtx: CanvasRenderingContext2D | null = null;
 let overlayCtx: CanvasRenderingContext2D | null = null;
 let editorHost: HTMLDivElement | null = null;
+let cursorHost: HTMLDivElement | null = null;
 
 // Deferred resize state - applied at start of next render frame
 let pendingPixelW = 0;
@@ -48,6 +49,11 @@ export function getEditorHost(): HTMLDivElement | null {
 /** Set editor host div. Called by CanvasRuntime.start(). */
 export function setEditorHost(el: HTMLDivElement | null): void {
   editorHost = el;
+}
+
+/** Get cursor host div — DOM layer for peer presence cursors (z:4, above editor overlay). */
+export function getCursorHost(): HTMLDivElement | null {
+  return cursorHost;
 }
 
 /**
@@ -78,15 +84,23 @@ export class SurfaceManager {
   private baseCanvas: HTMLCanvasElement;
   private overlayCanvas: HTMLCanvasElement;
   private editorHostEl: HTMLDivElement;
+  private cursorHostEl: HTMLDivElement;
   private resizeObserver: ResizeObserver | null = null;
   private dprCleanup: (() => void) | null = null;
   private currentDpr = window.devicePixelRatio || 1;
 
-  constructor(container: HTMLElement, baseCanvas: HTMLCanvasElement, overlayCanvas: HTMLCanvasElement, editorHostEl: HTMLDivElement) {
+  constructor(
+    container: HTMLElement,
+    baseCanvas: HTMLCanvasElement,
+    overlayCanvas: HTMLCanvasElement,
+    editorHostEl: HTMLDivElement,
+    cursorHostEl: HTMLDivElement,
+  ) {
     this.container = container;
     this.baseCanvas = baseCanvas;
     this.overlayCanvas = overlayCanvas;
     this.editorHostEl = editorHostEl;
+    this.cursorHostEl = cursorHostEl;
   }
 
   start(): void {
@@ -97,6 +111,7 @@ export class SurfaceManager {
     overlayCtx = overlay;
 
     editorHost = this.editorHostEl;
+    cursorHost = this.cursorHostEl;
     setCanvasElement(this.baseCanvas);
     applyCursor();
 
@@ -128,6 +143,7 @@ export class SurfaceManager {
     baseCtx = null;
     overlayCtx = null;
     editorHost = null;
+    cursorHost = null;
     setCanvasElement(null);
   }
 

@@ -16,6 +16,7 @@ cd /home/issak/dev/avlo && npm run dev          # client :3000 + worker :8787 �
 
 ## Best Practices
 
+- **Pre-production, solo dev.** Don't plan migrations, compat shims, or schema-versioning seams — clear history / new room / refresh covers any Y.Doc or store pivot.
 - **Reuse before invention.** Bbox/frame/handle/accessor primitives exist — grep `core/geometry/bounds.ts`, `core/accessors.ts`, `core/types/`, `utils/` first. A named 3-line helper beats inline reinvention.
 - **Low-friction modules.** Cross-module data flows through module-level getters (`getHandle`, `frameOf`, `getSpatialIndex`, `getVisibleBoundsTuple`). Over-encapsulation is the enemy.
 - **Fewest lines for full robustness.** No defensive checks at trusted boundaries, no backwards-compat shims, no half-finished abstractions.
@@ -37,7 +38,7 @@ All paths relative to `client/src/` unless noted.
 | File | Responsibility |
 |------|----------------|
 | `CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch |
-| `SurfaceManager.ts` | DOM refs (contexts, editorHost) + resize/DPR + deferred canvas resize |
+| `SurfaceManager.ts` | DOM refs (contexts, editorHost, cursorHost) + resize/DPR + deferred canvas resize |
 | `InputManager.ts` | DOM event forwarder + modifier state (shift/ctrl/meta) |
 | `tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
 | `room-runtime.ts` | Module-level room context — `connectRoom`/`disconnectRoom` + imperative getters |
@@ -45,7 +46,8 @@ All paths relative to `client/src/` unless noted.
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
 | `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
 | `cursor-tracking.ts` | Last cursor world position (for paste placement) |
-| `presence/presence.ts` | Awareness lifecycle, cursor send/receive, peer state (mutable Map) |
+| `presence/presence.ts` | Awareness lifecycle, cursor send (throttle + backpressure), receive dispatch. Delegates peer state to the renderer. |
+| `presence/presence-renderer.ts` | `PresenceCursorRenderer` — SoA peer state, slot pool, self-driven rAF, DOM `<img>` cursors (host at z:4, above editor overlay) |
 | `presence/presence-pointer.ts` | Pure dispatch for the `document`-level local-cursor input path (move/out/blur/camera-sync) |
 | `viewport/zoom.ts` | Smooth zoom animations (step, pinch, zoom-to-fit, reset) |
 | `viewport/edge-scroll.ts` | Auto-pan near viewport edges during drags |
@@ -70,9 +72,7 @@ All paths relative to `client/src/` unless noted.
 | `layers/eraser-dim.ts` | Dim hovered objects under eraser via 'screen' blend |
 | `layers/handle-stamp.ts` | Resize-handle bitmap stamp — pre-rendered offscreen, blitted (no per-frame `shadowBlur`) |
 | `animation/AnimationController.ts` | Singleton animation job manager — push-based invalidation |
-| `animation/CursorAnimationJob.ts` | Remote cursor animation (interpolated positions) |
 | `animation/EraserTrailAnimation.ts` | Decaying eraser-stroke trail |
-| `animation/cursor-bitmap.ts` | Offscreen cursor bitmap stamp |
 
 ### Tools (`tools/` — zero-arg singletons via `tool-registry.ts`)
 | File | Notes |
@@ -162,7 +162,7 @@ Canvas.tsx (thin React wrapper — mounts DOM, creates runtime)
 CanvasRuntime (the brain)
   ├── SurfaceManager   — DOM refs + resize/DPR + deferred canvas resize
   ├── renderLoop       — base canvas, dirty-rect optimized (native rAF)
-  ├── overlayLoop      — preview + presence + animation jobs, full clear each frame
+  ├── overlayLoop      — tool preview + animation jobs, full clear each frame (peer cursors render as DOM, not here)
   ├── InputManager     — pointer + keyboard + modifier state
   ├── camera subscription → tool.onViewChange() (guarded by isEdgeScrolling)
   └── pointer dispatch → spacebar/MMB pan check → tool.begin/move/end
@@ -429,7 +429,7 @@ computeBBoxForInto(id, kind, y, out) {
 
 ### Two-canvas architecture
 - **Base canvas:** World content, dirty-rect optimized, native rAF.
-- **Overlay canvas:** Full clear each invalidation — tool preview, selection UI, presence cursors, animation jobs.
+- **Overlay canvas:** Full clear each invalidation — tool preview, selection UI, animation jobs (eraser trail). Peer cursors are NOT on the overlay canvas — they're rendered as DOM `<img>` elements by `PresenceCursorRenderer` so they sit above the editor overlay.
 - `SelectTool` renders transformed objects on the base canvas for correct Z-order during translate/scale.
 
 ### Object dispatch (`renderer/layers/objects.ts`)
@@ -443,7 +443,7 @@ Two helpers, one per Content subclass. `readPrim` reads `val.content.arr[0]` (Co
 Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById`, `noteCachedLayout`, `codeSystem.getLayoutById`, `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, fontSize, ...)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantees; see Cache Architecture). Geometry-cache trusts entries — `shapeType` keychange pre-evicts via `evictGeometry(id)` in the observer rather than a per-draw re-check. Defensive guards stripped on the hot path: bbox-size (`scaleFrameNonUniform` clamps to `MIN_SHAPE_FRAME_DIM + 2·pad`), `n < 2` (already in `paintConnectorFromPoints`), null `assetId`/`frame` on image (observer contract).
 
 ### Overlay loop animation
-`AnimationController` (`renderer/animation/`) is a push-based singleton: jobs return `true` from `frame()` to request another rAF; controller calls `invalidate()` from the loop. Built-in jobs: `CursorAnimationJob` (interpolated remote cursors), `EraserTrailAnimation` (decaying trail). Registered once in `OverlayRenderLoop.start()`.
+`AnimationController` (`renderer/animation/`) is a push-based singleton: jobs return `true` from `frame()` to request another rAF; controller calls `invalidate()` from the loop. Built-in jobs: `EraserTrailAnimation` (decaying trail). Registered once in `OverlayRenderLoop.start()`. (Peer cursors are NOT a job — `PresenceCursorRenderer` renders them as DOM `<img>` elements above the editor overlay with its own rAF; see `runtime/presence/CLAUDE.md`.)
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
