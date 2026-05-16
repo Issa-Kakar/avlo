@@ -1,42 +1,24 @@
 import type React from 'react';
 
-// Crude placeholder geometry — to be redesigned. For now each path is laid out so
-// its bbox center sits at (12, 12) inside the 0-24 viewBox.
-// Grouped in one file: tight design family, shared stroke style.
+// Connector inspector variant icons. Fill-based (no strokes) at a native 20-unit
+// viewBox so they're pixel-aligned at the inspector's 20px render size. The
+// straight-arrow variant reuses `IconArrow` (24-unit; CSS-scaled down) — see
+// `ConnectorInspector.tsx`'s VARIANT_ICONS map.
 
-const VARIANT_STROKE = {
-  stroke: 'currentColor',
-  strokeWidth: 2.25,
-  strokeLinecap: 'round' as const,
-  strokeLinejoin: 'round' as const,
-  fill: 'none',
-};
-
+// Diagonal pill, top-right → bottom-left. Same / axis as IconArrow's shaft,
+// minus the arrowhead. Conveys "straight, no caps". The large-arc caps protrude
+// past the chord for a slightly bulged silhouette (radius ~2.2× the half-width).
 export const IconConnectorLine: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
-    <line x1="4" y1="12" x2="20" y2="12" {...VARIANT_STROKE} />
+  <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M15.366 6.403L6.403 15.366A3.333 3.333 0 1 1 4.634 13.598L13.598 4.634A3.333 3.333 0 1 1 15.366 6.403Z" />
   </svg>
 );
 
-export const IconConnectorArrow: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
-    <line x1="4" y1="12" x2="18" y2="12" {...VARIANT_STROKE} />
-    <path d="M15 9L18 12L15 15" {...VARIANT_STROKE} />
-  </svg>
-);
-
-export const IconConnectorDoubleArrow: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
-    <line x1="6" y1="12" x2="18" y2="12" {...VARIANT_STROKE} />
-    <path d="M9 9L6 12L9 15" {...VARIANT_STROKE} />
-    <path d="M15 9L18 12L15 15" {...VARIANT_STROKE} />
-  </svg>
-);
-
-// Elbow w/ end-cap arrow. bbox x[6,18], y[8,16] → center (12, 12).
+// Right-then-down elbow with a flag-style arrowhead on the right tip. The two
+// outer corners are rounded; the two inner corners stay sharp. Conveys
+// "orthogonal connector with end-cap arrow".
 export const IconConnectorElbow: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
-    <path d="M6 8H13C14.1046 8 15 8.8954 15 10V16" {...VARIANT_STROKE} />
-    <path d="M12 13L15 16L18 13" {...VARIANT_STROKE} />
+  <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M10.833 2.5H14.167V0L20 3.75L14.167 7.5V5H10.833V17.5A2.5 2.5 0 0 1 8.333 20H0V17.5H8.333V5A2.5 2.5 0 0 1 10.833 2.5Z" />
   </svg>
 );

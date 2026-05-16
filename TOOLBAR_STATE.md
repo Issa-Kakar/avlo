@@ -26,12 +26,15 @@ The toolbar now has:
   highlighter (`strokeWidth`). Click an inactive slot to switch; click the
   active slot to open a color picker. The picker holds a 24-color palette +
   a custom-hex entry; picking any color closes it.
-- **Connector inspector** with **four** variant buttons (line, arrow,
-  doubleArrow, elbow) and a single-slot color picker. The active variant is
-  **derived** from `(connectorType, connectorStartCap, connectorEndCap)` at
-  render time via `deriveConnectorVariant()` — there is no stored variant
-  field. Clicking a button calls `setConnectorMode(variant)`, which writes
-  the cap triple atomically in one `set()`.
+- **Connector inspector** with **three** variant buttons (line, arrow,
+  elbow) and a single-slot color picker. The active variant is **derived**
+  from `(connectorType, connectorStartCap, connectorEndCap)` at render
+  time via `deriveConnectorVariant()` — there is no stored variant field.
+  Clicking a button calls `setConnectorMode(variant)`, which writes the
+  cap triple atomically in one `set()`. Cap configs beyond the three (e.g.
+  double cap, start-only) still live in the store and survive until the
+  user clicks a variant button; for display, anything-but-no-caps in
+  straight mode collapses onto the `arrow` button.
 
 The previous `ToolPanel.tsx` / `ToolPanel.css` (horizontal top dock + the
 old `FIXED_COLORS` + `MORE_COLORS` + `recentColors` popover) is **deleted**.
@@ -66,7 +69,7 @@ stylesheet import.
 | `inspectors/Inspector.css`            | shared inspector pill shell + divider; `@import`s the 3 primitive CSS files                                                |
 | `inspectors/InspectorButton.tsx/css`  | reusable square icon button with `is-active` state — used by tool toggles, weight buttons, connector variants              |
 | `inspectors/PenInspector.tsx`         | pen / highlighter toggle, 4 weight buttons (iterates `STROKE_WEIGHTS`), 3-slot color row + picker (local `useState`). Reads `s.pen` xor `s.highlighter` as a single cluster selector based on `activeTool`. |
-| `inspectors/ConnectorInspector.tsx`   | 4 variant buttons (inlined SVGs) + 1-slot color row + picker (local `useState`). Variant derived from caps via `deriveConnectorVariant`. Reads `s.connector` as a single cluster selector. `ColorSlots.onSelectSlot` omitted (single-slot inspectors don't need slot-switching). |
+| `inspectors/ConnectorInspector.tsx`   | 3 variant buttons (line / arrow / elbow) + 1-slot color row + picker (local `useState`). Icons sourced via a `Record<ConnectorVariantId, FC>` lookup — the `arrow` slot reuses `IconArrow` (the toolbar tool icon). Variant derived from caps via `deriveConnectorVariant`. Reads `s.connector` as a single cluster selector. |
 | `color/ColorSlots.tsx/css`            | reusable column of 1–3 rounded-square slots; `onSelectSlot` is optional (only meaningful when `colors.length > 1`); falls back to `onTogglePicker` when absent |
 | `color/ColorSlot.tsx`                 | single slot — checkmark + `--slot-tint` offset ring when active; `data-dark` triggers a white inset stroke. `slotStyle(color, isActive)` helper owns the one localized `React.CSSProperties` cast for the CSS custom property |
 | `color/ColorPicker.tsx/css`           | 24-swatch grid (6×4) + custom hex input + outside-click close; `data-dark` swatches get a brighter border                  |
@@ -210,28 +213,26 @@ Direct module-level handlers in `Toolbar.tsx`:
 
 ### Connector inspector contents
 
-1. **Four** variant buttons rendered by mapping `CONNECTOR_VARIANT_IDS`.
+1. **Three** variant buttons rendered by mapping `CONNECTOR_VARIANT_IDS`.
    Each calls `setConnectorMode(variant)`, an atomic immer recipe that
    looks up `CONNECTOR_VARIANT_SPECS[variant]` and writes the
    `(type, startCap, endCap)` triple in one `set()`:
    - `line` → `straight / none / none`
    - `arrow` → `straight / none / arrow`
-   - `doubleArrow` → `straight / arrow / arrow`
-   - `elbow` → `elbow` (**caps preserved** — only the type flips;
-     the spec table entry has `startCap: 'none', endCap: 'arrow'` but
-     the recipe skips those writes for the elbow case)
+   - `elbow` → `elbow / none / arrow`  (no preserve-caps branch — every
+     variant click is a full reset)
 
    Single subscriber notification per click, no three-write race.
 
 2. **Active button is derived** at render time via
-   `deriveConnectorVariant(type, startCap, endCap)`:
-   - `type === 'elbow'` → `'elbow'` (any cap config — elbow swallows them)
-   - `straight + arrow/arrow` → `'doubleArrow'`
-   - `straight + none/arrow` → `'arrow'`
+   `deriveConnectorVariant(type, startCap, endCap)` — total over the three
+   ids, never null:
+   - `type === 'elbow'` → `'elbow'`  (any cap config — elbow swallows them)
    - `straight + none/none` → `'line'`
-   - Otherwise → `null` (no toolbar button matches; e.g. a backward
-     straight `arrow/none`). The selection inspector — once wired —
-     still shows the individual caps.
+   - `straight + anything else` → `'arrow'`  (single-end, start-only, and
+     double-arrow all collapse onto this button for display purposes;
+     the underlying cap fields are still distinguishable on emitted
+     connectors until the next variant click resets them)
 
    `deriveConnectorVariant` is pure; called once per inspector render.
 
@@ -435,9 +436,10 @@ construction (single `set()` call, single subscriber notification).
 - `setActiveTool(tool)` — `state.tool.active = tool`. No mirror fields.
 - `setShapeMode(variant)` — atomic `state.tool.active = 'shape';
   state.shape.variant = variant` in one recipe.
-- `setConnectorMode(variant)` — looks up `CONNECTOR_VARIANT_SPECS[variant]`,
-  writes `state.connector.type` (and `startCap`/`endCap` unless type is
-  `'elbow'` — elbow preserves caps).
+- `setConnectorMode(variant)` — looks up `CONNECTOR_VARIANT_SPECS[variant]`
+  and writes the full `(type, startCap, endCap)` triple atomically. No
+  preserve-caps branch: clicking `'elbow'` resets caps to `none`/`arrow`
+  exactly like the straight variants do.
 - `setPenSlotColor(color)` / `setHighlighterSlotColor(color)` —
   `state.pen.slots[state.pen.activeSlot] = color` (or `highlighter`).
   Direct draft-tuple index write, no clone, no cast.

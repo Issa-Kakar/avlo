@@ -2,21 +2,23 @@ import { type FC, type SVGProps, useCallback, useState } from 'react';
 import { selectConnector, setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
 import { ColorField } from '../color/ColorField';
 import { CONNECTOR_VARIANT_IDS, CONNECTOR_VARIANT_SPECS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
-import { IconConnectorArrow, IconConnectorDoubleArrow, IconConnectorElbow, IconConnectorLine } from '../icons/ConnectorVariantIcons';
+import { IconConnectorElbow, IconConnectorLine } from '../icons/ConnectorVariantIcons';
+import { IconArrow } from '../icons/IconArrow';
 import { InspectorButton } from './InspectorButton';
 import './Inspector.css';
 
 const VARIANT_HANDLERS: Record<ConnectorVariantId, () => void> = {
   line: () => setConnectorMode('line'),
   arrow: () => setConnectorMode('arrow'),
-  doubleArrow: () => setConnectorMode('doubleArrow'),
   elbow: () => setConnectorMode('elbow'),
 };
 
+// `arrow` reuses the toolbar's connector tool icon — the chunky diagonal shaft +
+// lug-corner arrowhead. The line/elbow icons share its / diagonal language so
+// the three button states read as a coherent family.
 const VARIANT_ICONS: Record<ConnectorVariantId, FC<SVGProps<SVGSVGElement>>> = {
   line: IconConnectorLine,
-  arrow: IconConnectorArrow,
-  doubleArrow: IconConnectorDoubleArrow,
+  arrow: IconArrow,
   elbow: IconConnectorElbow,
 };
 

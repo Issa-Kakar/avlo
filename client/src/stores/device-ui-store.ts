@@ -251,13 +251,9 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
         setConnectorMode: (variant) =>
           set((state) => {
             const spec = CONNECTOR_VARIANT_SPECS[variant];
-            if (spec.type === 'elbow') {
-              state.connector.type = 'elbow';
-            } else {
-              state.connector.type = spec.type;
-              state.connector.startCap = spec.startCap;
-              state.connector.endCap = spec.endCap;
-            }
+            state.connector.type = spec.type;
+            state.connector.startCap = spec.startCap;
+            state.connector.endCap = spec.endCap;
           }),
 
         setTextColor: (color) =>

@@ -54,12 +54,12 @@ import.
 | `Toolbar.tsx` | Vertical main pill (13 buttons + 2 actions). Dispatches `<PenInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. |
 | `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + actions-pill + tooltip styling. |
 | `weights.ts` | `STROKE_WEIGHTS: readonly StrokeWeightOption[]` (4 entries `{ width, Icon }`) + `StrokeWidthPreset = 4 \| 7 \| 10 \| 13` (UI-only union; store field is `number`). |
-| `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId \| null`. Pure, table-driven. |
+| `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple — `line`/`arrow`/`elbow`) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId` (totally onto the three ids; never null). Pure, table-driven. |
 | `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). No barrel — consumers import each icon directly. |
 | `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s the 4 `color/*` primitive CSS files. |
 | `inspectors/InspectorButton.tsx/css` | Memoized 30×30 square icon button with `is-active` state. Used by pen/highlighter toggles, weight buttons, connector variants. |
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
-| `inspectors/ConnectorInspector.tsx` | 4 variant buttons sourced from `../icons` via `VARIANT_ICONS` lookup table, divider, `<ColorField>` + picker. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
+| `inspectors/ConnectorInspector.tsx` | 3 variant buttons (`line`/`arrow`/`elbow`) sourced via `VARIANT_ICONS` lookup, divider, `<ColorField>` + picker. The `arrow` slot reuses `IconArrow` (the toolbar tool icon) — same diagonal language as line/elbow. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
 | `inspectors/WeightSelector.tsx` | Memoized **controlled** 4-button stroke-weight row (`value` / `onChange`). Returns a fragment so the buttons stay direct flex children of `.inspector`. Per-preset `useMemo` handler table — built to also drive `connector.width` later. |
 | `color/ColorSlots.tsx/css` | Memoized pen/highlighter **3-slot** column — definitionally 3-slot, iterates `SLOT_INDICES`. Owns a `usePickerDismiss` wrapper containing the slots + picker. `ColorSlots.css` styles the column (`.color-slots`) and opts its slots out of `ColorButton`'s hover-scale. |
 | `color/ColorField.tsx/css` | Memoized connector single-color field — sibling of `ColorSlots`, also built on `ColorButton`. One trigger button (no checkmark) + picker. Owns a `usePickerDismiss` wrapper. |
@@ -109,8 +109,8 @@ RoomPage
 
 `ConnectorInspector` body:
 ```
-.inspector
-├─ 4× <InspectorButton>                            line / arrow / doubleArrow / elbow (inlined SVGs)
+.inspector.inspector-connector
+├─ 3× <InspectorButton>                            line / arrow / elbow  (20×20 icons)
 ├─ .inspector-divider
 └─ <ColorField color=connector.color>
    ├─ 1× <ColorButton>                              expanded only — no checkmark
@@ -262,7 +262,7 @@ after a bump regenerates user identity through the init block.
 - All setters are immer recipes. Multi-field writes are atomic by construction.
 - `setActiveTool(tool)` — `state.tool.active = tool`.
 - `setShapeMode(variant)` — atomic `state.tool.active = 'shape'` + `state.shape.variant = variant`.
-- `setConnectorMode(variant)` — looks up `CONNECTOR_VARIANT_SPECS[variant]`. For `'elbow'` it writes **only** `state.connector.type = 'elbow'` (caps preserved). For straight variants it writes the full `(type, startCap, endCap)` triple. Single subscriber notification per click.
+- `setConnectorMode(variant)` — looks up `CONNECTOR_VARIANT_SPECS[variant]` and writes the full `(type, startCap, endCap)` triple atomically. Single subscriber notification per click. No preserve-caps branch: clicking `'elbow'` resets to `none`/`arrow` caps just like the straight variants do. Off-inspector cap configurations (double, start-only) survive only as long as the user doesn't touch a variant button.
 - `setStrokeSlotColor(tool, color)` / `setStrokeActiveSlot(tool, slot)` — both `tool`-keyed; `setStrokeSlotColor` is a direct draft index write on that tool's active slot.
 - `setCursorOverride` — idempotent guard then recipe. Cursor application is the subscription's job, not the setter's.
 - Width setters take `number` (not `StrokeWidth` / `ConnectorWidth` unions). The preset unions live UI-side only (`StrokeWidthPreset` in `weights.ts`). Off-preset widths (e.g. from a future drag-resize) persist with no cast.
@@ -410,9 +410,11 @@ icons/
 ├── IconInspectorPen.tsx              ┐  pen inspector
 ├── IconInspectorHighlighter.tsx      ┘
 ├── StrokeWeightIcons.tsx             # IconStrokeWeight1..4 (shared squiggle lineage)
-└── ConnectorVariantIcons.tsx         # IconConnectorLine / Arrow / DoubleArrow / Elbow
-                                      #   (shared VARIANT_STROKE, hosted by ConnectorInspector
-                                      #    via a `Record<ConnectorVariantId, FC>` lookup)
+└── ConnectorVariantIcons.tsx         # IconConnectorLine + IconConnectorElbow
+                                      #   (fill-based pictograms; the `arrow` variant
+                                      #    reuses ../icons/IconArrow directly — same
+                                      #    diagonal language. Inspector wires all three
+                                      #    via a `Record<ConnectorVariantId, FC>` lookup.)
 ```
 
 Zoom/help icons (`IconZoomPlus`, `IconZoomMinus`, `IconZoomToFit`, `IconHelp`,
@@ -530,6 +532,10 @@ change breaks one of these, do it deliberately, not accidentally.**
 4. **Connector variant is derived, not stored.** `deriveConnectorVariant`
    is the only source. Adding a "current variant" field is a regression
    that re-introduces the three-write race `setConnectorMode` eliminates.
+   The derivation is total over the three ids (`line`/`arrow`/`elbow`) —
+   off-inspector cap configs (double, start-only) collapse onto `'arrow'`
+   for display purposes; they're still distinguishable in store state and
+   on emitted connectors until the user clicks a variant button.
 5. **Pen and highlighter slot columns are independent.** `strokeTools`
    keys a `StrokeCluster` (`slots` + `activeSlot`) per `StrokeTool`.
    `resolveStrokeStyle(s, tool)` resolves the right one at gesture begin.
@@ -573,8 +579,11 @@ the prompt.**
   from `isDark` because contrast threshold and "needs an edge stroke
   against the dock" are different perceptual questions.
 - **Connector variant icons** (`icons/ConnectorVariantIcons.tsx`) —
-  `IconConnectorLine/Arrow/DoubleArrow/Elbow`, placeholder geometry,
-  viewBox 0–24 with bbox center at (12, 12). All four want a design pass.
+  `IconConnectorLine` (diagonal pill) + `IconConnectorElbow` (right-then-down
+  with end arrow), fill-based at a native 0–20 viewBox (pixel-aligned at the
+  inspector's 20px render size). The straight-arrow variant reuses
+  `icons/IconArrow.tsx` (24-unit, CSS-scaled down from the toolbar's 24px to
+  the inspector's 20px) so the three-button row shares one diagonal language.
 - **Stroke-weight icons** (`icons/StrokeWeightIcons.tsx`,
   `IconStrokeWeight1..4`) — W2/W3 currently use Mural's `drawWeight20`
   / `drawWeight40` paths; W1 and W4 are custom. Geometry is up for tuning.
