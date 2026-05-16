@@ -355,7 +355,8 @@ function prosemirrorJsonToFragment(doc: PMDoc): Y.XmlFragment | null {
           }
         }
 
-        xmlText.insert(textPos, inline.text, Object.keys(attrs).length > 0 ? attrs : undefined);
+        // `{}` not undefined — Yjs treats undefined as "inherit currentAttributes" and leaks the prior segment's marks into this one.
+        xmlText.insert(textPos, inline.text, attrs);
         textPos += inline.text.length;
         if (inline.text) hasContent = true;
       }
