@@ -1,26 +1,31 @@
 import { memo, useMemo } from 'react';
-import { STROKE_WEIGHTS, type StrokeWidthPreset } from '../weights';
+import type { WeightPreset } from '../weights';
 import { InspectorButton } from './InspectorButton';
 
 interface Props {
-  /** Current width; an off-preset value leaves all four buttons inactive. */
+  /** Table the row renders against. Caller picks per-tool (STROKE_WEIGHTS / CONNECTOR_WEIGHTS).
+   * Pass a module-level constant so the handler memo never invalidates. */
+  presets: readonly WeightPreset[];
+  /** Current width; an off-preset value leaves every button inactive. */
   value: number;
-  onChange: (width: StrokeWidthPreset) => void;
+  onChange: (width: number) => void;
 }
 
-/** The 4-button stroke-weight row. Controlled — the parent owns the width field, so the
- * same component drives the pen inspector now and the connector inspector later. Returns
- * a fragment so the buttons stay direct flex children of `.inspector`. */
-export const WeightSelector = memo(function WeightSelector({ value, onChange }: Props) {
-  // Per-preset handler table. useMemo (not module-level like the old WEIGHT_HANDLERS)
-  // because onChange is a prop — callers pass a stable module-level store action.
-  const handlers = useMemo<Record<StrokeWidthPreset, () => void>>(
-    () => ({ 4: () => onChange(4), 7: () => onChange(7), 10: () => onChange(10), 13: () => onChange(13) }),
-    [onChange],
-  );
+/** Presets-driven row of weight buttons. Controlled — the parent owns the width. Returns
+ * a fragment so the buttons stay direct flex children of the surrounding container
+ * (`.inspector` for the pen inline row, `.weight-picker` for the connector popout). */
+export const WeightSelector = memo(function WeightSelector({ presets, value, onChange }: Props) {
+  // Bound the per-preset closure to its own width. Deps are stable module-level refs in
+  // practice (presets is a const table, onChange a destructured store action), so the
+  // table allocates once per mount and lives until unmount.
+  const handlers = useMemo<Record<number, () => void>>(() => {
+    const out: Record<number, () => void> = {};
+    for (const { width } of presets) out[width] = () => onChange(width);
+    return out;
+  }, [presets, onChange]);
   return (
     <>
-      {STROKE_WEIGHTS.map(({ width, Icon }) => (
+      {presets.map(({ width, Icon }) => (
         <InspectorButton key={width} isActive={value === width} ariaLabel={`Stroke width ${width}`} onClick={handlers[width]}>
           <Icon className="insp-icon" />
         </InspectorButton>

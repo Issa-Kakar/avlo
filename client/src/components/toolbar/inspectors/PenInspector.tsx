@@ -12,6 +12,7 @@ import {
 import { ColorSlots } from '../color/ColorSlots';
 import { IconInspectorHighlighter } from '../icons/IconInspectorHighlighter';
 import { IconInspectorPen } from '../icons/IconInspectorPen';
+import { STROKE_WEIGHTS } from '../weights';
 import { InspectorButton } from './InspectorButton';
 import { WeightSelector } from './WeightSelector';
 import './Inspector.css';
@@ -56,7 +57,7 @@ export function PenInspector({ tool }: { tool: StrokeTool }) {
 
       <div className="inspector-divider" />
 
-      <WeightSelector value={currentWidth} onChange={setStrokeWidth} />
+      <WeightSelector presets={STROKE_WEIGHTS} value={currentWidth} onChange={setStrokeWidth} />
 
       <div className="inspector-divider" />
 

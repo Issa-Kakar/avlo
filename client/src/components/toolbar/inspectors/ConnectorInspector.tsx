@@ -1,10 +1,12 @@
 import { type FC, type SVGProps, useCallback, useState } from 'react';
-import { selectConnector, setConnectorColor, setConnectorMode, useDeviceUIStore } from '@/stores/device-ui-store';
+import { selectConnector, setConnectorColor, setConnectorMode, setConnectorWidth, useDeviceUIStore } from '@/stores/device-ui-store';
 import { ColorField } from '../color/ColorField';
 import { CONNECTOR_VARIANT_IDS, CONNECTOR_VARIANT_SPECS, type ConnectorVariantId, deriveConnectorVariant } from '../connector-variants';
 import { IconConnectorElbow, IconConnectorLine } from '../icons/ConnectorVariantIcons';
 import { IconArrow } from '../icons/IconArrow';
+import { CONNECTOR_WEIGHTS } from '../weights';
 import { InspectorButton } from './InspectorButton';
+import { WeightField } from './WeightField';
 import './Inspector.css';
 
 const VARIANT_HANDLERS: Record<ConnectorVariantId, () => void> = {
@@ -22,19 +24,30 @@ const VARIANT_ICONS: Record<ConnectorVariantId, FC<SVGProps<SVGSVGElement>>> = {
   elbow: IconConnectorElbow,
 };
 
-export function ConnectorInspector() {
-  const [isPickerOpen, setIsPickerOpen] = useState(false);
+// At most one popout open at a time. Cross-picker switching is order-safe:
+// usePickerDismiss closes the old one on mousedown before the toggle opens
+// the new one on click.
+type OpenPicker = 'weight' | 'color' | null;
 
-  // One cluster selector covers all four fields we read.
-  const { type, startCap, endCap, color } = useDeviceUIStore(selectConnector);
+export function ConnectorInspector() {
+  const [openPicker, setOpenPicker] = useState<OpenPicker>(null);
+
+  // One cluster selector covers all five fields we read.
+  const { type, startCap, endCap, color, width } = useDeviceUIStore(selectConnector);
   const activeVariant = deriveConnectorVariant(type, startCap, endCap);
 
-  const handlePick = useCallback((c: string) => {
+  const handleToggleWeight = useCallback(() => setOpenPicker((v) => (v === 'weight' ? null : 'weight')), []);
+  const handleToggleColor = useCallback(() => setOpenPicker((v) => (v === 'color' ? null : 'color')), []);
+  const handleClosePicker = useCallback(() => setOpenPicker(null), []);
+
+  const handlePickColor = useCallback((c: string) => {
     setConnectorColor(c);
-    setIsPickerOpen(false);
+    setOpenPicker(null);
   }, []);
-  const handleToggle = useCallback(() => setIsPickerOpen((v) => !v), []);
-  const handleClose = useCallback(() => setIsPickerOpen(false), []);
+  const handleChangeWidth = useCallback((w: number) => {
+    setConnectorWidth(w);
+    setOpenPicker(null);
+  }, []);
 
   return (
     <div className="inspector inspector-connector">
@@ -54,12 +67,23 @@ export function ConnectorInspector() {
 
       <div className="inspector-divider" />
 
+      <WeightField
+        presets={CONNECTOR_WEIGHTS}
+        value={width}
+        isPickerOpen={openPicker === 'weight'}
+        onTogglePicker={handleToggleWeight}
+        onChangeWidth={handleChangeWidth}
+        onClosePicker={handleClosePicker}
+      />
+
+      <div className="inspector-divider" />
+
       <ColorField
         color={color}
-        isPickerOpen={isPickerOpen}
-        onTogglePicker={handleToggle}
-        onPickColor={handlePick}
-        onClosePicker={handleClose}
+        isPickerOpen={openPicker === 'color'}
+        onTogglePicker={handleToggleColor}
+        onPickColor={handlePickColor}
+        onClosePicker={handleClosePicker}
       />
     </div>
   );

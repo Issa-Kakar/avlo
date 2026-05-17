@@ -45,22 +45,24 @@ its own persist consumers via the same field table — out of scope to refactor
 ## File Map — `toolbar/`
 
 CSS is co-located with components. `inspectors/Inspector.css` `@import`s
-the four primitive CSS files so an inspector only needs one stylesheet
-import.
+the inspector's child stylesheets (`InspectorButton`, `WeightField`,
+`color/*`) and owns the shared `picker-pop` keyframes — so an inspector
+only needs one stylesheet import.
 
 | File | Role |
 |---|---|
 | `index.ts` | Re-exports `{ Toolbar }`. Single export — no barrel sprawl. |
 | `Toolbar.tsx` | Vertical main pill (13 buttons + 2 actions). Dispatches `<PenInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. |
 | `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + actions-pill + tooltip styling. |
-| `weights.ts` | `STROKE_WEIGHTS: readonly StrokeWeightOption[]` (4 entries `{ width, Icon }`) + `StrokeWidthPreset = 4 \| 7 \| 10 \| 13` (UI-only union; store field is `number`). |
+| `weights.ts` | `WeightPreset` (`{ width, Icon }`) + two preset tables: `STROKE_WEIGHTS` (pen/highlighter — `4/7/10/13`) and `CONNECTOR_WEIGHTS` (connector — `2/4/6/8`). Both tables reuse the same `IconStrokeWeight1..4` set — the icons represent visual tiers, not pixel widths. `WeightSelector` / `WeightField` are preset-agnostic; each consumer picks its table. |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple — `line`/`arrow`/`elbow`) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId` (totally onto the three ids; never null). Pure, table-driven. |
 | `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). No barrel — consumers import each icon directly. |
-| `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s the 4 `color/*` primitive CSS files. |
+| `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s `InspectorButton.css`, `WeightField.css`, and the `color/*` primitive CSS files. Defines the shared `picker-pop` entry-animation keyframes used by `.weight-picker` and `.color-picker`. |
 | `inspectors/InspectorButton.tsx/css` | Memoized 30×30 square icon button with `is-active` state. Used by pen/highlighter toggles, weight buttons, connector variants. |
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
-| `inspectors/ConnectorInspector.tsx` | 3 variant buttons (`line`/`arrow`/`elbow`) sourced via `VARIANT_ICONS` lookup, divider, `<ColorField>` + picker. The `arrow` slot reuses `IconArrow` (the toolbar tool icon) — same diagonal language as line/elbow. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
-| `inspectors/WeightSelector.tsx` | Memoized **controlled** 4-button stroke-weight row (`value` / `onChange`). Returns a fragment so the buttons stay direct flex children of `.inspector`. Per-preset `useMemo` handler table — built to also drive `connector.width` later. |
+| `inspectors/ConnectorInspector.tsx` | 3 variant buttons (`line`/`arrow`/`elbow`) sourced via `VARIANT_ICONS` lookup, divider, `<WeightField presets={CONNECTOR_WEIGHTS}>` (popout), divider, `<ColorField>` (popout). The `arrow` slot reuses `IconArrow` (the toolbar tool icon) — same diagonal language as line/elbow. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. The two popouts are mutually exclusive via a discriminated `OpenPicker = 'weight' \| 'color' \| null` state. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
+| `inspectors/WeightSelector.tsx` | Memoized **controlled** presets-driven button row (`presets` / `value` / `onChange`). Returns a fragment so the buttons stay direct flex children of the surrounding container (inline `.inspector` or the `.weight-picker` popout). Per-preset `useMemo` handler table keyed on `[presets, onChange]` — both stable module-level refs in practice, so the table allocates exactly once per mount. |
+| `inspectors/WeightField.tsx/css` | Memoized stroke-width field — sibling of `ColorField`. One trigger button showing the nearest-preset icon (blue ONLY while the popout is open) + an absolutely-positioned `.weight-picker` popout that mounts a `<WeightSelector>` with the same presets. Owns a `usePickerDismiss` wrapper. Off-preset widths render the nearest tier's icon on the trigger; popout buttons all stay inactive (strict equality). Used by `ConnectorInspector` today; pen inspector still uses the inline `<WeightSelector>` while the popout UX is evaluated. |
 | `color/ColorSlots.tsx/css` | Memoized pen/highlighter **3-slot** column — definitionally 3-slot, iterates `SLOT_INDICES`. Owns a `usePickerDismiss` wrapper containing the slots + picker. `ColorSlots.css` styles the column (`.color-slots`) and opts its slots out of `ColorButton`'s hover-scale. |
 | `color/ColorField.tsx/css` | Memoized connector single-color field — sibling of `ColorSlots`, also built on `ColorButton`. One trigger button (no checkmark) + picker. Owns a `usePickerDismiss` wrapper. |
 | `color/ColorButton.tsx/css` | The shared swatch-button **primitive** (renamed from `ColorSlot`). `selected?` → checkmark + active ring; `expanded?` → picker-trigger aria — **decoupled**. `colorButtonStyle(color, selected)` centralizes the lone `React.CSSProperties` cast for `--slot-tint` — exported, so `ColorPicker`'s swatches reuse it for the same active ring. |
@@ -112,10 +114,20 @@ RoomPage
 .inspector.inspector-connector
 ├─ 3× <InspectorButton>                            line / arrow / elbow  (20×20 icons)
 ├─ .inspector-divider
+├─ <WeightField presets={CONNECTOR_WEIGHTS}>       sibling of ColorField — popout, not inline
+│   ├─ 1× <InspectorButton>                         trigger: nearest-preset icon; is-active=isPickerOpen
+│   └─ {openPicker === 'weight' && .weight-picker} vertical 4-button column
+│       └─ <WeightSelector presets={CONNECTOR_WEIGHTS}>
+├─ .inspector-divider
 └─ <ColorField color=connector.color>
    ├─ 1× <ColorButton>                              expanded only — no checkmark
-   └─ {isPickerOpen && <ColorPicker />}
+   └─ {openPicker === 'color' && <ColorPicker />}
 ```
+
+Picker state is a discriminated `OpenPicker = 'weight' | 'color' | null`
+owned by `ConnectorInspector` — at most one popout open at a time.
+Cross-picker switching is order-safe: `usePickerDismiss` closes the old
+one on mousedown before the toggle handler opens the new one on click.
 
 ### Layout metrics (live values — tune freely)
 
@@ -129,6 +141,7 @@ RoomPage
 | `InspectorButton` | 30×30, 7px radius, 20×20 icon |
 | Color slot | 24×24, 6px radius, 12px vertical gap, 6px/4px container padding |
 | Color picker | `left: calc(100% + 12px); top:-8px`; 22×22 swatches, 6-col grid (23 swatches → 6+6+6+5), 10px gap, 10px container padding |
+| Weight picker | `left: calc(100% + 12px); top:-8px` (matches color picker); inspector-pill chrome: 7px padding, 14px radius, 4px gap |
 | Tooltip | CSS pseudo-element on `.tool-btn`, suppressed while any `.inspector` is mounted via `.toolbar-wrap:has(.inspector) .toolbar-main .tool-btn::after { display: none; }` |
 
 ### Active-slot anatomy
@@ -265,7 +278,7 @@ after a bump regenerates user identity through the init block.
 - `setConnectorMode(variant)` — looks up `CONNECTOR_VARIANT_SPECS[variant]` and writes the full `(type, startCap, endCap)` triple atomically. Single subscriber notification per click. No preserve-caps branch: clicking `'elbow'` resets to `none`/`arrow` caps just like the straight variants do. Off-inspector cap configurations (double, start-only) survive only as long as the user doesn't touch a variant button.
 - `setStrokeSlotColor(tool, color)` / `setStrokeActiveSlot(tool, slot)` — both `tool`-keyed; `setStrokeSlotColor` is a direct draft index write on that tool's active slot.
 - `setCursorOverride` — idempotent guard then recipe. Cursor application is the subscription's job, not the setter's.
-- Width setters take `number` (not `StrokeWidth` / `ConnectorWidth` unions). The preset unions live UI-side only (`StrokeWidthPreset` in `weights.ts`). Off-preset widths (e.g. from a future drag-resize) persist with no cast.
+- Width setters take `number`. There are no preset unions — `weights.ts` exports per-tool `WeightPreset` tables, and `WeightSelector` / `WeightField` flow widths as plain `number` end-to-end. Off-preset widths (e.g. from a future drag-resize) persist with no cast; `WeightField`'s trigger shows the nearest tier's icon.
 
 ### Stable action handler exports
 
@@ -348,14 +361,15 @@ with an inline `(s) => s.strokeTools[tool]` selector.
 |---|---|---|
 | `Toolbar.tsx` | `s.tool.active`, `s.shape.variant` — 2 scalar selectors | — |
 | `PenInspector.tsx` | `selectStrokeWidth` + an inline `(s) => s.strokeTools[tool]` cluster selector (`tool` is a prop, not read from the store) | `useState` |
-| `ConnectorInspector.tsx` | `selectConnector` — single cluster selector; destructures `{ type, startCap, endCap, color }` | `useState` |
+| `ConnectorInspector.tsx` | `selectConnector` — single cluster selector; destructures `{ type, startCap, endCap, color, width }` | `useState<'weight' \| 'color' \| null>` |
 
-The cluster selector in `ConnectorInspector` replaces the four prior
-scalar selectors. A cap-only change still fires only the connector
-cluster's subscription; the inspector re-renders, the derivation runs
-(~5 comparisons), and `<InspectorButton>` children see new `isActive`
-booleans. `Toolbar.tsx` doesn't subscribe to the connector cluster, so it
-never re-renders on a connector cap change.
+The cluster selector in `ConnectorInspector` covers all five fields it
+reads. A cap-only change still fires only the connector cluster's
+subscription; the inspector re-renders, the derivation runs (~5
+comparisons), and `<InspectorButton>` / `<WeightField>` / `<ColorField>`
+children re-render only when their own relevant subset changed (memo +
+stable prop handlers). `Toolbar.tsx` doesn't subscribe to the connector
+cluster, so it never re-renders on a connector cap or width change.
 
 `PenInspector` takes its tool as a prop — `Toolbar.tsx`'s `isStrokeTool`
 guard narrows `activeTool` to `StrokeTool` inside the `&&` and passes it,
@@ -458,8 +472,9 @@ during refactoring.
 | Component | Memo | Click handlers |
 |---|---|---|
 | `ToolButton` (13 in `Toolbar.tsx`) | `React.memo` | Module-level pre-bound consts (`clickSelect`, `clickPan`, …). |
-| `InspectorButton` | `React.memo` | Sourced from `VARIANT_HANDLERS` (module-level) or `WeightSelector`'s `useMemo` handler table. No inline arrows reach the memoized child. |
-| `WeightSelector` | `React.memo` | Controlled. `useMemo` per-preset handler table keyed on the `onChange` prop — callers pass a stable module-level store action (`setStrokeWidth`). |
+| `InspectorButton` | `React.memo` | Sourced from `VARIANT_HANDLERS` (module-level), `WeightSelector`'s `useMemo` handler table, or `useCallback([])` wrappers in the inspectors. No inline arrows reach the memoized child. |
+| `WeightSelector` | `React.memo` | Controlled. `useMemo` per-preset handler table keyed on `[presets, onChange]` — both stable module-level refs in practice (`STROKE_WEIGHTS`/`CONNECTOR_WEIGHTS` const tables; `setStrokeWidth` or a parent `useCallback([])` wrapper). |
+| `WeightField` | `React.memo` | Single trigger `<InspectorButton>` + a `<WeightSelector>` mounted only while open. All 3 handler props from `ConnectorInspector` are `useCallback([])` → stable. Trigger icon comes from a `nearestPreset` find — order-independent, O(presets.length). |
 | `ColorSlots` | `React.memo` | Iterates `SLOT_INDICES`; `PenInspector` passes stable `useCallback` handlers. Non-active slots compose a fresh `onClick` closure each render — bounded to ≤2 per inspector. |
 | `ColorField` | `React.memo` | Single `ColorButton`; all handlers are stable `useCallback`s from `ConnectorInspector` — no `useMemo`-wrapped array needed (the old `useMemo<readonly [string]>` is gone). |
 | `ColorButton` | `React.memo` | The shared swatch primitive. `selected` / `expanded` are plain booleans. |
@@ -524,7 +539,7 @@ change breaks one of these, do it deliberately, not accidentally.**
    cluster selector subscribed via `useDeviceUIStore(selectX)` only
    re-fires when the cluster itself changes — this is what makes
    `Object.is` cluster reads work and lets the connector inspector use
-   one selector for four fields.
+   one selector for five fields.
 3. **Atomic multi-field writes.** `setShapeMode`, `setConnectorMode`,
    `setStrokeSlotColor`, etc. write all their fields in one immer recipe →
    one subscriber notification. Don't split them into multiple `set()`
@@ -556,6 +571,17 @@ change breaks one of these, do it deliberately, not accidentally.**
     the type is probably wrong somewhere else.
 11. **`setCursorOverride` is a pure recipe.** Cursor application is the
     subscription's job. Don't inline `applyCursor()` into the setter.
+12. **Connector inspector: at most one popout open at a time.** The
+    discriminated `OpenPicker = 'weight' | 'color' | null` state makes
+    co-open structurally impossible. Cross-picker switches are
+    order-safe by the browser's mousedown→click ordering
+    (`usePickerDismiss` closes the old one before the toggle opens the
+    new one). Don't fork into two independent booleans.
+13. **Weight icons are tier-based, not pixel-based.** `IconStrokeWeight1..4`
+    represent visual weight tiers ("thin / medium / thick / very thick").
+    `STROKE_WEIGHTS` and `CONNECTOR_WEIGHTS` map their own absolute
+    widths to the same shared icon set — different scales, same icons.
+    Don't fork the icon set per tool.
 
 ---
 
@@ -593,7 +619,7 @@ the prompt.**
 - **Color picker positioning** — `top: -8px` from the slot column.
   Vertical alignment with the slot row center may be cleaner once more
   inspectors land.
-- **Inspector pill geometry** — gap (4px), padding (6px), radius (14px),
+- **Inspector pill geometry** — gap (4px), padding (7px), radius (14px),
   divider width (70%) all eyeballed.
 - **Slot offset ring on dark colors** — `--slot-tint` is the slot's own
   color, so a black slot's ring is also black against the near-black
