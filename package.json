@@ -13,7 +13,7 @@
     "dev:main": "node scripts/dev-worker.mjs main",
     "dev:images": "node scripts/dev-worker.mjs images",
     "dev:unfurl": "node scripts/dev-worker.mjs unfurl",
-    "dev:p": "PORT_OFFSET=3 VITE_PORT=3001 npm run dev",
+    "dev:p": "PORT_OFFSET=4 VITE_PORT=3001 npm run dev",
     "build": "npm run build -w client",
     "preview": "concurrently -k -n vite,main,images,unfurl \"npm run preview -w client\" \"npm:dev:main\" \"npm:dev:images\" \"npm:dev:unfurl\"",
     "deploy:main": "wrangler deploy -c workers/main/wrangler.jsonc",

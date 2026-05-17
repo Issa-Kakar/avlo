@@ -1,6 +1,7 @@
 import { extractDomain, isSvg, parseImageDimensions, validateImage } from '@avlo/shared';
-import { syntheticCacheUrl } from '@avlo/worker-shared';
+import { applyCsp, syntheticCacheUrl } from '@avlo/worker-shared';
 import type { Context } from 'hono';
+import type { UnfurlResponseBody } from './app-type';
 
 // --- Constants ---
 
@@ -176,12 +177,12 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
     });
   } catch (err) {
     console.warn('[unfurl] page fetch error:', url, err);
-    return c.body(null, 502);
+    return emptyApiResponse(502);
   }
 
   if (!pageRes.ok) {
     console.warn('[unfurl] page fetch non-OK:', url, pageRes.status);
-    return c.body(null, 502);
+    return emptyApiResponse(502);
   }
 
   const ct = pageRes.headers.get('content-type') ?? '';
@@ -191,9 +192,9 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
     const imageResult = await fetchAndStoreImage(c.env.IMAGES, url, OG_IMAGE_MAX);
     if (!imageResult) {
       console.warn('[unfurl] direct image failed to store:', url);
-      return c.body(null, 204);
+      return emptyApiResponse(204);
     }
-    const data: Record<string, string | number> = { url, domain };
+    const data: UnfurlResponseBody = { url, domain };
     try {
       const pathname = new URL(url).pathname;
       const filename = pathname.split('/').pop() || '';
@@ -210,7 +211,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   // --- Non-HTML content ---
   if (!ct.includes('text/html') && !ct.includes('application/xhtml+xml') && !ct.includes('application/xml')) {
     console.warn('[unfurl] non-HTML content type:', url, ct);
-    return c.body(null, 204);
+    return emptyApiResponse(204);
   }
 
   // --- HTMLRewriter parse ---
@@ -296,11 +297,11 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   // --- Check for useful metadata ---
   if (!title && !ogImageResult) {
     console.warn('[unfurl] no useful metadata:', url);
-    return c.body(null, 204);
+    return emptyApiResponse(204);
   }
 
   // --- Build response ---
-  const data: Record<string, string | number> = { url, domain };
+  const data: UnfurlResponseBody = { url, domain };
   if (title) data.title = title;
   if (description) data.description = description;
   if (ogImageResult) {
@@ -320,16 +321,26 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   return jsonCached(c, cache, cacheKey, data);
 };
 
-function jsonCached(c: Context<{ Bindings: Env }>, cache: Cache, cacheKey: string, data: Record<string, string | number>): Response {
+function jsonCached(c: Context<{ Bindings: Env }>, cache: Cache, cacheKey: string, data: UnfurlResponseBody): Response {
   const body = JSON.stringify(data);
   const headers = new Headers({
     'Content-Type': 'application/json',
     'Cache-Control': 'public, max-age=604800',
   });
+  applyCsp(headers, 'api-json'); // H5
   const response = new Response(body, { status: 200, headers });
 
   // Populate edge cache in background (clone for cache)
   c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
 
   return response;
+}
+
+// Empty-body responses (502/204) still get the api-json CSP profile so the
+// cross-site headers (X-Content-Type-Options, CORP) are consistent with the
+// success path. H5: applies to every response, not just JSON bodies.
+function emptyApiResponse(status: number): Response {
+  const headers = new Headers();
+  applyCsp(headers, 'api-json');
+  return new Response(null, { status, headers });
 }

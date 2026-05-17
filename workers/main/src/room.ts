@@ -5,19 +5,16 @@ import * as Y from 'yjs';
 // One canonical head per room, V2-encoded at rest
 const headKey = (room: string) => `rooms/${room}/head.v2.bin`;
 
+// YServer lifecycle: awaits onStart(), then onLoad(), installs debounced
+// onSave(), then accepts sockets — so hydration always completes before the
+// first sync step. We don't override onStart() because the default behavior
+// is correct.
 export class RoomDurableObject extends YServer<Env> {
   // R2-friendly cadence: fewer, bigger writes
   static override callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
   static override options = {
     hibernate: true,
   };
-  /**
-   * Ensure hydration completes before the first sync step.
-   * YServer awaits onStart(), then onLoad(), installs debounced onSave(), then accepts sockets.
-   */
-  override async onStart(): Promise<void> {
-    return super.onStart();
-  }
 
   /**
    * Hydrate from R2 (V2 bytes).

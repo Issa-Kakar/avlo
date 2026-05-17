@@ -1,24 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "lib": ["ES2022"],
     "types": ["./worker-configuration.d.ts"],
-    "moduleResolution": "bundler",
     "noEmit": true,
-    "strict": true,
-    "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
-    "forceConsistentCasingInFileNames": true,
-    "isolatedModules": true,
-    "resolveJsonModule": true,
-    "paths": {
-      "@avlo/shared": ["../../packages/shared/src/index.ts"],
-      "@avlo/shared/*": ["../../packages/shared/src/*"],
-      "@avlo/worker-shared": ["../../packages/worker-shared/src/index.ts"],
-      "@avlo/worker-shared/*": ["../../packages/worker-shared/src/*"]
-    }
+    "isolatedModules": true
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "worker-configuration.d.ts"]
 }

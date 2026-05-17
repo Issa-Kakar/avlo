@@ -6,13 +6,10 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
-    "./cors": { "types": "./src/cors.ts", "default": "./src/cors.ts" },
-    "./csp": { "types": "./src/csp.ts", "default": "./src/csp.ts" },
-    "./ssrf": { "types": "./src/ssrf.ts", "default": "./src/ssrf.ts" },
-    "./cache-keys": { "types": "./src/cache-keys.ts", "default": "./src/cache-keys.ts" },
-    "./responses": { "types": "./src/responses.ts", "default": "./src/responses.ts" },
-    "./zod/*": { "types": "./src/zod/*.ts", "default": "./src/zod/*.ts" }
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",

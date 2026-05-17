@@ -11,6 +11,7 @@
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [{ "pattern": "unfurl.avlo.io", "custom_domain": true }],
 
-  "dev": { "port": 8789 },
-  "observability": { "enabled": true }
+  "dev": { "port": 8791 },
+  "observability": { "enabled": true },
+  "minify": true
 }

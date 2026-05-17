@@ -10,6 +10,7 @@
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [{ "pattern": "images.avlo.io", "custom_domain": true }],
 
-  "dev": { "port": 8788 },
-  "observability": { "enabled": true }
+  "dev": { "port": 8790 },
+  "observability": { "enabled": true },
+  "minify": true
 }

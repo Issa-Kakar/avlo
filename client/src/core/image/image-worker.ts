@@ -17,9 +17,9 @@
  * Only ImageBitmaps cross back to main thread via Transferable (zero-copy).
  */
 
-import { validateImage } from '@avlo/shared';
 import { imagesClient } from '@avlo/api-client/images';
 import { unfurlClient } from '@avlo/api-client/unfurl';
+import { validateImage } from '@avlo/shared';
 
 // ============================================================
 // Message Types

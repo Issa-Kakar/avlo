@@ -30,3 +30,18 @@ jobs:
 
       - name: Biome check
         run: npm run check
+
+      - name: Build client
+        run: npm run build
+
+      - name: Verify SW bundle has no server symbols
+        # `@avlo/api-client` re-exports server AppTypes as type-only imports
+        # which Vite must erase. If a runtime import of @avlo/worker-shared
+        # (or another server-only module) slips into the SW graph, the bundle
+        # bloats and these symbols appear. This is the load-bearing check.
+        run: |
+          if grep -E 'partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost' client/dist/sw.js > /dev/null; then
+            echo "ERROR: SW bundle contains server-only symbols"
+            grep -E 'partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost' client/dist/sw.js
+            exit 1
+          fi

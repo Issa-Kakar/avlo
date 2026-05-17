@@ -8,10 +8,12 @@ Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,i
 
 ## Commands & Aliases
 ```bash
-cd /home/issak/dev/avlo && npm run typecheck    # typecheck all workspaces (must run from repo root)
-cd /home/issak/dev/avlo && npm run dev          # client :3000 + worker :8787 — ask before starting
+cd /home/issak/dev/avlo && npm run typecheck    # typecheck client + all three workers (must run from repo root)
+cd /home/issak/dev/avlo && npm run dev          # Vite :3000 + workers :8787/:8788/:8789 — ask before starting
 ```
-- `@avlo/shared` → `packages/shared/src/*`
+- `@avlo/shared` → `packages/shared/src/*` (cross-runtime; client + server)
+- `@avlo/worker-shared` → `packages/worker-shared/src/*` (server-only — never imported client-side)
+- `@avlo/api-client` → `packages/api-client/src/*` (browser/SW typed `hc<AppType>` clients)
 - `@/*` → `client/src/*`
 
 ## Best Practices
@@ -135,13 +137,17 @@ All paths relative to `client/src/` unless noted.
 | `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain` |
 | `packages/shared/src/utils/image-validation.ts` | `validateImage`, `isSvg`, `parseImageDimensions` |
 
-### Server (`worker/src/`)
-| File | Responsibility |
-|------|----------------|
-| `index.ts` | Hono app: CORS, asset routes, unfurl route, `partyserverMiddleware()` for Yjs sync |
-| `assets.ts` | `PUT/GET /api/assets/:key` — R2 store + edge-cached proxy |
-| `unfurl.ts` | `GET /api/unfurl?url=` — HTMLRewriter OG extraction, image→R2, SSRF guard, edge cache 7d |
-| `parties/room.ts` | `RoomDurableObject` — hibernate-aware, debounced V2 snapshot to R2 |
+### Server (`workers/`)
+
+Three independently-deployed Cloudflare Workers. Full architecture, hardening invariants, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
+
+| Worker | Folder | Prod | Bindings | Surface |
+|---|---|---|---|---|
+| **main** | `workers/main/` | `avlo.io` | `ASSETS` (Static Assets), `rooms` (DO), `DOCS` (R2) | SPA via Assets binding + WSS `/parties/*` via `partyserverMiddleware` + `RoomDurableObject` |
+| **images** | `workers/images/` | `images.avlo.io` | `IMAGES` (R2) | `PUT/GET /:key` — Zod param, content-length bound, hash-verify, edge cache, Range, CSP |
+| **unfurl** | `workers/unfurl/` | `unfurl.avlo.io` | `IMAGES` (R2, shared) | `GET /?url=` — Zod query + SSRF refine, HTMLRewriter OG extraction, image→R2, edge cache 7d |
+
+Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client}/CLAUDE.md` cover the shared backend primitives and typed-RPC clients respectively.
 
 ### Routes + UI
 `routes/__root.tsx`, `routes/index.tsx`, `routes/room.$roomId.tsx` (calls `connectRoom` in `beforeLoad`).

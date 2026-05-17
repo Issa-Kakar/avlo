@@ -13,7 +13,7 @@
       "!**/.cache",
       "!**/.turbo",
       "!client/src/routeTree.gen.ts",
-      "!worker/worker-configuration.d.ts",
+      "!workers/**/worker-configuration.d.ts",
       "!package-lock.json"
     ]
   },

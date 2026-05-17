@@ -42,7 +42,8 @@ Width is fixed at `BOOKMARK_WIDTH = 300`. Frame is derived: `[origin[0], origin[
 | `core/bookmark/bookmark-actions.ts` | `openBookmarkUrl(id)` — two-pass URL validation, `window.open(_blank, noopener,noreferrer)` |
 | `core/bookmark/bookmark-unfurl.ts` | Lifecycle: pending map, `beginUnfurl`, `handleUnfurlResult`/`handleUnfurlFailed`, `canCreateBookmark`, `cleanupOnRoomTeardown`, SVG favicon rasterization |
 | `core/bookmark/bookmark-placeholder.ts` | HTML loading element (spinner + domain), camera-tracked positioning |
-| `worker/src/unfurl.ts` | CF Worker route — Zod validation, SSRF guard, HTMLRewriter, image fetch/R2 store, edge cache |
+| `workers/unfurl/src/unfurl.ts` | CF Worker route — Zod validation, SSRF guard, HTMLRewriter, image fetch/R2 store, edge cache |
+| `workers/unfurl/src/app-type.ts` | Public mock app + `UnfurlResponseBody` wire contract |
 | `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain`, `prettifyDomain` |
 | `core/accessors.ts` | `getBookmarkProps`, `getBookmarkUrl`, `getBookmarkAssetIds` |
 
@@ -246,9 +247,11 @@ Hover state and paint both live on the **base canvas**. Overlay never paints it.
 
 ---
 
-## Cloudflare Worker — `GET /api/unfurl?url=<encoded>`
+## Cloudflare Worker — `GET /?url=<encoded>` (`workers/unfurl/`)
 
-Middleware: `zValidator('query', unfurlQuery)` — Zod validates, `normalizeUrl()` transforms, SSRF guard rejects private hosts before handler.
+Prod: `unfurl.avlo.io/?url=...`. Dev: `/api/unfurl?url=...` via Vite proxy (rewrite strips the prefix, so the worker sees the bare `/`). Client URL building uses `unfurlClient.index.$get({ query: { url } })` from `@avlo/api-client` — typed against `UnfurlResponseBody` exported from `workers/unfurl/src/app-type.ts`.
+
+Middleware: `zValidator('query', unfurlQuery)` (from `@avlo/worker-shared`) — Zod validates, `normalizeUrl()` transforms, SSRF refine rejects private hosts before handler. R2 binding is `IMAGES` (shared with `workers/images`).
 
 ### SSRF Guard
 
@@ -297,7 +300,7 @@ Failure is non-fatal — bookmark renders without favicon. Async work completes 
 
 ### Edge Cache + Response Codes
 
-Synthetic key: `https://unfurl.avlo.internal/<sha256(normalizedUrl)>`. TTL 7d. `waitUntil(cache.put())`.
+Synthetic key: `syntheticCacheUrl('unfurl', sha256(normalizedUrl))` → `https://unfurl.cache.avlo.internal/<sha>` (per-service namespacing from `@avlo/worker-shared/cache-keys`, H7). TTL 7d. `waitUntil(cache.put())`. JSON responses and empty 502/204 bodies all get `applyCsp(headers, 'api-json')` (H5).
 
 | Status | Meaning | Cached |
 |---|---|---|
