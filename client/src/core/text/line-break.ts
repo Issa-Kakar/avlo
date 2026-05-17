@@ -86,54 +86,69 @@ function getLBClass(cc: number): number {
   return LB_AL;
 }
 
+/** Pairwise UAX#14 break check on already-classified LB classes.
+ *
+ *  Returns `true` iff there is a soft-wrap break opportunity between two
+ *  adjacent code units whose classes are `prev` / `curr`. Encodes the same
+ *  candidate-then-suppress decision tree that the original inline `nextSoftBreak`
+ *  loop used.
+ *
+ *  Candidate rules (prev allows break-after, or curr opens break-before):
+ *    HY/BA/SY/EX/CL/CP/ZW × * | * × OP | B2 × * | * × B2
+ *  Suppressions are LB9, LB11, LB12, LB12a, LB13, LB14, LB17, LB19, LB25, LB30.
+ *  IS is intentionally absent from the candidate list — see comment trail
+ *  in the previous revision (LB29 + LB25 make post-IS breaks vanish for
+ *  word-internal text).
+ *
+ *  Hot helper — JIT-inlinable, monomorphic (number, number) → boolean. */
+function isBreakBetweenClasses(prev: number, curr: number): boolean {
+  const prevAllows =
+    prev === LB_HY ||
+    prev === LB_BA ||
+    prev === LB_SY ||
+    prev === LB_EX ||
+    prev === LB_CL ||
+    prev === LB_CP ||
+    prev === LB_ZW ||
+    prev === LB_B2;
+  const currOpensBreak = curr === LB_OP || curr === LB_B2;
+  if (!prevAllows && !currOpensBreak) return false;
+
+  if (curr === LB_CM) return false; // LB9: never split a grapheme cluster
+  if (prev === LB_WJ || curr === LB_WJ) return false; // LB11
+  if (prev === LB_GL) return false; // LB12
+  if (curr === LB_GL && prev !== LB_SP && prev !== LB_BA && prev !== LB_HY) return false; // LB12a
+  if (curr === LB_CL || curr === LB_CP || curr === LB_EX || curr === LB_IS || curr === LB_SY) return false; // LB13
+  if (prev === LB_OP) return false; // LB14
+  // LB17 is `B2 SP* × B2`. SP cannot appear within a word token (tokenizer splits on it),
+  // so pairwise B2 × B2 is sufficient.
+  if (prev === LB_B2 && curr === LB_B2) return false; // LB17
+  if (prev === LB_QU || curr === LB_QU) return false; // LB19
+  if ((prev === LB_HY || prev === LB_SY) && curr === LB_NU) return false; // LB25
+  if ((prev === LB_AL || prev === LB_NU) && curr === LB_OP) return false; // LB30 (AL/NU × OP)
+  if ((prev === LB_CL || prev === LB_CP) && (curr === LB_AL || curr === LB_NU)) return false; // LB30 (CL/CP × AL/NU)
+  return true;
+}
+
 /** Find end of first soft-wrap sub-segment of `text[start..]` per UAX#14.
  *  Returns a char index in `text` (or `text.length` if no break). The returned
  *  index always lies on a grapheme boundary because LB9 suppresses break-before
  *  combining marks (CM, ZWJ, ZWNJ). */
 export function nextSoftBreak(text: string, start: number = 0): number {
   for (let i = start + 1; i < text.length; i++) {
-    const prev = getLBClass(text.charCodeAt(i - 1));
-    const curr = getLBClass(text.charCodeAt(i));
-
-    // Identify break candidates: prev allows break-after, or curr opens break-before.
-    // IS (. , : ;) is NOT a break-after class — LB29 (IS × AL/HL) and LB25
-    // (numeric infix IS × NU) make the post-IS break opportunity vanish in
-    // practice for word-internal text. Omitting IS here is equivalent to
-    // applying both suppressions, while still allowing IS × OP via the OP
-    // candidate below (e.g. ":[" stays breakable).
-    // B2 (em dash) opens a break on BOTH sides per UAX#14 — appears in both lists.
-    const prevAllows =
-      prev === LB_HY ||
-      prev === LB_BA ||
-      prev === LB_SY ||
-      prev === LB_EX ||
-      prev === LB_CL ||
-      prev === LB_CP ||
-      prev === LB_ZW ||
-      prev === LB_B2;
-    const currOpensBreak = curr === LB_OP || curr === LB_B2;
-    if (!prevAllows && !currOpensBreak) continue;
-
-    // Apply UAX#14 suppressions in order.
-    if (curr === LB_CM) continue; // LB9: never split a grapheme cluster
-    if (prev === LB_WJ || curr === LB_WJ) continue; // LB11
-    if (prev === LB_GL) continue; // LB12
-    if (curr === LB_GL && prev !== LB_SP && prev !== LB_BA && prev !== LB_HY) continue; // LB12a
-    if (curr === LB_CL || curr === LB_CP || curr === LB_EX || curr === LB_IS || curr === LB_SY) continue; // LB13
-    if (prev === LB_OP) continue; // LB14
-    // LB17 is `B2 SP* × B2`. SP cannot appear within a word token (tokenizer splits on it),
-    // so pairwise B2 × B2 is sufficient.
-    if (prev === LB_B2 && curr === LB_B2) continue; // LB17
-    if (prev === LB_QU || curr === LB_QU) continue; // LB19
-    // LB25: suppress break inside numeric expressions. HY×NU keeps signed numbers
-    // glued (e.g. `:-2947.84` stays one chunk); SY×NU keeps fractions glued
-    // (e.g. `5/3`). HY×AL still breaks (e.g. `cross-hatch`) — LB25 doesn't apply.
-    // IS×NU and NU×NU are already suppressed by their LHS not being in prevAllows.
-    if ((prev === LB_HY || prev === LB_SY) && curr === LB_NU) continue; // LB25
-    if ((prev === LB_AL || prev === LB_NU) && curr === LB_OP) continue; // LB30 (AL/NU × OP)
-    if ((prev === LB_CL || prev === LB_CP) && (curr === LB_AL || curr === LB_NU)) continue; // LB30 (CL/CP × AL/NU)
-
-    return i;
+    if (isBreakBetweenClasses(getLBClass(text.charCodeAt(i - 1)), getLBClass(text.charCodeAt(i)))) return i;
   }
   return text.length;
+}
+
+/** Whether two adjacent code units form a UAX#14 break opportunity.
+ *
+ *  The text-system flow engine uses this at style-segment seams *inside* a
+ *  word: the per-segment `nextSoftBreak` walk can't see across segments, so
+ *  the seam itself has to be classified explicitly. Letter-letter (LB_AL ×
+ *  LB_AL) seams return `false` even though a bold/regular split is structurally
+ *  visible to the tokenizer — matching CSS, where styling never introduces a
+ *  break opportunity. */
+export function isBreakOpportunity(prevCharCode: number, currCharCode: number): boolean {
+  return isBreakBetweenClasses(getLBClass(prevCharCode), getLBClass(currCharCode));
 }

@@ -33,7 +33,7 @@ import * as Y from 'yjs';
 import type { FontFamily, TextAlign, TextAlignV, TextProps, TextWidth } from '../accessors';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import { FONT_FAMILIES } from './font-config';
-import { nextSoftBreak } from './line-break';
+import { isBreakOpportunity, nextSoftBreak } from './line-break';
 import {
   buildFontMatrix,
   clearMeasurementCaches,
@@ -750,10 +750,32 @@ function commitPending(m: MeasuredContent, l: TextLayout): void {
 /** Place a word token on the current line.
  *
  *  Fast path: whole word fits remaining → drop in atomic. Otherwise drive a
- *  per-sub-segment Q1/Q2/Q3 ladder over the soft-break opportunities so that
- *  intra-word break points (HY, BA, OP candidate, etc.) are honored before
- *  falling back to char-slicing. Q3 is unreachable when `tokAdvance <= maxWidth`
- *  because no sub-segment can exceed the whole-word width. */
+ *  per-sub-segment ladder over UAX#14 break opportunities so intra-word break
+ *  points (HY, BA, OP, …) are honored before falling back to char-slicing.
+ *
+ *  Two independent decision systems, layered (mirrors the CSS pipeline):
+ *
+ *   1. UAX#14 soft-break pass — Q1/Q2 walk break opportunities and place
+ *      atomic chunks. Q2 (push-to-fresh-line) is gated by `canSoftBreak`
+ *      so style-only seams (e.g. AL × AL across a bold/highlight boundary)
+ *      don't behave as break opportunities.
+ *
+ *   2. break-word char-slice pass — Q3 operates exactly where UAX#14 forbids
+ *      a break, so it is NOT gated by `canSoftBreak`. Two slice-loop guards
+ *      cover the corner cases:
+ *        (a) `lineRemaining ≤ 0` on a non-empty line — wrap before slicing,
+ *            otherwise the slicer's forward-progress strands a grapheme on
+ *            a full line (overflow).
+ *        (b) forward-progress hands back a grapheme wider than `lr` on a
+ *            non-empty line — wrap and retry on the fresh line. On an empty
+ *            line a single oversized grapheme is appended unavoidably.
+ *
+ *  Seam classification: a word is split into segments by style runs, not by
+ *  UAX#14. The per-segment `nextSoftBreak` walk can't see across segments,
+ *  so the seam between (s-1) and s is classified explicitly via
+ *  `isBreakOpportunity`. Within a segment after the first chunk, cursor > 0
+ *  implies the position is itself a real break op (it's what `nextSoftBreak`
+ *  just returned). */
 function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: number): void {
   const tokAdvance = m.tokenAdvanceWidth[ti];
   const sStart = m.tokenSegStart[ti];
@@ -764,13 +786,19 @@ function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: numb
     return;
   }
 
-  // Per-sub-segment Q1/Q2/Q3 ladder. Cut the word at UAX#14 soft-break
-  // opportunities and ask, for each chunk in order: fits current line, fits a
-  // fresh empty line, or oversized → char-slice across as many lines as needed.
   for (let s = sStart; s < sEnd; s++) {
     const font = m.segFont[s];
     const highlight = m.segHighlight[s];
     const fullText = m.segText[s];
+
+    // First seg of the word: word-leading position is itself a break.
+    // Otherwise classify the seam against the previous seg's last char.
+    let segEntryIsBreak = true;
+    if (s > sStart) {
+      const prev = m.segText[s - 1];
+      segEntryIsBreak = isBreakOpportunity(prev.charCodeAt(prev.length - 1), fullText.charCodeAt(0));
+    }
+
     let cursor = 0;
     while (cursor < fullText.length) {
       const segEnd = nextSoftBreak(fullText, cursor);
@@ -778,28 +806,55 @@ function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: numb
       const chunkW = measureTextCached(font, chunk);
       const lineRemaining = maxWidth - _b.advanceX;
 
-      // Q1: fits the current line as-is.
+      // cursor > 0 ⇒ post-nextSoftBreak position (a real break op by definition).
+      // Otherwise rely on the seam classification above.
+      const canSoftBreak = cursor > 0 || segEntryIsBreak;
+
+      // Q1 — fits the current line as-is. Always allowed.
       if (chunkW <= lineRemaining) {
         appendRun(l, font, highlight, false, chunk, chunkW);
         cursor = segEnd;
         continue;
       }
-      // Q2: fits a fresh empty line.
-      if (chunkW <= maxWidth) {
+      // Q2 — UAX#14 soft break: place atomic on a fresh line. Only legal at a
+      // real break op; at a non-break seam fall through to Q3 char-slicing so
+      // the remaining line space gets greedy-filled — matching DOM
+      // `overflow-wrap: break-word`, where style runs never introduce break ops.
+      if (canSoftBreak && chunkW <= maxWidth) {
         if (l.runCount > _b.runStart) pushLine(l);
         appendRun(l, font, highlight, false, chunk, chunkW);
         cursor = segEnd;
         continue;
       }
-      // Q3: oversized chunk — char-slice. Always start on a fresh line if dirty.
-      if (l.runCount > _b.runStart) pushLine(l);
+      // Q3 — break-word char-slice. NOT gated by UAX#14 (char-break operates
+      // exactly where UAX#14 forbids a break). Pre-emptive pushLine only when
+      // the chunk is truly oversized at a real break op — matches DOM where
+      // oversized words start on a fresh line. At a non-break seam fall
+      // straight into the slice loop; its guards handle the wrap.
+      if (canSoftBreak && chunkW > maxWidth && l.runCount > _b.runStart) {
+        pushLine(l);
+      }
       while (cursor < segEnd) {
-        const r = sliceTextToFit(font, fullText, maxWidth - _b.advanceX, cursor, segEnd);
+        let lr = maxWidth - _b.advanceX;
+        // Guard 1 — line is full; wrap before slicing. The slicer's forward-
+        // progress guarantee would otherwise strand a grapheme on a full line.
+        if (lr <= 0 && l.runCount > _b.runStart) {
+          pushLine(l);
+          lr = maxWidth;
+        }
+        const r = sliceTextToFit(font, fullText, lr, cursor, segEnd);
+        // Guard 2 — forward-progress handed back a grapheme wider than `lr`
+        // (single grapheme > available width). On a non-empty line, wrap and
+        // retry. On an empty line, accept the overflow (single grapheme >
+        // maxWidth is unavoidable).
+        if (r.headW > lr && l.runCount > _b.runStart) {
+          pushLine(l);
+          continue;
+        }
         appendRun(l, font, highlight, false, r.head, r.headW);
         cursor += r.head.length;
         if (cursor < segEnd) pushLine(l);
       }
-      // Tail of slicing sits on the current line; next outer iter handles the next sub-segment.
     }
   }
 }

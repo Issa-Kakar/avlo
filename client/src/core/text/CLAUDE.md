@@ -19,7 +19,7 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 | File | Purpose |
 |------|---------|
 | `core/text/text-system.ts` | Layout engine, three-tier cache, text renderer, text BBox |
-| `core/text/line-break.ts` | UAX #14 soft-break machinery (`nextSoftBreak`) — pure char-code logic, leaf module |
+| `core/text/line-break.ts` | UAX #14 soft-break machinery (`nextSoftBreak`, `isBreakOpportunity`) — pure char-code logic, leaf module |
 | `core/text/text-measure.ts` | Measure context, font-string builders, measured font metrics, measurement caches — shared boundary (code-system, bookmark-render, transform, TextTool, sticky-note) |
 | `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + `renderShapeLabel` + `layoutIntoLabelScratch` |
 | `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
@@ -147,7 +147,15 @@ Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at
 
 **Paragraph end:** Trailing WS is content (not hanging), so `alignmentWidth = min(advanceWidth, maxWidth)`.
 
-**Oversized words (break-word):** `sliceTextToFit(font, text, maxW, start?, endChar?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. The slicer reads grapheme boundaries from `CHAR_ENDS_CACHE` (font-independent) and probes each binary-search candidate via `measureTextCached(font, text.substring(start, charEnds[mid]))` — direct shaping captures kerning exactly, so each broken line's width matches what the DOM would render for that line shaped independently. (The previous per-grapheme cumulative-widths approach summed individual char advances, missing cumulative kerning and evicting trailing chars near the line edge.) Fast path: if `[start..endChar]` fits as a whole, returns in one measureText call. Forward-progress: >=1 grapheme advances from `start` per slice. Cross-segment guard: if forced grapheme overflows non-empty line, push line first, retry on fresh line. `noteFlowCheck` (sticky-note search predicate) mirrors the cursor-offset pattern.
+**Word placement — two decision systems:** `placeWord` drives a per-sub-segment Q1/Q2/Q3 ladder over UAX#14 break opportunities within each style segment of a word. Mirrors CSS's layered pipeline:
+- **Q1** — chunk fits current line as-is. Always allowed.
+- **Q2** — UAX#14 soft break: place atomic on a fresh line. Gated by `canSoftBreak` so style-only seams (a bold/highlight boundary inside an otherwise unbroken AL run) don't behave as break opportunities.
+- **Q3** — `overflow-wrap: break-word` char-slice via `sliceTextToFit`. Operates *exactly where* UAX#14 forbids a break, so NOT gated by `canSoftBreak`. Pre-emptive `pushLine` fires only when truly oversized (`chunkW > maxWidth`) at a real break op (matches DOM: oversized words start fresh); non-break seams fall straight into the slice loop and char-fill the remaining line space.
+- **Slice-loop guards** — (a) `lineRemaining ≤ 0` on a non-empty line → wrap before slicing (otherwise the slicer's forward-progress strands a grapheme on a full line, overflow); (b) slicer hands back a grapheme wider than available width on a non-empty line → wrap and retry on the fresh line. Both no-op on an empty line — a single oversized grapheme is appended unavoidably.
+
+Style seams are classified via `isBreakOpportunity(prevCharCode, currCharCode)` (`line-break.ts`) between the previous segment's last char and the current segment's first char. Within a segment after the first chunk, `cursor > 0` implies a real break op (it's what `nextSoftBreak` just returned). `noteFlowCheck` (sticky-note search predicate) mirrors the same ladder.
+
+**Oversized words — slicer mechanics:** `sliceTextToFit(font, text, maxW, start?, endChar?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. The slicer reads grapheme boundaries from `CHAR_ENDS_CACHE` (font-independent) and probes each binary-search candidate via `measureTextCached(font, text.substring(start, charEnds[mid]))` — direct shaping captures kerning exactly, so each broken line's width matches what the DOM would render for that line shaped independently. (The previous per-grapheme cumulative-widths approach summed individual char advances, missing cumulative kerning and evicting trailing chars near the line edge.) Fast path: if `[start..endChar]` fits as a whole, returns in one measureText call. Forward-progress: >=1 grapheme advances from `start` per slice.
 
 **Run coalescing:** Adjacent runs with identical font+highlight merge via string concat.
 
@@ -513,6 +521,8 @@ Mirrors `layoutMeasuredContent`'s pending whitespace state machine:
 - Early bail when `lineCount > maxLines`
 - Phase 1: returns `findStepForWord(wordW, contentWidth)` for oversized words
 - Phase 2: char-breaks oversized words segment by segment
+
+Sub-segment ladder is the same two-decision-system structure as `placeWord` (Stage 3 §Word placement) — `canSoftBreak` gates Q2 only; Q3 char-slices across non-break style seams to match DOM. Phase 1 may char-slice at style seams (line count then matches DOM); the `tokAdvance > maxW` bail still ensures truly oversized words defer to phase 2.
 
 #### Phase B: Mutate + Build Layout
 

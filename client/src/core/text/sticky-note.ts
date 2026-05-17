@@ -14,7 +14,7 @@ import type { FontFamily, NoteProps } from '../accessors';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { ObjectHandle } from '../types/objects';
 import { FONT_FAMILIES } from './font-config';
-import { nextSoftBreak } from './line-break';
+import { isBreakOpportunity, nextSoftBreak } from './line-break';
 import { buildFontMatrix, fontFromMatrix, getBaselineToTopRatio, measureTextCached } from './text-measure';
 import type { MeasuredContent, TextLayout } from './text-system';
 import {
@@ -140,9 +140,11 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
       // Phase 1 bails out on oversized words — char-breaking not allowed yet.
       if (tokAdvance > maxW && !phase2) return findStepForWord(tokAdvance, contentWidth);
 
-      // Per-sub-segment Q1/Q2/Q3 ladder — mirrors `placeWord`. Commit pending
-      // WS to the current line so intra-word break opportunities can place
-      // the leading sub-segment on the same line (e.g. `Char-` after `is `).
+      // Per-sub-segment ladder — mirrors `placeWord`. Two decision systems:
+      // UAX#14 (Q1/Q2 gated by `canSoftBreak`) and break-word char-slicing
+      // (Q3, not gated by UAX#14). See `placeWord` for the full mental model.
+      // Commit pending WS to the current line so intra-word break opportunities
+      // can place the leading sub-segment on the same line (e.g. `Char-` after `is `).
       curW += pendingW;
       pendingW = 0;
 
@@ -151,21 +153,30 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
       for (let s = sStart; s < sEnd; s++) {
         const font = measured.segFont[s];
         const fullText = measured.segText[s];
+
+        // First seg: word-leading position is a break. Else classify the seam.
+        let segEntryIsBreak = true;
+        if (s > sStart) {
+          const prev = measured.segText[s - 1];
+          segEntryIsBreak = isBreakOpportunity(prev.charCodeAt(prev.length - 1), fullText.charCodeAt(0));
+        }
+
         let cursor = 0;
         while (cursor < fullText.length) {
           const segEnd = nextSoftBreak(fullText, cursor);
           const chunk = fullText.substring(cursor, segEnd);
           const chunkW = measureTextCached(font, chunk);
           const lineRemaining = maxW - curW;
+          const canSoftBreak = cursor > 0 || segEntryIsBreak;
 
-          // Q1
+          // Q1 — fits as-is.
           if (chunkW <= lineRemaining) {
             curW += chunkW;
             cursor = segEnd;
             continue;
           }
-          // Q2
-          if (chunkW <= maxW) {
+          // Q2 — UAX#14 soft break: place atomic on a fresh line. Gated.
+          if (canSoftBreak && chunkW <= maxW) {
             if (curW > 0) {
               lineCount++;
               if (lineCount > maxLines) return 'heightOverflow';
@@ -175,14 +186,32 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
             cursor = segEnd;
             continue;
           }
-          // Q3 — phase 2 only (sub-segs of fits-maxW words can't exceed maxW).
-          if (curW > 0) {
+          // Q3 — break-word char-slice. Pre-emptive pushLine only when truly
+          // oversized at a real break op (matches DOM: oversized words start
+          // fresh). Non-break seams fall straight into the slice loop so the
+          // remaining line space gets greedy-filled.
+          if (canSoftBreak && chunkW > maxW && curW > 0) {
             lineCount++;
             if (lineCount > maxLines) return 'heightOverflow';
             curW = 0;
           }
           while (cursor < segEnd) {
-            const r = sliceTextToFit(font, fullText, maxW - curW, cursor, segEnd);
+            let lr = maxW - curW;
+            // Guard 1 — line full; wrap before slicing.
+            if (lr <= 0 && curW > 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+              lr = maxW;
+            }
+            const r = sliceTextToFit(font, fullText, lr, cursor, segEnd);
+            // Guard 2 — oversized grapheme on a non-empty line; wrap, retry.
+            if (r.headW > lr && curW > 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+              continue;
+            }
             curW += r.headW;
             cursor += r.head.length;
             if (cursor < segEnd) {
