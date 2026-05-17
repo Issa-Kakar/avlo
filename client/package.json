@@ -11,6 +11,7 @@
     "typecheck:tsc": "tsc --noEmit && tsc -p tsconfig.sw.json --noEmit"
   },
   "dependencies": {
+    "@avlo/api-client": "*",
     "@codemirror/autocomplete": "^6.20.1",
     "@codemirror/commands": "^6.10.2",
     "@codemirror/lang-javascript": "^6.2.5",

@@ -1,13 +1,17 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node"],
+    "lib": ["ES2022", "DOM", "WebWorker"],
     "noEmit": true,
     "strict": true,
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "target": "ES2022"
+    "target": "ES2022",
+    "paths": {
+      "@avlo/shared": ["../shared/src/index.ts"],
+      "@avlo/shared/*": ["../shared/src/*"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

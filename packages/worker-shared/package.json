@@ -1,0 +1,30 @@
+{
+  "name": "@avlo/worker-shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
+    "./cors": { "types": "./src/cors.ts", "default": "./src/cors.ts" },
+    "./csp": { "types": "./src/csp.ts", "default": "./src/csp.ts" },
+    "./ssrf": { "types": "./src/ssrf.ts", "default": "./src/ssrf.ts" },
+    "./cache-keys": { "types": "./src/cache-keys.ts", "default": "./src/cache-keys.ts" },
+    "./responses": { "types": "./src/responses.ts", "default": "./src/responses.ts" },
+    "./zod/*": { "types": "./src/zod/*.ts", "default": "./src/zod/*.ts" }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@avlo/shared": "*",
+    "hono": "^4.12.15",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251106.1",
+    "typescript": "^6.0.3"
+  }
+}

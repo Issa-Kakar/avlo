@@ -3,15 +3,18 @@
  * Service Worker — owns the entire fetch/cache layer.
  *
  * Strategies:
- *   /api/assets/*        cache-first (immutable, content-addressed)
- *   /assets/*            cache-first (Vite-hashed, immutable)
- *   /fonts/*, /cursors/* cache-first
- *   navigation (HTML)    network-first with cache fallback
- *   everything else      passthrough (no respondWith)
+ *   images host (prod) / /api/images/* (dev)  cache-first (immutable, content-addressed)
+ *   /assets/*                                  cache-first (Vite-hashed, immutable)
+ *   /fonts/*, /cursors/*                       cache-first
+ *   navigation (HTML)                          network-first with cache fallback
+ *   everything else                            passthrough (no respondWith)
  *
  * Mip URLs (?mip=half|quarter) are synthetic — written by the image worker,
  * never on the network. SW returns 404 on cache miss.
  */
+
+import { IMAGES_ORIGIN, SYNC_HOST_PROD } from '@avlo/api-client/origins';
+import { isImagesRequest, isSyncRequest } from '@avlo/api-client/sw-matchers';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
@@ -56,16 +59,13 @@ sw.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
 
   // Never intercept: party routes (WebSocket), non-GET (PUT uploads, etc.)
-  if (url.pathname.startsWith('/parties/') || request.method !== 'GET') return;
+  if (isSyncRequest(url, SYNC_HOST_PROD) || request.method !== 'GET') return;
 
-  // Asset routes: cache-first from avlo-assets (immutable, content-addressed)
-  if (url.pathname.startsWith('/api/assets/')) {
+  // Image assets: cache-first from avlo-assets (immutable, content-addressed)
+  if (isImagesRequest(url, IMAGES_ORIGIN)) {
     event.respondWith(cacheFirst(request, ASSET_CACHE));
     return;
   }
-
-  // Other API routes: passthrough
-  if (url.pathname.startsWith('/api/')) return;
 
   // Hashed static assets: cache-first (Vite hash = immutable)
   if (url.pathname.startsWith('/assets/')) {

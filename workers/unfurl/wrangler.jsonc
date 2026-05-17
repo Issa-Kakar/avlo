@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "avlo-unfurl",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
+  "compatibility_flags": ["nodejs_compat"],
+
+  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "avlo-assets" }],
+  // "images": [{ "binding": "IMG_TRANSFORM" }],   // wire up when OG-image resize / favicon thumbnail lands
+
+  // routes uncommented post-DNS-transfer + remaining pre-prod essentials
+  // "routes": [{ "pattern": "unfurl.avlo.io", "custom_domain": true }],
+
+  "dev": { "port": 8789 },
+  "observability": { "enabled": true }
+}

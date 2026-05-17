@@ -1,0 +1,22 @@
+{
+  "name": "@avlo/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
+    "./origins": { "types": "./src/origins.ts", "default": "./src/origins.ts" },
+    "./sw-matchers": { "types": "./src/sw-matchers.ts", "default": "./src/sw-matchers.ts" },
+    "./images": { "types": "./src/images.ts", "default": "./src/images.ts" },
+    "./unfurl": { "types": "./src/unfurl.ts", "default": "./src/unfurl.ts" }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.12.15"
+  }
+}

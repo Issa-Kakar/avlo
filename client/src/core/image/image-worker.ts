@@ -18,6 +18,8 @@
  */
 
 import { validateImage } from '@avlo/shared';
+import { imagesClient } from '@avlo/api-client/images';
+import { unfurlClient } from '@avlo/api-client/unfurl';
 
 // ============================================================
 // Message Types
@@ -152,7 +154,7 @@ async function getAllPendingUploadIds(): Promise<string[]> {
 const ASSET_CACHE = 'avlo-assets';
 
 function assetUrl(id: string): string {
-  return `/api/assets/${id}`;
+  return imagesClient[':key'].$url({ param: { key: id } }).toString();
 }
 
 async function deleteCachedAsset(id: string): Promise<void> {
@@ -345,14 +347,15 @@ async function drainUploads(): Promise<void> {
 // Unfurl (primary only, direct fetch — no IDB queue)
 // ============================================================
 
+type UnfurlData = Extract<WorkerOutbound, { type: 'unfurled' }>['data'];
+
 async function unfurlDirect(objectId: string, url: string): Promise<void> {
   try {
-    const resp = await fetch(`/api/unfurl?url=${encodeURIComponent(url)}`);
+    const resp = await unfurlClient.index.$get({ query: { url } });
     console.warn('[image-worker] unfurl response:', objectId, resp.status);
     if (resp.status === 200) {
-      const data = await resp.json();
-      delete data.url;
-      delete data.domain;
+      const raw = (await resp.json()) as UnfurlData & { url?: string; domain?: string };
+      const { url: _u, domain: _d, ...data } = raw;
       post({ type: 'unfurled', objectId, data });
     } else {
       post({ type: 'unfurl-failed', objectId, permanent: true });
