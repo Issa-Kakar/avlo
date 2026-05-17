@@ -29,7 +29,7 @@ interface ToolButtonProps {
 
 const ToolButton = memo(function ToolButton({ isActive, tooltip, onClick, children }: ToolButtonProps) {
   return (
-    <button className={`tool-btn ${isActive ? 'active' : ''}`} data-tooltip={tooltip} aria-label={tooltip} onClick={onClick}>
+    <button className={`tool-btn ${isActive ? 'active' : ''}`} data-tooltip={tooltip} aria-label={tooltip} tabIndex={-1} onClick={onClick}>
       {children}
     </button>
   );

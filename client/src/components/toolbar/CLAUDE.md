@@ -458,12 +458,37 @@ inherited by every toolbar descendant, deliberately *not* in the page-global
 --icon-muted:     #ffffff
 --icon-selected:  #ffffff
 --divider:        #4a4a4a
---ring:           #1d4ed8
 ```
 
 All `toolbar/*.css` files reference these via `var(--name, fallback)` with
 hardcoded fallbacks so partials still render if the import order shifts
 during refactoring.
+
+---
+
+## Accessibility — tab order
+
+Every button in the dock (`ToolButton`, `InspectorButton`, `ColorButton`, the
+picker `Swatch`, and the picker action / hex-apply buttons) carries
+`tabIndex={-1}`. None of the toolbar's `*.css` files define a `:focus-visible`
+outline. This is deliberate:
+
+- The keyboard surface of this app is the **canvas** — every tool has a
+  shortcut (`V`/`P`/`A`/…); keyboard activation never goes through the dock.
+- Tabbing through the buttons would strand focus on a tool button after a
+  shortcut switches tools elsewhere, leaving a stale blue ring on the wrong
+  icon. Removing them from the tab order removes the stranding entirely.
+- Mouse activation still works normally; `aria-label` / `aria-pressed` /
+  `aria-haspopup` are intact so the surface remains screen-reader-legible
+  even though it's not tab-navigable.
+- `.picker-hex input` is the one exception — it's a real text input,
+  auto-focused on open, and keeps its natural focus behavior. Its
+  `.picker-hex input:focus` border (using `--accent`) is the only focus
+  styling left in the surface.
+
+If a richer keyboard model is ever wanted (e.g. a focus trap inside an open
+inspector), bring it back deliberately — don't reintroduce a generic
+`:focus-visible` ring across the dock.
 
 ---
 

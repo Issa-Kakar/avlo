@@ -9,7 +9,6 @@
   --icon-muted: #ffffff;
   --icon-selected: #ffffff;
   --divider: #4a4a4a;
-  --ring: #1d4ed8;
 
   position: fixed;
   left: 9px;
@@ -88,12 +87,6 @@
 .toolbar-actions .tool-btn:active,
 .toolbar-main .tool-btn:active {
   transform: scale(0.95);
-}
-
-.toolbar-actions .tool-btn:focus-visible,
-.toolbar-main .tool-btn:focus-visible {
-  outline: 2px solid var(--ring, #1d4ed8);
-  outline-offset: 2px;
 }
 
 /* Tooltip — right of button (vertical toolbar) */

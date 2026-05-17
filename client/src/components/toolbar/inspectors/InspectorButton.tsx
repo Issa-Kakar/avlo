@@ -11,7 +11,13 @@ interface Props {
  * children stable across unrelated parent renders (e.g. picker open/close). */
 export const InspectorButton = memo(function InspectorButton({ isActive, ariaLabel, onClick, children }: Props) {
   return (
-    <button className={`insp-btn ${isActive ? 'is-active' : ''}`} aria-label={ariaLabel} aria-pressed={isActive} onClick={onClick}>
+    <button
+      className={`insp-btn ${isActive ? 'is-active' : ''}`}
+      aria-label={ariaLabel}
+      aria-pressed={isActive}
+      tabIndex={-1}
+      onClick={onClick}
+    >
       {children}
     </button>
   );

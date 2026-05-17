@@ -28,6 +28,7 @@ export const ColorButton = memo(function ColorButton({ color, ariaLabel, onClick
       aria-label={ariaLabel}
       aria-haspopup={expanded === undefined ? undefined : 'dialog'}
       aria-expanded={expanded}
+      tabIndex={-1}
       onClick={onClick}
     >
       {selected && <CheckIcon color={checkmarkColorFor(color)} size={16} />}

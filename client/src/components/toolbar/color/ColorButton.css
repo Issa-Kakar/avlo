@@ -40,8 +40,3 @@
     0 0 0 2px var(--dock-bg, #101720),
     0 0 0 4px var(--slot-tint);
 }
-
-.color-button:focus-visible {
-  outline: 2px solid var(--ring, #1d4ed8);
-  outline-offset: 3px;
-}

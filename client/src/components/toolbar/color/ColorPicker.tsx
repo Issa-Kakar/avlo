@@ -22,6 +22,7 @@ const Swatch = memo(function Swatch({ color, isActive, onPickColor }: SwatchProp
       data-near-black={isNearBlack(color) || undefined}
       style={colorButtonStyle(color, isActive)}
       aria-label={`Color ${color}`}
+      tabIndex={-1}
       onClick={() => onPickColor(color)}
     >
       {/* Active swatch: checkmark + the active slot's tinted offset ring (ColorPicker.css). */}
@@ -55,12 +56,18 @@ export const ColorPicker = memo(function ColorPicker({ currentColor, onPickColor
       </div>
 
       <div className="picker-actions">
-        <button className="picker-action-btn" aria-label="Custom hex" aria-pressed={showHex} onClick={() => setShowHex((v) => !v)}>
+        <button
+          className="picker-action-btn"
+          aria-label="Custom hex"
+          aria-pressed={showHex}
+          tabIndex={-1}
+          onClick={() => setShowHex((v) => !v)}
+        >
           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
             <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
           </svg>
         </button>
-        <button className="picker-action-btn" aria-label="Eyedropper" disabled>
+        <button className="picker-action-btn" aria-label="Eyedropper" tabIndex={-1} disabled>
           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
             <path
               d="M11.5 2.5l2 2-1.5 1.5-1-1L7 9.5l-1 0.5-1 1-2 2 1 1 2-2 1-1 0.5-1L12 5.5l-1-1 0.5-2z"
@@ -90,7 +97,7 @@ export const ColorPicker = memo(function ColorPicker({ currentColor, onPickColor
               }
             }}
           />
-          <button className="picker-hex-apply" aria-label="Apply hex" onClick={submitHex}>
+          <button className="picker-hex-apply" aria-label="Apply hex" tabIndex={-1} onClick={submitHex}>
             ↵
           </button>
         </div>
