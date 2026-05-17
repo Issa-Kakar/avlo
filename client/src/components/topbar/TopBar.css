@@ -123,6 +123,19 @@
   background: rgba(0, 0, 0, 0.05);
 }
 
+/* Disabled state — cascade-ordered AFTER :hover so the disabled hover override
+   wins without !important. Cool-grey (slight blue cast) reads as disabled
+   without disappearing into the white pill — neutral grey at this lightness
+   washes out against the warm-dark text on either side. */
+.top-bar-history-btn:disabled {
+  color: #9ba3ad;
+  cursor: default;
+}
+
+.top-bar-history-btn:disabled:hover {
+  background: transparent;
+}
+
 /* Hair extra space between adjacent history buttons (on top of the 2px flex gap). */
 .top-bar-history-btn + .top-bar-history-btn {
   margin-left: 2px;

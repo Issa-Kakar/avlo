@@ -1,6 +1,5 @@
 import { memo, type ReactNode } from 'react';
 import { openImageFilePicker } from '@/core/image/image-actions';
-import { getActiveRoomDoc, hasActiveRoom } from '@/runtime/room-runtime';
 import { isStrokeTool, setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
 import { IconArrow } from './icons/IconArrow';
 import { IconCode } from './icons/IconCode';
@@ -11,11 +10,9 @@ import { IconImage } from './icons/IconImage';
 import { IconPan } from './icons/IconPan';
 import { IconPen } from './icons/IconPen';
 import { IconRectangle } from './icons/IconRectangle';
-import { IconRedo } from './icons/IconRedo';
 import { IconSelect } from './icons/IconSelect';
 import { IconStickyNote } from './icons/IconStickyNote';
 import { IconText } from './icons/IconText';
-import { IconUndo } from './icons/IconUndo';
 import { ConnectorInspector } from './inspectors/ConnectorInspector';
 import { PenInspector } from './inspectors/PenInspector';
 import './Toolbar.css';
@@ -48,12 +45,6 @@ const clickPen = () => setActiveTool('pen');
 const clickCode = () => setActiveTool('code');
 const clickEraser = () => setActiveTool('eraser');
 const clickImage = () => openImageFilePicker();
-const clickUndo = () => {
-  if (hasActiveRoom()) getActiveRoomDoc().undo();
-};
-const clickRedo = () => {
-  if (hasActiveRoom()) getActiveRoomDoc().redo();
-};
 
 export function Toolbar() {
   const activeTool = useDeviceUIStore((s) => s.tool.active);
@@ -104,15 +95,6 @@ export function Toolbar() {
 
         {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}
         {activeTool === 'connector' && <ConnectorInspector />}
-      </div>
-
-      <div className="toolbar-actions">
-        <ToolButton isActive={false} tooltip="Undo" onClick={clickUndo}>
-          <IconUndo className="icon" />
-        </ToolButton>
-        <ToolButton isActive={false} tooltip="Redo" onClick={clickRedo}>
-          <IconRedo className="icon" />
-        </ToolButton>
       </div>
     </div>
   );

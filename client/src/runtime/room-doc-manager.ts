@@ -23,6 +23,7 @@ import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { getUserId } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
+import { bindUndoManagerToHistoryStore } from './history-bridge';
 import { attach, detach } from './presence/presence';
 
 // Type alias for Y structures
@@ -62,6 +63,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Undo/Redo manager
   private undoManager: Y.UndoManager | null = null;
+  private unbindHistory: (() => void) | null = null;
 
   // Track if destroyed for cleanup
   private destroyed = false;
@@ -128,6 +130,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       trackedOrigins: new Set([this.userId, ySyncPluginKey]),
       captureTimeout: 500,
     });
+    this.unbindHistory = bindUndoManagerToHistoryStore(this.undoManager);
   }
 
   mutate(fn: () => void): void {
@@ -171,6 +174,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       p.disconnect();
       p.destroy();
     });
+    this.unbindHistory = dispose(this.unbindHistory, (fn) => fn());
     this.undoManager = dispose(this.undoManager, (m) => m.destroy());
     this.objectsObserver = dispose(this.objectsObserver, (fn) => this.objects.unobserveDeep(fn));
 

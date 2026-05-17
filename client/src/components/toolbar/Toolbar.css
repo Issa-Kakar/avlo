@@ -16,13 +16,14 @@
   transform: translateY(-50%);
   z-index: 380;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 8px;
 }
 
-.toolbar-actions,
+/* The inspector child is `position: absolute` against the main pill, so
+   .toolbar-main is the positioning ancestor — `top: 50%` on the inspector
+   centers vertically against this pill. */
 .toolbar-main {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -35,14 +36,6 @@
   backdrop-filter: blur(6px);
 }
 
-/* Make .toolbar-main the positioning ancestor for the inspector child so
- * `top: 50%` on the inspector centers against the main pill (not the
- * taller .toolbar-wrap, which stacks main + actions). */
-.toolbar-main {
-  position: relative;
-}
-
-.toolbar-actions .tool-btn,
 .toolbar-main .tool-btn {
   width: 32px;
   height: 32px;
@@ -60,7 +53,6 @@
   flex-shrink: 0;
 }
 
-.toolbar-actions .tool-btn .icon,
 .toolbar-main .tool-btn .icon {
   width: 24px;
   height: 24px;
@@ -68,29 +60,24 @@
   fill: currentColor;
 }
 
-.toolbar-actions .tool-btn:hover,
 .toolbar-main .tool-btn:hover {
   background: var(--dock-hover, #383838);
 }
 
-.toolbar-actions .tool-btn.active,
 .toolbar-main .tool-btn.active {
   background: var(--accent, #1f51ff);
   color: var(--icon-selected, #f5f5f5);
 }
 
-.toolbar-actions .tool-btn.active:hover,
 .toolbar-main .tool-btn.active:hover {
   background: var(--accent, #1f51ff);
 }
 
-.toolbar-actions .tool-btn:active,
 .toolbar-main .tool-btn:active {
   transform: scale(0.95);
 }
 
 /* Tooltip — right of button (vertical toolbar) */
-.toolbar-actions .tool-btn::after,
 .toolbar-main .tool-btn::after {
   content: attr(data-tooltip);
   position: absolute;
@@ -110,7 +97,6 @@
   z-index: 10;
 }
 
-.toolbar-actions .tool-btn:hover::after,
 .toolbar-main .tool-btn:hover::after {
   opacity: 1;
   transform: translateY(-50%) scale(1);
@@ -135,19 +121,16 @@
     left: 6px;
   }
 
-  .toolbar-actions .tool-btn,
   .toolbar-main .tool-btn {
     width: 28px;
     height: 28px;
   }
 
-  .toolbar-actions .tool-btn .icon,
   .toolbar-main .tool-btn .icon {
     width: 20px;
     height: 20px;
   }
 
-  .toolbar-actions,
   .toolbar-main {
     padding: 3px;
     border-radius: 10px;

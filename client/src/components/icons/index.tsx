@@ -1,7 +1,8 @@
 import type React from 'react';
 
 // Zoom-control + help icons consumed by `components/ZoomControls.tsx`.
-// Toolbar icons live in `components/toolbar/icons/` — don't add toolbar icons here.
+// Toolbar icons live in `components/toolbar/icons/` and topbar icons in
+// `components/topbar/icons/` — don't add icons for those surfaces here.
 
 // Mural's filled chunky plus.
 export const IconZoomPlus: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (

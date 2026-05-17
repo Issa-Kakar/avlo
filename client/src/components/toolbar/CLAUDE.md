@@ -52,8 +52,8 @@ only needs one stylesheet import.
 | File | Role |
 |---|---|
 | `index.ts` | Re-exports `{ Toolbar }`. Single export — no barrel sprawl. |
-| `Toolbar.tsx` | Vertical main pill (13 buttons + 2 actions). Dispatches `<PenInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. |
-| `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + actions-pill + tooltip styling. |
+| `Toolbar.tsx` | Vertical main pill (13 buttons). Dispatches `<PenInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. Undo/redo live in `components/topbar/` and are state-driven via `stores/history-store.ts`. |
+| `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + tooltip styling. |
 | `weights.ts` | `WeightPreset` (`{ width, Icon }`) + two preset tables: `STROKE_WEIGHTS` (pen/highlighter — `4/7/10/13`) and `CONNECTOR_WEIGHTS` (connector — `2/4/6/8`). Both tables reuse the same `IconStrokeWeight1..4` set — the icons represent visual tiers, not pixel widths. `WeightSelector` / `WeightField` are preset-agnostic; each consumer picks its table. |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple — `line`/`arrow`/`elbow`) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId` (totally onto the three ids; never null). Pure, table-driven. |
 | `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). No barrel — consumers import each icon directly. |
@@ -89,11 +89,10 @@ shared location if/when the context menu adopts them.
 RoomPage
 └─ <Toolbar />                                     zero props
    └─ .toolbar-wrap                                 fixed left:12px, viewport-centered (top:50%)
-      ├─ .toolbar-main (pill, position:relative)
-      │   ├─ 13× <ToolButton>                       React.memo; module-level onClicks
-      │   ├─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered vs main pill
-      │   └─ {activeTool === 'connector' && <ConnectorInspector />}
-      └─ .toolbar-actions (pill)                   Undo, Redo
+      └─ .toolbar-main (pill, position:relative)
+          ├─ 13× <ToolButton>                       React.memo; module-level onClicks
+          ├─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered vs main pill
+          └─ {activeTool === 'connector' && <ConnectorInspector />}
 ```
 
 `PenInspector` body (`tool: StrokeTool` prop):
@@ -174,8 +173,11 @@ Each handler is module-level in `Toolbar.tsx`:
 | 12 | Image | I | `openImageFilePicker()` | **One-shot, never marked active.** `'image'` is not in the `Tool` union. |
 | 13 | Eraser | E | `setActiveTool('eraser')` | |
 
-Below the main pill, in `.toolbar-actions`: Undo, Redo — call
-`getActiveRoomDoc().undo()/redo()` gated on `hasActiveRoom()`.
+Undo/redo no longer live in the toolbar — they moved to
+`components/topbar/HistoryButtons.tsx` and read `canUndo`/`canRedo` from
+`stores/history-store.ts` (a Y.UndoManager bridge in
+`runtime/history-bridge.ts` pushes stack state into the store, and the
+buttons use native `disabled` to grey out when the action is unavailable).
 
 `ShapeVariant` union includes `'triangle'` but the toolbar doesn't expose
 it yet. Existing `'roundedRect'` shape objects in user data still render
@@ -419,8 +421,6 @@ icons/
 ├── IconCode.tsx                      │
 ├── IconImage.tsx                     │
 ├── IconEraser.tsx                    ┘
-├── IconUndo.tsx                      ┐  actions
-├── IconRedo.tsx                      ┘
 ├── IconInspectorPen.tsx              ┐  pen inspector
 ├── IconInspectorHighlighter.tsx      ┘
 ├── StrokeWeightIcons.tsx             # IconStrokeWeight1..4 (shared squiggle lineage)
@@ -525,8 +525,7 @@ never depended on that nest.
 
 `Toolbar.tsx` renders the inspector inside `.toolbar-main` so the
 inspector's `top: 50%; transform: translateY(-50%)` centers against the
-**main pill** — not the taller `.toolbar-wrap`, which also stacks
-`.toolbar-actions` underneath.
+**main pill** as the positioning ancestor.
 
 ---
 
