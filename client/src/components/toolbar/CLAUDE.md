@@ -133,7 +133,7 @@ one on mousedown before the toggle handler opens the new one on click.
 | Token | Value |
 |---|---|
 | `toolbar-wrap` position | `fixed; left:12px; top:50%; transform:translateY(-50%); z-index:380` |
-| Main-pill button | 32×32, 8px radius, 24×24 icon, 2px gap, 8px container padding, 14px container radius |
+| Main-pill button | 32×32, 8px radius, 24×24 icon, 5px gap, 8px container padding, 14px container radius |
 | `<768px` override | 28×28 button, 20×20 icon, 3px container padding, 10px radius, `left:6px` |
 | Inspector pill | `left: calc(100% + 7px); top:50%; translateY(-50%)`; 4px gap, 7px container padding, 14px radius |
 | `<768px` inspector | `left: calc(100% + 6px)` |
