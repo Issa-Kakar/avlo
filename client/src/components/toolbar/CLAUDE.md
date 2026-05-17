@@ -206,6 +206,7 @@ const HIGHLIGHTER_OPACITY = 0.45;                            // fixed; pen is al
 const isStrokeTool = (t: Tool): t is StrokeTool => …;        // dodges core/accessors' getStrokeTool
 interface StrokeCluster { slots: SlotColors; activeSlot: SlotIndex }   // module-local
 interface StrokeStyle   { color: string; width: number; opacity: number }   // exported
+type PointerInputKind = 'mouse' | 'trackpad';                  // workspace pref value type
 
 interface DeviceUIState {
   user:        { id: string; name: string; color: string };
@@ -217,6 +218,15 @@ interface DeviceUIState {
   text:        { color; align; size; fontFamily; highlightColor; fillColor };
   note:        { align; alignV; fontFamily };
   code:        { lineNumbers; headerVisible };
+
+  // Workspace preferences — flat top-level scalars (no cluster).
+  pointerInput:            PointerInputKind;
+  gridEnabled:             boolean;
+  alignObjects:            boolean;
+  edgeScrolling:           boolean;
+  showCollaboratorCursors: boolean;
+  showFlowConnectors:      boolean;     // quick-connect arrows around selected bindables
+  toolLock:                boolean;     // false = auto-revert to 'select' after one commit
 }
 ```
 
@@ -235,6 +245,18 @@ CSS cast lives in `ColorButton.tsx`'s `colorButtonStyle()` for the
 **Why `strokeWidth` is top-level.** Pen and highlighter genuinely share it
 — width changes apply to both. Putting it inside a `strokeTools` cluster
 would lie about the model and force a mirror.
+
+**Why workspace prefs are flat.** Each pref has an independent consumer
+(grid renderer, snap engine, presence dispatch, edge-scroll runtime,
+tool commit, pan-zoom gesture handlers). Grouping them under a `prefs`
+cluster would route every toggle through a single notification path and
+force unrelated consumers to ask "did this field actually change?" —
+poor code at every consumer. Hot-path reads are one property hop
+(`useDeviceUIStore.getState().X`); reactive consumers subscribe via
+the per-field `selectX` selector and Zustand's `Object.is` dedup
+handles change detection. Toggles are named (`toggleGridEnabled`, …)
+so memoized UI buttons get module-stable handlers — no `togglePref(key)`
+indirection with inline arrows at callsites.
 
 ### Middleware stack
 
@@ -281,6 +303,7 @@ after a bump regenerates user identity through the init block.
 - `setStrokeSlotColor(tool, color)` / `setStrokeActiveSlot(tool, slot)` — both `tool`-keyed; `setStrokeSlotColor` is a direct draft index write on that tool's active slot.
 - `setCursorOverride` — idempotent guard then recipe. Cursor application is the subscription's job, not the setter's.
 - Width setters take `number`. There are no preset unions — `weights.ts` exports per-tool `WeightPreset` tables, and `WeightSelector` / `WeightField` flow widths as plain `number` end-to-end. Off-preset widths (e.g. from a future drag-resize) persist with no cast; `WeightField`'s trigger shows the nearest tier's icon.
+- **Workspace prefs.** `setPointerInput(kind)` writes the mode scalar. Each boolean has its own named action — `toggleGridEnabled`, `toggleAlignObjects`, `toggleEdgeScrolling`, `toggleShowCollaboratorCursors`, `toggleShowFlowConnectors`, `toggleToolLock`. One immer recipe per action → one set() → one notification on exactly the touched scalar. No parameterized `togglePref(key)` — named actions keep callsite handlers stable for memoized buttons. Not yet wired to runtime; expected consumers when integrated: renderer (`gridEnabled`), `SelectTool` snap (`alignObjects`), `runtime/viewport/edge-scroll.ts` (`edgeScrolling`), presence overlay (`showCollaboratorCursors`), `SelectTool` overlay (`showFlowConnectors`), tool commit (`toolLock`), pan-zoom gesture handlers (`pointerInput`).
 
 ### Stable action handler exports
 
@@ -338,7 +361,7 @@ plain `Object.is` is correct (no `useShallow` needed for cluster reads).
 | Kind | Names |
 |---|---|
 | Cluster | `selectUser`, `selectShape`, `selectConnector`, `selectText`, `selectNote`, `selectCode` |
-| Scalar | `selectActiveTool`, `selectStrokeWidth`, `selectTextColor`, `selectTextAlign`, `selectTextSize`, `selectTextHighlightColor`, `selectTextFontFamily` |
+| Scalar | `selectActiveTool`, `selectStrokeWidth`, `selectTextColor`, `selectTextAlign`, `selectTextSize`, `selectTextHighlightColor`, `selectTextFontFamily`, `selectPointerInput`, `selectGridEnabled`, `selectAlignObjects`, `selectEdgeScrolling`, `selectShowCollaboratorCursors`, `selectShowFlowConnectors`, `selectToolLock` |
 
 `resolveStrokeStyle(s, tool)` is not a selector (it takes a second arg) but
 lives beside them — it's the stroke-tool read consumers use *instead of* a
@@ -606,6 +629,15 @@ change breaks one of these, do it deliberately, not accidentally.**
     `STROKE_WEIGHTS` and `CONNECTOR_WEIGHTS` map their own absolute
     widths to the same shared icon set — different scales, same icons.
     Don't fork the icon set per tool.
+14. **Workspace prefs are flat top-level scalars, not a `prefs` cluster.**
+    Each pref has an independent consumer (renderer / snap / presence /
+    edge-scroll / tool commit / pan-zoom). Cluster grouping would route
+    every toggle through one notification path and force unrelated
+    consumers to dedup. Toggles are named (`toggleX`), not parameterized
+    (`togglePref(key)`), so memoized UI buttons get stable refs without
+    inline arrows. New prefs go at the top level + get a `selectX`
+    scalar selector + a named `setX`/`toggleX` action + a `partialize`
+    line — five small edits, no cluster ceremony.
 
 ---
 

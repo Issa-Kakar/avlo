@@ -50,6 +50,16 @@ export const isStrokeTool = (t: Tool): t is StrokeTool => t === 'pen' || t === '
 // not stored state; pen is always 1.
 export const HIGHLIGHTER_OPACITY = 0.45;
 
+// Workspace preferences are flat top-level scalars, not a cluster. Each
+// preference has an independent consumer (grid renderer, snap engine,
+// presence dispatch, edge-scroll runtime, tool commit) — they share no
+// lifecycle, so grouping them would only add a drill (`s.prefs.x`) and
+// pull unrelated subscribers into one another's selector firings.
+// Hot-path consumers read via `useDeviceUIStore.getState().X`; reactive
+// consumers subscribe via the per-field selector below. Not yet wired —
+// UI surface to be added later.
+export type PointerInputKind = 'mouse' | 'trackpad';
+
 // Per-tool slot cluster — module-local; consumers go through resolveStrokeStyle.
 interface StrokeCluster {
   slots: SlotColors;
@@ -77,6 +87,16 @@ export interface DeviceUIState {
   text: { color: string; align: TextAlign; size: number; fontFamily: FontFamily; highlightColor: string | null; fillColor: string | null };
   note: { align: TextAlign; alignV: TextAlignV; fontFamily: FontFamily };
   code: { lineNumbers: boolean; headerVisible: boolean };
+
+  pointerInput: PointerInputKind;
+  gridEnabled: boolean;
+  alignObjects: boolean;
+  edgeScrolling: boolean;
+  showCollaboratorCursors: boolean;
+  // Quick-connect arrows around a selected bindable for drag-out connector creation.
+  showFlowConnectors: boolean;
+  // When false, tools auto-revert to `select` after one commit.
+  toolLock: boolean;
 }
 
 // === Actions Interface ===
@@ -118,6 +138,14 @@ export interface DeviceUIActions {
 
   setCodeLineNumbers(v: boolean): void;
   setCodeHeaderVisible(v: boolean): void;
+
+  setPointerInput(kind: PointerInputKind): void;
+  toggleGridEnabled(): void;
+  toggleAlignObjects(): void;
+  toggleEdgeScrolling(): void;
+  toggleShowCollaboratorCursors(): void;
+  toggleShowFlowConnectors(): void;
+  toggleToolLock(): void;
 }
 
 export type DeviceUIStore = DeviceUIState & DeviceUIActions;
@@ -169,6 +197,14 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
         },
 
         code: { lineNumbers: true, headerVisible: true },
+
+        pointerInput: 'mouse',
+        gridEnabled: false,
+        alignObjects: true,
+        edgeScrolling: true,
+        showCollaboratorCursors: true,
+        showFlowConnectors: true,
+        toolLock: false,
 
         // === Actions ===
 
@@ -302,6 +338,35 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           set((state) => {
             state.code.headerVisible = v;
           }),
+
+        setPointerInput: (kind) =>
+          set((state) => {
+            state.pointerInput = kind;
+          }),
+        toggleGridEnabled: () =>
+          set((state) => {
+            state.gridEnabled = !state.gridEnabled;
+          }),
+        toggleAlignObjects: () =>
+          set((state) => {
+            state.alignObjects = !state.alignObjects;
+          }),
+        toggleEdgeScrolling: () =>
+          set((state) => {
+            state.edgeScrolling = !state.edgeScrolling;
+          }),
+        toggleShowCollaboratorCursors: () =>
+          set((state) => {
+            state.showCollaboratorCursors = !state.showCollaboratorCursors;
+          }),
+        toggleShowFlowConnectors: () =>
+          set((state) => {
+            state.showFlowConnectors = !state.showFlowConnectors;
+          }),
+        toggleToolLock: () =>
+          set((state) => {
+            state.toolLock = !state.toolLock;
+          }),
       })),
       {
         name: 'avlo.toolbar.v2',
@@ -316,6 +381,13 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           text: s.text,
           note: s.note,
           code: s.code,
+          pointerInput: s.pointerInput,
+          gridEnabled: s.gridEnabled,
+          alignObjects: s.alignObjects,
+          edgeScrolling: s.edgeScrolling,
+          showCollaboratorCursors: s.showCollaboratorCursors,
+          showFlowConnectors: s.showFlowConnectors,
+          toolLock: s.toolLock,
           // tool.active + tool.cursorOverride intentionally excluded.
         }),
       },
@@ -355,6 +427,13 @@ export const {
   setNoteFontFamily,
   setCodeLineNumbers,
   setCodeHeaderVisible,
+  setPointerInput,
+  toggleGridEnabled,
+  toggleAlignObjects,
+  toggleEdgeScrolling,
+  toggleShowCollaboratorCursors,
+  toggleShowFlowConnectors,
+  toggleToolLock,
 } = useDeviceUIStore.getState();
 
 // ============================================
@@ -456,3 +535,14 @@ export const selectText = (s: DeviceUIState) => s.text;
 export const selectNote = (s: DeviceUIState) => s.note;
 export const selectCode = (s: DeviceUIState) => s.code;
 export const selectUser = (s: DeviceUIState) => s.user;
+
+// Per-pref scalar selectors — stable refs for `useDeviceUIStore(selectX)`
+// and `useDeviceUIStore.subscribe(selectX, fn)`. Each is independent; a
+// toggle of `gridEnabled` doesn't fire `showCollaboratorCursors` consumers.
+export const selectPointerInput = (s: DeviceUIState) => s.pointerInput;
+export const selectGridEnabled = (s: DeviceUIState) => s.gridEnabled;
+export const selectAlignObjects = (s: DeviceUIState) => s.alignObjects;
+export const selectEdgeScrolling = (s: DeviceUIState) => s.edgeScrolling;
+export const selectShowCollaboratorCursors = (s: DeviceUIState) => s.showCollaboratorCursors;
+export const selectShowFlowConnectors = (s: DeviceUIState) => s.showFlowConnectors;
+export const selectToolLock = (s: DeviceUIState) => s.toolLock;
