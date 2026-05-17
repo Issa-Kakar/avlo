@@ -2,13 +2,13 @@
 
 .top-bar {
   position: fixed;
-  top: 9px;
+  top: 7px;
   left: 9px;
   z-index: 400;
   height: 48px;
   display: inline-flex;
   align-items: center;
-  padding: 0 6px 0 4px;
+  padding: 0 6px 0 5px;
   gap: 2px;
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -22,8 +22,8 @@
 
 /* Sidebar toggle button */
 .top-bar-sidebar {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   background: transparent;
@@ -54,11 +54,18 @@
 
 /* Vertical divider */
 .top-bar-divider {
-  width: 1px;
+  width: 2px;
   height: 24px;
   background: rgba(0, 0, 0, 0.16);
   margin: 0 4px 0 9px;
   flex-shrink: 0;
+}
+
+/* Right-side divider — symmetric margins so the line reads centered between the
+   kebab and undo buttons (both sides are empty button space, no text-form mass
+   to compensate for asymmetry like the first divider has). */
+.top-bar-divider-history {
+  margin: 0 9px;
 }
 
 /* Board name */
@@ -81,9 +88,9 @@
 
 /* Board settings kebab */
 .top-bar-settings {
-  width: 28px;
+  width: 32px;
   margin-left: 4px;
-  height: 40px;
+  height: 32px;
   display: grid;
   place-items: center;
   background: transparent;
@@ -96,6 +103,34 @@
 
 .top-bar-settings:hover {
   background: rgba(0, 0, 0, 0.05);
+}
+
+/* History buttons (undo / redo) */
+.top-bar-history-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #1a1a1a;
+  transition: background 150ms ease;
+}
+
+.top-bar-history-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* Hair extra space between adjacent history buttons (on top of the 2px flex gap). */
+.top-bar-history-btn + .top-bar-history-btn {
+  margin-left: 2px;
+}
+
+.top-bar-history-icon {
+  width: 20px;
+  height: 20px;
 }
 
 /* ===== Responsive ===== */

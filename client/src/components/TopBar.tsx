@@ -1,6 +1,8 @@
 import { AvloLogo } from './icons/AvloLogo';
 import { KebabIcon } from './icons/KebabIcon';
+import { RedoIcon } from './icons/RedoIcon';
 import { SidebarIcon } from './icons/SidebarIcon';
+import { UndoIcon } from './icons/UndoIcon';
 import './TopBar.css';
 
 export function TopBar() {
@@ -22,6 +24,15 @@ export function TopBar() {
       {/* Board settings */}
       <button className="top-bar-settings" aria-label="Board settings">
         <KebabIcon />
+      </button>
+
+      <div className="top-bar-divider top-bar-divider-history" />
+
+      <button className="top-bar-history-btn" aria-label="Undo">
+        <UndoIcon className="top-bar-history-icon" />
+      </button>
+      <button className="top-bar-history-btn" aria-label="Redo">
+        <RedoIcon className="top-bar-history-icon" />
       </button>
     </div>
   );
