@@ -30,9 +30,31 @@ const port = PORTS[name] + offset;
 // via PORT_OFFSET.
 const inspectorPort = PORTS[name] + 1000 + offset;
 const repoRoot = resolve(here, '..');
+// Force every worker onto a single repo-level Miniflare state tree. Without this,
+// wrangler v4 resolves the default `.wrangler/` relative to the *config file's*
+// directory — so each `workers/<name>/.wrangler/state/v3/r2/avlo-assets/` ends up
+// a *separate* physical bucket. Bug surface: unfurl writes an OG image to its
+// own R2, the images worker's R2 stays empty, and the browser's GET on that
+// `<sha>` 404s. The path must be absolute — a relative `--persist-to` is itself
+// resolved against the config dir in some wrangler versions, silently un-sharing
+// the state. The matching `bucket_name` (`avlo-assets`) in both wrangler.jsoncs
+// is the second half of the contract: same persist root + same bucket name =
+// one shared subdirectory across workers.
+const persistTo = resolve(repoRoot, '.wrangler/state');
 const proc = spawn(
   'npx',
-  ['wrangler', 'dev', '-c', `workers/${name}/wrangler.jsonc`, '--port', String(port), '--inspector-port', String(inspectorPort)],
+  [
+    'wrangler',
+    'dev',
+    '-c',
+    `workers/${name}/wrangler.jsonc`,
+    '--port',
+    String(port),
+    '--inspector-port',
+    String(inspectorPort),
+    '--persist-to',
+    persistTo,
+  ],
   { stdio: 'inherit', cwd: repoRoot, shell: true },
 );
 proc.on('exit', (code) => process.exit(code ?? 0));

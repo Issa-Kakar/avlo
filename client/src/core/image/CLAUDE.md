@@ -473,9 +473,9 @@ Response codes: 201 (created), 200 (exists), 400 (bad format / hash mismatch / C
 Edge-cached R2 proxy with full HTTP semantics:
 1. **Zod param (H1)** — same key regex
 2. **Edge cache check** — skipped if request has `Range` (caches.default keys on URL+method, not Range; serving a full 200 to Range silently satisfies RFC 9110 but defeats partial-content workflows)
-3. **R2 fetch** — `IMAGES.get(key, { range: headers, onlyIf: headers })` — R2 parses Range + If-None-Match / If-Modified-Since natively
+3. **R2 fetch** — `IMAGES.get(key, { range: hasRange ? headers : undefined, onlyIf: headers })` — R2 parses Range + If-None-Match / If-Modified-Since natively. **The `range` argument is gated on an incoming `Range` header** because miniflare's R2 simulator always populates `object.range` (defaulting to `{ offset: 0, length: size }` when no Range was asked for), and any downstream branch that conflates "object.range truthy" with "client wanted partial content" will leak 206s into no-Range fetches in dev.
 4. **Response headers** — `Cache-Control: public, max-age=31536000, immutable`, `ETag` from R2, `Accept-Ranges: bytes`, `applyCsp(headers, 'asset-body')` (`default-src 'none'; sandbox` + `X-Content-Type-Options: nosniff` + `CORP: cross-origin`)
-5. **Content-Range** branch for 206 partial responses (suffix and offset+length forms)
+5. **Content-Range** branch for 206 partial responses (suffix and offset+length forms) — entered only when `hasRange`, same reason as above
 6. **Edge cache populate** — `waitUntil(cache.put())` on full 200 (not 206/304); `body.tee()` for simultaneous cache write + response
 
 Response codes: 200 (full), 206 (range), 304 (conditional), 404 (not found)
@@ -509,7 +509,7 @@ Driven by `scripts/dev-ports.json` (single source of truth) + `PORT_OFFSET`:
 
 Client port: 3000 (`VITE_PORT`). Base worker ports: 8787/8788/8789. Parallel dev (`PORT_OFFSET=3 VITE_PORT=3001 npm run dev`) shifts all uniformly.
 
-Client URL building uses `@avlo/api-client` typed `hc<App>` — `imagesClient[':key'].$url({ param: { key: id } })` produces the right cross-origin URL in prod (`https://images.avlo.io/<key>`) and the dev-proxy URL locally (`/api/images/<key>`), driven by `import.meta.env.PROD` in `packages/api-client/src/origins.ts`.
+Client URL building uses `@avlo/api-client` typed `hc<App>` — `imagesClient[':key'].$url({ param: { key: id } })` produces the right cross-origin URL in prod (`https://images.avlo.io/<key>`) and an absolute localhost URL in dev (`${location.origin}/api/images/<key>` → e.g. `http://localhost:3000/api/images/<key>`), driven by `import.meta.env.PROD` in `packages/api-client/src/origins.ts`. The dev origin must be absolute: a bare path base throws `Invalid URL` inside Hono's `$url(...)` URL constructor.
 
 **Testing SW:** `npm run -w client build && npm run -w client preview` (preview has same proxy config). Dev mode doesn't build SW — worker's `readAssetBlob()` handles this transparently.
 

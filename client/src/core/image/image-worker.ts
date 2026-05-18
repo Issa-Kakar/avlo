@@ -179,8 +179,10 @@ async function readAssetBlob(assetId: string): Promise<Blob | null> {
   try {
     const resp = await fetch(url);
     if (!resp.ok) return null;
-    // Cache the network response for future reads
-    cache.put(url, resp.clone());
+    // Cache.put() rejects on 206 (spec-mandated) — only persist 200s. Fire-and-
+    // forget with a swallowed rejection so an unexpected write failure doesn't
+    // surface as an unhandled rejection.
+    if (resp.status === 200) cache.put(url, resp.clone()).catch(() => {});
     return resp.blob();
   } catch {
     return null;

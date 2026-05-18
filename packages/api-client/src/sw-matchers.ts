@@ -2,10 +2,13 @@
 // not building) — plain string/origin checks are the right tool. `hc` is unused here
 // to keep the SW bundle small.
 
+// `imagesOrigin` is always absolute (see origins.ts) — `https://images.avlo.io` in
+// prod, `http://<host>/api/images` in dev. Compare origin first, then enforce the
+// path prefix when one is present (dev proxy path).
 export function isImagesRequest(url: URL, imagesOrigin: string): boolean {
-  return imagesOrigin.startsWith('http')
-    ? url.origin === imagesOrigin
-    : url.pathname.startsWith(`${imagesOrigin}/`); // dev: '/api/images/...'
+  const o = new URL(imagesOrigin);
+  if (url.origin !== o.origin) return false;
+  return o.pathname === '/' || url.pathname.startsWith(`${o.pathname}/`);
 }
 
 export function isSyncRequest(url: URL, syncHostProd: string | null): boolean {

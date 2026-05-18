@@ -138,6 +138,8 @@ npm run dev:images                         # single worker, useful with separate
 
 **Bump `PORT_OFFSET`** in `dev-ports.json`'s `_comment` and in `dev:p` to **10** when adding the 4th worker — today's offset of 4 will collide with `code-exec` at base 8792.
 
+**Shared Miniflare state.** `dev-worker.mjs` passes `--persist-to=<repoRoot>/.wrangler/state` (absolute) to every `wrangler dev`. Without this, wrangler v4 resolves the default `.wrangler/` *relative to the config file's directory*, so each `workers/<name>/.wrangler/state/v3/r2/avlo-assets/` becomes a separate physical bucket — unfurl writes an OG image, the images worker's bucket stays empty, and the browser's GET 404s in dev. The path must be absolute (relative paths re-resolve against the config dir in some wrangler versions). Sharing requires *both* a shared persist root *and* matching `bucket_name` in every config — `r2_buckets[].bucket_name = "avlo-assets"` is identical in `workers/{images,unfurl}/wrangler.jsonc`. Same constraint applies if KV (`id`), D1 (`database_id`), DOs, or Queues are ever shared across workers. `.wrangler/` is gitignored at the repo root.
+
 ## CI
 
 `.github/workflows/ci.yml` runs typecheck (tsgo + tsc ground truth), biome check, client build, and the **SW bundle isolation grep**:

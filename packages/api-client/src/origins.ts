@@ -9,8 +9,13 @@
 // Vite substitutes `import.meta.env.PROD` at build time. The main bundle, web
 // workers, and the SW rollup entry all receive the substitution — one file,
 // one source of truth.
-export const IMAGES_ORIGIN = import.meta.env.PROD ? 'https://images.avlo.io' : '/api/images';
-export const UNFURL_ORIGIN = import.meta.env.PROD ? 'https://unfurl.avlo.io' : '/api/unfurl';
+//
+// Dev origins MUST be absolute: `hc<App>('/api/images')[':key'].$url(...)`
+// throws `Invalid URL` because Hono runs `new URL(path, base)` and a bare
+// path is not a valid base. `location.origin` resolves in window, dedicated-
+// worker, and SW global scopes (all three are where this module is consumed).
+export const IMAGES_ORIGIN = import.meta.env.PROD ? 'https://images.avlo.io' : `${location.origin}/api/images`;
+export const UNFURL_ORIGIN = import.meta.env.PROD ? 'https://unfurl.avlo.io' : `${location.origin}/api/unfurl`;
 
 // Sync host: SPA is same-origin with main worker in prod, so `window.location.host`
 // works untouched. Exposed here only so the SW can match WSS by host.
