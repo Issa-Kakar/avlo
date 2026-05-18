@@ -55,6 +55,11 @@ const GRID_X_LINES: number[] = [];
 const GRID_Y_LINES: number[] = [];
 const GRID_SCRATCH: Grid = { xLines: GRID_X_LINES, yLines: GRID_Y_LINES };
 
+// Flicker-fix side-pin state (see fillFlickerPin). Populated in fillRoutingContext,
+// consumed in fillSimpleGrid. Module-scoped to stay consistent with the rest of
+// this file's zero-alloc, synchronous-only contract.
+const FLICKER_PIN = { active: false, tangentialIsY: true, pinNear: true };
+
 // ============================================================================
 // MAIN ENTRY POINT
 // ============================================================================
@@ -96,6 +101,13 @@ export function fillRoutingContext(
 
   // 3. Compute centerlines from RAW bounds (no padding) into CENTERLINES.
   fillCenterlines(CENTERLINES, START_RAW, END_RAW, isFreeToAnchored, offset);
+
+  // 3b. Flicker-fix detection — needs raws + centerlines + dirs + anchor positions.
+  // Two distinct anchored shapes guarantee at least one of the four flicker
+  // sub-cases (A / B-h / B-v) when the tangential centerline is null and the
+  // stubs aren't both facing each other.
+  const hasTwoShapes = startAnchored && endAnchored && startShapeBounds !== endShapeBounds;
+  fillFlickerPin(START_RAW, END_RAW, hasTwoShapes, CENTERLINES, startPos, startDir, endPos, endDir);
 
   // 4. Build dynamic routing bounds with centerline/padding into ROUTING_*.
   // Each call determines its own facing sides based on where the OTHER shape is.
@@ -151,6 +163,68 @@ function fillCenterlines(out: Centerlines, startRaw: Bounds, endRaw: Bounds, isF
   out.y =
     computeAxisCenterline(startRaw.bottom, endRaw.top, isFreeToAnchored, offset) ??
     computeAxisCenterline(endRaw.bottom, startRaw.top, isFreeToAnchored, offset);
+}
+
+// ============================================================================
+// FLICKER-FIX SIDE-PIN
+// ----------------------------------------------------------------------------
+// Two anchored shapes overlapping on the tangential axis (perpendicular to the
+// stub direction) with at least one non-facing stub produce two provably tied
+// wrap corridors (N/S for E/W stubs; L/R for N/S stubs). A* picks arbitrarily
+// and the choice flips on tiny upstream changes (mouse jitter, handle drags)
+// → visible flicker.
+//
+// Fix: on the tangential axis, replace the four per-shape edges with the outer
+// envelope (min top / max bottom or min left / max right) and drop one side per
+// the anchor tangential delta — pin to the side the start is on, default far
+// (south/east) on a zero tie. One corridor remains; A* is deterministic.
+// ============================================================================
+
+/** Does cardinal `dir` (outward stub) point into `other`'s half-plane? */
+function dirFacesBounds(dir: Dir, me: Bounds, other: Bounds): boolean {
+  switch (dir) {
+    case 'E':
+      return me.right <= other.left;
+    case 'W':
+      return me.left >= other.right;
+    case 'S':
+      return me.bottom <= other.top;
+    case 'N':
+      return me.top >= other.bottom;
+  }
+}
+
+/**
+ * Set the module FLICKER_PIN per the flicker envelope. Trigger:
+ *   - two distinct anchored shapes
+ *   - same-axis stubs (both horizontal or both vertical)
+ *   - tangential centerline is null (shapes overlap on the tangential axis)
+ *   - NOT both facing each other (otherwise the route is a clean centerline L)
+ *
+ * Side: tangDelta = startPos − endPos along the tangential axis. Negative →
+ * pin near (route hugs start's side, "go where start is"). Zero or positive →
+ * pin far (default tie-break, south for E/W stubs, east for N/S stubs).
+ */
+function fillFlickerPin(
+  startRaw: Bounds,
+  endRaw: Bounds,
+  hasTwoShapes: boolean,
+  centerlines: Centerlines,
+  startPos: Point,
+  startDir: Dir,
+  endPos: Point,
+  endDir: Dir,
+): void {
+  FLICKER_PIN.active = false;
+  if (!hasTwoShapes) return;
+  if (isHorizontal(startDir) !== isHorizontal(endDir)) return;
+  const tangentialIsY = isHorizontal(startDir);
+  if (tangentialIsY ? centerlines.y !== null : centerlines.x !== null) return;
+  if (dirFacesBounds(startDir, startRaw, endRaw) && dirFacesBounds(endDir, endRaw, startRaw)) return;
+  const tangDelta = tangentialIsY ? startPos[1] - endPos[1] : startPos[0] - endPos[0];
+  FLICKER_PIN.active = true;
+  FLICKER_PIN.tangentialIsY = tangentialIsY;
+  FLICKER_PIN.pinNear = tangDelta < 0;
 }
 
 // ============================================================================
@@ -275,8 +349,23 @@ export function fillSimpleGrid(out: Grid, ctx: RoutingContext): Grid {
   out.xLines.length = 0;
   out.yLines.length = 0;
 
-  out.xLines.push(ctx.startBounds.left, ctx.startBounds.right, ctx.endBounds.left, ctx.endBounds.right);
-  out.yLines.push(ctx.startBounds.top, ctx.startBounds.bottom, ctx.endBounds.top, ctx.endBounds.bottom);
+  // Flicker-fix branch: on the tangential axis, the four per-shape edges become
+  // a single outer-envelope edge picked by pin-side. The opposite (facing) axis
+  // is unchanged — centerline collapse already lives in the routing bounds.
+  if (FLICKER_PIN.active && FLICKER_PIN.tangentialIsY) {
+    out.xLines.push(ctx.startBounds.left, ctx.startBounds.right, ctx.endBounds.left, ctx.endBounds.right);
+    out.yLines.push(
+      FLICKER_PIN.pinNear ? Math.min(ctx.startBounds.top, ctx.endBounds.top) : Math.max(ctx.startBounds.bottom, ctx.endBounds.bottom),
+    );
+  } else if (FLICKER_PIN.active) {
+    out.yLines.push(ctx.startBounds.top, ctx.startBounds.bottom, ctx.endBounds.top, ctx.endBounds.bottom);
+    out.xLines.push(
+      FLICKER_PIN.pinNear ? Math.min(ctx.startBounds.left, ctx.endBounds.left) : Math.max(ctx.startBounds.right, ctx.endBounds.right),
+    );
+  } else {
+    out.xLines.push(ctx.startBounds.left, ctx.startBounds.right, ctx.endBounds.left, ctx.endBounds.right);
+    out.yLines.push(ctx.startBounds.top, ctx.startBounds.bottom, ctx.endBounds.top, ctx.endBounds.bottom);
+  }
 
   if (isHorizontal(ctx.startDir)) out.yLines.push(ctx.startStub[1]);
   else out.xLines.push(ctx.startStub[0]);

@@ -34,7 +34,7 @@ core/connectors/
 ├── anchor-atoms.ts       # anchorFramePoint, elbowAnchorPoint, fillElbowAnchorPointInto, anchorRecordFromSnap, getEndpointEdgePosition
 ├── connector-utils.ts    # Direction primitives, spatialRelation, elbow direction resolution
 ├── snap.ts               # findBestSnapTarget + two pipelines + shared edge probe
-├── routing-context.ts    # Centerlines, routing bounds, stubs, grid construction
+├── routing-context.ts    # Centerlines, routing bounds, stubs, grid construction + flicker side-pin
 ├── routing-astar.ts      # computeAStarRouteInto — typed-array pool + generation counter
 ├── connector-paths.ts    # Path2D builders (polyline + arrows, trim compensation)
 ├── connector-router.ts   # Route cache + reverse shape→connector map + detach helper
@@ -229,6 +229,7 @@ Bypasses A* entirely. `computeStraightRouteInto(start, end, outPoints)` writes 2
 - **Fallbacks:** no path → recurse with `EMPTY_OBSTACLES`; still nothing → direct `[startPos, endPos]`.
 - **Dynamic routing bounds** encode centerline knowledge in their edges (`routing-context.ts`). Facing-side = centerline (when shapes face each other); non-facing padded by approach offset = `CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`. Stubs land on centerlines automatically.
 - **Centerline computation** (`computeAxisCenterline`) returns `null` when ranges overlap, when a Free→Anchored gap is below approach offset, or when gap ≤ `EDGE_CLEARANCE_W`.
+- **Flicker side-pin** (`fillFlickerPin` → `fillSimpleGrid`): same-axis anchored pair with tangential-axis overlap and at least one non-facing stub gives two cost-tied wrap corridors — A* picks arbitrarily and the choice flips on micro-changes upstream (mouse jitter, unrelated handle drags). Grid collapses the four per-shape tangential edges to the outer envelope and drops one side by the anchor tangential delta — deterministic, matches "go where start is". Inactive when shapes are perpendicular-axis or facing-facing.
 
 **Direction resolution** (`resolveElbowDirections`):
 - Anchored→Anchored: stored `dir`s.
