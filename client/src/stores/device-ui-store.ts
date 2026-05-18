@@ -12,7 +12,7 @@ import { getCanvasElement } from './camera-store';
 // 'image' is intentionally absent — image is a fire-and-forget toolbar action,
 // not a sustained mode (see Toolbar.tsx + keyboard-manager.ts).
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'code' | 'connector' | 'note';
-export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle';
+export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle' | 'roundedRect';
 
 // Unified font size presets (used by context menu + store)
 export const TEXT_FONT_SIZE_PRESETS: readonly number[] = [10, 12, 14, 18, 24, 36, 48, 64, 80, 144];

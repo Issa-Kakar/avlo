@@ -38,6 +38,14 @@
   fill: currentColor;
 }
 
+/* Shape inspector runs longer than the others (5 variants + weight) and wants
+   slightly more breathing room than the pen/connector tuning. Scoped, not
+   global — comparison side-by-side with the other inspectors is the point. */
+.inspector.inspector-shape {
+  gap: 6px;
+  padding: 9px;
+}
+
 @media (max-width: 768px) {
   .inspector {
     left: calc(100% + 6px);

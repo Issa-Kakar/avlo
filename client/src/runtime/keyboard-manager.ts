@@ -24,7 +24,7 @@ import {
 } from '@/core/clipboard/clipboard-actions';
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { type ShapeVariant, setCursorOverride, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
+import { type ShapeVariant, setCursorOverride, setShapeMode, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { deleteSelected, setSelectedHighlight, toggleSelectedBold, toggleSelectedItalic } from '@/tools/selection/selection-actions';
 import { computeUniformInlineStyles } from '@/tools/selection/selection-utils';
@@ -235,13 +235,11 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     return;
   }
 
-  // Shape variant switch
+  // Shape variant switch — atomic (single set() → single subscriber fire).
   const variant = SHAPE_KEYS[key];
   if (variant) {
     e.preventDefault();
-    const store = useDeviceUIStore.getState();
-    store.setActiveTool('shape');
-    store.setShapeVariant(variant);
+    setShapeMode(variant);
     return;
   }
 

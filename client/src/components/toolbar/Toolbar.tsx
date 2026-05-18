@@ -1,20 +1,19 @@
 import { memo, type ReactNode } from 'react';
 import { openImageFilePicker } from '@/core/image/image-actions';
-import { isStrokeTool, setActiveTool, setShapeMode, useDeviceUIStore } from '@/stores/device-ui-store';
+import { isStrokeTool, setActiveTool, useDeviceUIStore } from '@/stores/device-ui-store';
 import { IconArrow } from './icons/IconArrow';
 import { IconCode } from './icons/IconCode';
-import { IconDiamond } from './icons/IconDiamond';
-import { IconEllipse } from './icons/IconEllipse';
 import { IconEraser } from './icons/IconEraser';
 import { IconImage } from './icons/IconImage';
 import { IconPan } from './icons/IconPan';
 import { IconPen } from './icons/IconPen';
-import { IconRectangle } from './icons/IconRectangle';
 import { IconSelect } from './icons/IconSelect';
+import { IconShapes } from './icons/IconShapes';
 import { IconStickyNote } from './icons/IconStickyNote';
 import { IconText } from './icons/IconText';
 import { ConnectorInspector } from './inspectors/ConnectorInspector';
 import { PenInspector } from './inspectors/PenInspector';
+import { ShapeInspector } from './inspectors/ShapeInspector';
 import './Toolbar.css';
 
 interface ToolButtonProps {
@@ -37,9 +36,11 @@ const clickSelect = () => setActiveTool('select');
 const clickPan = () => setActiveTool('pan');
 const clickNote = () => setActiveTool('note');
 const clickText = () => setActiveTool('text');
-const clickRect = () => setShapeMode('rectangle');
-const clickEllipse = () => setShapeMode('ellipse');
-const clickDiamond = () => setShapeMode('diamond');
+// Shape entry point. Variant is whatever was last persisted in s.shape.variant
+// — the inspector below switches it. R/O/D/3 keyboard shortcuts also flip the
+// active tool, so this button mirrors the keyboard semantics for an idle
+// (non-shape) variant.
+const clickShape = () => setActiveTool('shape');
 const clickConnector = () => setActiveTool('connector');
 const clickPen = () => setActiveTool('pen');
 const clickCode = () => setActiveTool('code');
@@ -48,7 +49,6 @@ const clickImage = () => openImageFilePicker();
 
 export function Toolbar() {
   const activeTool = useDeviceUIStore((s) => s.tool.active);
-  const shapeVariant = useDeviceUIStore((s) => s.shape.variant);
 
   return (
     <div className="toolbar-wrap">
@@ -68,14 +68,8 @@ export function Toolbar() {
         <ToolButton isActive={activeTool === 'text'} tooltip="Text (T)" onClick={clickText}>
           <IconText className="icon" />
         </ToolButton>
-        <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'rectangle'} tooltip="Rectangle (R)" onClick={clickRect}>
-          <IconRectangle className="icon" />
-        </ToolButton>
-        <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'ellipse'} tooltip="Ellipse (O)" onClick={clickEllipse}>
-          <IconEllipse className="icon" />
-        </ToolButton>
-        <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'diamond'} tooltip="Diamond (D)" onClick={clickDiamond}>
-          <IconDiamond className="icon" />
+        <ToolButton isActive={activeTool === 'shape'} tooltip="Shapes" onClick={clickShape}>
+          <IconShapes className="icon" />
         </ToolButton>
         <ToolButton isActive={activeTool === 'connector'} tooltip="Connector (A)" onClick={clickConnector}>
           <IconArrow className="icon" />
@@ -94,6 +88,7 @@ export function Toolbar() {
         </ToolButton>
 
         {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}
+        {activeTool === 'shape' && <ShapeInspector />}
         {activeTool === 'connector' && <ConnectorInspector />}
       </div>
     </div>

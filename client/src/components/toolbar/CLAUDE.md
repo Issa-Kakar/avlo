@@ -52,14 +52,15 @@ only needs one stylesheet import.
 | File | Role |
 |---|---|
 | `index.ts` | Re-exports `{ Toolbar }`. Single export — no barrel sprawl. |
-| `Toolbar.tsx` | Vertical main pill (13 buttons). Dispatches `<PenInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. Undo/redo live in `components/topbar/` and are state-driven via `stores/history-store.ts`. |
+| `Toolbar.tsx` | Vertical main pill (11 buttons). Dispatches `<PenInspector />` xor `<ShapeInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. Undo/redo live in `components/topbar/` and are state-driven via `stores/history-store.ts`. |
 | `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + tooltip styling. |
-| `weights.ts` | `WeightPreset` (`{ width, Icon }`) + two preset tables: `STROKE_WEIGHTS` (pen/highlighter — `4/7/10/13`) and `CONNECTOR_WEIGHTS` (connector — `2/4/6/8`). Both tables reuse the same `IconStrokeWeight1..4` set — the icons represent visual tiers, not pixel widths. `WeightSelector` / `WeightField` are preset-agnostic; each consumer picks its table. |
+| `weights.ts` | `WeightPreset` (`{ width, Icon }`) + three preset tables: `STROKE_WEIGHTS` (pen/highlighter — `4/7/10/13`), `CONNECTOR_WEIGHTS` (connector — `2/4/6/8`), `SHAPE_WEIGHTS` (shape — `2/4/6/8`; same range as connector today, separate table so it can diverge). All three reuse `IconStrokeWeight1..4` — the icons represent visual tiers, not pixel widths. `WeightSelector` / `WeightField` are preset-agnostic; each consumer picks its table. |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple — `line`/`arrow`/`elbow`) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId` (totally onto the three ids; never null). Pure, table-driven. |
 | `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). No barrel — consumers import each icon directly. |
 | `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s `InspectorButton.css`, `WeightField.css`, and the `color/*` primitive CSS files. Defines the shared `picker-pop` entry-animation keyframes used by `.weight-picker` and `.color-picker`. |
 | `inspectors/InspectorButton.tsx/css` | Memoized 30×30 square icon button with `is-active` state. Used by pen/highlighter toggles, weight buttons, connector variants. |
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
+| `inspectors/ShapeInspector.tsx` | 5 variant buttons (`rectangle`/`ellipse`/`diamond`/`triangle`/`roundedRect`) + divider + `<WeightField presets={SHAPE_WEIGHTS}>`. Active variant is `s.shape.variant` directly — no derivation. Module-level `VARIANT_HANDLERS`/`VARIANT_ICONS`/`VARIANT_LABELS` records; variant click is `setShapeVariant(id)` only (inspector mounts only when `activeTool === 'shape'`). Picker state is a single `useState<boolean>` — only one popout exists, no `OpenPicker` discriminant needed yet. Color TBD. Scoped `.inspector.inspector-shape` CSS in `Inspector.css` bumps gap 4→6 and padding 7→9 — visual tuning, not load-bearing. |
 | `inspectors/ConnectorInspector.tsx` | 3 variant buttons (`line`/`arrow`/`elbow`) sourced via `VARIANT_ICONS` lookup, divider, `<WeightField presets={CONNECTOR_WEIGHTS}>` (popout), divider, `<ColorField>` (popout). The `arrow` slot reuses `IconArrow` (the toolbar tool icon) — same diagonal language as line/elbow. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. The two popouts are mutually exclusive via a discriminated `OpenPicker = 'weight' \| 'color' \| null` state. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
 | `inspectors/WeightSelector.tsx` | Memoized **controlled** presets-driven button row (`presets` / `value` / `onChange`). Returns a fragment so the buttons stay direct flex children of the surrounding container (inline `.inspector` or the `.weight-picker` popout). Per-preset `useMemo` handler table keyed on `[presets, onChange]` — both stable module-level refs in practice, so the table allocates exactly once per mount. |
 | `inspectors/WeightField.tsx/css` | Memoized stroke-width field — sibling of `ColorField`. One trigger button showing the nearest-preset icon (blue ONLY while the popout is open) + an absolutely-positioned `.weight-picker` popout that mounts a `<WeightSelector>` with the same presets. Owns a `usePickerDismiss` wrapper. Off-preset widths render the nearest tier's icon on the trigger; popout buttons all stay inactive (strict equality). Used by `ConnectorInspector` today; pen inspector still uses the inline `<WeightSelector>` while the popout UX is evaluated. |
@@ -90,8 +91,9 @@ RoomPage
 └─ <Toolbar />                                     zero props
    └─ .toolbar-wrap                                 fixed left:12px, viewport-centered (top:50%)
       └─ .toolbar-main (pill, position:relative)
-          ├─ 13× <ToolButton>                       React.memo; module-level onClicks
+          ├─ 11× <ToolButton>                       React.memo; module-level onClicks
           ├─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered vs main pill
+          ├─ {activeTool === 'shape'     && <ShapeInspector />}
           └─ {activeTool === 'connector' && <ConnectorInspector />}
 ```
 
@@ -106,6 +108,14 @@ RoomPage
 └─ <ColorSlots slots=cluster.slots activeSlot>       cluster = s.strokeTools[tool]
    ├─ 3× <ColorButton>                              selected = checkmark + tinted offset ring
    └─ {isPickerOpen && <ColorPicker />}            isPickerOpen = local useState
+```
+
+`ShapeInspector` body:
+```
+.inspector.inspector-shape
+├─ 5× <InspectorButton>                            rectangle / ellipse / diamond / triangle / roundedRect
+├─ .inspector-divider
+└─ <WeightField presets={SHAPE_WEIGHTS}>           useState<boolean> — no OpenPicker discriminant (single popout)
 ```
 
 `ConnectorInspector` body:
@@ -164,14 +174,12 @@ Each handler is module-level in `Toolbar.tsx`:
 | 3 | — | — | divider | |
 | 4 | Sticky Note | N | `setActiveTool('note')` | Routes to `TextTool` via `tool-registry`. |
 | 5 | Text | T | `setActiveTool('text')` | |
-| 6 | Rectangle | R | `setShapeMode('rectangle')` | Atomic: writes `tool.active='shape'` + `shape.variant='rectangle'`. Commits `shapeType:'rect'`. |
-| 7 | Ellipse | O | `setShapeMode('ellipse')` | |
-| 8 | Diamond | D | `setShapeMode('diamond')` | |
-| 9 | Connector | A | `setActiveTool('connector')` | Opens `ConnectorInspector`. |
-| 10 | Pen | P | `setActiveTool('pen')` | Opens `PenInspector`. **Stays highlighted while `activeTool === 'highlighter'`** — there is no top-level highlighter button (highlighter lives inside the inspector). |
-| 11 | Code | — | `setActiveTool('code')` | |
-| 12 | Image | I | `openImageFilePicker()` | **One-shot, never marked active.** `'image'` is not in the `Tool` union. |
-| 13 | Eraser | E | `setActiveTool('eraser')` | |
+| 6 | Shapes | — | `setActiveTool('shape')` | Single dock entry-point. Variant is **whatever `s.shape.variant` already is** — persisted, so the user's last pick survives reloads. Opens `ShapeInspector` (5 variant buttons). R/O/D/3 keyboard shortcuts still atomically set `tool.active='shape'` + the variant (in `keyboard-manager.ts`'s `SHAPE_KEYS`). `roundedRect` has no shortcut yet — inspector-only. |
+| 7 | Connector | A | `setActiveTool('connector')` | Opens `ConnectorInspector`. |
+| 8 | Pen | P | `setActiveTool('pen')` | Opens `PenInspector`. **Stays highlighted while `activeTool === 'highlighter'`** — there is no top-level highlighter button (highlighter lives inside the inspector). |
+| 9 | Code | — | `setActiveTool('code')` | |
+| 10 | Image | I | `openImageFilePicker()` | **One-shot, never marked active.** `'image'` is not in the `Tool` union. |
+| 11 | Eraser | E | `setActiveTool('eraser')` | |
 
 Undo/redo no longer live in the toolbar — they moved to
 `components/topbar/HistoryButtons.tsx` and read `canUndo`/`canRedo` from
@@ -179,10 +187,10 @@ Undo/redo no longer live in the toolbar — they moved to
 `runtime/history-bridge.ts` pushes stack state into the store, and the
 buttons use native `disabled` to grey out when the action is unavailable).
 
-`ShapeVariant` union includes `'triangle'` but the toolbar doesn't expose
-it yet. Existing `'roundedRect'` shape objects in user data still render
-correctly — only new toolbar shapes go through `SHAPE_VARIANT_TO_TYPE` in
-`DrawingTool.ts` (which maps `rectangle → 'rect'`).
+`ShapeVariant` union covers all five inspector entries (`rectangle`,
+`ellipse`, `diamond`, `triangle`, `roundedRect`). `SHAPE_VARIANT_TO_TYPE`
+in `DrawingTool.ts` maps each to its stored `shapeType` (`rectangle →
+'rect'`, `roundedRect → 'roundedRect'`, the rest are identity).
 
 ---
 
@@ -197,7 +205,7 @@ data model — the toolbar mostly just visualizes and mutates it.
 ```ts
 type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan'
           | 'select' | 'shape' | 'code' | 'connector' | 'note';
-type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle';
+type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle' | 'roundedRect';
 type StrokeTool = 'pen' | 'highlighter';                     // subset of Tool
 type SlotColors = readonly [string, string, string];         // was `ColorSlots`
 type SlotIndex  = 0 | 1 | 2;
@@ -384,8 +392,9 @@ with an inline `(s) => s.strokeTools[tool]` selector.
 
 | Component | Selectors used | Picker state |
 |---|---|---|
-| `Toolbar.tsx` | `s.tool.active`, `s.shape.variant` — 2 scalar selectors | — |
+| `Toolbar.tsx` | `s.tool.active` — single scalar selector (shape variant is no longer needed; the variant chip lives inside the inspector, not the dock) | — |
 | `PenInspector.tsx` | `selectStrokeWidth` + an inline `(s) => s.strokeTools[tool]` cluster selector (`tool` is a prop, not read from the store) | `useState` |
+| `ShapeInspector.tsx` | `selectShape` cluster selector — destructures `{ variant, width }` | `useState<boolean>` |
 | `ConnectorInspector.tsx` | `selectConnector` — single cluster selector; destructures `{ type, startCap, endCap, color, width }` | `useState<'weight' \| 'color' \| null>` |
 
 The cluster selector in `ConnectorInspector` covers all five fields it
@@ -408,7 +417,7 @@ slot updates the right column without subscribing to both clusters.
 
 | Consumer | Read pattern | Notes |
 |---|---|---|
-| `DrawingTool.begin()` | `useDeviceUIStore.getState()` once at gesture start; branches on `ui.tool.active`. The `isStrokeTool` branch calls `resolveStrokeStyle(ui, activeTool)` → `{ color, width, opacity }` (one branch for pen + highlighter; no slot access, no cast — `activeTool` is narrowed to `StrokeTool`). Shape reads `ui.shape.color/width/fillColor + variant`. | Settings frozen for the duration of the gesture. Hold-snap from a stroke commits the resulting shape **unfilled** (fillColor stays null). |
+| `DrawingTool.begin()` | `useDeviceUIStore.getState()` once at gesture start; branches on `ui.tool.active`. The `isStrokeTool` branch calls `resolveStrokeStyle(ui, activeTool)` → `{ color, width, opacity }` (one branch for pen + highlighter; no slot access, no cast — `activeTool` is narrowed to `StrokeTool`). Shape reads `ui.shape.color/width/fillColor + variant` and maps `variant → shapeType` via `SHAPE_VARIANT_TO_TYPE` (rectangle→rect, roundedRect→roundedRect, otherwise identity). | Settings frozen for the duration of the gesture. Hold-snap from a stroke commits the resulting shape **unfilled** (fillColor stays null). |
 | `ConnectorTool.begin()` | `useDeviceUIStore.getState().connector` once; destructures `{ color, width, startCap, endCap, type }` into frozen private fields. | Re-read once mid-move at `probeSnap` for connector type only (acceptable — the user can change it mid-gesture; routing follows). |
 | `connector-preview.ts:drawConnectorPreview` | `useDeviceUIStore.getState().connector` per frame | Live style during preview. The doc-comment notes "device-ui-store is stable within a gesture" — true; the live read is for the few cases where it changes between gestures. |
 | `CodeTool.begin()` | `useDeviceUIStore.getState()` reads `text` and `code` clusters for defaults | |
@@ -436,9 +445,7 @@ icons/
 ├── IconPan.tsx                       │
 ├── IconStickyNote.tsx                │
 ├── IconText.tsx                      │
-├── IconRectangle.tsx                 │  main pill (12 individual files)
-├── IconEllipse.tsx                   │
-├── IconDiamond.tsx                   │
+├── IconShapes.tsx                    │  main pill (10 individual files)
 ├── IconArrow.tsx                     │  ← connector tool button (the diagonal arrow)
 ├── IconPen.tsx                       │
 ├── IconCode.tsx                      │
@@ -447,11 +454,22 @@ icons/
 ├── IconInspectorPen.tsx              ┐  pen inspector
 ├── IconInspectorHighlighter.tsx      ┘
 ├── StrokeWeightIcons.tsx             # IconStrokeWeight1..4 (shared squiggle lineage)
-└── ConnectorVariantIcons.tsx         # IconConnectorLine + IconConnectorElbow
-                                      #   (fill-based pictograms; the `arrow` variant
-                                      #    reuses ../icons/IconArrow directly — same
-                                      #    diagonal language. Inspector wires all three
-                                      #    via a `Record<ConnectorVariantId, FC>` lookup.)
+├── ConnectorVariantIcons.tsx         # IconConnectorLine + IconConnectorElbow
+│                                     #   (fill-based pictograms; the `arrow` variant
+│                                     #    reuses ../icons/IconArrow directly — same
+│                                     #    diagonal language. Inspector wires all three
+│                                     #    via a `Record<ConnectorVariantId, FC>` lookup.)
+└── ShapeVariantIcons.tsx             # IconShapeRect / Ellipse / Diamond / Triangle /
+                                      #   RoundedRect — five filled silhouettes at native
+                                      #   20-unit viewBox (1:1 with the 20px insp-icon CSS
+                                      #   render size) with paths extending edge-to-edge.
+                                      #   The rect/roundedRect pair is intentionally a
+                                      #   corner-radius contrast (rx=0 vs rx=6 — 30% of the
+                                      #   side). Diamond/triangle have ~50% ink coverage of
+                                      #   the rect by geometry; expected, not a bug.
+                                      #   Inspector wires the five via a
+                                      #   `Record<ShapeVariant, FC>` lookup, same pattern
+                                      #   as connector variants.
 ```
 
 Zoom/help icons (`IconZoomPlus`, `IconZoomMinus`, `IconZoomToFit`, `IconHelp`,
@@ -522,6 +540,7 @@ inspector), bring it back deliberately — don't reintroduce a generic
 | `ToolButton` (13 in `Toolbar.tsx`) | `React.memo` | Module-level pre-bound consts (`clickSelect`, `clickPan`, …). |
 | `InspectorButton` | `React.memo` | Sourced from `VARIANT_HANDLERS` (module-level), `WeightSelector`'s `useMemo` handler table, or `useCallback([])` wrappers in the inspectors. No inline arrows reach the memoized child. |
 | `WeightSelector` | `React.memo` | Controlled. `useMemo` per-preset handler table keyed on `[presets, onChange]` — both stable module-level refs in practice (`STROKE_WEIGHTS`/`CONNECTOR_WEIGHTS` const tables; `setStrokeWidth` or a parent `useCallback([])` wrapper). |
+| `ShapeInspector` (5× `InspectorButton`) | `React.memo` on InspectorButton | Module-level `VARIANT_HANDLERS` (one per variant) — never re-allocated. |
 | `WeightField` | `React.memo` | Single trigger `<InspectorButton>` + a `<WeightSelector>` mounted only while open. All 3 handler props from `ConnectorInspector` are `useCallback([])` → stable. Trigger icon comes from a `nearestPreset` find — order-independent, O(presets.length). |
 | `ColorSlots` | `React.memo` | Iterates `SLOT_INDICES`; `PenInspector` passes stable `useCallback` handlers. Non-active slots compose a fresh `onClick` closure each render — bounded to ≤2 per inspector. |
 | `ColorField` | `React.memo` | Single `ColorButton`; all handlers are stable `useCallback`s from `ConnectorInspector` — no `useMemo`-wrapped array needed (the old `useMemo<readonly [string]>` is gone). |
@@ -683,9 +702,11 @@ the prompt.**
 - **`Tool` union membership** — `'image'` deliberately absent. Adding/
   removing tools changes the cursor switch (`computeBaseCursor`), the
   `tool-registry`, and the toolbar.
-- **`ShapeVariant` union** — has `'triangle'` declared but not exposed
-  in the toolbar. A "mixed shape menu" button is a likely path forward
-  for surfacing roundedRect / triangle / etc. from one slot.
+- **`ShapeVariant` union** — all five variants exposed via the
+  `ShapeInspector` column. `roundedRect` has no keyboard shortcut yet
+  (R/O/D/3 cover the other four). Inspector currently surfaces variant
+  + width; color (stroke vs fill) and icon-vs-button sizing are still
+  open questions — expect movement here.
 - **Persist key bump** — flip `'avlo.toolbar.v2'` / `version: 2` if the
   state shape changes incompatibly. There's no migrate fn; old payloads
   are discarded.
