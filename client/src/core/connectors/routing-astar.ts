@@ -366,8 +366,11 @@ export function computeAStarRouteInto(
   strokeWidth: number,
   outPoints: Point[],
 ): number {
+  // Coincident: emit two identical points (downstream rejects count<2, mirrors computeStraightRouteInto).
   if (startPos[0] === endPos[0] && startPos[1] === endPos[1]) {
-    return emitOrMerge(outPoints, 0, endPos[0], endPos[1]);
+    let i = emitOrMerge(outPoints, 0, startPos[0], startPos[1]);
+    i = emitOrMerge(outPoints, i, endPos[0], endPos[1]);
+    return i;
   }
 
   const ctx = fillRoutingContext(startPos, startDir, endPos, endDir, startShapeBounds, endShapeBounds, strokeWidth);

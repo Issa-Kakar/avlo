@@ -134,6 +134,7 @@ Authoritative list. Mirror code-side comments in `reroute-connector.ts` (lines 4
 9. **`connectorType` is read once at `buildRouteContext`** and stored as `pipeline: AnyPipeline`. No helper below the entry boundary inspects it.
 10. **A* uses generation-counter pooling.** Module-level typed arrays (`closedGen` / `gScores` / `fScores` / `parentNode` / `pathCells`, `MAX_CELLS = 64`, `MAX_NODES = 256`); `astarGen` bumps per call → "clear" is a single increment. Pool exhaustion is dev-mode warned.
 11. **No bbox-dummy.** `objectsById` never holds a connector handle with a `[0,0,0,0]` placeholder. `rerouteCanonical(id, yObj)` takes `yObj` directly to skip the `getHandle(connectorId)` round-trip.
+12. **Route count: ≥2 or -1, never 1.** Every routing fn (`Pipeline.routeInto`, `computeAStarRouteInto`, `computeStraightRouteInto`) emits ≥2 points or signals failure with -1. Returning 1 propagates as `count < 2` through `runDrag` (→ -1, skips `outBbox` write) and `rerouteCanonical` (→ `routes.delete(id)`); `updateEndpointDrag`'s NEW-dirty-rect gate (`count > 0`) bails → half-cleared canvas + cached gesture-start fallback. Degenerate coincident-endpoint routes emit two identical points; `paintConnectorFromPoints` strokes zero-length with `lineCap='round'` as a dot.
 
 ---
 
