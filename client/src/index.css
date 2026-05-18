@@ -10,6 +10,15 @@
   --font-ui: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Mobile pinch-zoom + pull-to-refresh block — scoped to canvas rooms by the
+   `canvas-room` class set in install-ui-zoom-block.ts. Landing / list pages
+   keep native browser behavior. */
+html.canvas-room,
+html.canvas-room body {
+  touch-action: pan-x pan-y;
+  overscroll-behavior: none;
+}
+
 html {
   overflow: hidden;
 }

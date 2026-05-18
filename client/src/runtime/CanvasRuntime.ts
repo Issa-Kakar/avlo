@@ -18,6 +18,7 @@ import { setCursorOverride } from '@/stores/device-ui-store';
 import { contextMenuController } from './ContextMenuController';
 import { setLastCursorWorld } from './cursor-tracking';
 import { InputManager } from './InputManager';
+import { installUIZoomBlock } from './install-ui-zoom-block';
 import { isSpacebarPanMode } from './keyboard-manager';
 import { clearCursor, updateCursor } from './presence/presence';
 import { SurfaceManager } from './SurfaceManager';
@@ -44,6 +45,7 @@ export class CanvasRuntime {
   private surfaceManager: SurfaceManager | null = null;
   private inputManager: InputManager | null = null;
   private cameraUnsub: (() => void) | null = null;
+  private uninstallZoomBlock: (() => void) | null = null;
   private wheelTimestamps: number[] = [];
 
   start(config: RuntimeConfig): void {
@@ -61,19 +63,25 @@ export class CanvasRuntime {
     this.inputManager = new InputManager(this, baseCanvas, container);
     this.inputManager.attach();
 
-    // 4. Camera subscription for tool view changes + context menu repositioning
+    // 4. Page-zoom block: preempts browser Ctrl/⌘ + wheel/zoom-key/pinch on
+    //    UI chrome and focused editors, which the canvas wheel handler can't
+    //    reach. Scoped to canvas-page lifetime — disposed in stop().
+    this.uninstallZoomBlock = installUIZoomBlock();
+
+    // 5. Camera subscription for tool view changes + context menu repositioning
     this.cameraUnsub = subscribeCamera(() => {
       if (!isEdgeScrolling()) getCurrentTool()?.onViewChange();
       contextMenuController.onCameraMove();
     });
 
-    // 5. First-frame bootstrap
+    // 6. First-frame bootstrap
     renderLoop.invalidateAll();
     overlayLoop.invalidateAll();
   }
 
   stop(): void {
     this.cameraUnsub?.();
+    this.uninstallZoomBlock?.();
 
     this.inputManager?.detach();
     cancelZoom();
@@ -90,6 +98,7 @@ export class CanvasRuntime {
     this.inputManager = null;
     this.surfaceManager = null;
     this.cameraUnsub = null;
+    this.uninstallZoomBlock = null;
   }
 
   // === Event Handlers (called by InputManager — modifiers already updated) ===
