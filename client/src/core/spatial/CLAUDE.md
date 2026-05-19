@@ -2,9 +2,10 @@
 
 Hit testing and region queries for every object on the canvas. Answers "what's
 under the cursor?", "what's inside this marquee?", "what can this connector
-endpoint snap to?". The **only** module in `core/` that imports `getHandle` /
-`getSpatialIndex` from `runtime/room-runtime` — every consumer downstream takes
-the single value its picker returns.
+endpoint snap to?". rbush items ARE `ObjectHandle`s — the handle carries the
+four envelope fields (`minX/minY/maxX/maxY` mirroring `bbox[0..3]`) that rbush
+reads, so queries return handles directly. No `IndexEntry` indirection, no
+`getHandle(e.id)` lookup post-query.
 
 > Architectural overview, not a changelog. Match surrounding detail when updating.
 
@@ -29,8 +30,8 @@ client/src/core/spatial/
 Call site → object-query.ts facade
               ├─ resolveRadius        ({px} ÷ scale | {world} passthrough)
               ├─ regionEnvelope       (rect or point-r → bbox)
-              ├─ spatialIndex.queryBBox/queryRadius   (rbush envelope prefilter)
-              ├─ collectHits          (kind prefilter? getHandle, cap.hitPoint)
+              ├─ spatialIndex.queryBBox/queryRadius   (rbush returns ObjectHandle[])
+              ├─ collectHits          (kind prefilter, cap.hitPoint — no Map.get)
               ├─ sortTopFirst         (ULID desc, in-place)
               └─ picker walk          (tournament | kind-match | accept+memo)
                        ↓
@@ -84,11 +85,15 @@ Constants: `HANDLE_HIT_PX = 10`, `ENDPOINT_DOT_HIT_PX = 10`,
 
 ### Raw `queryBBox` — three consumers bypass the facade
 
-They want `IndexEntry[]`, not handles, and own their own kind filtering / dedup:
+They want `ObjectHandle[]` directly (the rbush item shape) and own their own kind
+filtering / dedup:
 
-- `renderer/layers/objects.ts` — viewport cull (500+ ids per frame)
-- `core/image/image-manager.ts` — viewport decode/evict (image+bookmark only)
+- `renderer/layers/objects.ts` — viewport cull (500+ handles per frame; reads
+  `e.minX/maxX/...` + `e.id/kind` directly off each handle)
+- `core/image/image-manager.ts` — viewport decode/evict (image+bookmark only;
+  reads `e.minX/maxX/...` for asset marking)
 - `core/clipboard/clipboard-actions.ts` — smart-duplicate collision probe
+  (reads `r.id` for exclude filtering)
 
 **Don't wrap these behind a facade function for uniformity.** They don't need it.
 
@@ -174,30 +179,42 @@ in the calling tool, not here.
 
 ---
 
-## `ObjectSpatialIndex` (rbush wrapper)
+## `ObjectSpatialIndex` (rbush subclass)
 
 ```ts
-class ObjectSpatialIndex {
-  insert(id, bbox, kind)
-  update(id, oldBBox, newBBox, kind)
-  remove(id, bbox)
-  queryBBox(bbox)    → IndexEntry[]
-  queryRadius(x,y,r) → IndexEntry[]   // axis-aligned-square envelope
-  bulkLoad(handles)
+class ObjectSpatialIndex extends RBush<ObjectHandle> {
+  // Inherited from RBush<ObjectHandle>:
+  insert(handle)            // rbush reads handle.minX/.../maxY
+  remove(handle)            // identity match via default === comparator (no comparator fn)
+  load(handles)             // bulk load
   clear()
+  search(envelope) → ObjectHandle[]
+  all()             → ObjectHandle[]
+
+  // Tuple-first conveniences:
+  queryBBox(bbox)    → ObjectHandle[]
+  queryRadius(x,y,r) → ObjectHandle[]   // axis-aligned-square envelope
+  updateHandleBBox(handle, newBBox)     // remove → applyHandleBBox → insert
 }
-type IndexEntry = { minX, minY, maxX, maxY, id, kind };
 ```
 
-A single module-scoped scratch bbox is reused across every query — rbush reads
+The handle IS the rbush item — `minX/minY/maxX/maxY` mirror `bbox[0..3]` and
+are kept in sync by `applyHandleBBox` (the only legal post-creation bbox
+mutator). Removals use the default `===` comparator — V8 inlines it to a
+single pointer compare per leaf check.
+
+A single instance-scoped scratch bbox is reused across every query — rbush reads
 the fields immediately and doesn't hold a reference, so mutation is safe.
 Envelope queries are intentionally coarse; tight intersection is the capability
 layer's job.
 
 **Lifecycle.** Owned by `RoomDocManager` (`spatialIndex` field, non-null from
-construction). Hydrated via `bulkLoad()` on room join, maintained per-object via
-`insert/update/remove` in the deep observer, repacked on WS first sync via
-`repackSpatialIndex()` for optimal tree packing. Consumers read it via
+construction). Hydrated via inherited `load(handles)` on room join, maintained
+per-object via `insert(handle)` / `remove(handle)` / `updateHandleBBox(handle, newBBox)`
+in the deep observer, repacked on WS first sync via `repackSpatialIndex()` for
+optimal tree packing. **Only `RoomDocManager` writes to the index** —
+grep `spatialIndex\.(insert|remove|load|clear|updateHandleBBox)` should match
+only inside `runtime/room-doc-manager.ts`. Consumers read it via
 `getSpatialIndex()` from `runtime/room-runtime`.
 
 ---

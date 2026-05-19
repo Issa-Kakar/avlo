@@ -11,12 +11,11 @@ import { getCodeProps } from '@/core/accessors';
 import { codeSystem } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
-import { copyBbox } from '@/core/geometry/bounds';
 import { hydrateImages, registerBookmarkMeta, registerImageMeta, unregisterMedia } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
-import { isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
+import { createHandle, isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { evictGeometry } from '@/renderer/geometry-cache';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
@@ -281,7 +280,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     for (const id of deleted) {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
-      this.spatialIndex.remove(id, handle.bbox);
+      this.spatialIndex.remove(handle); // identity removal; envelope mirrors still describe the live entry
       removeObjectCaches(id, handle.kind);
       if (handle.kind === 'image' || handle.kind === 'bookmark') unregisterMedia(id);
       invalidateIfVisible(handle.bbox, vp);
@@ -345,16 +344,17 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   /**
-   * Insert/update a handle in place. On first insert, allocates the ObjectHandle once with
-   * its own owned `bbox` tuple cloned from `newBBox`. On update, mutates `handle.bbox` in
-   * place via `copyBbox` — provably safe because no downstream consumer holds a bbox ref
-   * across observer fires (transform/topology/image-manager snapshot at gesture begin;
-   * renderer and spatial index destructure on read).
+   * Insert/update a handle in place. On first insert, allocates the ObjectHandle once
+   * (via `createHandle`) with its own owned `bbox` tuple cloned from `newBBox` and the
+   * rbush mirror fields seeded to match. On update, mutates `handle.bbox` + mirrors
+   * in place via `spatialIndex.updateHandleBBox` — provably safe because no downstream
+   * consumer holds a bbox ref across observer fires (transform/topology/image-manager
+   * snapshot at gesture begin; renderer and spatial index destructure on read).
    *
-   * Ordering critical when `bboxChanged`: publish prev rect AND call `spatialIndex.update`
-   * BEFORE mutating `handle.bbox`. rbush's `remove` destructures the old bbox to locate the
-   * entry; if `handle.bbox` already holds the new values, the remove silently no-ops and
-   * leaves a stale entry.
+   * Ordering critical when `bboxChanged`: publish prev rect BEFORE calling
+   * `updateHandleBBox` (rbush's `remove` reads the current envelope to locate the leaf,
+   * and we still want the prev-rect publish to use the old values). `updateHandleBBox`
+   * internally encapsulates the remove → mutate → insert dance.
    *
    * Returns `bboxChanged`. Caller drives selection bookkeeping + bindable propagation off
    * the flag.
@@ -370,11 +370,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     const handle = this.objectsById.get(id);
 
     if (!handle) {
-      const owned: BBoxTuple = [newBBox[0], newBBox[1], newBBox[2], newBBox[3]];
-      this.objectsById.set(id, { id, kind, y: yObj, bbox: owned });
-      this.spatialIndex.insert(id, owned, kind);
+      const fresh = createHandle(id, kind, yObj, newBBox);
+      this.objectsById.set(id, fresh);
+      this.spatialIndex.insert(fresh);
       evictGeometry(id);
-      invalidateIfVisible(owned, vp);
+      invalidateIfVisible(fresh.bbox, vp);
       return true;
     }
 
@@ -382,8 +382,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     if (bboxChanged) {
       invalidateIfVisible(handle.bbox, vp); // prev area — handle.bbox still old
-      this.spatialIndex.update(id, handle.bbox, newBBox, kind); // rbush reads old envelope first
-      copyBbox(newBBox, handle.bbox); // commit in place
+      this.spatialIndex.updateHandleBBox(handle, newBBox); // remove(handle) → applyHandleBBox → insert(handle)
     }
     if (bboxChanged || alwaysEvict) evictGeometry(id);
     invalidateIfVisible(handle.bbox, vp); // new area — always (content may have changed visually even when bbox identical)
@@ -419,7 +418,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       }
 
       const bbox = computeBBoxFor(id, kind, yObj);
-      const handle: ObjectHandle = { id, kind, y: yObj, bbox };
+      const handle = createHandle(id, kind, yObj, bbox);
       this.objectsById.set(id, handle);
       handles.push(handle);
       if (kind === 'image') registerImageMeta(id, yObj);
@@ -435,14 +434,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
       const bbox: BBoxTuple = [0, 0, 0, 0];
-      this.connectorRouter.rerouteCanonical(id, yObj, bbox);
-      const handle: ObjectHandle = { id, kind: 'connector', y: yObj, bbox };
+      this.connectorRouter.rerouteCanonical(id, yObj, bbox); // mutates bbox tuple in place
+      const handle = createHandle(id, 'connector', yObj, bbox); // reads post-reroute bbox into mirrors
       this.objectsById.set(id, handle);
       handles.push(handle);
     }
 
     if (handles.length > 0) {
-      this.spatialIndex.bulkLoad(handles);
+      this.spatialIndex.load(handles);
     }
 
     hydrateImages();
@@ -491,7 +490,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private repackSpatialIndex(): void {
     this.spatialIndex.clear();
     const handles = Array.from(this.objectsById.values());
-    if (handles.length > 0) this.spatialIndex.bulkLoad(handles);
+    if (handles.length > 0) this.spatialIndex.load(handles);
   }
 
   public isConnected(): boolean {

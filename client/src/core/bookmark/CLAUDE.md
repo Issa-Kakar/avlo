@@ -97,7 +97,7 @@ Bookmark asset IDs flow through the **same decode pipeline as images**, but alwa
 
 - `registerBookmarkMeta(id, yObj)` — called by RoomDocManager on insert/change; stores `{ ogId, favId }` in `bookmarkAssetIds` map
 - `unregisterMedia(id)` — on delete
-- `manageImageViewport()` — per frame, iterates visible bookmark `IndexEntry`s + reads `bookmarkAssetIds`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
+- `manageImageViewport()` — per frame, iterates visible bookmark `ObjectHandle`s (rbush items are handles) + reads `bookmarkAssetIds`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
 - `hydrateImages()` (zero-arg) — at room join, reads observer-populated caches; bookmark assets contribute at level 0 using the handle's bbox
 
 OG images ≤ 300wu (card width); favicons 18×18.

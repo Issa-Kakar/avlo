@@ -39,8 +39,11 @@ import { paintConnector, paintConnectorFromPoints } from './connector-render-ato
 import { paintShapeFrame } from './shape-preview';
 
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
-const _candidateIds: string[] = [];
+const _candidateHandles: ObjectHandle[] = [];
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
+
+/** Stable ULID-asc comparator (oldest first). Hoisted so V8 sees one callable. */
+const _byIdAsc = (a: ObjectHandle, b: ObjectHandle): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 // Per-frame editing-id snapshot, written once at the top of `drawObjects` and
 // read by leaf `draw*` functions. Avoids one `useSelectionStore.getState()`
@@ -88,11 +91,11 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   const viewport = getVisibleBoundsTuple();
   const entries = spatialIndex.queryBBox(viewport);
 
-  _candidateIds.length = 0;
+  _candidateHandles.length = 0;
   const hasClip = clipBuf !== null && clipCount > 0;
   const cbuf = clipBuf; // narrowed local — avoids repeated NNA inside hot loop
 
-  // Main loop: rbush entries from the viewport, rect-filtered by clipBuf.
+  // Main loop: rbush entries from the viewport (handles directly), rect-filtered by clipBuf.
   // Transform-injected IDs (selected + attached-topology connectors, or the
   // dragged endpoint connector — already in selectedSet by drill invariant)
   // are skipped here and re-pushed below via their preview bbox.
@@ -114,7 +117,7 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
       }
       if (!hit) continue;
     }
-    _candidateIds.push(e.id);
+    _candidateHandles.push(e);
   }
 
   // Pre-dispatched inject cull. Outer switch picks the loop body once;
@@ -126,12 +129,10 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
 
   // Sort by ULID for deterministic draw order (oldest first -> newest on top).
   // Main loop excludes inject-set IDs and injectIds is provably unique — no post-sort dedupe needed.
-  _candidateIds.sort();
+  _candidateHandles.sort(_byIdAsc);
 
-  for (let i = 0; i < _candidateIds.length; i++) {
-    const id = _candidateIds[i];
-    const handle = objectsById.get(id);
-    if (!handle) continue;
+  for (let i = 0; i < _candidateHandles.length; i++) {
+    const handle = _candidateHandles[i];
 
     // Connector branch: ONE Map.get (topology) OR ONE string compare (endpoint
     // drag) + ONE dispatch. No optional chaining on the hot path. The
@@ -150,7 +151,7 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     // selectedSet narrows to the dragged connector by drill invariant — the
     // `else` arm below is unreachable for non-connectors and intentionally
     // omitted (impossible state, no fallback paint).
-    if (!isTransforming || !selectedSet.has(id)) {
+    if (!isTransforming || !selectedSet.has(handle.id)) {
       drawObject(ctx, handle);
       continue;
     }
@@ -212,7 +213,7 @@ function cullInjected(
         if (!h) continue;
         const ce = connEntries?.get(id);
         if (ce) {
-          if (bboxesIntersect(ce.currBbox, viewport)) _candidateIds.push(id);
+          if (bboxesIntersect(ce.currBbox, viewport)) _candidateHandles.push(h);
           continue;
         }
         // Non-connector translate: handle.bbox + delta. Inline writes — no allocation.
@@ -221,7 +222,7 @@ function cullInjected(
         _previewScratch[1] = b[1] + tdy;
         _previewScratch[2] = b[2] + tdx;
         _previewScratch[3] = b[3] + tdy;
-        if (bboxesIntersect(_previewScratch, viewport)) _candidateIds.push(id);
+        if (bboxesIntersect(_previewScratch, viewport)) _candidateHandles.push(h);
       }
       return;
     }
@@ -232,15 +233,15 @@ function cullInjected(
         if (!h) continue;
         const ce = connEntries?.get(id);
         if (ce) {
-          if (bboxesIntersect(ce.currBbox, viewport)) _candidateIds.push(id);
+          if (bboxesIntersect(ce.currBbox, viewport)) _candidateHandles.push(h);
           continue;
         }
         if (h.kind !== 'connector') {
           const entry = getScaleEntry(h.kind, id);
           const bbox = entry ? (entry.out as { bbox: BBoxTuple }).bbox : h.bbox;
-          if (bboxesIntersect(bbox, viewport)) _candidateIds.push(id);
+          if (bboxesIntersect(bbox, viewport)) _candidateHandles.push(h);
         } else if (bboxesIntersect(h.bbox, viewport)) {
-          _candidateIds.push(id);
+          _candidateHandles.push(h);
         }
       }
       return;
@@ -248,7 +249,9 @@ function cullInjected(
     case 'endpointDrag': {
       // Single connector — read directly off the controller's synthetic entry.
       if (!epDragEntry) return;
-      if (bboxesIntersect(epDragEntry.currBbox, viewport)) _candidateIds.push(epDragEntry.id);
+      const h = objectsById.get(epDragEntry.id);
+      if (!h) return;
+      if (bboxesIntersect(epDragEntry.currBbox, viewport)) _candidateHandles.push(h);
       return;
     }
     case 'none':

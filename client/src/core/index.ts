@@ -9,7 +9,6 @@ export type {
   Dir,
   FontFamily,
   ImageProps,
-  IndexEntry,
   NoteProps,
   ObjectHandle,
   ObjectKind,

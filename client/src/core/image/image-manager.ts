@@ -347,7 +347,7 @@ const _decodeQueue: DecodeRequest[] = [];
 /**
  * Mark an asset as visible this frame. First mark resets the entry; subsequent marks aggregate
  * (max ppsp, union bbox). Coords passed as 4 numbers to avoid a tuple-construction at the
- * spatial-index call site (rbush IndexEntry exposes flat min/maxX/Y).
+ * spatial-index call site (rbush items expose flat min/maxX/Y on the ObjectHandle itself).
  */
 function markAsset(assetId: string, ppsp: number, nw: number, nh: number, x0: number, y0: number, x1: number, y1: number): void {
   let info = _assetInfo.get(assetId);
@@ -409,8 +409,9 @@ export function manageImageViewport(): void {
   const dpr = window.devicePixelRatio || 1;
 
   // === MARK PHASE A: spatial visibility ===
-  // Spatial query returns IndexEntry { id, kind, bbox } — no getHandle() needed per result.
-  // hasActiveRoom guard above already covers the no-room case.
+  // Spatial query returns ObjectHandle[] (the handle IS the rbush item) — id/kind/min/max
+  // resolve on the handle directly, no getHandle() needed per result. hasActiveRoom guard
+  // above already covers the no-room case.
   const visible = getSpatialIndex().queryBBox(padded);
   for (const entry of visible) {
     if (entry.kind === 'image') {
