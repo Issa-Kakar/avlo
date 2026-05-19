@@ -1,16 +1,14 @@
 import type React from 'react';
+import { IconArrow } from '@/components/toolbar/icons/IconArrow';
+import { IconCode } from '@/components/toolbar/icons/IconCode';
+import { IconImage } from '@/components/toolbar/icons/IconImage';
+import { IconPen } from '@/components/toolbar/icons/IconPen';
+import { IconShapes } from '@/components/toolbar/icons/IconShapes';
+import { IconStickyNote } from '@/components/toolbar/icons/IconStickyNote';
+import { IconText } from '@/components/toolbar/icons/IconText';
 import type { ObjectKind } from '@/core/types/objects';
 import type { KindCounts } from '@/tools/selection/types';
-import {
-  IconChevronDown,
-  IconCodeBlock,
-  IconConnectorLine,
-  IconImages,
-  IconPenStroke,
-  IconShapes,
-  IconStickySquareFold,
-  IconTextType,
-} from './icons';
+import { IconChevronDown } from './icons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
@@ -21,13 +19,13 @@ const KIND_CONFIG: {
   label: string;
   Icon: React.FC<React.SVGProps<SVGSVGElement>>;
 }[] = [
-  { key: 'stroke', label: 'Strokes', Icon: IconPenStroke },
-  { key: 'shape', label: 'Shapes', Icon: IconShapes },
-  { key: 'text', label: 'Text', Icon: IconTextType },
-  { key: 'connector', label: 'Connectors', Icon: IconConnectorLine },
-  { key: 'code', label: 'Code Block', Icon: IconCodeBlock },
-  { key: 'note', label: 'Sticky Note', Icon: IconStickySquareFold },
-  { key: 'image', label: 'Images', Icon: IconImages },
+  { key: 'stroke', label: 'Stroke', Icon: IconPen },
+  { key: 'shape', label: 'Shape', Icon: IconShapes },
+  { key: 'text', label: 'Text', Icon: IconText },
+  { key: 'connector', label: 'Connector', Icon: IconArrow },
+  { key: 'code', label: 'Code Block', Icon: IconCode },
+  { key: 'note', label: 'Sticky Note', Icon: IconStickyNote },
+  { key: 'image', label: 'Image', Icon: IconImage },
 ];
 
 interface FilterObjectsDropdownProps {
@@ -42,19 +40,10 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton className="ctx-btn-filter" onMouseDown={toggle} aria-expanded={open}>
         <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
-          <text
-            x="0"
-            y="9"
-            fill="#6B7280"
-            fontSize="10"
-            fontWeight="500"
-            letterSpacing="0.03em"
-            fontFamily="var(--font-ui)"
-            textRendering="geometricPrecision"
-          >
+          <text className="ctx-filter-trigger-label" x="0" y="9">
             FILTER
           </text>
-          <text x="0" y="24" fill="#1F2937" fontSize="13" fontWeight="600" fontFamily="var(--font-ui)" textRendering="geometricPrecision">
+          <text className="ctx-filter-trigger-total" x="0" y="24">
             {kindCounts.total} objects
           </text>
         </svg>
@@ -76,7 +65,7 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
                   close();
                 }}
               >
-                <Icon width={22} height={22} />
+                <Icon width={20} height={20} />
                 <span>{label}</span>
                 <span className="ctx-filter-num">{count}</span>
               </button>

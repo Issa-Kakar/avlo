@@ -1,5 +1,44 @@
 # Context Menu System
 
+> **EVERYTHING IS MUTABLE.** This directory is under active redesign in the
+> `avlo-parallel` worktree. Every value documented below — hex codes, font
+> weights, icon sizes, spacing, classes, button taxonomies, popover patterns
+> — is in flux. **Do not treat any value or structure documented below as
+> canonical.** Read it as the snapshot-shape you're about to mutate.
+>
+> The **filter dropdown** (`FilterObjectsDropdown`, mixed-selection menu) is
+> the solid base. Its trigger states, row layout, trash button, and the
+> tokens below are the design vocabulary every other surface will align to.
+> Pull from this list — not from legacy values further down.
+>
+> **Filter-menu vocabulary (alignment targets):**
+> - **Body / secondary text:** `#48525b`. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon. The menu's "everything else" color.
+> - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
+> - **Open-trigger bg:** `#1b1f22`. The "menu is hosting a submenu" state — distinct from the routine icon-toggle tone.
+> - **Open-trigger primary text:** pure white.
+> - **Open-trigger FILTER subtitle:** `#D4B89B` (warm sand). Intentional warm third pole in the otherwise cool slate palette; deliberately stays subordinate to white (~2× contrast hierarchy). `fill 150ms ease` transition.
+> - **Icons:** 20×20, sourced from `components/toolbar/icons/*` (not the legacy `context-menu/icons/FilterIcons.tsx` pictograms). `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
+> - **Row protection:** `white-space: nowrap` on `.ctx-filter-item` — prevents subpixel wrap on borderline-fit labels (e.g. "Sticky Note" against `min-width: 140px`).
+> - **Labels singular:** `Stroke` / `Shape` / `Connector` / `Image`. Two-word singulars (`Code Block`, `Sticky Note`) untouched.
+> - **Trash button:** `.ctx-btn-danger` repointed to `#48525b` (class name kept — describes the destructive *action*; visual is now neutral). Mural 24-viewBox glyph in `icons/TrashIcon.tsx`. Hover override deleted; base `.ctx-btn:hover` carries it. Currently rendered for every kind via `CommonActionsGroup`; **planned** removal from per-kind menus, leaving it only in mixed. Don't preemptively delete.
+>
+> **Reserved (not yet wired):**
+> - `#282e34` — future "icon-clicked / selected toggle" bg for routine icon buttons (font / alignment / shape-type pick active). Strictly distinct from `#1b1f22` (submenu-host); do not collapse the two — they're different roles.
+>
+> **Surfaces still on legacy vocabulary** (their values below are not canon):
+> - Per-kind groups: `{Stroke,Shape,Text,Note,Connector,Code}StyleGroup`.
+> - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover`.
+> - Dropdowns: `ShapeTypeDropdown`, `LanguageDropdown`, `AlignDropdown`, `NoteAlignDropdown`, `TypefaceButton`.
+> - `FontSizeStepper`, `SizeLabel`.
+> - Bar shell — `.ctx-menu` blur / border / shadow / radius are untouched.
+> - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` via class-specific rules.
+> - Overflow `…` button — placeholder, no handler.
+>
+> **Task scope comes from the prompt, not this doc.** The body below describes
+> *what currently exists*. The prompt tells you what to change.
+
+---
+
 Selection-aware contextual toolbar positioned above/below the selection via `@floating-ui/dom`.
 
 ## Architecture
