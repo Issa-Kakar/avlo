@@ -347,11 +347,15 @@ Editor configured with `TextCollaboration.configure({ fragment, yObj: handle.y, 
 - Empty notes: preserved (valid visual elements)
 - `(editor as any).editorState = null` — Tiptap doesn't null this; release EditorState + plugin states
 
+**Re-entrancy guard (`closing` flag).** Empty-text deletion via `transact(getObjects().delete(...))` fires the deep observer synchronously → `selection-store.onObjectsDeleted` → recursive `textTool.commitAndClose()`. Without the guard, the inner call destroys the editor + nulls fields, outer's `editor.destroy()` throws on null, the click-outside handler exits before its `e.stopPropagation()` runs, and the same pointerdown spawns a fresh text object via the canvas handler. Outer owns teardown; inner is a no-op. The standalone observer-driven path (remote peer deletes my edited text) is a single call — guard lets it through.
+
+**ProseMirror DOMObserver selectionchange leak.** PM's `DOMObserver.start/stop` is reference-counted; our `onTransaction → syncInlineStylesToStore` re-enters start/stop overlapping a mid-flight selection, leaving one `start` unmatched per editor lifetime. `editor.destroy()`'s final `stop()` removes only one listener; the orphan keeps `document → bound onSelectionChange → DOMObserver → view → view.dom` alive — ~0.5 kB detached `.tiptap` tree per close, linear accumulation. Snapshot `view.domObserver.onSelectionChange` BEFORE `editor.destroy()`, force-remove after. No-op when PM cleaned up correctly. Verify with `getEventListeners(document).selectionchange?.length` in DevTools — bounded across cycles (1 when an editor is mounted or transient, not N after N closes).
+
 ### Click-Outside
 
 `pointerdown` on document (capture phase, 100ms delayed registration — delay prevents catching the opening click). Uses `pointerdown` not `mousedown` because CanvasRuntime's `preventDefault()` suppresses compatibility mousedown per spec.
 
-After `commitAndClose()`, `e.stopPropagation()` fires **only when `activeTool === 'text'|'note'` AND target is canvas** — prevents creating a new text/note object on click-off. When SelectTool is active (e.g., label editing), the event intentionally propagates so the clicked object gets selected normally in one click.
+After `commitAndClose()`, `e.stopPropagation()` fires **only when `activeTool === 'text'|'note'` AND target is canvas** — prevents creating a new text/note object on click-off. When SelectTool is active (e.g., label editing), the event intentionally propagates so the clicked object gets selected normally in one click. The stopPropagation is load-bearing: anything throwing inside `commitAndClose()` exits the handler before it runs, and the same pointerdown spawns a new editor through the canvas handler (see commitAndClose §Re-entrancy guard for the concrete bug this prevented).
 
 ### Remount Prevention
 
