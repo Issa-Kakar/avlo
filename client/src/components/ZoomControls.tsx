@@ -1,7 +1,7 @@
 import { type MouseEvent, useEffect, useRef, useState } from 'react';
 import { getObjectsById } from '@/runtime/room-runtime';
 import { animateToFit, zoomIn, zoomOut, zoomTo } from '@/runtime/viewport/zoom';
-import { MAX_ZOOM, MIN_ZOOM, selectScale, useCameraStore } from '@/stores/camera-store';
+import { selectScale, useCameraStore } from '@/stores/camera-store';
 import { IconHelp, IconMouseSettings, IconZoomMinus, IconZoomPlus, IconZoomToFit } from './icons';
 
 import './ZoomControls.css';
@@ -61,7 +61,7 @@ export function ZoomControls() {
 
       <div className="zoom-bar-divider" />
 
-      <button className="zoom-bar-btn" onMouseDown={preventFocus} onClick={zoomOut} disabled={scale <= MIN_ZOOM} title="Zoom out">
+      <button className="zoom-bar-btn" onMouseDown={preventFocus} onClick={zoomOut} title="Zoom out">
         <IconZoomMinus />
       </button>
 
@@ -74,7 +74,7 @@ export function ZoomControls() {
         {zoomPercentage}%
       </button>
 
-      <button className="zoom-bar-btn" onMouseDown={preventFocus} onClick={zoomIn} disabled={scale >= MAX_ZOOM} title="Zoom in">
+      <button className="zoom-bar-btn" onMouseDown={preventFocus} onClick={zoomIn} title="Zoom in">
         <IconZoomPlus />
       </button>
 

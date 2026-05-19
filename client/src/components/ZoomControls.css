@@ -39,16 +39,6 @@
   color: #1a1a1a;
 }
 
-.zoom-bar-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.zoom-bar-btn:disabled:hover {
-  background: transparent;
-  color: #2a2a2a;
-}
-
 .zoom-bar-btn svg {
   width: 20px;
   height: 20px;
@@ -57,12 +47,13 @@
 /* --- Zoom Percentage Pill --- */
 .zoom-bar-pct {
   height: 34px;
-  min-width: 54px;
-  padding: 0 12px;
-  border-radius: 999px;
-  font-size: 13px;
+  width: 46px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 12px;
   font-weight: 700;
   font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
   color: #4a4a4a;
   background: transparent;
   border: none;
@@ -86,7 +77,7 @@
 
 /* --- Dividers --- */
 .zoom-bar-divider {
-  width: 1px;
+  width: 2px;
   height: 22px;
   background: rgba(0, 0, 0, 0.16);
   margin: 0 3px;
@@ -125,10 +116,10 @@
   height: 36px;
   padding: 0 12px;
   border-radius: 8px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   font-family: var(--font-ui);
-  color: #3d3d3d;
+  color: #48525b;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -149,7 +140,7 @@
 
 /* --- Menu Divider --- */
 .zoom-menu-divider {
-  height: 1px;
+  height: 2px;
   background: rgba(0, 0, 0, 0.08);
   margin: 4px 8px;
 }
