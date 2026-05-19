@@ -3,11 +3,11 @@
 /* The one sanctioned global UI token. Extend THIS @theme block for genuinely
    shared design values — never hand-roll a :root block in a component CSS file.
    Tailwind v4 emits both a `--font-ui` custom property (use as var(--font-ui))
-   and a `font-ui` utility class. Figtree (the canon UI font) is already loaded
-   by index.html via Google Fonts — a stopgap until a self-hosted woff2 subset
-   replaces it, matching the four self-hosted content fonts below. */
+   and a `font-ui` utility class. Schibsted Grotesk is the canon UI font — a
+   self-hosted woff2 subset (wght 400–700) loaded via @font-face below, matching
+   the four self-hosted content fonts. */
 @theme {
-  --font-ui: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-ui: "Schibsted Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 /* Mobile pinch-zoom + pull-to-refresh block — scoped to canvas rooms by the
@@ -24,12 +24,23 @@ html {
 }
 
 /* =============================================================================
-   FONT DEFINITIONS — Variable Fonts (Latin subset, wght 450–700)
+   FONT DEFINITIONS — Variable Fonts
 
-   All fonts: ligatures stripped at font level for WYSIWYG canvas parity.
-   Grandstander: ss01 alternates baked as default glyphs.
+   Schibsted Grotesk (UI chrome, wght 400–700): ligatures kept for brand
+   readability; tnum + case features baked in.
+   Content fonts (wght 450–700): ligatures stripped at font level for WYSIWYG
+   canvas parity. Grandstander: ss01 alternates baked as default glyphs.
    Inter: opsz axis pinned to 14.
    ============================================================================= */
+
+/* --- Schibsted Grotesk (UI chrome) --- */
+@font-face {
+  font-family: "Schibsted Grotesk";
+  src: url("/fonts/SchibstedGrotesk[wght].woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
 
 /* --- Grandstander --- */
 @font-face {
