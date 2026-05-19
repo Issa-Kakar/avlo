@@ -68,12 +68,23 @@ export function Toolbar() {
         <ToolButton isActive={activeTool === 'text'} tooltip="Text (T)" onClick={clickText}>
           <IconText className="icon" />
         </ToolButton>
-        <ToolButton isActive={activeTool === 'shape'} tooltip="Shapes" onClick={clickShape}>
-          <IconShapes className="icon" />
-        </ToolButton>
-        <ToolButton isActive={activeTool === 'connector'} tooltip="Connector (A)" onClick={clickConnector}>
-          <IconArrow className="icon" />
-        </ToolButton>
+        {/* Anchor wrappers tie the inspector's positioning context to the trigger
+            button (not the whole pill), so the inspector centers on the clicked
+            button. Pen inspector is too tall for this — anchoring it to the Pen
+            button (8th in the column) would push its bottom edge below the dock —
+            so it stays a direct child of .toolbar-main, centered on the pill. */}
+        <div className="tool-btn-anchor">
+          <ToolButton isActive={activeTool === 'shape'} tooltip="Shapes" onClick={clickShape}>
+            <IconShapes className="icon" />
+          </ToolButton>
+          {activeTool === 'shape' && <ShapeInspector />}
+        </div>
+        <div className="tool-btn-anchor">
+          <ToolButton isActive={activeTool === 'connector'} tooltip="Connector (A)" onClick={clickConnector}>
+            <IconArrow className="icon" />
+          </ToolButton>
+          {activeTool === 'connector' && <ConnectorInspector />}
+        </div>
         <ToolButton isActive={isStrokeTool(activeTool)} tooltip="Pen (P)" onClick={clickPen}>
           <IconPen className="icon" />
         </ToolButton>
@@ -88,8 +99,6 @@ export function Toolbar() {
         </ToolButton>
 
         {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}
-        {activeTool === 'shape' && <ShapeInspector />}
-        {activeTool === 'connector' && <ConnectorInspector />}
       </div>
     </div>
   );

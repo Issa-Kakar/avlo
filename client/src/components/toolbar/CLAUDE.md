@@ -52,15 +52,15 @@ only needs one stylesheet import.
 | File | Role |
 |---|---|
 | `index.ts` | Re-exports `{ Toolbar }`. Single export — no barrel sprawl. |
-| `Toolbar.tsx` | Vertical main pill (11 buttons). Dispatches `<PenInspector />` xor `<ShapeInspector />` xor `<ConnectorInspector />` based on `activeTool`. Module-level pre-bound onClicks. Undo/redo live in `components/topbar/` and are state-driven via `stores/history-store.ts`. |
+| `Toolbar.tsx` | Vertical main pill (11 buttons). Dispatches `<PenInspector />` xor `<ShapeInspector />` xor `<ConnectorInspector />` based on `activeTool`. Shape + Connector buttons live inside a `.tool-btn-anchor` wrapper alongside their inspector, so the inspector centers on its trigger button (`top: 50%` of the wrapper = button center). Pen inspector renders at the end as a direct child of `.toolbar-main`, centered on the whole pill — anchoring it to the Pen button (8th in column) would push its 366px height below the dock. Module-level pre-bound onClicks. Undo/redo live in `components/topbar/` and are state-driven via `stores/history-store.ts`. |
 | `Toolbar.css` | Dock design tokens (scoped to `.toolbar-wrap`) + main-pill + tooltip styling. |
 | `weights.ts` | `WeightPreset` (`{ width, Icon }`) + three preset tables: `STROKE_WEIGHTS` (pen/highlighter — `4/7/10/13`), `CONNECTOR_WEIGHTS` (connector — `2/4/6/8`), `SHAPE_WEIGHTS` (shape — `2/4/6/8`; same range as connector today, separate table so it can diverge). All three reuse `IconStrokeWeight1..4` — the icons represent visual tiers, not pixel widths. `WeightSelector` / `WeightField` are preset-agnostic; each consumer picks its table. |
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple — `line`/`arrow`/`elbow`) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId` (totally onto the three ids; never null). Pure, table-driven. |
 | `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). No barrel — consumers import each icon directly. |
 | `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s `InspectorButton.css`, `WeightField.css`, and the `color/*` primitive CSS files. Defines the shared `picker-pop` entry-animation keyframes used by `.weight-picker` and `.color-picker`. |
-| `inspectors/InspectorButton.tsx/css` | Memoized square icon button with `is-active` state. Base 30×30 (pen inspector); shape + connector inspectors scope it to 32×32 via `Inspector.css` overrides. 7px radius, 20×20 icon. Used by pen/highlighter toggles, weight buttons, connector variants, shape variants. |
+| `inspectors/InspectorButton.tsx/css` | Memoized square icon button with `is-active` state. 32×32, 7px radius, 20×20 icon — single size across all three inspectors so each pill's cross-axis is 48px (32 + 8×2 padding), matching the dock pill. Used by pen/highlighter toggles, weight buttons, connector variants, shape variants. |
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
-| `inspectors/ShapeInspector.tsx` | 5 variant buttons (`rectangle`/`ellipse`/`diamond`/`triangle`/`roundedRect`) + divider + `<WeightField presets={SHAPE_WEIGHTS}>`. Active variant is `s.shape.variant` directly — no derivation. Module-level `VARIANT_HANDLERS`/`VARIANT_ICONS`/`VARIANT_LABELS` records; variant click is `setShapeVariant(id)` only (inspector mounts only when `activeTool === 'shape'`). Picker state is a single `useState<boolean>` — only one popout exists, no `OpenPicker` discriminant needed yet. Color TBD. Scoped `.inspector.inspector-shape` CSS in `Inspector.css` bumps `.insp-btn` 30→32 (shared with the connector inspector via a grouped selector — filled shape silhouettes need more inset breathing room). |
+| `inspectors/ShapeInspector.tsx` | 5 variant buttons (`rectangle`/`ellipse`/`diamond`/`triangle`/`roundedRect`) + divider + `<WeightField presets={SHAPE_WEIGHTS}>`. Active variant is `s.shape.variant` directly — no derivation. Module-level `VARIANT_HANDLERS`/`VARIANT_ICONS`/`VARIANT_LABELS` records; variant click is `setShapeVariant(id)` only (inspector mounts only when `activeTool === 'shape'`). Picker state is a single `useState<boolean>` — only one popout exists, no `OpenPicker` discriminant needed yet. Color TBD. The `.inspector-shape` class on the root div is currently a hook with no CSS attached — kept around in case a future tweak needs to scope something to filled-silhouette rows. |
 | `inspectors/ConnectorInspector.tsx` | 3 variant buttons (`line`/`arrow`/`elbow`) sourced via `VARIANT_ICONS` lookup, divider, `<WeightField presets={CONNECTOR_WEIGHTS}>` (popout), divider, `<ColorField>` (popout). The `arrow` slot reuses `IconArrow` (the toolbar tool icon) — same diagonal language as line/elbow. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. The two popouts are mutually exclusive via a discriminated `OpenPicker = 'weight' \| 'color' \| null` state. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
 | `inspectors/WeightSelector.tsx` | Memoized **controlled** presets-driven button row (`presets` / `value` / `onChange`). Returns a fragment so the buttons stay direct flex children of the surrounding container (inline `.inspector` or the `.weight-picker` popout). Per-preset `useMemo` handler table keyed on `[presets, onChange]` — both stable module-level refs in practice, so the table allocates exactly once per mount. |
 | `inspectors/WeightField.tsx/css` | Memoized stroke-width field — sibling of `ColorField`. One trigger button showing the nearest-preset icon (blue ONLY while the popout is open) + an absolutely-positioned `.weight-picker` popout that mounts a `<WeightSelector>` with the same presets. Owns a `usePickerDismiss` wrapper. Off-preset widths render the nearest tier's icon on the trigger; popout buttons all stay inactive (strict equality). Used by `ConnectorInspector` today; pen inspector still uses the inline `<WeightSelector>` while the popout UX is evaluated. |
@@ -91,10 +91,17 @@ RoomPage
 └─ <Toolbar />                                     zero props
    └─ .toolbar-wrap                                 fixed left:12px, viewport-centered (top:50%)
       └─ .toolbar-main (pill, position:relative)
-          ├─ 11× <ToolButton>                       React.memo; module-level onClicks
-          ├─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered vs main pill
-          ├─ {activeTool === 'shape'     && <ShapeInspector />}
-          └─ {activeTool === 'connector' && <ConnectorInspector />}
+          ├─ <ToolButton> Select, Pan
+          ├─ .toolbar-divider
+          ├─ <ToolButton> Note, Text
+          ├─ .tool-btn-anchor (position:relative; 32×32 wrapper)
+          │   ├─ <ToolButton> Shapes
+          │   └─ {activeTool === 'shape' && <ShapeInspector />}   .inspector absolute, centered on Shapes button
+          ├─ .tool-btn-anchor
+          │   ├─ <ToolButton> Connector
+          │   └─ {activeTool === 'connector' && <ConnectorInspector />}   centered on Connector button
+          ├─ <ToolButton> Pen, Code, Image, Eraser
+          └─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered on .toolbar-main (whole pill)
 ```
 
 `PenInspector` body (`tool: StrokeTool` prop):
@@ -145,9 +152,10 @@ one on mousedown before the toggle handler opens the new one on click.
 | `toolbar-wrap` position | `fixed; left:12px; top:50%; transform:translateY(-50%); z-index:380` |
 | Main-pill button | 32×32, 8px radius, 24×24 icon, 5px gap, 8px container padding, 14px container radius |
 | `<768px` override | 28×28 button, 20×20 icon, 3px container padding, 10px radius, `left:6px` |
-| Inspector pill | `left: calc(100% + 7px); top:50%; translateY(-50%)`; 4px gap, 8px container padding, 14px radius. **No border** — the dock surfaces are defined by fill + shadow alone. |
-| `<768px` inspector | `left: calc(100% + 6px)` |
-| `InspectorButton` | 30×30 base, 7px radius, 20×20 icon. Scoped 32×32 inside `.inspector.inspector-shape` and `.inspector.inspector-connector` (shared grouped selector in `Inspector.css`). |
+| Inspector pill | `top:50%; translateY(-50%)`; 4px gap, 8px container padding, 14px radius. `left` depends on positioning context: pen inspector (child of `.toolbar-main`, 48px wide) → `calc(100% + 7px)`; shape/connector (child of `.tool-btn-anchor`, 32px wide) → `calc(100% + 15px)` (the extra 8px compensates for the toolbar's left padding, so all three inspectors land at the same X). **No border** — the dock surfaces are defined by fill + shadow alone. |
+| `.tool-btn-anchor` | `position: relative` wrapper with the same 32×32 footprint as a bare ToolButton (the inspector inside is `position: absolute` so it doesn't count toward the wrapper's flex size). Used for shape + connector triggers so the inspector centers on the button. Pen has no anchor — see Toolbar.tsx note. |
+| `<768px` inspector | `left: calc(100% + 6px)` unanchored, `calc(100% + 9px)` anchored (6 + 3 mobile padding) |
+| `InspectorButton` | 32×32, 7px radius, 20×20 icon. One size across all three inspectors → each inspector pill's cross-axis = 32 + 8×2 padding = 48px, matching the dock pill. |
 | `inspector-divider` | 70% width, 2px height, 4px vertical margin, 0.6 opacity. (Separate from `.toolbar-divider` in `Toolbar.css`, which stays 1px / 2px margin.) |
 | Color slot | 24×24, 6px radius, 12px vertical gap, 6px/4px container padding |
 | Color picker | `left: calc(100% + 12px); top:-8px`; 22×22 swatches, 6-col grid (23 swatches → 6+6+6+5), 10px gap, 10px container padding |

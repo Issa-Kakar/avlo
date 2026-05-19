@@ -39,22 +39,21 @@
   fill: currentColor;
 }
 
-/* 32px buttons (shared with connector). At 30×30 with a 20px icon, the
-   variant rows read as cramped — most of the button is icon. The bump
-   gives 1px of inset on each side without touching the icon size, and
-   cascades into the WeightField/ColorField triggers + popout buttons so
-   each inspector stays at one button size. Pen inspector stays at 30px
-   for now — its row is shorter and the larger ColorSlots column already
-   carries the visual weight. */
-.inspector.inspector-shape .insp-btn,
-.inspector.inspector-connector .insp-btn {
-  width: 32px;
-  height: 32px;
+/* Anchored variant (shape, connector). Inside .tool-btn-anchor, `100%` is the
+   32px button width, not the 48px toolbar pill — add the toolbar's 8px padding
+   so the inspector lands at the same X coordinate as the pen inspector (which
+   stays anchored to .toolbar-main). */
+.tool-btn-anchor .inspector {
+  left: calc(100% + 15px);
 }
 
 @media (max-width: 768px) {
   .inspector {
     left: calc(100% + 6px);
+  }
+  .tool-btn-anchor .inspector {
+    /* Mobile: 6px outer + 3px toolbar padding */
+    left: calc(100% + 9px);
   }
 }
 

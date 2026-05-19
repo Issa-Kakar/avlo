@@ -43,6 +43,18 @@
     0 2px 2px rgba(0, 0, 0, 0.35);
 }
 
+/* Same 32×32 flex footprint as a bare ToolButton (the inspector inside is
+   position:absolute so it doesn't contribute to the wrapper's size). The
+   wrapper exists purely as a positioning context — its `position: relative`
+   makes the absolutely-positioned child inspector center on this button via
+   `top: 50%`, rather than on the whole .toolbar-main pill. */
+.tool-btn-anchor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
 .toolbar-main .tool-btn {
   width: 32px;
   height: 32px;
