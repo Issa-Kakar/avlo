@@ -13,8 +13,8 @@
 
 import { getFrame } from '@/core/accessors';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
-import type { BindableHandle, IndexEntry, ObjectHandle, ObjectKind } from '@/core/types/objects';
-import { getHandle, getSpatialIndex } from '@/runtime/room-runtime';
+import type { BindableHandle, ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { getSpatialIndex } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
 import { type AnyCapability, KIND, type Paint } from './kind-capability';
 
@@ -74,16 +74,14 @@ function shapeArea(h: ObjectHandle): number {
 }
 
 /** Shared hit-collection loop for the three pickers. */
-function collectHits(entries: readonly IndexEntry[], p: Point, r: number, kindFilter: ReadonlySet<ObjectKind> | null): Cand[] {
+function collectHits(entries: readonly ObjectHandle[], p: Point, r: number, kindFilter: ReadonlySet<ObjectKind> | null): Cand[] {
   const out: Cand[] = [];
   for (const e of entries) {
     if (kindFilter && !kindFilter.has(e.kind)) continue;
-    const h = getHandle(e.id);
-    if (!h) continue;
-    const cap = KIND[h.kind] as AnyCapability;
-    const paint = cap.hitPoint(h, p, r);
+    const cap = KIND[e.kind] as AnyCapability;
+    const paint = cap.hitPoint(e, p, r);
     if (paint === null) continue;
-    out.push({ handle: h, paint });
+    out.push({ handle: e, paint });
   }
   return out;
 }
@@ -110,11 +108,9 @@ export function queryHandleIds(region: Region): string[] {
   const entries = getSpatialIndex().queryBBox(env);
   const out: string[] = [];
   for (const e of entries) {
-    const h = getHandle(e.id);
-    if (!h) continue;
-    const cap = KIND[h.kind] as AnyCapability;
-    const ok = region.kind === 'rect' ? cap.hitRect === null || cap.hitRect(h, region.bbox) : cap.hitCircle(h, region.p, region.r);
-    if (ok) out.push(h.id);
+    const cap = KIND[e.kind] as AnyCapability;
+    const ok = region.kind === 'rect' ? cap.hitRect === null || cap.hitRect(e, region.bbox) : cap.hitCircle(e, region.p, region.r);
+    if (ok) out.push(e.id);
   }
   return out;
 }

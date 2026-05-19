@@ -9,12 +9,50 @@ import type { BBoxTuple, FrameTuple } from './geometry';
 export const OBJECT_KINDS = ['stroke', 'shape', 'text', 'connector', 'code', 'image', 'note', 'bookmark'] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
-// Lightweight handle pointing to Y.Map
+// Lightweight handle pointing to Y.Map. The handle IS the rbush spatial-index item —
+// `minX/minY/maxX/maxY` mirror `bbox[0..3]` and are kept in sync by `applyHandleBBox`
+// (the only legal post-creation bbox mutator). rbush reads its envelope via the default
+// `toBBox(item) = item`, so passing the handle directly satisfies its item shape.
 export interface ObjectHandle {
   id: string;
   kind: ObjectKind;
   y: Y.Map<unknown>; // Direct Y.Map reference
   bbox: BBoxTuple; // Computed locally, NOT stored in Y.Map
+  // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox. Mirror bbox[0..3].
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export function createHandle(id: string, kind: ObjectKind, y: Y.Map<unknown>, bbox: Readonly<BBoxTuple>): ObjectHandle {
+  return {
+    id,
+    kind,
+    y,
+    bbox: [bbox[0], bbox[1], bbox[2], bbox[3]],
+    minX: bbox[0],
+    minY: bbox[1],
+    maxX: bbox[2],
+    maxY: bbox[3],
+  };
+}
+
+/**
+ * Mutate `handle.bbox` and the four rbush mirror fields together.
+ *
+ * CONTRACT: ONLY callable from `ObjectSpatialIndex.updateHandleBBox` (which has already
+ * removed the handle from the rbush tree using the OLD envelope). Direct external call
+ * corrupts the spatial index: the tree leaf still carries the old envelope, but the
+ * handle's mirror fields now say "new", so the next `spatialIndex.remove(handle)` silently
+ * no-ops (rbush descends to the wrong leaf) and the entry leaks.
+ */
+export function applyHandleBBox(handle: ObjectHandle, src: Readonly<BBoxTuple>): void {
+  const b = handle.bbox;
+  b[0] = handle.minX = src[0];
+  b[1] = handle.minY = src[1];
+  b[2] = handle.maxX = src[2];
+  b[3] = handle.maxY = src[3];
 }
 
 // ============================================================================
@@ -34,17 +72,6 @@ export const isUnbindableKind = (k: ObjectKind): k is UnbindableKind => k === 's
 
 export type BindableHandle = ObjectHandle & { kind: BindableKind };
 export const isBindableHandle = (h: ObjectHandle | null | undefined): h is BindableHandle => !!h && isBindableKind(h.kind);
-
-// Spatial index entry (minimal)
-export interface IndexEntry {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-  id: string;
-  kind: ObjectKind;
-  // NO data field - lookup via objectsById
-}
 
 // ============================================================================
 // COMMON TYPES

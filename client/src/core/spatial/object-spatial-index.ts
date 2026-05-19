@@ -1,69 +1,51 @@
 import RBush from 'rbush';
 import type { BBoxTuple } from '../types/geometry';
-import type { IndexEntry, ObjectHandle, ObjectKind } from '../types/objects';
+import { applyHandleBBox, type ObjectHandle } from '../types/objects';
 
 /**
- * ObjectSpatialIndex — pure rbush wrapper, tuple-first.
+ * Spatial index keyed on ObjectHandle. The handle IS the rbush item — its
+ * `minX/minY/maxX/maxY` mirror `handle.bbox[0..3]` and are kept in sync by
+ * `applyHandleBBox` (the only legal post-creation bbox mutator).
  *
- * Queries mutate a single module-scoped scratch bbox object instead of
- * allocating a fresh `{minX, minY, maxX, maxY}` per call. rbush's own
- * internals read the fields; nobody else holds a reference.
+ * Removals use rbush's default identity comparator (`===`). No comparator
+ * function, no per-remove entry allocation — single pointer compare per leaf
+ * check during tree descent.
+ *
+ * Scratch envelope is an instance field; it leaks only as long as a single
+ * `.search()` call (rbush reads its fields and stores nothing).
  */
-const _scratchBBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+export class ObjectSpatialIndex extends RBush<ObjectHandle> {
+  private readonly _scratch = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
 
-export class ObjectSpatialIndex {
-  private tree = new RBush<IndexEntry>(9);
-
-  insert(id: string, bbox: [number, number, number, number], kind: ObjectKind): void {
-    const [minX, minY, maxX, maxY] = bbox;
-    this.tree.insert({ minX, minY, maxX, maxY, id, kind });
+  /** Tuple-first bbox query. Reuses an instance-scoped scratch envelope. */
+  queryBBox(bbox: Readonly<BBoxTuple>): ObjectHandle[] {
+    const s = this._scratch;
+    s.minX = bbox[0];
+    s.minY = bbox[1];
+    s.maxX = bbox[2];
+    s.maxY = bbox[3];
+    return this.search(s);
   }
 
-  update(id: string, oldBBox: [number, number, number, number], newBBox: [number, number, number, number], kind: ObjectKind): void {
-    // Remove old entry
-    const [minX, minY, maxX, maxY] = oldBBox;
-    this.tree.remove({ minX, minY, maxX, maxY, id, kind } as IndexEntry, (a, b) => a.id === b.id);
-
-    // Insert new entry
-    this.insert(id, newBBox, kind);
+  /** Radius query around (x, y). Reuses an instance-scoped scratch envelope. */
+  queryRadius(x: number, y: number, r: number): ObjectHandle[] {
+    const s = this._scratch;
+    s.minX = x - r;
+    s.minY = y - r;
+    s.maxX = x + r;
+    s.maxY = y + r;
+    return this.search(s);
   }
 
-  remove(id: string, bbox: [number, number, number, number]): void {
-    const [minX, minY, maxX, maxY] = bbox;
-    // Remove by ID only - kind doesn't matter for removal
-    this.tree.remove({ minX, minY, maxX, maxY, id } as IndexEntry, (a, b) => a.id === b.id);
-  }
-
-  /** Tuple-first bbox query. Reuses a module-scoped scratch envelope. */
-  queryBBox(bbox: Readonly<BBoxTuple>): IndexEntry[] {
-    _scratchBBox.minX = bbox[0];
-    _scratchBBox.minY = bbox[1];
-    _scratchBBox.maxX = bbox[2];
-    _scratchBBox.maxY = bbox[3];
-    return this.tree.search(_scratchBBox);
-  }
-
-  /** Radius query around (x, y). Reuses a module-scoped scratch envelope. */
-  queryRadius(x: number, y: number, r: number): IndexEntry[] {
-    _scratchBBox.minX = x - r;
-    _scratchBBox.minY = y - r;
-    _scratchBBox.maxX = x + r;
-    _scratchBBox.maxY = y + r;
-    return this.tree.search(_scratchBBox);
-  }
-
-  bulkLoad(handles: ObjectHandle[]): void {
-    const items: IndexEntry[] = handles.map((h) => {
-      const [minX, minY, maxX, maxY] = h.bbox;
-      return { minX, minY, maxX, maxY, id: h.id, kind: h.kind };
-    });
-
-    if (items.length > 0) {
-      this.tree.load(items);
-    }
-  }
-
-  clear(): void {
-    this.tree.clear();
+  /**
+   * In-place envelope change. CONTRACT: caller must NOT have mutated `handle.bbox`
+   * or the mirror fields between the previous insert and this call — `rbush.remove`
+   * descends the tree using the current envelope to locate the leaf. Always wrapped
+   * by `RoomDocManager.upsertHandle`; not called elsewhere.
+   */
+  updateHandleBBox(handle: ObjectHandle, newBBox: Readonly<BBoxTuple>): void {
+    this.remove(handle); // identity match; rbush uses current (old) envelope
+    applyHandleBBox(handle, newBBox); // mutate bbox tuple + mirrors → new
+    this.insert(handle); // rbush reads new envelope from mirror fields
   }
 }

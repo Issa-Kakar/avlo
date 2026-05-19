@@ -101,7 +101,7 @@ All paths relative to `client/src/` unless noted.
 | File | Responsibility |
 |------|----------------|
 | `accessors.ts` | Typed Y.Map accessors (per-field + per-kind bulk `getXxxProps`) |
-| `types/objects.ts` | `ObjectKind`, `ObjectHandle`, `IndexEntry`, prop types, `BindableKind`/`BINDABLE_KINDS`/`isBindable*` |
+| `types/objects.ts` | `ObjectKind`, `ObjectHandle` (+ `createHandle`/`applyHandleBBox`), prop types, `BindableKind`/`BINDABLE_KINDS`/`isBindable*` |
 | `types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
 | `types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `index.ts` | Type re-export barrel |
@@ -285,17 +285,21 @@ All objects share `{ id (ULID), kind, ownerId, createdAt }`. **Color semantics:*
 - **Image** — `{ assetId: 64-hex, frame, naturalWidth, naturalHeight, mimeType, opacity? }`. Content-addressed (same file → same `assetId`).
 - **Bookmark** — `{ url, domain, origin, height, scale?, title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId? }`. Frame derived (`getBookmarkFrame(id)`). State implied by which optional fields are set.
 
-### ObjectHandle (live reference)
+### ObjectHandle (live reference, IS the rbush item)
 ```ts
 interface ObjectHandle {
   id: string;            // ULID
   kind: ObjectKind;
   y: Y.Map<unknown>;     // LIVE reference
   bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally, mutated in place by observer
+  // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox.
+  minX: number; minY: number; maxX: number; maxY: number;
 }
 ```
 
-Wrapper persists across observer fires; only `bbox`'s four slots change (via `copyBbox`). Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
+The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariant:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator; it writes the tuple AND the mirrors atomically. No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
+
+Wrapper persists across observer fires; only `bbox`'s four slots + mirrors change. Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
 
 ### Stored vs derived geometry
 
@@ -384,7 +388,7 @@ applyObjectChanges:                                 // _newBBoxScratch reused pe
 
 **Inline-before-bulk is load-bearing.** `handleContentChange` / `invalidateContent` / router events fire BEFORE Phase B so that `compute*BBox` reads already-fresh subsystem state and routes can be drained from the queue in Phase C in the same fire. No second pass.
 
-`upsertHandle` mutates `handle.bbox` in place; the wrapper persists for the id's lifetime. On `bboxChanged`: invalidate prev rect → `spatialIndex.update` → `copyBbox` → `evictGeometry` → invalidate new rect (order critical — rbush's `remove` destructures the old envelope synchronously, so `handle.bbox` must still hold the old values when `update` is called). On no-bbox-change with `alwaysEvict`: only evict + invalidate new rect. New rect is invalidated unconditionally (content may have changed visually without bbox change).
+`upsertHandle` mutates `handle.bbox` + the rbush mirror fields in place via `spatialIndex.updateHandleBBox`; the wrapper persists for the id's lifetime. On `bboxChanged`: invalidate prev rect → `spatialIndex.updateHandleBBox(handle, newBBox)` [internally: `remove(handle)` reads old envelope → `applyHandleBBox` writes new tuple + mirrors → `insert(handle)` reads new envelope] → `evictGeometry` → invalidate new rect (order critical — `handle.bbox` must still hold the old values when `updateHandleBBox` is called, since rbush's `remove` descends to the old leaf). On no-bbox-change with `alwaysEvict`: only evict + invalidate new rect. New rect is invalidated unconditionally (content may have changed visually without bbox change).
 
 Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
 
@@ -410,6 +414,8 @@ computeBBoxForInto(id, kind, y, out) {
 ```
 
 **Handle exists ⇒ caches populated.** Frame getters (`getTextFrame` / `getCodeFrame` / `getBookmarkFrame`) defensively return `null` via `?? null`, but the `null` is just the natural Map-miss return — it fires only when no handle exists in `objectsById` (caller is reading an id that was never observed or has been deleted, in which case the cache entry was removed alongside the handle). Within an id's lifetime, its caches stay populated.
+
+**rbush items ARE handles.** `objectsById` and the spatial index reference the same `ObjectHandle` objects — one source of truth, two access paths. The handle's `minX/minY/maxX/maxY` mirror `bbox[0..3]` and are kept in sync by `applyHandleBBox` (the only legal post-creation mutator, wrapped by `spatialIndex.updateHandleBBox`). Spatial queries return handles directly — no `getHandle(e.id)` lookup post-query, no `IndexEntry` indirection.
 
 **Lazy exceptions** (populated on first read, not via observer):
 - `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common).
