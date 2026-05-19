@@ -3,9 +3,11 @@
   left: calc(100% + 12px);
   top: -8px;
   background: var(--dock-bg, #101720);
-  border: 1px solid var(--dock-border, #4a4a4a);
   border-radius: 12px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  /* Two-layer precise shadow — matches the weight picker. */
+  box-shadow:
+    0 -1px 1px rgba(0, 0, 0, 0.15),
+    0 3px 3px rgba(0, 0, 0, 0.35);
   padding: 10px;
   display: flex;
   flex-direction: column;

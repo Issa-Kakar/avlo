@@ -20,9 +20,11 @@
   padding: 7px;
   border-radius: 14px;
   background: var(--dock-bg, #101720);
-  border: 1px solid var(--dock-border, #4a4a4a);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(6px);
+  /* Two-layer precise shadow — see Toolbar.css. Popouts share the same
+     top halo; the bottom drop grows to 3/3 for more elevation. */
+  box-shadow:
+    0 -1px 1px rgba(0, 0, 0, 0.15),
+    0 3px 3px rgba(0, 0, 0, 0.35);
   animation: picker-pop 140ms ease-out;
   z-index: 1;
 }

@@ -58,9 +58,9 @@ only needs one stylesheet import.
 | `connector-variants.ts` | `CONNECTOR_VARIANT_IDS` (ordered tuple — `line`/`arrow`/`elbow`) + `CONNECTOR_VARIANT_SPECS` (keyed table of `{ label, type, startCap, endCap }`) + `ConnectorVariantId` + `deriveConnectorVariant(type, startCap, endCap) → ConnectorVariantId` (totally onto the three ids; never null). Pure, table-driven. |
 | `icons/` | All toolbar icon SVGs (see "Icons" section below). One icon per file with two grouped exceptions (stroke weights, connector variants). No barrel — consumers import each icon directly. |
 | `inspectors/Inspector.css` | Inspector pill shell + `inspector-divider`; `@import`s `InspectorButton.css`, `WeightField.css`, and the `color/*` primitive CSS files. Defines the shared `picker-pop` entry-animation keyframes used by `.weight-picker` and `.color-picker`. |
-| `inspectors/InspectorButton.tsx/css` | Memoized 30×30 square icon button with `is-active` state. Used by pen/highlighter toggles, weight buttons, connector variants. |
+| `inspectors/InspectorButton.tsx/css` | Memoized square icon button with `is-active` state. Base 30×30 (pen inspector); shape + connector inspectors scope it to 32×32 via `Inspector.css` overrides. 7px radius, 20×20 icon. Used by pen/highlighter toggles, weight buttons, connector variants, shape variants. |
 | `inspectors/PenInspector.tsx` | Takes a `tool: StrokeTool` prop. Pen/highlighter toggle (2), divider, `<WeightSelector>`, divider, `<ColorSlots>` + picker. Picker state is component-local `useState`. Reads its slot cluster via `s.strokeTools[tool]`. |
-| `inspectors/ShapeInspector.tsx` | 5 variant buttons (`rectangle`/`ellipse`/`diamond`/`triangle`/`roundedRect`) + divider + `<WeightField presets={SHAPE_WEIGHTS}>`. Active variant is `s.shape.variant` directly — no derivation. Module-level `VARIANT_HANDLERS`/`VARIANT_ICONS`/`VARIANT_LABELS` records; variant click is `setShapeVariant(id)` only (inspector mounts only when `activeTool === 'shape'`). Picker state is a single `useState<boolean>` — only one popout exists, no `OpenPicker` discriminant needed yet. Color TBD. Scoped `.inspector.inspector-shape` CSS in `Inspector.css` bumps gap 4→6 and padding 7→9 — visual tuning, not load-bearing. |
+| `inspectors/ShapeInspector.tsx` | 5 variant buttons (`rectangle`/`ellipse`/`diamond`/`triangle`/`roundedRect`) + divider + `<WeightField presets={SHAPE_WEIGHTS}>`. Active variant is `s.shape.variant` directly — no derivation. Module-level `VARIANT_HANDLERS`/`VARIANT_ICONS`/`VARIANT_LABELS` records; variant click is `setShapeVariant(id)` only (inspector mounts only when `activeTool === 'shape'`). Picker state is a single `useState<boolean>` — only one popout exists, no `OpenPicker` discriminant needed yet. Color TBD. Scoped `.inspector.inspector-shape` CSS in `Inspector.css` bumps `.insp-btn` 30→32 (shared with the connector inspector via a grouped selector — filled shape silhouettes need more inset breathing room). |
 | `inspectors/ConnectorInspector.tsx` | 3 variant buttons (`line`/`arrow`/`elbow`) sourced via `VARIANT_ICONS` lookup, divider, `<WeightField presets={CONNECTOR_WEIGHTS}>` (popout), divider, `<ColorField>` (popout). The `arrow` slot reuses `IconArrow` (the toolbar tool icon) — same diagonal language as line/elbow. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. The two popouts are mutually exclusive via a discriminated `OpenPicker = 'weight' \| 'color' \| null` state. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
 | `inspectors/WeightSelector.tsx` | Memoized **controlled** presets-driven button row (`presets` / `value` / `onChange`). Returns a fragment so the buttons stay direct flex children of the surrounding container (inline `.inspector` or the `.weight-picker` popout). Per-preset `useMemo` handler table keyed on `[presets, onChange]` — both stable module-level refs in practice, so the table allocates exactly once per mount. |
 | `inspectors/WeightField.tsx/css` | Memoized stroke-width field — sibling of `ColorField`. One trigger button showing the nearest-preset icon (blue ONLY while the popout is open) + an absolutely-positioned `.weight-picker` popout that mounts a `<WeightSelector>` with the same presets. Owns a `usePickerDismiss` wrapper. Off-preset widths render the nearest tier's icon on the trigger; popout buttons all stay inactive (strict equality). Used by `ConnectorInspector` today; pen inspector still uses the inline `<WeightSelector>` while the popout UX is evaluated. |
@@ -145,12 +145,14 @@ one on mousedown before the toggle handler opens the new one on click.
 | `toolbar-wrap` position | `fixed; left:12px; top:50%; transform:translateY(-50%); z-index:380` |
 | Main-pill button | 32×32, 8px radius, 24×24 icon, 5px gap, 8px container padding, 14px container radius |
 | `<768px` override | 28×28 button, 20×20 icon, 3px container padding, 10px radius, `left:6px` |
-| Inspector pill | `left: calc(100% + 7px); top:50%; translateY(-50%)`; 4px gap, 7px container padding, 14px radius |
+| Inspector pill | `left: calc(100% + 7px); top:50%; translateY(-50%)`; 4px gap, 8px container padding, 14px radius. **No border** — the dock surfaces are defined by fill + shadow alone. |
 | `<768px` inspector | `left: calc(100% + 6px)` |
-| `InspectorButton` | 30×30, 7px radius, 20×20 icon |
+| `InspectorButton` | 30×30 base, 7px radius, 20×20 icon. Scoped 32×32 inside `.inspector.inspector-shape` and `.inspector.inspector-connector` (shared grouped selector in `Inspector.css`). |
+| `inspector-divider` | 70% width, 2px height, 4px vertical margin, 0.6 opacity. (Separate from `.toolbar-divider` in `Toolbar.css`, which stays 1px / 2px margin.) |
 | Color slot | 24×24, 6px radius, 12px vertical gap, 6px/4px container padding |
 | Color picker | `left: calc(100% + 12px); top:-8px`; 22×22 swatches, 6-col grid (23 swatches → 6+6+6+5), 10px gap, 10px container padding |
-| Weight picker | `left: calc(100% + 12px); top:-8px` (matches color picker); inspector-pill chrome: 7px padding, 14px radius, 4px gap |
+| Weight picker | `left: calc(100% + 12px); top:-8px` (matches color picker); 7px padding, 14px radius, 4px gap. **Divergence note:** the comment in `WeightField.css` calls this "clones the inspector pill's chrome" but the inspector pill is now at 8px padding — the popout was deliberately left at 7px during the inspector-padding bump; revisit if the asymmetry reads. |
+| Surface shadow | All four surfaces (toolbar, inspector, weight-picker, color-picker) share a two-layer precise shadow: `0 -1px 1px rgba(0,0,0,0.15)` top halo + `0 Npx Npx rgba(0,0,0,0.35)` bottom drop, with `N=2` for toolbar/inspector and `N=3` for popouts. Each layer follows `\|offset_y\| == blur` so it has zero tail in the unwanted direction (no upward leak past the bottom drop, no downward leak past the top halo). With no border, the shadow is the only edge cue against the white canvas. |
 | Tooltip | CSS pseudo-element on `.tool-btn`, suppressed while any `.inspector` is mounted via `.toolbar-wrap:has(.inspector) .toolbar-main .tool-btn::after { display: none; }` |
 
 ### Active-slot anatomy
@@ -460,14 +462,18 @@ icons/
 │                                     #    diagonal language. Inspector wires all three
 │                                     #    via a `Record<ConnectorVariantId, FC>` lookup.)
 └── ShapeVariantIcons.tsx             # IconShapeRect / Ellipse / Diamond / Triangle /
-                                      #   RoundedRect — five filled silhouettes at native
-                                      #   20-unit viewBox (1:1 with the 20px insp-icon CSS
-                                      #   render size) with paths extending edge-to-edge.
+                                      #   RoundedRect — five filled silhouettes drawn at
+                                      #   19×19 inside a native 20-unit viewBox (0.5-unit
+                                      #   inset on each side, centered). SVG itself renders
+                                      #   at 20px CSS to match the inspector icon footprint;
+                                      #   the smaller painted region offsets the extra
+                                      #   visual weight filled silhouettes carry vs.
+                                      #   negative-space-heavy icons elsewhere in the dock.
                                       #   The rect/roundedRect pair is intentionally a
-                                      #   corner-radius contrast (rx=0 vs rx=6 — 30% of the
-                                      #   side). Diamond/triangle have ~50% ink coverage of
-                                      #   the rect by geometry; expected, not a bug.
-                                      #   Inspector wires the five via a
+                                      #   corner-radius contrast (rx=0 vs rx=6 — ~32% of
+                                      #   the 19-unit side). Diamond/triangle have ~50% ink
+                                      #   coverage of the rect by geometry; expected, not
+                                      #   a bug. Inspector wires the five via a
                                       #   `Record<ShapeVariant, FC>` lookup, same pattern
                                       #   as connector variants.
 ```
@@ -503,7 +509,10 @@ inherited by every toolbar descendant, deliberately *not* in the page-global
 
 All `toolbar/*.css` files reference these via `var(--name, fallback)` with
 hardcoded fallbacks so partials still render if the import order shifts
-during refactoring.
+during refactoring. `--dock-border` is now read **only** by the two
+divider backgrounds (`.inspector-divider`, `.toolbar-divider`) — the four
+surface borders that used to read it are gone; the dock surfaces are
+defined by their fill + shadow alone, no border.
 
 ---
 
@@ -694,8 +703,16 @@ the prompt.**
 - **Color picker positioning** — `top: -8px` from the slot column.
   Vertical alignment with the slot row center may be cleaner once more
   inspectors land.
-- **Inspector pill geometry** — gap (4px), padding (7px), radius (14px),
-  divider width (70%) all eyeballed.
+- **Inspector pill geometry** — gap (4px), padding (8px), radius (14px),
+  divider (70% width, 2px tall, 4px margin, 0.6 opacity) all eyeballed.
+- **Surface shadow** — two-layer precise pattern on all four surfaces; each
+  layer is `|offset_y| == blur` so its tail lives in one direction only. Top
+  halo opacity (15%) is the knob for "edge definition vs. fuzziness against
+  white canvas"; bottom drop opacity (35%) is the elevation knob. Popouts
+  scale the bottom layer's coords (3/3 vs the inspector's 2/2). **No border**
+  — borders were removed when the shadow alone proved sufficient on a sharp
+  display; if a future variant goes lighter on contrast a `--dock-rim` token
+  can come back.
 - **Slot offset ring on dark colors** — `--slot-tint` is the slot's own
   color, so a black slot's ring is also black against the near-black
   dock and reads as a thin gap only. Design question, not a bug.
