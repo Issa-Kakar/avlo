@@ -4,11 +4,11 @@
  * Used by CanvasRuntime (drop), clipboard-actions (paste), toolbar, and keyboard shortcut.
  */
 
-import { isSvg } from '@avlo/shared';
+import { generateZAtTop, isSvg } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getObjects, transact } from '@/runtime/room-runtime';
+import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -133,6 +133,7 @@ export async function createImageFromBlob(blob: Blob, worldX: number, worldY: nu
     yObj.set('mimeType', result.mimeType);
     yObj.set('ownerId', userId);
     yObj.set('createdAt', Date.now());
+    yObj.set('z', generateZAtTop(getZOrder().maxZ()));
     getObjects().set(objectId, yObj);
   });
 

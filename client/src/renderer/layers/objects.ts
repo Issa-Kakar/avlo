@@ -7,7 +7,7 @@ import { drawStickyNote } from '@/core/text/sticky-note';
 import { renderTextLayout, textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
+import { getObjectsById, getSpatialIndex, getZOrder } from '@/runtime/room-runtime';
 import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -41,9 +41,6 @@ import { paintShapeFrame } from './shape-preview';
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateHandles: ObjectHandle[] = [];
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
-
-/** Stable ULID-asc comparator (oldest first). Hoisted so V8 sees one callable. */
-const _byIdAsc = (a: ObjectHandle, b: ObjectHandle): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 // Per-frame editing-id snapshot, written once at the top of `drawObjects` and
 // read by leaf `draw*` functions. Avoids one `useSelectionStore.getState()`
@@ -127,9 +124,12 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     cullInjected(injectIds, objectsById, viewport, transform, connEntries, epDragEntry, tdx, tdy);
   }
 
-  // Sort by ULID for deterministic draw order (oldest first -> newest on top).
-  // Main loop excludes inject-set IDs and injectIds is provably unique — no post-sort dedupe needed.
-  _candidateHandles.sort(_byIdAsc);
+  // Sort by fractional z-key rank (bottom -> top). Rank table is dirty-flag-guarded;
+  // clean frames early-out in one boolean. Main loop excludes inject-set IDs and
+  // injectIds is provably unique — no post-sort dedupe needed.
+  const zOrder = getZOrder();
+  zOrder.ensureRanksValid(objectsById.values());
+  _candidateHandles.sort(zOrder.handleAscCmp);
 
   for (let i = 0; i < _candidateHandles.length; i++) {
     const handle = _candidateHandles[i];

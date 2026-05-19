@@ -16,6 +16,14 @@
     "typecheck:tsc": "tsc --noEmit"
   },
   "dependencies": {
+    "fractional-indexing": "^3.2.0",
+    "jittered-fractional-indexing": "^1.0.1",
     "ulid": "^3.0.1"
+  },
+  "peerDependencies": {
+    "yjs": "^13.6.0"
+  },
+  "devDependencies": {
+    "yjs": "^13.6.27"
   }
 }

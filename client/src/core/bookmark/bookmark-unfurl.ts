@@ -5,11 +5,11 @@
  * Loading state is local-only via HTML placeholder.
  */
 
-import { extractDomain } from '@avlo/shared';
+import { extractDomain, generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getHandle, getObjects, hasActiveRoom, transact } from '@/runtime/room-runtime';
+import { getHandle, getObjects, getZOrder, hasActiveRoom, transact } from '@/runtime/room-runtime';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -168,6 +168,7 @@ export async function handleUnfurlResult(objectId: string, data: UnfurlResultDat
       if (faviconAssetId) yObj.set('faviconAssetId', faviconAssetId);
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
+      yObj.set('z', generateZAtTop(getZOrder().maxZ()));
       getObjects().set(objectId, yObj);
     });
 

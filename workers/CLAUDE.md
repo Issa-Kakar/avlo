@@ -34,7 +34,7 @@ workers/main               workers/images           workers/unfurl
 | File | Responsibility |
 |---|---|
 | `src/index.ts` | `partyserverMiddleware()` on `/parties/*`, Assets binding fallback for everything else. Exports `RoomDurableObject` + `MainApp`. |
-| `src/room.ts` | `RoomDurableObject extends YServer<Env>` — hibernate, debounced V2 snapshot to `env.DOCS`, hard-flush on last-disconnect. |
+| `src/room.ts` | `RoomDurableObject extends YServer<Env>` — hibernate, debounced V2 snapshot to `env.DOCS`, hard-flush + z-key renorm on empty-room close. Single trigger by design (onLoad scan would be defensive O(N) for a self-healing failure: long keys are perf, not correctness, and the next successful onClose catches up). Never-empty rooms are a documented limitation; if profiling ever surfaces it, add alarm-based periodic renorm. |
 | `wrangler.jsonc` | `assets.directory: ../../client/dist`, `binding: ASSETS`, `run_worker_first: ["/parties/*"]`, `migrations: new_sqlite_classes`. |
 
 Same-origin SPA + WSS — SPA on `avlo.io` opens `wss://avlo.io/parties/rooms/<id>` via `window.location.host` in `client/src/runtime/room-doc-manager.ts`. No CORS, no preflight.

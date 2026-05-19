@@ -1,3 +1,4 @@
+import type { ZKey } from '@avlo/shared';
 import type * as Y from 'yjs';
 import type { BBoxTuple, FrameTuple } from './geometry';
 
@@ -23,9 +24,21 @@ export interface ObjectHandle {
   minY: number;
   maxX: number;
   maxY: number;
+  // Fractional z-key (mirror of y.get('z')). Mutated only by the deep observer's z-key-edit branch.
+  z: ZKey;
+  // Stable index into ZRankTable._ranks. Assigned at creation by acquireSlot(); never reassigned.
+  // Returns to the free-list on delete; future objects may reuse it.
+  slot: number;
 }
 
-export function createHandle(id: string, kind: ObjectKind, y: Y.Map<unknown>, bbox: Readonly<BBoxTuple>): ObjectHandle {
+export function createHandle(
+  id: string,
+  kind: ObjectKind,
+  y: Y.Map<unknown>,
+  bbox: Readonly<BBoxTuple>,
+  z: ZKey,
+  slot: number,
+): ObjectHandle {
   return {
     id,
     kind,
@@ -35,6 +48,8 @@ export function createHandle(id: string, kind: ObjectKind, y: Y.Map<unknown>, bb
     minY: bbox[1],
     maxX: bbox[2],
     maxY: bbox[3],
+    z,
+    slot,
   };
 }
 

@@ -13,6 +13,7 @@
  * @module lib/tools/ConnectorTool
  */
 
+import { generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
@@ -23,7 +24,7 @@ import type { Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { isCtrlHeld } from '@/runtime/InputManager';
-import { getObjects, transact } from '@/runtime/room-runtime';
+import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { ConnectorPreview, PointerTool, PreviewData } from './types';
 
@@ -236,6 +237,7 @@ export class ConnectorTool implements PointerTool {
       // Metadata
       connectorMap.set('ownerId', userId);
       connectorMap.set('createdAt', Date.now());
+      connectorMap.set('z', generateZAtTop(getZOrder().maxZ()));
 
       getObjects().set(id, connectorMap);
     });

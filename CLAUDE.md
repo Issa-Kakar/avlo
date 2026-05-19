@@ -4,7 +4,7 @@
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,bookmark,clipboard,spatial,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence}`, `components/context-menu`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence}`, `components/context-menu`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -117,6 +117,7 @@ All paths relative to `client/src/` unless noted.
 | `image/` | Offline-first pipeline + 2 web workers. Entry: `image-manager.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
 | `clipboard/` | Nonce-based clipboard + serializer. Entry: `clipboard-actions.ts`, `clipboard-serializer.ts`. See CLAUDE.md |
+| `z-order/` | `ZRankTable` (SoA Uint32 ranks + slot pool) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
 
 ### Stores
 | File | Responsibility |
@@ -272,7 +273,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
 
 ### Schemas
 
-All objects share `{ id (ULID), kind, ownerId, createdAt }`. **Color semantics:** `color` = stroke color (shape/stroke/connector) or text color (text); `fillColor` = background always; shapes use `labelColor` for label text. Per-kind fields:
+All objects share `{ id (ULID), kind, ownerId, createdAt, z: ZKey }`. `id` is creation-ordered and immutable (used for identity + references); `z` is a mutable fractional sort key (opaque, lex-comparable — see `core/z-order/` + `@avlo/shared/z-order`). **Color semantics:** `color` = stroke color (shape/stroke/connector) or text color (text); `fillColor` = background always; shapes use `labelColor` for label text. Per-kind fields:
 
 - **Stroke** (pen/highlighter) — `{ tool: 'pen'|'highlighter', color, width, opacity, points: [number,number][] }`
 - **Shape** (rect/ellipse/diamond/roundedRect) — `{ shapeType, color, width, opacity, fillColor?, frame: [x,y,w,h], content?: Y.XmlFragment, fontSize?, fontFamily?, labelColor? }`. Label fields added on first edit, removed if empty on close.
@@ -292,12 +293,14 @@ interface ObjectHandle {
   bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally, mutated in place by observer
   // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox.
   minX: number; minY: number; maxX: number; maxY: number;
+  z: ZKey;               // mirror of y.get('z'); mutated only by the observer's z-key-edit branch
+  slot: number;          // stable Uint32Array index into ZRankTable._ranks; immutable post-creation
 }
 ```
 
-The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariant:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator; it writes the tuple AND the mirrors atomically. No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
+The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariants:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator for the bbox tuple + envelope mirrors; it writes them atomically. `handle.z` is mutated only by the deep observer's `'z'` key handler (mirror of `y.get('z')`). `handle.slot` is assigned once by `ZRankTable.acquireSlot()` and never reassigned (the slot returns to the free-list on delete and is reusable, but no live handle ever changes its slot). No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
 
-Wrapper persists across observer fires; only `bbox`'s four slots + mirrors change. Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
+Wrapper persists across observer fires; only `bbox`'s four slots + mirrors (and `z` when the user reorders) change. Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
 
 ### Stored vs derived geometry
 

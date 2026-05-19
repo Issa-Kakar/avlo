@@ -14,7 +14,7 @@
 import { getFrame } from '@/core/accessors';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { BINDABLE_KINDS, type BindableHandle, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
-import { getSpatialIndex } from '@/runtime/room-runtime';
+import { getObjectsById, getSpatialIndex, getZOrder } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
 import { hitCircleFor, hitPointFor, hitRectFor, type Paint } from './hit-dispatch';
 
@@ -63,9 +63,12 @@ interface Cand {
 // Reused across the three pickers; consumers never retain past one picker call (single-threaded JS).
 const _collectHitsScratch: Cand[] = [];
 
-/** ULID-desc z-sort (top first), in-place. */
+/** Rank-desc z-sort (top first), in-place. Rank table is dirty-flag-guarded; clean call is a single boolean check. */
 function sortTopFirst(cs: Cand[]): void {
-  cs.sort((a, b) => (a.handle.id < b.handle.id ? 1 : a.handle.id > b.handle.id ? -1 : 0));
+  const zOrder = getZOrder();
+  zOrder.ensureRanksValid(getObjectsById().values());
+  const ranks = zOrder.getRanks(); // live reference; reread per call so grow-rebind is picked up
+  cs.sort((a, b) => ranks[b.handle.slot] - ranks[a.handle.slot]);
 }
 
 /** Shape-only area for the frame-aware tournament. Called only when `paint ∈ {'seethrough','fill'}`. */
