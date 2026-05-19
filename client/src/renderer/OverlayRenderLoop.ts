@@ -1,7 +1,7 @@
 import { applyPendingResize, getOverlayContext } from '@/runtime/SurfaceManager';
 import { subscribeCamera, useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { CursorAnimationJob, destroyAnimationController, EraserTrailAnimation, getAnimationController } from './animation';
+import { destroyAnimationController, EraserTrailAnimation, getAnimationController } from './animation';
 import { drawToolPreview } from './layers/tool-preview';
 
 export class OverlayRenderLoop {
@@ -21,7 +21,6 @@ export class OverlayRenderLoop {
     // Register animation jobs + wire push-based invalidation
     const controller = getAnimationController();
     controller.register(new EraserTrailAnimation());
-    controller.register(new CursorAnimationJob());
     controller.setInvalidator(() => this.invalidateAll());
 
     // Subscribe to camera store — any change invalidates overlay

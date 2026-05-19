@@ -1,19 +1,19 @@
 {
-  "name": "@avlo/worker",
+  "name": "@avlo/unfurl",
   "private": true,
   "type": "module",
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "typecheck:tsc": "tsc --noEmit",
+    "types": "wrangler types",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@avlo/shared": "*",
+    "@avlo/worker-shared": "*",
     "@hono/zod-validator": "^0.7.6",
     "hono": "^4.12.15",
-    "hono-party": "^2.0.3",
-    "partyserver": "^0.4.1",
-    "yjs": "^13.6.27",
     "zod": "^4.3.6"
   },
   "devDependencies": {

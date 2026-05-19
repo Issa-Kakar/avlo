@@ -38,11 +38,12 @@ Width is fixed at `BOOKMARK_WIDTH = 300`. Frame is derived: `[origin[0], origin[
 
 | File | Purpose |
 |------|---------|
-| `core/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()` (hover-aware), text wrapping, height computation, two card layouts, Open-button hit-test + world-bbox helpers, `computeBookmarkBBox`, `getBookmarkFrame`, `BOOKMARK_WIDTH`, `bookmarkCache` |
+| `core/bookmark/bookmark-render.ts` | Layout cache, 3-slice shadow cache, `drawBookmark()` (hover-aware), `renderBookmarkBody`, text wrapping, height computation, two card layouts, Open-button hit-test + world-bbox helpers, `computeBookmarkBBox`, `getBookmarkFrame`, `BOOKMARK_WIDTH`, `bookmarkCache` |
 | `core/bookmark/bookmark-actions.ts` | `openBookmarkUrl(id)` — two-pass URL validation, `window.open(_blank, noopener,noreferrer)` |
 | `core/bookmark/bookmark-unfurl.ts` | Lifecycle: pending map, `beginUnfurl`, `handleUnfurlResult`/`handleUnfurlFailed`, `canCreateBookmark`, `cleanupOnRoomTeardown`, SVG favicon rasterization |
 | `core/bookmark/bookmark-placeholder.ts` | HTML loading element (spinner + domain), camera-tracked positioning |
-| `worker/src/unfurl.ts` | CF Worker route — Zod validation, SSRF guard, HTMLRewriter, image fetch/R2 store, edge cache |
+| `workers/unfurl/src/unfurl.ts` | CF Worker route — Zod validation, SSRF guard, HTMLRewriter, image fetch/R2 store, edge cache |
+| `workers/unfurl/src/app-type.ts` | Public mock app + `UnfurlResponseBody` wire contract |
 | `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain`, `prettifyDomain` |
 | `core/accessors.ts` | `getBookmarkProps`, `getBookmarkUrl`, `getBookmarkAssetIds` |
 
@@ -163,7 +164,13 @@ Lifecycle: `createPlaceholder` (in `beginUnfurl`) → `removePlaceholder` (on re
 
 ### Body + Shadow
 
-`renderNoteBody(ctx, 0, 0, BOOKMARK_WIDTH, height, '#FFFFFF')` from `core/text/sticky-note.ts`. Shares the dual-layer Gaussian shadow cache (keyed by `(w, h)`) and corner-radius ratio with sticky notes — `CARD_RADIUS = getNoteCornerRadius(BOOKMARK_WIDTH)` so the OG image top-corner clip aligns with the body silhouette.
+`renderBookmarkBody(ctx, 0, 0, height, '#FFFFFF')` — `drawBookmarkShadow` + `roundRect` body fill at `BOOKMARK_CORNER_RADIUS` (10wu, fixed; `CARD_RADIUS` aliases it so the OG image top-corner clip stays aligned with the body silhouette).
+
+**Vertical 3-slice shadow cache.** Width and corner radius are constant, so the shadow's horizontal cross-section is identical at every card height — only the vertical sides stretch. Past `R + 1.5·blur` (~28wu) from either horizontal body edge the shadow is fully translation-invariant in y. One `OffscreenCanvas` (`_bookmarkShadow`) is baked per DPR by `ensureBookmarkShadow` — top cap + 2 invariant rows + bottom cap — and `drawBookmarkShadow` blits it in three `drawImage` calls: top cap (no stretch), middle (the 2 invariant rows stretched vertically over `midDestH`), bottom cap (no stretch). No horizontal stretch (`BAKE_W → BAKE_W` is 1:1 in world units), so the baked rounded corners land on the body's exact destination pixels.
+
+Shadow casters (drop + contact gaussian) and the `destination-out` punch all use the same body path at `BOOKMARK_CORNER_RADIUS`, so the punched silhouette matches the destination body fill 1:1 — no AA fringe, no corner wedge. Seam invariant: each cap's innermost source row and the middle's sampled rows are all fully-invariant body rows (pixel-identical), so cap→middle→cap transitions are exact regardless of `midDestH`.
+
+`SHADOW_H_MIN_SUPPORTED` (58wu) is the 3-slice floor; below it `midDestH` clamps to 0 and `computeBookmarkBBox` pads to match. Realistic bookmark min height is ~71 (text-only, 1 title line), so the clamp is defensive-only. Memory: one canvas (~0.6 MB at DPR=2) regardless of bookmark count or distinct heights — replaced a shared 16-entry LRU that thrashed past 16 distinct heights. Pad ratios are bookmark-local (`BOOKMARK_SHADOW_{TOP,SIDE,BOTTOM}_RATIO` = 0.06 / 0.075 / 0.12, exported for the `bbox.ts` fallback).
 
 ### OG Image
 
@@ -240,9 +247,11 @@ Hover state and paint both live on the **base canvas**. Overlay never paints it.
 
 ---
 
-## Cloudflare Worker — `GET /api/unfurl?url=<encoded>`
+## Cloudflare Worker — `GET /?url=<encoded>` (`workers/unfurl/`)
 
-Middleware: `zValidator('query', unfurlQuery)` — Zod validates, `normalizeUrl()` transforms, SSRF guard rejects private hosts before handler.
+Prod: `unfurl.avlo.io/?url=...`. Dev: `/api/unfurl?url=...` via Vite proxy (rewrite strips the prefix, so the worker sees the bare `/`). Client URL building uses `unfurlClient.index.$get({ query: { url } })` from `@avlo/api-client` — typed against `UnfurlResponseBody` exported from `workers/unfurl/src/app-type.ts`.
+
+Middleware: `zValidator('query', unfurlQuery)` (from `@avlo/worker-shared`) — Zod validates, `normalizeUrl()` transforms, SSRF refine rejects private hosts before handler. R2 binding is `IMAGES` (shared with `workers/images`).
 
 ### SSRF Guard
 
@@ -291,7 +300,7 @@ Failure is non-fatal — bookmark renders without favicon. Async work completes 
 
 ### Edge Cache + Response Codes
 
-Synthetic key: `https://unfurl.avlo.internal/<sha256(normalizedUrl)>`. TTL 7d. `waitUntil(cache.put())`.
+Synthetic key: `syntheticCacheUrl('unfurl', sha256(normalizedUrl))` → `https://unfurl.cache.avlo.internal/<sha>` (per-service namespacing from `@avlo/worker-shared/cache-keys`, H7). TTL 7d. `waitUntil(cache.put())`. JSON responses and empty 502/204 bodies all get `applyCsp(headers, 'api-json')` (H5).
 
 | Status | Meaning | Cached |
 |---|---|---|
@@ -337,7 +346,7 @@ Bookmark is in `BINDABLE_KINDS` (`core/types/objects.ts`) — snap and reroute a
 `frameOf(handle)` dispatch includes `bookmark: (h) => getBookmarkFrame(h.id)`.
 
 ### BBox — `core/geometry/bbox.ts`
-`case 'bookmark'` → `computeBookmarkBBox(id, props)`. Populates layout + frame caches as side effects. Shadow padding via `NOTE_SHADOW_*_RATIO` from `sticky-note.ts` (asymmetric — extends mostly downward).
+`case 'bookmark'` → `computeBookmarkBBox(id, props)`. Populates layout + frame caches as side effects. Shadow padding via `BOOKMARK_SHADOW_*_RATIO` (local to `bookmark-render.ts`, asymmetric — extends mostly downward); the props-incomplete fallback imports the same ratios.
 
 ### Object Cache — `renderer/object-cache.ts`
 No bookmark-specific case (no Path2D/ConnectorPaths). Eviction routes `bookmarkCache.evict(id)` via `removeObjectCaches`.
@@ -379,7 +388,7 @@ TITLE_LINE_H       = 19;  DESC_LINE_H = 16
 TITLE_MAX_LINES    = 2;   DESC_MAX_LINES = 3
 FAVICON_SIZE       = 18;  FAVICON_GAP = 6
 CARD_FILL          = '#FFFFFF'
-CARD_RADIUS        = getNoteCornerRadius(BOOKMARK_WIDTH)   // shared with sticky-note
+BOOKMARK_CORNER_RADIUS = 10   // fixed corner radius; CARD_RADIUS aliases it
 OPEN_BTN_W / H     = 78 / 28
 OPEN_BTN_RADIUS    = 6;   OPEN_BTN_MARGIN = 10
 PLACEHOLDER_H      = 48   (in bookmark-placeholder.ts)

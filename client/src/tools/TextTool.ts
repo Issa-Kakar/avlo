@@ -37,6 +37,7 @@ import {
 } from '@/core/accessors';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { TextCollaboration } from '@/core/text/extensions';
+import { computeLabelTextBox } from '@/core/text/shape-label';
 import {
   getNoteContentWidth,
   getNoteDerivedFontSize,
@@ -45,7 +46,8 @@ import {
   NOTE_FILL_COLOR,
   NOTE_WIDTH,
 } from '@/core/text/sticky-note';
-import { anchorFactor, computeLabelTextBox, FONT_FAMILIES, getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-system';
+import { getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-measure';
+import { anchorFactor, FONT_FAMILIES } from '@/core/text/text-system';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, transact } from '@/runtime/room-runtime';
@@ -82,6 +84,9 @@ export class TextTool implements PointerTool {
   // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private boundHandleClickOutside: ((e: PointerEvent) => void) | null = null;
+
+  // Re-entrancy guard for commitAndClose — see commitAndClose() for why.
+  private closing = false;
 
   // =========================================================================
   // PointerTool Interface
@@ -607,51 +612,80 @@ export class TextTool implements PointerTool {
   // =========================================================================
 
   commitAndClose(): void {
-    if (this.editor && this.objectId) {
-      const handle = getHandle(this.objectId);
+    // Re-entrancy guard. The empty-text branch below calls `transact(getObjects().delete(...))`,
+    // and the room deep observer fires synchronously inside that transact → Phase A bridge in
+    // selection-store.onObjectsDeleted calls this same method recursively. Without the guard,
+    // the inner call tears down the editor + nulls fields, then the outer call hits
+    // `this.editor.destroy()` on a null editor and throws. The throw escapes
+    // boundHandleClickOutside before its `e.stopPropagation()` runs, so the canvas pointerdown
+    // proceeds and spawns a fresh text object. The outer call owns the teardown; the inner is
+    // a no-op (re-tearing is unsafe and unnecessary — selection-store's only purpose calling
+    // us here is editor unmount, which the outer call already guarantees).
+    if (this.closing) return;
+    this.closing = true;
+    try {
+      if (this.editor && this.objectId) {
+        const handle = getHandle(this.objectId);
 
-      // Delete empty content on close — only when object still exists (otherwise the
-      // remote/local delete already removed it). Sticky notes keep empty content.
-      if (this.editor.isEmpty && handle) {
-        if (handle.kind === 'shape') {
-          // Shape label: remove label fields, keep shape
-          transact(() => {
-            handle.y.delete('content');
-            handle.y.delete('fontSize');
-            handle.y.delete('fontFamily');
-            handle.y.delete('labelColor');
-            handle.y.delete('align');
-            handle.y.delete('alignV');
-          });
-        } else if (handle.kind !== 'note') {
-          // Regular text object: delete entirely
-          transact(() => {
-            getObjects().delete(this.objectId!);
-          });
+        // Delete empty content on close — only when object still exists (otherwise the
+        // remote/local delete already removed it). Sticky notes keep empty content.
+        if (this.editor.isEmpty && handle) {
+          if (handle.kind === 'shape') {
+            // Shape label: remove label fields, keep shape
+            transact(() => {
+              handle.y.delete('content');
+              handle.y.delete('fontSize');
+              handle.y.delete('fontFamily');
+              handle.y.delete('labelColor');
+              handle.y.delete('align');
+              handle.y.delete('alignV');
+            });
+          } else if (handle.kind !== 'note') {
+            // Regular text object: delete entirely
+            transact(() => {
+              getObjects().delete(this.objectId!);
+            });
+          }
         }
+
+        this.removeEditorHandlers();
+
+        // ProseMirror's DOMObserver intermittently leaks one `selectionchange` listener on
+        // `document` per destroy — the bound handler's `this` retains `view`, which retains
+        // `view.dom` (the entire detached editor DOM tree). Heap retainer chain confirmed
+        // 1:1 with this listener. PM's start/stop is reference-counted and our onTransaction
+        // sync re-enters it overlapping with a mid-flight selection, leaving one `start`
+        // unmatched. Snapshot the bound handler before destroy(), force-remove after — no-op
+        // when PM removed it correctly.
+        // biome-ignore lint/suspicious/noExplicitAny: ProseMirror domObserver is internal
+        const onSelectionChange = (this.editor.view as any).domObserver?.onSelectionChange as ((e: Event) => void) | undefined;
+
+        // Destroy triggers extension onDestroy → seals undo session, clears per-session UM
+        this.editor.destroy();
+        // biome-ignore lint/suspicious/noExplicitAny: release Tiptap internal EditorState + plugin states
+        (this.editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + plugin states
+
+        if (onSelectionChange) {
+          document.removeEventListener('selectionchange', onSelectionChange);
+        }
+
+        if (this.container?.parentNode) {
+          this.container.parentNode.removeChild(this.container);
+        }
+
+        this.container = null;
+        this.editor = null;
+        this.objectId = null;
+
+        // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
+        invalidateWorldAll();
+        invalidateOverlay();
       }
 
-      this.removeEditorHandlers();
-
-      // Destroy triggers extension onDestroy → seals undo session, clears per-session UM
-      this.editor.destroy();
-      // biome-ignore lint/suspicious/noExplicitAny: release Tiptap internal EditorState + plugin states
-      (this.editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + plugin states
-
-      if (this.container?.parentNode) {
-        this.container.parentNode.removeChild(this.container);
-      }
-
-      this.container = null;
-      this.editor = null;
-      this.objectId = null;
-
-      // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
-      invalidateWorldAll();
-      invalidateOverlay();
+      useSelectionStore.getState().endTextEditing();
+    } finally {
+      this.closing = false;
     }
-
-    useSelectionStore.getState().endTextEditing();
   }
 
   // =========================================================================

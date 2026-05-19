@@ -48,11 +48,10 @@ import {
   scaleBBoxEdges,
   scaleBBoxUniform,
 } from '@/core/geometry/scale-system';
+import { getItalicOverhangPad, getMinCharWidth } from '@/core/text/text-measure';
 import {
   anchorFactor,
   createTextLayout,
-  getItalicOverhangPad,
-  getMinCharWidth,
   getTextFrame,
   layoutMeasuredContent,
   type TextLayout,

@@ -177,13 +177,13 @@ export class ConnectorRouter {
    * Bakes both endpoints directly via `bakeCanonicalEndpoint` and routes through
    * the pipeline — no override-decoder cost (canonical reroute never has overrides).
    *
-   * Mutates the per-connector pooled buffer in `routes` (length trimmed to count
-   * — canonical reroutes are steady-state). Returns a fresh `BBoxTuple` written
-   * via the *Into bbox helper, or `null` on routing failure (caller skips upsert).
+   * Mutates the per-connector pooled buffer in `routes` (length trimmed to count —
+   * canonical reroutes are steady-state). Writes the bbox into caller-owned
+   * `outBbox`; returns `false` on routing failure (caller decides skip vs. leave-as-is).
    */
-  rerouteCanonical(id: string, yObj: Y.Map<unknown>): BBoxTuple | null {
+  rerouteCanonical(id: string, yObj: Y.Map<unknown>, outBbox: BBoxTuple): boolean {
     const ctx = buildRouteContext(id, yObj);
-    if (!ctx) return null;
+    if (!ctx) return false;
     const P = ctx.pipeline as Pipeline<unknown>;
     const start = bakeCanonicalEndpoint(P, ctx.start, ctx.cachedRoute, 'start');
     const end = bakeCanonicalEndpoint(P, ctx.end, ctx.cachedRoute, 'end');
@@ -195,12 +195,11 @@ export class ConnectorRouter {
     const count = P.routeInto(start, end, ctx.strokeWidth, buf);
     if (count < 2) {
       this.routes.delete(id);
-      return null;
+      return false;
     }
     if (buf.length > count) buf.length = count;
-    const outBbox: BBoxTuple = [0, 0, 0, 0];
     computeConnectorBBoxFromPointsInto(buf, count, ctx.strokeWidth, ctx.startCap, ctx.endCap, outBbox);
-    return outBbox;
+    return true;
   }
 
   /**

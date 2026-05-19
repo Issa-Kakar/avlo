@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "avlo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": "../../client/dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/parties/*"]
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "rooms", "class_name": "RoomDurableObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDurableObject"] }],
+  "r2_buckets": [{ "binding": "DOCS", "bucket_name": "avlo-docs" }],
+
+  // routes uncommented post-DNS-transfer + remaining pre-prod essentials
+  // "routes": [
+  //   { "pattern": "avlo.io",     "custom_domain": true },
+  //   { "pattern": "www.avlo.io", "custom_domain": true }
+  // ],
+
+  "dev": { "port": 8787 },
+  "observability": { "enabled": true },
+  "minify": true
+}

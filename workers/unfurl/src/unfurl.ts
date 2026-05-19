@@ -1,6 +1,7 @@
-import { extractDomain, isSvg, normalizeUrl, parseImageDimensions, validateImage } from '@avlo/shared';
+import { extractDomain, isSvg, parseImageDimensions, validateImage } from '@avlo/shared';
+import { applyCsp, syntheticCacheUrl } from '@avlo/worker-shared';
 import type { Context } from 'hono';
-import { z } from 'zod/v4';
+import type { UnfurlResponseBody } from './app-type';
 
 // --- Constants ---
 
@@ -8,42 +9,6 @@ const OG_IMAGE_MAX = 5 * 1024 * 1024; // 5 MB
 const FAVICON_MAX = 500 * 1024; // 500 KB
 const FETCH_TIMEOUT = 5000;
 const UA = 'AvloBot/1.0 (+https://avlo.io/bot)';
-
-// --- SSRF Guard (server-only) ---
-
-function isPrivateHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase();
-
-  // Named private hosts
-  if (lower === 'localhost' || lower === '[::1]' || lower.endsWith('.local') || lower.endsWith('.internal')) {
-    return true;
-  }
-
-  // IPv4 private ranges
-  const parts = lower.split('.');
-  if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p))) {
-    const [a, b] = [parseInt(parts[0], 10), parseInt(parts[1], 10)];
-    if (a === 127) return true; // 127.x.x.x
-    if (a === 10) return true; // 10.x.x.x
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16-31.x.x
-    if (a === 192 && b === 168) return true; // 192.168.x.x
-    if (a === 169 && b === 254) return true; // 169.254.x.x
-    if (a === 0) return true; // 0.x.x.x
-  }
-
-  return false;
-}
-
-// --- Zod Schema ---
-
-export const unfurlQuery = z.object({
-  url: z
-    .string()
-    .min(1, 'url parameter required')
-    .transform((raw) => normalizeUrl(raw))
-    .refine((v): v is string => v !== null, 'Invalid or non-HTTP URL')
-    .refine((url) => !isPrivateHost(new URL(url).hostname), 'URL not allowed'),
-});
 
 // --- Helpers ---
 
@@ -191,7 +156,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   const domain = extractDomain(url);
 
   // --- Edge cache check ---
-  const cacheKey = `https://unfurl.avlo.internal/${await sha256Hex(new TextEncoder().encode(url))}`;
+  const cacheKey = syntheticCacheUrl('unfurl', await sha256Hex(new TextEncoder().encode(url)));
   const cache = caches.default;
   try {
     const cached = await cache.match(cacheKey);
@@ -212,24 +177,24 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
     });
   } catch (err) {
     console.warn('[unfurl] page fetch error:', url, err);
-    return c.body(null, 502);
+    return emptyApiResponse(502);
   }
 
   if (!pageRes.ok) {
     console.warn('[unfurl] page fetch non-OK:', url, pageRes.status);
-    return c.body(null, 502);
+    return emptyApiResponse(502);
   }
 
   const ct = pageRes.headers.get('content-type') ?? '';
 
   // --- Direct image URL handling ---
   if (ct.startsWith('image/')) {
-    const imageResult = await fetchAndStoreImage(c.env.ASSETS, url, OG_IMAGE_MAX);
+    const imageResult = await fetchAndStoreImage(c.env.IMAGES, url, OG_IMAGE_MAX);
     if (!imageResult) {
       console.warn('[unfurl] direct image failed to store:', url);
-      return c.body(null, 204);
+      return emptyApiResponse(204);
     }
-    const data: Record<string, string | number> = { url, domain };
+    const data: UnfurlResponseBody = { url, domain };
     try {
       const pathname = new URL(url).pathname;
       const filename = pathname.split('/').pop() || '';
@@ -246,7 +211,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   // --- Non-HTML content ---
   if (!ct.includes('text/html') && !ct.includes('application/xhtml+xml') && !ct.includes('application/xml')) {
     console.warn('[unfurl] non-HTML content type:', url, ct);
-    return c.body(null, 204);
+    return emptyApiResponse(204);
   }
 
   // --- HTMLRewriter parse ---
@@ -325,18 +290,18 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
 
   // --- Fetch + store images in parallel ---
   const [ogImageResult, faviconResult] = await Promise.all([
-    rawOgImage ? fetchAndStoreImage(c.env.ASSETS, rawOgImage, OG_IMAGE_MAX) : null,
-    rawFavicon ? fetchFavicon(c.env.ASSETS, rawFavicon, FAVICON_MAX) : null,
+    rawOgImage ? fetchAndStoreImage(c.env.IMAGES, rawOgImage, OG_IMAGE_MAX) : null,
+    rawFavicon ? fetchFavicon(c.env.IMAGES, rawFavicon, FAVICON_MAX) : null,
   ]);
 
   // --- Check for useful metadata ---
   if (!title && !ogImageResult) {
     console.warn('[unfurl] no useful metadata:', url);
-    return c.body(null, 204);
+    return emptyApiResponse(204);
   }
 
   // --- Build response ---
-  const data: Record<string, string | number> = { url, domain };
+  const data: UnfurlResponseBody = { url, domain };
   if (title) data.title = title;
   if (description) data.description = description;
   if (ogImageResult) {
@@ -356,16 +321,26 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   return jsonCached(c, cache, cacheKey, data);
 };
 
-function jsonCached(c: Context<{ Bindings: Env }>, cache: Cache, cacheKey: string, data: Record<string, string | number>): Response {
+function jsonCached(c: Context<{ Bindings: Env }>, cache: Cache, cacheKey: string, data: UnfurlResponseBody): Response {
   const body = JSON.stringify(data);
   const headers = new Headers({
     'Content-Type': 'application/json',
     'Cache-Control': 'public, max-age=604800',
   });
+  applyCsp(headers, 'api-json'); // H5
   const response = new Response(body, { status: 200, headers });
 
   // Populate edge cache in background (clone for cache)
   c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
 
   return response;
+}
+
+// Empty-body responses (502/204) still get the api-json CSP profile so the
+// cross-site headers (X-Content-Type-Options, CORP) are consistent with the
+// success path. H5: applies to every response, not just JSON bodies.
+function emptyApiResponse(status: number): Response {
+  const headers = new Headers();
+  applyCsp(headers, 'api-json');
+  return new Response(null, { status, headers });
 }

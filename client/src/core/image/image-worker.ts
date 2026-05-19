@@ -17,6 +17,8 @@
  * Only ImageBitmaps cross back to main thread via Transferable (zero-copy).
  */
 
+import { imagesClient } from '@avlo/api-client/images';
+import { unfurlClient } from '@avlo/api-client/unfurl';
 import { validateImage } from '@avlo/shared';
 
 // ============================================================
@@ -152,7 +154,7 @@ async function getAllPendingUploadIds(): Promise<string[]> {
 const ASSET_CACHE = 'avlo-assets';
 
 function assetUrl(id: string): string {
-  return `/api/assets/${id}`;
+  return imagesClient[':key'].$url({ param: { key: id } }).toString();
 }
 
 async function deleteCachedAsset(id: string): Promise<void> {
@@ -177,8 +179,10 @@ async function readAssetBlob(assetId: string): Promise<Blob | null> {
   try {
     const resp = await fetch(url);
     if (!resp.ok) return null;
-    // Cache the network response for future reads
-    cache.put(url, resp.clone());
+    // Cache.put() rejects on 206 (spec-mandated) — only persist 200s. Fire-and-
+    // forget with a swallowed rejection so an unexpected write failure doesn't
+    // surface as an unhandled rejection.
+    if (resp.status === 200) cache.put(url, resp.clone()).catch(() => {});
     return resp.blob();
   } catch {
     return null;
@@ -345,14 +349,15 @@ async function drainUploads(): Promise<void> {
 // Unfurl (primary only, direct fetch — no IDB queue)
 // ============================================================
 
+type UnfurlData = Extract<WorkerOutbound, { type: 'unfurled' }>['data'];
+
 async function unfurlDirect(objectId: string, url: string): Promise<void> {
   try {
-    const resp = await fetch(`/api/unfurl?url=${encodeURIComponent(url)}`);
+    const resp = await unfurlClient.index.$get({ query: { url } });
     console.warn('[image-worker] unfurl response:', objectId, resp.status);
     if (resp.status === 200) {
-      const data = await resp.json();
-      delete data.url;
-      delete data.domain;
+      const raw = (await resp.json()) as UnfurlData & { url?: string; domain?: string };
+      const { url: _u, domain: _d, ...data } = raw;
       post({ type: 'unfurled', objectId, data });
     } else {
       post({ type: 'unfurl-failed', objectId, permanent: true });

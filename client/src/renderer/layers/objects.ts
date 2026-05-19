@@ -1,32 +1,10 @@
-import {
-  getAlign,
-  getAlignV,
-  getAssetId,
-  getCodeProps,
-  getColor,
-  getContent,
-  getEndCap,
-  getFillColor,
-  getFontFamily,
-  getFontSize,
-  getFrame,
-  getLabelColor,
-  getOpacity,
-  getShapeProps,
-  getShapeType,
-  getStartCap,
-  getStrokeProps,
-  getStrokeTool,
-  getTextProps,
-  getWidth,
-  hasLabel,
-} from '@/core/accessors';
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
 import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { getBitmap } from '@/core/image/image-manager';
+import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel } from '@/core/text/shape-label';
 import { drawStickyNote } from '@/core/text/sticky-note';
-import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel, renderTextLayout, textLayoutCache } from '@/core/text/text-system';
+import { renderTextLayout, textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle } from '@/core/types/objects';
 import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
@@ -46,6 +24,17 @@ import {
 } from '@/tools/selection/transform';
 import type { TransformState } from '@/tools/selection/types';
 import { getConnectorPaths, getPath } from '../geometry-cache';
+import {
+  readCodeRender,
+  readConnectorBaseRender,
+  readConnectorRender,
+  readImageRender,
+  readShapeLabelRender,
+  readShapeLabelRenderNoFrame,
+  readShapeRender,
+  readStrokeRender,
+  readTextRender,
+} from '../render-accessors';
 import { paintConnector, paintConnectorFromPoints } from './connector-render-atoms';
 import { paintShapeFrame } from './shape-preview';
 
@@ -288,7 +277,7 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
       drawImage(ctx, handle);
       break;
     case 'note':
-      drawStickyNote(ctx, handle);
+      drawStickyNote(ctx, handle, _textEditingId === handle.id);
       break;
     case 'bookmark':
       drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id);
@@ -297,18 +286,15 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 }
 
 function drawStroke(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const props = getStrokeProps(handle.y);
-  if (!props) return;
-  const { color, opacity, tool } = props;
-
+  const r = readStrokeRender(handle.y);
   const path = getPath(handle.id, handle);
 
   ctx.save();
-  ctx.globalAlpha = opacity;
+  ctx.globalAlpha = r.opacity;
 
   // STROKES ARE ALWAYS FILLED POLYGONS
-  ctx.fillStyle = color;
-  if (tool === 'highlighter') {
+  ctx.fillStyle = r.color;
+  if (r.tool === 'highlighter') {
     ctx.globalCompositeOperation = 'source-over';
   }
   ctx.fill(path);
@@ -317,60 +303,51 @@ function drawStroke(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 }
 
 function drawShape(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const props = getShapeProps(handle.y);
-  if (!props) return;
-  const { fillColor, color, width, opacity } = props;
-
+  const r = readShapeRender(handle.y);
   const path = getPath(handle.id, handle);
 
   ctx.save();
-  ctx.globalAlpha = opacity;
+  ctx.globalAlpha = r.opacity;
 
-  if (fillColor) {
-    ctx.fillStyle = fillColor;
+  if (r.fillColor) {
+    ctx.fillStyle = r.fillColor;
     ctx.fill(path);
   }
 
-  if (color && width > 0) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
+  if (r.color && r.width > 0) {
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = r.width;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.stroke(path);
   }
 
-  if (hasLabel(handle.y)) drawShapeLabel(ctx, handle);
+  // Single content read inside readShapeLabelRender — null when shape has no label.
+  drawShapeLabel(ctx, handle);
 
   ctx.restore();
 }
 
 function drawShapeLabel(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   if (_textEditingId === handle.id) return;
-  const content = getContent(handle.y);
-  if (!content) return;
-  const frame = getFrame(handle.y)!;
-  const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
+  const r = readShapeLabelRender(handle.y);
+  if (!r) return;
+  const textBox = computeLabelTextBox(r.shapeType, r.frame);
   if (textBox[2] <= 0 || textBox[3] <= 0) return;
-  const fontSize = getFontSize(handle.y);
-  const fontFamily = getFontFamily(handle.y);
-  const align = getAlign(handle.y, 'center');
-  const alignV = getAlignV(handle.y);
-  const layout = textLayoutCache.getLayout(handle.id, content, fontSize, fontFamily, textBox[2]);
-  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily, align, alignV);
+  const layout = textLayoutCache.getLayout(handle.id, r.content, r.fontSize, r.fontFamily, textBox[2]);
+  renderShapeLabel(ctx, layout, textBox, r.labelColor, r.fontFamily, r.align, r.alignV);
 }
 
 function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frame: FrameTuple): void {
   if (_textEditingId === handle.id) return;
+  const r = readShapeLabelRenderNoFrame(handle.y);
+  if (!r) return;
   const measured = textLayoutCache.getMeasuredContent(handle.id);
   if (!measured) return;
-  const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
+  const textBox = computeLabelTextBox(r.shapeType, frame);
   if (textBox[2] <= 0 || textBox[3] <= 0) return;
-  const fontSize = getFontSize(handle.y);
-  const fontFamily = getFontFamily(handle.y);
-  const align = getAlign(handle.y, 'center');
-  const alignV = getAlignV(handle.y);
-  const layout = layoutIntoLabelScratch(measured, textBox[2], fontSize);
-  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily, align, alignV);
+  const layout = layoutIntoLabelScratch(measured, textBox[2], r.fontSize);
+  renderShapeLabel(ctx, layout, textBox, r.labelColor, r.fontFamily, r.align, r.alignV);
 }
 
 /**
@@ -381,13 +358,10 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
   if (_textEditingId === id) return;
 
-  const props = getTextProps(y);
-  if (!props) return;
-
-  const color = getColor(y);
-  const fillColor = getFillColor(y);
-  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.fontFamily, props.width);
-  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
+  const layout = textLayoutCache.getLayoutById(id);
+  if (!layout) return; // cold-miss race — observer fills the cache before render
+  const r = readTextRender(y);
+  renderTextLayout(ctx, layout, r.originX, r.originY, r.color, r.align, r.fillColor);
 }
 
 function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -396,30 +370,25 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   // Skip rendering if currently being edited (DOM overlay handles it)
   if (_codeEditingId === id) return;
 
-  const props = getCodeProps(y);
-  if (!props) return;
-
-  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
+  const layout = codeSystem.getLayoutById(id);
+  if (!layout) return; // cold-miss race — observer fills the cache before render
   const spans = codeSystem.getSpans(id);
   const source = codeSystem.getSource(id);
   if (!spans || !source) return;
-  const title = props.headerVisible ? (props.title ?? 'Untitled') : undefined;
-  const output = props.outputVisible ? (props.output ?? '') : undefined;
+  const r = readCodeRender(y);
+  const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
+  const output = r.outputVisible ? (r.output ?? '') : undefined;
   const outputCache = output !== undefined ? (codeSystem.getOutputCache(id, output) ?? undefined) : undefined;
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, source, title, output, outputCache);
+  renderCodeLayout(ctx, layout, r.originX, r.originY, r.fontSize, spans, source, title, output, outputCache);
 }
 
 function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOverride?: FrameTuple): void {
-  const frame = frameOverride ?? getFrame(handle.y);
-  if (!frame || frame[2] < 0.001 || frame[3] < 0.001) return;
-  const assetId = getAssetId(handle.y);
-  if (!assetId) return;
-
-  const bitmap = getBitmap(assetId);
-  const opacity = getOpacity(handle.y);
+  const r = readImageRender(handle.y);
+  const frame = frameOverride ?? r.frame!;
+  const bitmap = getBitmap(r.assetId!);
 
   ctx.save();
-  ctx.globalAlpha = opacity;
+  ctx.globalAlpha = r.opacity;
   if (bitmap) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
@@ -436,22 +405,19 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOve
 }
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const { id, y } = handle;
-  paintConnector(ctx, getConnectorPaths(id, handle), getColor(y), getWidth(y));
+  const r = readConnectorBaseRender(handle.y);
+  paintConnector(ctx, getConnectorPaths(handle.id, handle), r.color, r.width);
 }
 
 /**
- * Draw a connector from explicit points (for rerouted connectors during transforms).
- * `count` defaults to `points.length` for off-gesture callers; on-gesture callers
- * pass a pooled buffer (`pointsBuf`) and the explicit valid-prefix length.
+ * Draw a connector from explicit points (rerouted connectors during transforms).
+ * `count` is required — `paintConnectorFromPoints` short-circuits on `count < 2`.
  *
  * Hot path: emits straight into ctx (zero Path2D allocation per frame).
  */
-function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: Point[], count?: number): void {
-  const n = count ?? points.length;
-  if (n < 2) return;
-  const { y } = handle;
-  paintConnectorFromPoints(ctx, points, n, getWidth(y), getStartCap(y), getEndCap(y), getColor(y));
+function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: Point[], count: number): void {
+  const r = readConnectorRender(handle.y);
+  paintConnectorFromPoints(ctx, points, count, r.width, r.startCap, r.endCap, r.color);
 }
 
 // ============================================================================
@@ -463,17 +429,11 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
     case 'shape': {
       const entry = getScaleEntry('shape', handle.id);
       if (!entry) break;
-      const { frame, bbox } = entry.out;
-      if (bbox[2] - bbox[0] < 0.001 || bbox[3] - bbox[1] < 0.001) return;
+      const { frame } = entry.out;
 
-      const shapeType = getShapeType(handle.y);
-      const fillColor = getFillColor(handle.y);
-      const color = getColor(handle.y);
-      const width = getWidth(handle.y, 1);
-      const opacity = getOpacity(handle.y);
-
-      paintShapeFrame(ctx, shapeType, frame, fillColor, color, width, opacity);
-      if (hasLabel(handle.y)) drawShapeLabelWithFrame(ctx, handle, frame);
+      const r = readShapeRender(handle.y);
+      paintShapeFrame(ctx, r.shapeType, frame, r.fillColor, r.color, r.width, r.opacity);
+      drawShapeLabelWithFrame(ctx, handle, frame);
       break;
     }
 
@@ -494,13 +454,11 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
         const ncx = (entry.out.bbox[0] + entry.out.bbox[2]) / 2,
           ncy = (entry.out.bbox[1] + entry.out.bbox[3]) / 2;
         const path = getPath(handle.id, handle);
-        const color = getColor(handle.y);
-        const opacity = getOpacity(handle.y);
-        const tool = getStrokeTool(handle.y);
+        const r = readStrokeRender(handle.y);
         ctx.save();
-        ctx.globalAlpha = opacity;
-        ctx.fillStyle = color;
-        if (tool === 'highlighter') ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = r.opacity;
+        ctx.fillStyle = r.color;
+        if (r.tool === 'highlighter') ctx.globalCompositeOperation = 'source-over';
         ctx.translate(ncx, ncy);
         ctx.scale(factor, factor);
         ctx.translate(-fcx, -fcy);
@@ -517,26 +475,17 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
       if (!entry) break;
       const behavior = getScaleBehavior('text');
       if (behavior === 'reflow' && entry.out.layout) {
-        renderTextLayout(
-          ctx,
-          entry.out.layout,
-          entry.out.origin[0],
-          entry.out.origin[1],
-          getColor(handle.y),
-          getAlign(handle.y),
-          getFillColor(handle.y),
-        );
+        const r = readTextRender(handle.y);
+        renderTextLayout(ctx, entry.out.layout, entry.out.origin[0], entry.out.origin[1], r.color, r.align, r.fillColor);
       } else if (behavior === 'uniform') {
+        const layout = textLayoutCache.getLayoutById(handle.id);
+        if (!layout) break;
         const ratio = entry.out.fontSize / entry.frozen.fontSize!;
-        const props = getTextProps(handle.y);
-        if (!props) break;
-        const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.fontFamily, props.width);
-        const color = getColor(handle.y);
-        const fillColor = getFillColor(handle.y);
+        const r = readTextRender(handle.y);
         ctx.save();
         ctx.translate(entry.out.origin[0], entry.out.origin[1]);
         ctx.scale(ratio, ratio);
-        renderTextLayout(ctx, layout, 0, 0, color, props.align, fillColor);
+        renderTextLayout(ctx, layout, 0, 0, r.color, r.align, r.fillColor);
         ctx.restore();
       } else {
         renderTranslatedEntry(ctx, handle, entry);
@@ -549,20 +498,19 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
       if (!entry) break;
       const behavior = getScaleBehavior('code');
       if (behavior === 'reflow' && entry.out.layout.visualLineCount > 0) {
-        const props = getCodeProps(handle.y);
-        if (!props) break;
         const spans = codeSystem.getSpans(handle.id);
         const source = codeSystem.getSource(handle.id);
         if (!spans || !source) break;
-        const title = props.headerVisible ? (props.title ?? 'Untitled') : undefined;
-        const output = props.outputVisible ? (props.output ?? '') : undefined;
+        const r = readCodeRender(handle.y);
+        const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
+        const output = r.outputVisible ? (r.output ?? '') : undefined;
         const outputCache = output !== undefined ? (codeSystem.getOutputCache(handle.id, output) ?? undefined) : undefined;
         renderCodeLayout(
           ctx,
           entry.out.layout,
           entry.out.origin[0],
           entry.out.origin[1],
-          props.fontSize,
+          r.fontSize,
           spans,
           source,
           title,
@@ -570,21 +518,21 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
           outputCache,
         );
       } else if (behavior === 'uniform') {
-        const ratio = entry.out.fontSize / entry.frozen.fontSize!;
-        const props = getCodeProps(handle.y);
-        if (!props) break;
-        const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
+        const layout = codeSystem.getLayoutById(handle.id);
+        if (!layout) break;
         const spans = codeSystem.getSpans(handle.id);
         const source = codeSystem.getSource(handle.id);
         if (!spans || !source) break;
-        const title = props.headerVisible ? (props.title ?? 'Untitled') : undefined;
-        const output = props.outputVisible ? (props.output ?? '') : undefined;
+        const ratio = entry.out.fontSize / entry.frozen.fontSize!;
+        const r = readCodeRender(handle.y);
+        const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
+        const output = r.outputVisible ? (r.output ?? '') : undefined;
         const outputCache = output !== undefined ? (codeSystem.getOutputCache(handle.id, output) ?? undefined) : undefined;
         const b = entry.out.bbox;
         ctx.save();
         ctx.translate(b[0], b[1]);
         ctx.scale(ratio, ratio);
-        renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, source, title, output, outputCache);
+        renderCodeLayout(ctx, layout, 0, 0, r.fontSize, spans, source, title, output, outputCache);
         ctx.restore();
       } else {
         renderTranslatedEntry(ctx, handle, entry);

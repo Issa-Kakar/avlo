@@ -18,8 +18,11 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 
 | File | Purpose |
 |------|---------|
-| `core/text/text-system.ts` | Layout engine, cache, text/label renderers, text BBox |
-| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), per-dimension shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox` |
+| `core/text/text-system.ts` | Layout engine, three-tier cache, text renderer, text BBox |
+| `core/text/line-break.ts` | UAX #14 soft-break machinery (`nextSoftBreak`, `isBreakOpportunity`) — pure char-code logic, leaf module |
+| `core/text/text-measure.ts` | Measure context, font-string builders, measured font metrics, measurement caches — shared boundary (code-system, bookmark-render, transform, TextTool, sticky-note) |
+| `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + `renderShapeLabel` + `layoutIntoLabelScratch` |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
 | `core/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
 | `core/text/font-loader.ts` | `ensureFontsLoaded()` / `areFontsLoaded()` |
@@ -107,11 +110,11 @@ TextLayout (SOA: lineRunStart, lineAdvanceWidth, lineAlignmentWidth, lineBaselin
 
 All three stages are **parallel-array (SOA) buffers**: `out?` parameters let callers reuse a buffer across re-tokenize / re-measure / re-flow. Capacities double on grow; counts reset between calls. Renderers iterate via `for (let li=0; li<lineCount; li++) { for (let r=lineRunStart[li]; r<lineRunStart[li+1]; r++) ... }`. Per-line / per-run object allocations are eliminated entirely after the first call.
 
-Primary API: `textLayoutCache.getLayout()` (auto-wires per-id buffers). `layoutMeasuredContent()` is exported for reflow during E/W transforms; the `out` param lets the transform's `Entry<'text'>.out.layout` be reused per pointermove. `layoutIntoLabelScratch()` writes into a single module-level scratch shared across all labeled shapes per frame.
+Primary API: `textLayoutCache.getLayout()` (auto-wires per-id buffers). `layoutMeasuredContent()` is exported for reflow during E/W transforms; the `out` param lets the transform's `Entry<'text'>.out.layout` be reused per pointermove. `layoutIntoLabelScratch()` (in `shape-label.ts`) writes into a single module-level scratch shared across all labeled shapes per frame.
 
 ### Font Metrics
 
-Per-family, measured from canvas `fontBoundingBoxAscent/Descent` (not hardcoded):
+Per-family, measured from canvas `fontBoundingBoxAscent/Descent` (not hardcoded). Live in `text-measure.ts` alongside the measure context and font-string builders:
 
 | Function | Returns |
 |----------|---------|
@@ -129,12 +132,12 @@ Highlight extraction: `attrs.highlight` with `{ color: '#hex' }` → that color;
 
 ### Stage 2: Measurement
 
-Canvas `measureText()` via singleton offscreen canvas. Caches:
+Canvas `measureText()` via singleton offscreen canvas. The measure context, font-string builders, and the caches below all live in `text-measure.ts` (shared measurement boundary — no dependency on text-system):
 - `MEASURE_BY_FONT: Map<font, Map<text, width>>` — two-level cache, no concat-key allocation per call. Soft-cap at 200k entries (clears on overflow).
 - `SPACE_WIDTH_CACHE` — per-font space char width.
 - `CHAR_ENDS_CACHE: Map<text, Uint32Array>` — grapheme end-offsets (font-independent). Powers `sliceTextToFit`'s grapheme-aligned binary search.
 
-All cleared on `textLayoutCache.clear()`. Per-token measure pre-builds the four (bold × italic) font strings once via exported `buildFontMatrix(fontSize, fontFamily)` and indexes via `fontFromMatrix(F, bold, italic)` — eliminates O(segments) `buildFontString` calls; sticky-note's Phase B reuses both helpers when projecting 100px measurements onto the derived font size. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`). Token kind for word vs whitespace dispatch in the flow engine reads `tokenKind[ti]` directly — no per-segment whitespace flag is stored.
+All cleared on `textLayoutCache.clear()` via `clearMeasurementCaches()`. Per-token measure pre-builds the four (bold × italic) font strings once via exported `buildFontMatrix(fontSize, fontFamily)` and indexes via `fontFromMatrix(F, bold, italic)` — eliminates O(segments) `buildFontString` calls; sticky-note's Phase B reuses both helpers when projecting 100px measurements onto the derived font size. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`). Token kind for word vs whitespace dispatch in the flow engine reads `tokenKind[ti]` directly — no per-segment whitespace flag is stored.
 
 ### Stage 3: Flow Engine
 
@@ -144,7 +147,15 @@ Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at
 
 **Paragraph end:** Trailing WS is content (not hanging), so `alignmentWidth = min(advanceWidth, maxWidth)`.
 
-**Oversized words (break-word):** `sliceTextToFit(font, text, maxW, start?, endChar?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. The slicer reads grapheme boundaries from `CHAR_ENDS_CACHE` (font-independent) and probes each binary-search candidate via `measureTextCached(font, text.substring(start, charEnds[mid]))` — direct shaping captures kerning exactly, so each broken line's width matches what the DOM would render for that line shaped independently. (The previous per-grapheme cumulative-widths approach summed individual char advances, missing cumulative kerning and evicting trailing chars near the line edge.) Fast path: if `[start..endChar]` fits as a whole, returns in one measureText call. Forward-progress: >=1 grapheme advances from `start` per slice. Cross-segment guard: if forced grapheme overflows non-empty line, push line first, retry on fresh line. `noteFlowCheck` (sticky-note search predicate) mirrors the cursor-offset pattern.
+**Word placement — two decision systems:** `placeWord` drives a per-sub-segment Q1/Q2/Q3 ladder over UAX#14 break opportunities within each style segment of a word. Mirrors CSS's layered pipeline:
+- **Q1** — chunk fits current line as-is. Always allowed.
+- **Q2** — UAX#14 soft break: place atomic on a fresh line. Gated by `canSoftBreak` so style-only seams (a bold/highlight boundary inside an otherwise unbroken AL run) don't behave as break opportunities.
+- **Q3** — `overflow-wrap: break-word` char-slice via `sliceTextToFit`. Operates *exactly where* UAX#14 forbids a break, so NOT gated by `canSoftBreak`. Pre-emptive `pushLine` fires only when truly oversized (`chunkW > maxWidth`) at a real break op (matches DOM: oversized words start fresh); non-break seams fall straight into the slice loop and char-fill the remaining line space.
+- **Slice-loop guards** — (a) `lineRemaining ≤ 0` on a non-empty line → wrap before slicing (otherwise the slicer's forward-progress strands a grapheme on a full line, overflow); (b) slicer hands back a grapheme wider than available width on a non-empty line → wrap and retry on the fresh line. Both no-op on an empty line — a single oversized grapheme is appended unavoidably.
+
+Style seams are classified via `isBreakOpportunity(prevCharCode, currCharCode)` (`line-break.ts`) between the previous segment's last char and the current segment's first char. Within a segment after the first chunk, `cursor > 0` implies a real break op (it's what `nextSoftBreak` just returned). `noteFlowCheck` (sticky-note search predicate) mirrors the same ladder.
+
+**Oversized words — slicer mechanics:** `sliceTextToFit(font, text, maxW, start?, endChar?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. The slicer reads grapheme boundaries from `CHAR_ENDS_CACHE` (font-independent) and probes each binary-search candidate via `measureTextCached(font, text.substring(start, charEnds[mid]))` — direct shaping captures kerning exactly, so each broken line's width matches what the DOM would render for that line shaped independently. (The previous per-grapheme cumulative-widths approach summed individual char advances, missing cumulative kerning and evicting trailing chars near the line edge.) Fast path: if `[start..endChar]` fits as a whole, returns in one measureText call. Forward-progress: >=1 grapheme advances from `start` per slice.
 
 **Run coalescing:** Adjacent runs with identical font+highlight merge via string concat.
 
@@ -222,7 +233,7 @@ Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `s
 
 Pass 0: fillRect background (if fillColor). Per line: compute `startX` via `anchorFactor(align)` + `getLineStartX()`. Pass 1: highlight roundRects (radius `fontSize * 0.25`; fixed mode clamps to container). Pass 2: fillText, `textBaseline = 'alphabetic'`. Fixed mode uses `alignmentWidth` for line width; auto uses `advanceWidth`.
 
-### `renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)`
+### `renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)` — `shape-label.ts`
 
 H+V alignment within text box. Vertical via `getNoteContentOffsetY()`. Overflow clips via `ctx.clip()`.
 
@@ -232,7 +243,7 @@ H+V alignment within text box. Vertical via `getNoteContentOffsetY()`. Overflow 
 anchorFactor(align)   // left=0, center=0.5, right=1
 getLineStartX(originX, boxWidth, lineW, align)
   // left: boxLeftX, center: boxLeftX+(boxWidth-lineW)/2, right: boxLeftX+(boxWidth-lineW)
-computeLabelTextBox(shapeType, frame)
+computeLabelTextBox(shapeType, frame)   // shape-label.ts — writes + returns a shared module scratch
   // Max inscribed rect inset by LABEL_PADDING=10.
   // ellipse: (a/sqrt2)x2 x (b/sqrt2)x2 centered; diamond: w/2 x h/2 centered; rect: simple inset
 ```
@@ -336,11 +347,15 @@ Editor configured with `TextCollaboration.configure({ fragment, yObj: handle.y, 
 - Empty notes: preserved (valid visual elements)
 - `(editor as any).editorState = null` — Tiptap doesn't null this; release EditorState + plugin states
 
+**Re-entrancy guard (`closing` flag).** Empty-text deletion via `transact(getObjects().delete(...))` fires the deep observer synchronously → `selection-store.onObjectsDeleted` → recursive `textTool.commitAndClose()`. Without the guard, the inner call destroys the editor + nulls fields, outer's `editor.destroy()` throws on null, the click-outside handler exits before its `e.stopPropagation()` runs, and the same pointerdown spawns a fresh text object via the canvas handler. Outer owns teardown; inner is a no-op. The standalone observer-driven path (remote peer deletes my edited text) is a single call — guard lets it through.
+
+**ProseMirror DOMObserver selectionchange leak.** PM's `DOMObserver.start/stop` is reference-counted; our `onTransaction → syncInlineStylesToStore` re-enters start/stop overlapping a mid-flight selection, leaving one `start` unmatched per editor lifetime. `editor.destroy()`'s final `stop()` removes only one listener; the orphan keeps `document → bound onSelectionChange → DOMObserver → view → view.dom` alive — ~0.5 kB detached `.tiptap` tree per close, linear accumulation. Snapshot `view.domObserver.onSelectionChange` BEFORE `editor.destroy()`, force-remove after. No-op when PM cleaned up correctly. Verify with `getEventListeners(document).selectionchange?.length` in DevTools — bounded across cycles (1 when an editor is mounted or transient, not N after N closes).
+
 ### Click-Outside
 
 `pointerdown` on document (capture phase, 100ms delayed registration — delay prevents catching the opening click). Uses `pointerdown` not `mousedown` because CanvasRuntime's `preventDefault()` suppresses compatibility mousedown per spec.
 
-After `commitAndClose()`, `e.stopPropagation()` fires **only when `activeTool === 'text'|'note'` AND target is canvas** — prevents creating a new text/note object on click-off. When SelectTool is active (e.g., label editing), the event intentionally propagates so the clicked object gets selected normally in one click.
+After `commitAndClose()`, `e.stopPropagation()` fires **only when `activeTool === 'text'|'note'` AND target is canvas** — prevents creating a new text/note object on click-off. When SelectTool is active (e.g., label editing), the event intentionally propagates so the clicked object gets selected normally in one click. The stopPropagation is load-bearing: anything throwing inside `commitAndClose()` exits the handler before it runs, and the same pointerdown spawns a new editor through the canvas handler (see commitAndClose §Re-entrancy guard for the concrete bug this prevented).
 
 ### Remount Prevention
 
@@ -511,6 +526,8 @@ Mirrors `layoutMeasuredContent`'s pending whitespace state machine:
 - Phase 1: returns `findStepForWord(wordW, contentWidth)` for oversized words
 - Phase 2: char-breaks oversized words segment by segment
 
+Sub-segment ladder is the same two-decision-system structure as `placeWord` (Stage 3 §Word placement) — `canSoftBreak` gates Q2 only; Q3 char-slices across non-break style seams to match DOM. Phase 1 may char-slice at style seams (line count then matches DOM); the `tokAdvance > maxW` bail still ensures truly oversized words defer to phase 2.
+
 #### Phase B: Mutate + Build Layout
 
 After finding `derivedFontSize`, mutates `MeasuredContent` (100px) in place:
@@ -552,7 +569,7 @@ drawStickyNote(ctx, handle):
   2. getNoteLayout(id, content, fontFamily) -> layout at base dimensions
   3. getNoteDerivedFontSize(id) -> derived font size
   4. ctx.translate(origin) + ctx.scale(noteScale)
-  5. renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, fillColor) -- always drawn, even during editing
+  5. renderNoteBody(ctx, 0, 0, fillColor) -- always drawn, even during editing
   6. if textEditingId === id -> return (DOM overlay handles text)
   7. Alignment at base dimensions:
      padding = getNotePadding(1), contentWidth = getNoteContentWidth(1)
@@ -571,43 +588,37 @@ Key differences from `renderTextLayout`:
 - Vertical offset via `getNoteContentOffsetY` (not baseline positioning)
 - Clips overflow at content area boundary
 
-### Shadow System — Directional Drop Shadow, Asymmetric Cache
+### Shadow System — Directional Drop Shadow, Single-Entry Cache
 
 Real drop shadows under gravity reach *long below*, *barely on the sides*, *not above*. Native canvas `shadowBlur` is gaussian + isotropic — blur alone always spreads side-to-side. Two knobs make it directional:
 
-1. **Small blur (`0.04·w`)** — keeps side spread tight (~5 %).
-2. **OffsetY ≥ blur · 1.2 (`0.06·w`)** — pushes the gaussian's mass below the body. Above-extent collapses to ~0.
+1. **Small blur (`0.04·w`)** — keeps side spread tight.
+2. **OffsetY > blur (`0.045·w` vs `0.04·w`)** — pushes the gaussian's mass below the body. Above-extent collapses to ~0.
 
 Spread (à la CSS `box-shadow`) was tried and abandoned: the only way to fake it in canvas is to draw a wider rounded-rect fill, but then either you leave the expanded fill in (visible black ring around the body) or you punch the expanded silhouette (transparent ring around the body where the real body fill doesn't reach). Both visibly broken. Instead, a **contact layer** is filled on top of the drop layer using the *same* body path — it anchors the shadow at the body edge so the visible halo reads as connected to the body even when drop's near edge is faint.
 
 Crucial: both layers fill the **identical** body path. The final `destination-out` punch on that same path removes every black pixel deposited by the fills, leaving only the gaussian halo. No mismatched paths → no surviving opaque pixels → no black AA stroke.
 
-Rendered on a DPR-scaled `OffscreenCanvas` with **asymmetric pad** — top/sides small, bottom large — so the cache canvas isn't wasted on transparent pixels above the body where no shadow lives. Cached by `(w, h)` in an LRU map (max 16 entries, cleared on DPR change).
+| Layer | blur ratio | offsetY ratio | color |
+|-------|-----------|--------------|-------|
+| Drop | 0.04 | 0.045 | `rgba(0,0,0,0.11)` |
+| Contact | 0.013 | 0.008 | `rgba(0,0,0,0.07)` |
 
-| Layer | blur ratio | offsetY ratio | alpha | Visible extent below | Visible extent side |
-|-------|-----------|--------------|-------|---------------------|---------------------|
-| Drop | 0.04 | 0.06 | 0.20 | ~11 % of body width | ~5 % |
-| Contact | 0.015 | 0.012 | 0.10 | ~3 % | ~2 % |
+**Single-entry cache.** Notes always render inside `ctx.scale(noteScale)` at fixed base dimensions `(NOTE_WIDTH, NOTE_WIDTH)`, so the cache content is dimension-invariant — one DPR-scaled `OffscreenCanvas` (`_noteShadow`), baked once by `ensureNoteShadow(dpr)`, drawn with a single `drawImage` per note. `_noteShadowDpr` tracks the DPR; a mismatch re-bakes. No keying, no LRU, no eviction. Bookmarks keep their own 3-slice cache (`core/bookmark/CLAUDE.md`) since their height varies — the two no longer share shadow code.
 
-**Pad ratios (single source of truth, exported from sticky-note.ts):**
+The cache uses an **asymmetric pad** — top/sides hold a tight halo, bottom holds the long downward tail — so the canvas isn't wasted on transparent pixels above the body.
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `NOTE_SHADOW_TOP_RATIO` | 0.06 | Slight halo from contact's blur tail |
-| `NOTE_SHADOW_SIDE_RATIO` | 0.08 | Fits drop's gaussian tail (1.5·blur) |
-| `NOTE_SHADOW_BOTTOM_RATIO` | 0.15 | Fits drop's blur·1.5 + offset with headroom |
+| `NOTE_SHADOW_TOP_RATIO` | 0.06 | Slight halo from drop's blur tail |
+| `NOTE_SHADOW_SIDE_RATIO` | 0.075 | Fits drop's gaussian tail (1.5·blur) |
+| `NOTE_SHADOW_BOTTOM_RATIO` | 0.12 | Fits drop's blur·1.5 + offset with headroom |
 
-`computeNoteBBox`, `computeBookmarkBBox`, and the bookmark fallback in `bbox.ts` all read these exported constants — the dirty-rect invariant requires bbox pad ≥ painted shadow pad on every side.
+`computeNoteBBox` pads the bbox by these ratios (via `getNoteShadowPad*`) — the dirty-rect invariant requires bbox pad ≥ painted shadow pad on every side.
 
 Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punch matches the body's `roundRect` **exactly** — because the cached canvas is sized at the body's exact dimensions, the punched silhouette aligns 1:1 with the body fill drawn next by `renderNoteBody`. No corner wedge possible.
 
-**Cache shape:**
-- Notes always render inside `ctx.scale(noteScale)` at base dimensions `(NOTE_WIDTH, NOTE_WIDTH)` → all notes share one cache entry forever.
-- Bookmarks render inside `ctx.scale(s)` at `(BOOKMARK_WIDTH, props.height)` → one entry per unique height. Typical boards have <20 distinct heights, well under the 16-entry LRU bound; oldest entries evict on overflow and re-render on next use.
-
-**Cache invalidation:** `_shadowCacheDpr` tracks the DPR — mismatch clears all entries. No per-id invalidation needed: same `(w, h)` → same shadow.
-
-**`renderNoteBody(ctx, x, y, w, h, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `w * NOTE_CORNER_RADIUS_RATIO`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge.
+**`renderNoteBody(ctx, x, y, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `NOTE_CORNER_R`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge. Module-private — not shared with bookmarks.
 
 ### Alignment System
 

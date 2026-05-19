@@ -8,16 +8,20 @@ Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,i
 
 ## Commands & Aliases
 ```bash
-cd /home/issak/dev/avlo && npm run typecheck    # typecheck all workspaces (must run from repo root)
-cd /home/issak/dev/avlo && npm run dev          # client :3000 + worker :8787 — ask before starting
+npm run typecheck    # typecheck client + all three workers (must run from repo root)
+npm run dev          # Vite :3000 + workers :8787/:8788/:8789 — ask before starting
+npm run lint         # Biome — skip routine runs (noisy, sometimes wrong); pre-commit auto-formats
 ```
-> In the `avlo-parallel` worktree, swap the path to `/home/issak/dev/avlo-parallel` — each worktree operates on its own checked-out branch.
+> In the `avlo-parallel` worktree, run `npm run dev:p` instead of `npm run dev` — it shifts every wrangler port by `PORT_OFFSET` so the two checkouts can run side-by-side without colliding.
 
-- `@avlo/shared` → `packages/shared/src/*`
+- `@avlo/shared` → `packages/shared/src/*` (cross-runtime; client + server)
+- `@avlo/worker-shared` → `packages/worker-shared/src/*` (server-only — never imported client-side)
+- `@avlo/api-client` → `packages/api-client/src/*` (browser/SW typed `hc<AppType>` clients)
 - `@/*` → `client/src/*`
 
 ## Best Practices
 
+- **Pre-production, solo dev.** Don't plan migrations, compat shims, or schema-versioning seams — clear history / new room / refresh covers any Y.Doc or store pivot.
 - **Reuse before invention.** Bbox/frame/handle/accessor primitives exist — grep `core/geometry/bounds.ts`, `core/accessors.ts`, `core/types/`, `utils/` first. A named 3-line helper beats inline reinvention.
 - **Low-friction modules.** Cross-module data flows through module-level getters (`getHandle`, `frameOf`, `getSpatialIndex`, `getVisibleBoundsTuple`). Over-encapsulation is the enemy.
 - **Fewest lines for full robustness.** No defensive checks at trusted boundaries, no backwards-compat shims, no half-finished abstractions.
@@ -39,7 +43,7 @@ All paths relative to `client/src/` unless noted.
 | File | Responsibility |
 |------|----------------|
 | `CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch |
-| `SurfaceManager.ts` | DOM refs (contexts, editorHost) + resize/DPR + deferred canvas resize |
+| `SurfaceManager.ts` | DOM refs (contexts, editorHost, cursorHost) + resize/DPR + deferred canvas resize |
 | `InputManager.ts` | DOM event forwarder + modifier state (shift/ctrl/meta) |
 | `tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
 | `room-runtime.ts` | Module-level room context — `connectRoom`/`disconnectRoom` + imperative getters |
@@ -47,7 +51,9 @@ All paths relative to `client/src/` unless noted.
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
 | `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
 | `cursor-tracking.ts` | Last cursor world position (for paste placement) |
-| `presence/presence.ts` | Awareness lifecycle, cursor send/receive, peer state (mutable Map) |
+| `presence/presence.ts` | Awareness lifecycle, cursor send (throttle + backpressure), receive dispatch. Delegates peer state to the renderer. |
+| `presence/presence-renderer.ts` | `PresenceCursorRenderer` — SoA peer state, slot pool, self-driven rAF, DOM `<img>` cursors (host at z:4, above editor overlay) |
+| `presence/presence-pointer.ts` | Pure dispatch for the `document`-level local-cursor input path (move/out/blur/camera-sync) |
 | `viewport/zoom.ts` | Smooth zoom animations (step, pinch, zoom-to-fit, reset) |
 | `viewport/edge-scroll.ts` | Auto-pan near viewport edges during drags |
 | `viewport/arrow-key-pan.ts` | Continuous arrow key panning with easeInQuad acceleration |
@@ -58,7 +64,8 @@ All paths relative to `client/src/` unless noted.
 | `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,All}` |
 | `OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
 | `types.ts` | `FRAME_CONFIG`, Perfect Freehand options, `getSvgPathFromStroke` |
-| `geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache, shapeType-aware staleness |
+| `geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache; observer-driven eviction (bbox change, `shapeType` keychange) |
+| `render-accessors.ts` | Per-kind `_map.get` readers (`readXxxRender(y)`) + per-kind module scratches. Two helpers split by Content subclass — `readPrim` (ContentAny via `arr[0]`) and `readY` (ContentType via `type`). Both check `!val.deleted` (tombstones survive `.delete(key)`). Zero alloc, monomorphic per subclass. Hot path only |
 | `object-cache.ts` | Unified eviction: `removeObjectCaches(id, kind)`, `clearAllObjectCaches()` |
 | `layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
 | `layers/selection-overlay.ts` | Selection highlights, bbox, circular handles (marquee owned by SelectTool) |
@@ -70,9 +77,7 @@ All paths relative to `client/src/` unless noted.
 | `layers/eraser-dim.ts` | Dim hovered objects under eraser via 'screen' blend |
 | `layers/handle-stamp.ts` | Resize-handle bitmap stamp — pre-rendered offscreen, blitted (no per-frame `shadowBlur`) |
 | `animation/AnimationController.ts` | Singleton animation job manager — push-based invalidation |
-| `animation/CursorAnimationJob.ts` | Remote cursor animation (interpolated positions) |
 | `animation/EraserTrailAnimation.ts` | Decaying eraser-stroke trail |
-| `animation/cursor-bitmap.ts` | Offscreen cursor bitmap stamp |
 
 ### Tools (`tools/` — zero-arg singletons via `tool-registry.ts`)
 | File | Notes |
@@ -100,7 +105,7 @@ All paths relative to `client/src/` unless noted.
 | `types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
 | `types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `index.ts` | Type re-export barrel |
-| `geometry/bbox.ts` | `computeBBoxFor(id, kind, yMap)` — unified per-kind dispatch; `computeConnectorBBoxFromPoints{,Into}` |
+| `geometry/bbox.ts` | `computeBBoxFor{,Into}(id, kind, yMap[, out])` — unified per-kind dispatch (hot path uses `*Into` into a pooled scratch); `computeConnectorBBoxFromPointsInto` |
 | `geometry/bounds.ts` | BBox/frame tuple helpers, WorldBounds ops, mutating offset primitives (`offset*`, `copy*`, `*Mut`) |
 | `geometry/frame-of.ts` | `frameOf(handle)` — mapped dispatch to per-subsystem frame getter for any bindable kind |
 | `geometry/shape-path.ts` | Build Path2D from frame tuple |
@@ -109,7 +114,7 @@ All paths relative to `client/src/` unless noted.
 | `geometry/recognizer/` | $P/$Q shape recognizer — 550ms-hold match. Entry: `recognize.ts`, `hold-detector.ts`. See CLAUDE.md |
 | `spatial/` | Hit testing + region queries. Entry: `object-query.ts` (picker facade), `handle-hit.ts`. See CLAUDE.md |
 | `connectors/` | Elbow A* + straight routing, snap. Entry: `connector-router.ts`, `snap.ts`, `reroute-connector.ts`, `anchor-atoms.ts`, `connector-paths.ts`, `constants.ts`. See CLAUDE.md |
-| `text/` | Layout engine + three-tier cache + sticky notes. Entry: `text-system.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
+| `text/` | Layout engine + three-tier cache + sticky notes. Entry: `text-system.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
 | `code/` | Two-tier tokenization + CodeMirror + canvas renderer. Entry: `code-system.ts`, `code-tokens.ts`, `lezer-worker.ts`, `code-theme.ts`. See CLAUDE.md |
 | `image/` | Offline-first pipeline + 2 web workers. Entry: `image-manager.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
@@ -135,13 +140,17 @@ All paths relative to `client/src/` unless noted.
 | `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain` |
 | `packages/shared/src/utils/image-validation.ts` | `validateImage`, `isSvg`, `parseImageDimensions` |
 
-### Server (`worker/src/`)
-| File | Responsibility |
-|------|----------------|
-| `index.ts` | Hono app: CORS, asset routes, unfurl route, `partyserverMiddleware()` for Yjs sync |
-| `assets.ts` | `PUT/GET /api/assets/:key` — R2 store + edge-cached proxy |
-| `unfurl.ts` | `GET /api/unfurl?url=` — HTMLRewriter OG extraction, image→R2, SSRF guard, edge cache 7d |
-| `parties/room.ts` | `RoomDurableObject` — hibernate-aware, debounced V2 snapshot to R2 |
+### Server (`workers/`)
+
+Three independently-deployed Cloudflare Workers. Full architecture, hardening invariants, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
+
+| Worker | Folder | Prod | Bindings | Surface |
+|---|---|---|---|---|
+| **main** | `workers/main/` | `avlo.io` | `ASSETS` (Static Assets), `rooms` (DO), `DOCS` (R2) | SPA via Assets binding + WSS `/parties/*` via `partyserverMiddleware` + `RoomDurableObject` |
+| **images** | `workers/images/` | `images.avlo.io` | `IMAGES` (R2) | `PUT/GET /:key` — Zod param, content-length bound, hash-verify, edge cache, Range, CSP |
+| **unfurl** | `workers/unfurl/` | `unfurl.avlo.io` | `IMAGES` (R2, shared) | `GET /?url=` — Zod query + SSRF refine, HTMLRewriter OG extraction, image→R2, edge cache 7d |
+
+Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client}/CLAUDE.md` cover the shared backend primitives and typed-RPC clients respectively.
 
 ### Routes + UI
 `routes/__root.tsx`, `routes/index.tsx`, `routes/room.$roomId.tsx` (calls `connectRoom` in `beforeLoad`).
@@ -162,7 +171,7 @@ Canvas.tsx (thin React wrapper — mounts DOM, creates runtime)
 CanvasRuntime (the brain)
   ├── SurfaceManager   — DOM refs + resize/DPR + deferred canvas resize
   ├── renderLoop       — base canvas, dirty-rect optimized (native rAF)
-  ├── overlayLoop      — preview + presence + animation jobs, full clear each frame
+  ├── overlayLoop      — tool preview + animation jobs, full clear each frame (peer cursors render as DOM, not here)
   ├── InputManager     — pointer + keyboard + modifier state
   ├── camera subscription → tool.onViewChange() (guarded by isEdgeScrolling)
   └── pointer dispatch → spacebar/MMB pan check → tool.begin/move/end
@@ -179,9 +188,10 @@ tool-registry.ts (self-constructing singletons)
 Y.Doc (source of truth)
    ↓ observers (Y.Map.observeDeep)
 RoomDocManager.applyObjectChanges()
-   ├─ computeBBoxFor(id, kind, yMap)
+   ├─ computeBBoxForInto(id, kind, yMap, scratch)
+   ├─ upsertHandle (mutates handle.bbox in place; rbush update before mutation)
    ├─ evictGeometry(id) + per-kind layout cache evict
-   └─ invalidateWorldBBox(bbox)      [base canvas]
+   └─ invalidateIfVisible(bbox, vp) → invalidateWorldBBox      [base canvas]
          ↓
    RenderLoop (dirty-rect base)
    OverlayRenderLoop (full-clear overlay)
@@ -202,15 +212,19 @@ Tool.begin/move/end()              → user gesture
 ### Event flow
 
 ```
-Pointer event → InputManager → CanvasRuntime
+Canvas pointer event → InputManager → CanvasRuntime
   ├─ screenToWorld(clientX, clientY)
-  ├─ updatePresenceCursor()
+  ├─ setLastCursorWorld()  (paste-at-cursor placement)
   ├─ updateEdgeScroll() (auto-pan near edges)
   └─ getCurrentTool().begin/move/end(worldX, worldY)
        ↓
   Tool updates internal state
     ├─ invalidateOverlay()      preview changed
     └─ invalidateWorldBBox()    geometry changed
+
+Document pointer event → InputManager → presence-pointer.ts
+  └─ screenToWorldInto() → updateCursor()   (local cursor broadcast — fires
+       over DOM chrome too, a separate path from the canvas chain above)
 ```
 
 ---
@@ -277,9 +291,11 @@ interface ObjectHandle {
   id: string;            // ULID
   kind: ObjectKind;
   y: Y.Map<unknown>;     // LIVE reference
-  bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally
+  bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally, mutated in place by observer
 }
 ```
+
+Wrapper persists across observer fires; only `bbox`'s four slots change (via `copyBbox`). Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
 
 ### Stored vs derived geometry
 
@@ -287,7 +303,7 @@ interface ObjectHandle {
 - **Derived from layout/origin/scale** (subsystem-cached, accessed via getter): text/note `getTextFrame(id)` (`core/text/text-system.ts`), code `getCodeFrame(id)` (`core/code/code-system.ts`), bookmark `getBookmarkFrame(id)` (`core/bookmark/bookmark-render.ts`).
 - **Connectors are a third class.** Y.Map stores endpoint refs only (`start`/`end`: point or `StoredAnchor`); the routed polyline lives in `ConnectorRouter`'s local cache, populated by the deep observer on every relevant input change. Read via `getConnectorRoute(id)`.
 
-All frame getters return `FrameTuple | null` (null before first layout). `computeBBoxFor(id, kind, yMap)` (`core/geometry/bbox.ts`) dispatches to the right subsystem on hydration + every observer fire.
+All frame getters return `FrameTuple | null` (null before first layout). `computeBBoxFor{,Into}` (`core/geometry/bbox.ts`) dispatches to the right subsystem — observer fires use `*Into` (writes into a pooled scratch); hydrate uses the allocating wrapper.
 
 **Global helpers** (use before reaching into a subsystem):
 - `frameOf(handle)` — `core/geometry/frame-of.ts` — single dispatch over every bindable kind.
@@ -317,13 +333,58 @@ All frame getters return `FrameTuple | null` (null before first layout). `comput
 
 Public fields (non-null from construction): `objectsById`, `spatialIndex`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (non-connectors first, connectors second so bindable frames exist for routing) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`).
 
-**`applyObjectChanges`** (deep observer body) — three phases, reusing private scratch sets (`_touchedIds`/`_deletedIds`/`_bboxChangedIds`/`_dirtyBBoxes`) — zero alloc per fire:
+### Observer Pipeline
 
-- **A — deletions.** `spatial.remove` → `removeObjectCaches` → media unregister → push old bbox.
-- **B — touched.** Connector queued for reroute → skip (defer to C). Else bbox via `computeBBoxFor` (non-connector) or `router.computeBBox` (style-only connector) → upsert handle → evict on bbox change → bindable bbox change calls `router.onBindableChanged`.
-- **C — drain `router.drainRerouteQueue`.** Reroute → upsert → always evict.
+`observeDeep` on `objects` is the single CRDT-driven update path. The body is **synchronous main-thread**, non-reentrant (Y dispatches at end-of-transaction and observers don't open a new one). By the time the callback returns, every subsystem cache referenced below is consistent and visible dirty rects are published — **no awaits, no microtasks, no race between Y change and renderable state**.
 
-Then `flushDirtyBBoxes` viewport-filters and calls `invalidateWorldBBox`.
+Two passes per fire: **inline routing** (per-event, routes content/anchor edits to subsystem hooks so subsystem state is fresh BEFORE the bulk phase reads it) then **`applyObjectChanges`** (three phases over the accumulated `touchedIds` + `deletedIds`).
+
+```
+observeDeep(events):                                // synchronous, non-reentrant, per Y transaction
+  reset touchedIds, deletedIds
+  for ev in events, categorize and inline-route:
+    top-level add         → touched += id; if connector → router.onConnectorAdded(id, y)
+    top-level delete      → deleted += id; router.onObjectDeleted(id)
+    YMap edit on object   → touched += id
+        connector & (start|end|connectorType keychange) → router.onConnectorEdited(id, y, …)
+        shape     & (shapeType keychange)               → router.onBindableChanged(id)
+    nested 'content' edit → touched += id
+        Y.Text         (code)            → codeSystem.handleContentChange(id, ev, lang)
+        Y.XmlFragment  (text|label|note) → textLayoutCache.invalidateContent(id, content)
+  if touched|deleted nonempty → applyObjectChanges()
+
+applyObjectChanges:                                 // _newBBoxScratch reused per fire
+  vp = getVisibleBoundsTuple()
+
+  // Phase A — deletions (router maps already updated inline above)
+  for id in deleted:
+    spatialIndex.remove(id, handle.bbox)
+    removeObjectCaches(id, kind)                    // geometry + text/code/bookmark
+    if image|bookmark: unregisterMedia(id)
+    invalidateIfVisible(handle.bbox, vp)
+    objectsById.delete(id)
+  selection.onObjectsDeleted(deleted)
+
+  // Phase B — touched non-connectors + style-only connectors
+  for id in touched:
+    if router.isQueuedForReroute(id): continue      // → Phase C
+    if connector: router.computeBBox(id, y, scratch)             // style-only (color/width/cap)
+    else:         computeBBoxForInto(id, kind, y, scratch)       // ★ populates subsystem caches
+    bboxChanged = upsertHandle(id, kind, y, scratch, vp)         // spatial + evict + dirty rect
+    if image:    registerImageMeta(id, y)
+    if bookmark: registerBookmarkMeta(id, y)
+    if bboxChanged & bindable(kind): router.onBindableChanged(id)
+
+  // Phase C — drain reroute queue (router-owned)
+  for id in router.drainRerouteQueue():
+    router.rerouteCanonical(id, y, scratch)         // route + bbox
+    upsertHandle(id, 'connector', y, scratch, vp, alwaysEvict=true)
+  selection.onObjectsChanged(touched, bboxChanged)
+```
+
+**Inline-before-bulk is load-bearing.** `handleContentChange` / `invalidateContent` / router events fire BEFORE Phase B so that `compute*BBox` reads already-fresh subsystem state and routes can be drained from the queue in Phase C in the same fire. No second pass.
+
+`upsertHandle` mutates `handle.bbox` in place; the wrapper persists for the id's lifetime. On `bboxChanged`: invalidate prev rect → `spatialIndex.update` → `copyBbox` → `evictGeometry` → invalidate new rect (order critical — rbush's `remove` destructures the old envelope synchronously, so `handle.bbox` must still hold the old values when `update` is called). On no-bbox-change with `alwaysEvict`: only evict + invalidate new rect. New rect is invalidated unconditionally (content may have changed visually without bbox change).
 
 Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
 
@@ -331,11 +392,45 @@ Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
 
 ## Cache Architecture
 
-- **Geometry** (`renderer/geometry-cache.ts`): Path2D (strokes/shapes) + ConnectorPaths. Auto-detects shapeType changes.
-- **Layout:** `textLayoutCache` (three-tier, SOA-pooled — allocation-free reflow), `codeSystem` (two-tier tokenization + layout), `bookmarkCache` (text wrapping).
-- **Connector routes** (`core/connectors/connector-router.ts`): local route cache owned by `RoomDocManager.connectorRouter`. Fresh `Point[]` per relevant input change.
-- **Unified eviction:** `removeObjectCaches(id, kind)` on delete, `clearAllObjectCaches()` on room teardown.
-- **Tool teardown:** Tools owning per-object DOM/state (TextTool, CodeTool) tear down on object deletion via `dispose()` chains.
+The ★ in Phase B is the **cache-population hook**. `computeBBoxForInto` (`core/geometry/bbox.ts`) dispatches per-kind, and the derived-frame branches populate their subsystem caches as a side effect:
+
+```ts
+computeBBoxForInto(id, kind, y, out) {
+  switch (kind) {
+    case 'stroke':    out := pointsToBBox + widthPad
+    case 'shape':     out := getFrame + widthPad
+    case 'image':     out := getFrame
+    case 'text':      out := computeTextBBox(id, props)      // populates textLayoutCache + frame
+    case 'note':      out := computeNoteBBox(id, props)      // populates textLayoutCache + frame
+    case 'code':      out := computeCodeBBox(id, y)          // populates codeSystem    + frame
+    case 'bookmark':  out := computeBookmarkBBox(id, props)  // populates bookmarkCache + frame
+    case 'connector': out := bboxFromCachedRoute             // route built in Phase C
+  }
+}
+```
+
+**Handle exists ⇒ caches populated.** Frame getters (`getTextFrame` / `getCodeFrame` / `getBookmarkFrame`) defensively return `null` via `?? null`, but the `null` is just the natural Map-miss return — it fires only when no handle exists in `objectsById` (caller is reading an id that was never observed or has been deleted, in which case the cache entry was removed alongside the handle). Within an id's lifetime, its caches stay populated.
+
+**Lazy exceptions** (populated on first read, not via observer):
+- `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common).
+- **Shape label layouts.** The `shape` branch of `computeBBoxForInto` reads frame only — the label layout populates on first `drawShapeLabel`.
+
+**Async exceptions** (cross a worker boundary; render coarser fallback meanwhile, self-publish dirty rects):
+- Image bitmaps — worker decode; `getBitmap(assetId)` returns `null` until ready. Frame-driven by `manageImageViewport` per `RenderLoop.tick`.
+- Code tier-2 Lezer spans — sync floor inside the observer is eager (instant color); worker upgrade arrives later via `codeSystem.applyWorkerSpans`. **Layout is already eager** — tier-2 is colors only.
+
+| Subsystem cache | Owner | Read API |
+|---|---|---|
+| `textLayoutCache` (tokenized / measured / layout / frame / note-derived fontSize) | `core/text/text-system.ts` | `getTextFrame`, `getLayout`, `getMeasuredContent`, `getInlineStyles` + note bridge |
+| `codeSystem` (source / spans / layout / output / frame) | `core/code/code-system.ts` | `getCodeFrame`, `getSpans`, `getSource`, `getOutputCache` |
+| `bookmarkCache` (layout + frame) | `core/bookmark/bookmark-render.ts` | `getBookmarkFrame` |
+| `connectorRouter.routes` (per-id pooled `Point[]` + reverse `shape→connectors`) | `core/connectors/connector-router.ts` (owned by RDM) | `getConnectorRoute`, `getAttachedConnectors` |
+| `geometryCache` (Path2D, ConnectorPaths) | `renderer/geometry-cache.ts` | `getPath`, `getConnectorPaths` |
+| image bitmaps + `imageMeta` / `bookmarkAssetIds` | `core/image/image-manager.ts` | `getBitmap(assetId)` |
+
+**Eviction.** `removeObjectCaches(id, kind)` (`renderer/object-cache.ts`) routes geometry + text/code/bookmark on delete; `clearAllObjectCaches()` on teardown. **Image is not in this dispatch** — Phase A calls `unregisterMedia(id)` separately. Connector routes evict via `router.removeConnector` from `onObjectDeleted`. Tool-owned per-object DOM (TextTool, CodeTool) tears down via its own `dispose()` chain.
+
+**Out-of-band dirty-rect publishers** (everything that isn't the deep observer): tool gestures (`tool.move/end` → `invalidate{World,Overlay,WorldBBox}`), image-manager bitmap-arrival handler, `codeSystem.applyWorkerSpans`, camera-store subscribers (pan/zoom).
 
 ---
 
@@ -343,16 +438,21 @@ Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
 
 ### Two-canvas architecture
 - **Base canvas:** World content, dirty-rect optimized, native rAF.
-- **Overlay canvas:** Full clear each invalidation — tool preview, selection UI, presence cursors, animation jobs.
+- **Overlay canvas:** Full clear each invalidation — tool preview, selection UI, animation jobs (eraser trail). Peer cursors are NOT on the overlay canvas — they're rendered as DOM `<img>` elements by `PresenceCursorRenderer` so they sit above the editor overlay.
 - `SelectTool` renders transformed objects on the base canvas for correct Z-order during translate/scale.
 
 ### Object dispatch (`renderer/layers/objects.ts`)
 Switch on `handle.kind`: stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()`, bookmark via `drawBookmark()`. During scale (`renderScaleEntry`, behavior from `getScaleBehavior`): shape rebuilds frame; image bitmap at scaled frame; stroke uses cached Path2D with `ctx.scale(factor)`; text/code reflow on E/W sides else `ctx.scale(ratio)` on cached layout; note/bookmark `ctx.scale(out.scale/frozen.scale)` around `out.origin`. Edge-pin (multi-select side handle) falls back to `renderTranslatedEntry`. Details in `tools/selection/CLAUDE.md`.
 
-Per-frame hoisting in `drawObjects`: editing IDs, hovered Open-button id, translate `dx/dy`, topology `connEntries` Map, viewport bounds — read once, used per-object. Module scratches (`_candidateIds`, `_previewScratch`) for zero alloc.
+Per-frame hoisting in `drawObjects`: editing IDs (incl. `_textEditingId` threaded into `drawStickyNote`), hovered Open-button id, translate `dx/dy`, topology `connEntries` Map, viewport bounds — read once, used per-object. Module scratches (`_candidateIds`, `_previewScratch`) for zero alloc.
+
+### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
+Two helpers, one per Content subclass. `readPrim` reads `val.content.arr[0]` (ContentAny — every primitive/array/object key); `readY` reads `val.content.type` (ContentType — the single `'content'` key on shape labels). Both check `!val.deleted` (Yjs tombstones an Item rather than removing it from `_map` on `.delete(key)` — fillColor=null in `selection-field-table.ts`, empty-label close in `TextTool.ts`). Both bypass `Content.getContent()` so there's no `[this.type]` allocation for ContentType to depend on EA for. ~10 ns/key (vs ~109 ns for `y.get()`). `Y.Map._map` items always have `length === 1` (merges blocked by deleted-state asymmetry — proven from Yjs source), so `arr[0]` is correct without a `length - 1` lookup. One `readXxxRender(y)` per leaf draw fn writes into a per-kind module-level scratch returned by reference. Each `draw*` consumes its scratch before the next reader fires — no cross-reader hazards.
+
+Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById`, `noteCachedLayout`, `codeSystem.getLayoutById`, `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, fontSize, ...)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantees; see Cache Architecture). Geometry-cache trusts entries — `shapeType` keychange pre-evicts via `evictGeometry(id)` in the observer rather than a per-draw re-check. Defensive guards stripped on the hot path: bbox-size (`scaleFrameNonUniform` clamps to `MIN_SHAPE_FRAME_DIM + 2·pad`), `n < 2` (already in `paintConnectorFromPoints`), null `assetId`/`frame` on image (observer contract).
 
 ### Overlay loop animation
-`AnimationController` (`renderer/animation/`) is a push-based singleton: jobs return `true` from `frame()` to request another rAF; controller calls `invalidate()` from the loop. Built-in jobs: `CursorAnimationJob` (interpolated remote cursors), `EraserTrailAnimation` (decaying trail). Registered once in `OverlayRenderLoop.start()`.
+`AnimationController` (`renderer/animation/`) is a push-based singleton: jobs return `true` from `frame()` to request another rAF; controller calls `invalidate()` from the loop. Built-in jobs: `EraserTrailAnimation` (decaying trail). Registered once in `OverlayRenderLoop.start()`. (Peer cursors are NOT a job — `PresenceCursorRenderer` renders them as DOM `<img>` elements above the editor overlay with its own rAF; see `runtime/presence/CLAUDE.md`.)
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
@@ -363,7 +463,7 @@ World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transfo
 
 Zustand store: `scale`, `pan`, `cssWidth`, `cssHeight`, `dpr`, `roomCameras`, `currentRoomId`. Per-room camera persistence via `setRoom(roomId)` — saves outgoing, restores incoming (localStorage, 1Hz debounce — no `persist` middleware).
 
-**Module-level functions:** `worldToCanvas`, `canvasToWorld`, `screenToWorld`, `screenToCanvas`, `worldToClient`, `getVisibleWorldBounds` (object form), `getVisibleBoundsTuple` (scratch readonly tuple — hot path), `setCanvasElement`, `getCanvasElement`, `capturePointer`, `releasePointer`, `isMobile`, `subscribeCamera`, `getViewTransform`, `createViewTransform`.
+**Module-level functions:** `worldToCanvas`, `canvasToWorld`, `screenToWorld`, `screenToWorldInto` (zero-alloc, writes into `out` — hot path), `screenToCanvas`, `worldToClient`, `getVisibleWorldBounds` (object form), `getVisibleBoundsTuple` (scratch readonly tuple — hot path), `setCanvasElement`, `getCanvasElement`, `capturePointer`, `releasePointer`, `isMobile`, `subscribeCamera`, `getViewTransform`, `createViewTransform`.
 
 Imperative: `useCameraStore.getState()`. Reactive: `useCameraStore(selector)`. Constants: `MIN_ZOOM`, `MAX_ZOOM`.
 

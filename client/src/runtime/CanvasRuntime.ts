@@ -20,7 +20,7 @@ import { setLastCursorWorld } from './cursor-tracking';
 import { InputManager } from './InputManager';
 import { installUIZoomBlock } from './install-ui-zoom-block';
 import { isSpacebarPanMode } from './keyboard-manager';
-import { clearCursor, updateCursor } from './presence/presence';
+import { syncPresenceCursorOnCameraMove } from './presence/presence-pointer';
 import { SurfaceManager } from './SurfaceManager';
 import { canStartMMBPan, getCurrentTool, panTool } from './tool-registry';
 import { isEdgeScrolling, stopEdgeScroll, updateEdgeScroll } from './viewport/edge-scroll';
@@ -31,6 +31,7 @@ export interface RuntimeConfig {
   baseCanvas: HTMLCanvasElement;
   overlayCanvas: HTMLCanvasElement;
   editorHost: HTMLDivElement;
+  cursorHost: HTMLDivElement;
 }
 
 // --- Zoom constants ---
@@ -49,10 +50,10 @@ export class CanvasRuntime {
   private wheelTimestamps: number[] = [];
 
   start(config: RuntimeConfig): void {
-    const { container, baseCanvas, overlayCanvas, editorHost } = config;
+    const { container, baseCanvas, overlayCanvas, editorHost, cursorHost } = config;
 
     // 1. Surface manager: DOM refs, contexts, resize/DPR
-    this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost);
+    this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost, cursorHost);
     this.surfaceManager.start();
 
     // 2. Render loops
@@ -72,6 +73,8 @@ export class CanvasRuntime {
     this.cameraUnsub = subscribeCamera(() => {
       if (!isEdgeScrolling()) getCurrentTool()?.onViewChange();
       contextMenuController.onCameraMove();
+      // Unguarded — must run during edge-scroll (camera pans while pointer is still).
+      syncPresenceCursorOnCameraMove();
     });
 
     // 6. First-frame bootstrap
@@ -139,10 +142,7 @@ export class CanvasRuntime {
 
   handlePointerMove(e: PointerEvent): void {
     const world = screenToWorld(e.clientX, e.clientY);
-    if (world) {
-      setLastCursorWorld(world);
-      updateCursor(world[0], world[1]);
-    }
+    if (world) setLastCursorWorld(world);
 
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
       if (world) panTool.move(world[0], world[1]);
@@ -193,7 +193,6 @@ export class CanvasRuntime {
   }
 
   handlePointerLeave(_e: PointerEvent): void {
-    clearCursor();
     getCurrentTool()?.onPointerLeave();
   }
 

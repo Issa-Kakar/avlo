@@ -1,21 +1,35 @@
-import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import path, { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
+const __dirname_local = dirname(fileURLToPath(import.meta.url));
+const devPorts = JSON.parse(readFileSync(resolve(__dirname_local, '../scripts/dev-ports.json'), 'utf8'));
+
+const portOffset = parseInt(process.env.PORT_OFFSET || '0', 10);
 const clientPort = parseInt(process.env.VITE_PORT || '3000', 10);
-const workerPort = parseInt(process.env.WORKER_PORT || '8787', 10);
+const MAIN_PORT = devPorts.main + portOffset;
+const IMAGES_PORT = devPorts.images + portOffset;
+const UNFURL_PORT = devPorts.unfurl + portOffset;
 
 const proxyConfig = {
   '/parties': {
-    target: `ws://localhost:${workerPort}`,
+    target: `ws://localhost:${MAIN_PORT}`,
     ws: true,
     changeOrigin: true,
   },
-  '/api': {
-    target: `http://localhost:${workerPort}`,
+  '/api/images': {
+    target: `http://localhost:${IMAGES_PORT}`,
     changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/api\/images/, ''),
+  },
+  '/api/unfurl': {
+    target: `http://localhost:${UNFURL_PORT}`,
+    changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/api\/unfurl/, ''),
   },
 };
 
@@ -44,6 +58,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@avlo/shared': path.resolve(__dirname, '../packages/shared/src'),
+      '@avlo/api-client': path.resolve(__dirname, '../packages/api-client/src'),
     },
   },
   server: {

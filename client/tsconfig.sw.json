@@ -5,7 +5,9 @@
     "paths": {
       "@/*": ["./src/*"],
       "@avlo/shared": ["../packages/shared/src/index.ts"],
-      "@avlo/shared/*": ["../packages/shared/src/*"]
+      "@avlo/shared/*": ["../packages/shared/src/*"],
+      "@avlo/api-client": ["../packages/api-client/src/index.ts"],
+      "@avlo/api-client/*": ["../packages/api-client/src/*"]
     },
     "noEmit": true,
     "module": "ESNext",
@@ -14,6 +16,5 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src/sw.ts"],
-  "references": [{ "path": "../packages/shared" }]
+  "include": ["src/sw.ts"]
 }

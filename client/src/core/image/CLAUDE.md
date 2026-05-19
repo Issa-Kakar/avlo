@@ -167,8 +167,12 @@ Images use stored `frame` (like shapes), not derived frames (unlike text/code). 
 
 | File | Responsibility |
 |------|----------------|
-| `worker/src/assets.ts` | `handleUpload` (PUT) + `handleGetAsset` (GET) for `/api/assets/:key` |
-| `worker/src/index.ts` | Hono app: CORS on `/api/*`, asset routes, `partyserverMiddleware()` for Yjs sync |
+| `workers/images/src/upload.ts` | `handleUpload` (PUT `/:key` on `images.avlo.io`) — Zod param + content-length, dedup, magic-byte validate, hash-verify, R2 put |
+| `workers/images/src/get.ts` | `handleGetAsset` (GET `/:key`) — R2 conditional + Range read, edge cache (Range-bypass), `Accept-Ranges` advertise |
+| `workers/images/src/index.ts` | `createCors('images')`, route table, drift guard, default export |
+| `workers/main/src/index.ts` | `partyserverMiddleware()` on `/parties/*`, Static-Assets-binding fallback for everything else |
+
+Per-worker docs: `workers/CLAUDE.md`. Binding renames: legacy `ASSETS` (R2) → `IMAGES`; `ASSETS` is now Cloudflare's Static Assets binding on main.
 
 ---
 
@@ -439,80 +443,73 @@ All bitmaps transferred via `Transferable[]` (zero-copy). Bitmap is neutered in 
 
 ## Server-Side Architecture
 
-### Hono App (`worker/src/index.ts`)
+Full doctrine, hardening invariants, and the app-type/drift-guard pattern in `workers/CLAUDE.md`. Quick summary for image flow:
 
-```typescript
-const app = new Hono<{ Bindings: Env }>();
-app.use('/api/*', cors({
-  origin: (origin) => {
-    if (!origin) return null;
-    if (origin.startsWith('http://localhost:')) return origin;
-    if (origin === 'https://avlo.io') return origin;
-    return null;
-  },
-  allowMethods: ['GET', 'PUT', 'OPTIONS'],
-  maxAge: 86400,
-}));
-app.get('/api/unfurl', zValidator('query', unfurlQuery), handleUnfurl);  // Zod-validated bookmark unfurl
-app.put('/api/assets/:key', handleUpload);
-app.get('/api/assets/:key', handleGetAsset);
-app.use('*', partyserverMiddleware());  // Yjs WebSocket sync via PartyServer
-```
+### Three workers, one R2 bucket
 
-**Env bindings:** `ASSETS: R2Bucket`, `DOCS: R2Bucket`, `rooms: DurableObjectNamespace`
+| Worker | Path | Bucket binding |
+|---|---|---|
+| `workers/images` (prod `images.avlo.io`) | `PUT /:key`, `GET /:key` | `IMAGES` → R2 `avlo-assets` |
+| `workers/unfurl` (prod `unfurl.avlo.io`) | `GET /?url=` (also writes images for OG/favicon) | `IMAGES` → R2 `avlo-assets` (shared with images) |
+| `workers/main` (prod `avlo.io`) | SPA Assets binding + WSS `/parties/*` | `ASSETS` (Static Assets), `DOCS` (R2 `avlo-docs`), `rooms` (DO) |
 
-### Upload Route — `PUT /api/assets/:key` (`worker/src/assets.ts`)
+CORS comes from `createCors('images')` / `createCors('unfurl')` in `@avlo/worker-shared` (allows `localhost:*` + `https://{www.,}avlo.io`). Main needs no CORS — SPA + WSS are same-origin.
+
+### Upload Route — `PUT /:key` (`workers/images/src/upload.ts`)
 
 Validation pipeline (all checks before R2 write):
-1. **Origin check** → 403 if not `localhost:*` or `avlo.io`
-2. **R2 dedup** → `ASSETS.head(key)` → 200 `{ status: 'exists' }` if already stored (body not read)
-3. **Size limit** → 10 MB max → 413 `Payload Too Large`
-4. **Magic byte validation** → `validateImage(bytes)` → 400 if unsupported format
-5. **Hash verification** → `SHA-256(body)` must equal URL `:key` → 400 `key mismatch`
-6. **R2 put** → `ASSETS.put(key, buffer, { httpMetadata: { contentType } })` → 201 Created
+1. **Zod param (H1)** → `assetKeyParam` regex `^[0-9a-f]{64}$` → 400 fast on malformed
+2. **Zod header (H2)** → `contentLengthBound(MAX_UPLOAD_BYTES=10MB)` rejects oversize BEFORE the body is awaited
+3. **R2 dedup** → `IMAGES.head(key)` → 200 `{ status: 'exists' }` if already stored (body not read)
+4. **Body await** → `await c.req.arrayBuffer()`
+5. **Magic byte validation** → `validateImage(bytes)` → 400 if unsupported format
+6. **Hash verification (H4)** → server `SHA-256(buffer) === key` → 400 `key mismatch`
+7. **R2 put** → `IMAGES.put(key, buffer, { httpMetadata: { contentType: mimeType } })` → 201 Created with `api-json` CSP
 
-Response codes: 201 (created), 200 (exists), 400 (bad format / hash mismatch), 403 (CORS), 413 (too large)
+Response codes: 201 (created), 200 (exists), 400 (bad format / hash mismatch / Content-Length / malformed key)
 
-### Fetch Route — `GET /api/assets/:key` (`worker/src/assets.ts`)
+### Fetch Route — `GET /:key` (`workers/images/src/get.ts`)
 
 Edge-cached R2 proxy with full HTTP semantics:
-1. **Edge cache check** → `caches.default.match(cacheKey)` → return if hit
-2. **R2 fetch** → `ASSETS.get(key, { range: headers, onlyIf: headers })` → R2 handles Range + conditional natively
-3. **Response headers:**
-   - `Cache-Control: public, max-age=31536000, immutable` (1 year, immutable — content-addressed)
-   - `ETag` from R2 (`object.httpEtag`)
-   - `Content-Type` from stored `httpMetadata` (set at upload)
-   - `Content-Security-Policy: default-src 'none'` (security)
-   - `X-Content-Type-Options: nosniff`
-   - `Content-Range` for 206 partial responses
-4. **Edge cache populate** → `waitUntil(cache.put())` on 200 (not on 206/304)
-5. **Body streaming** → `body.tee()` for simultaneous cache write + response
+1. **Zod param (H1)** — same key regex
+2. **Edge cache check** — skipped if request has `Range` (caches.default keys on URL+method, not Range; serving a full 200 to Range silently satisfies RFC 9110 but defeats partial-content workflows)
+3. **R2 fetch** — `IMAGES.get(key, { range: hasRange ? headers : undefined, onlyIf: headers })` — R2 parses Range + If-None-Match / If-Modified-Since natively. **The `range` argument is gated on an incoming `Range` header** because miniflare's R2 simulator always populates `object.range` (defaulting to `{ offset: 0, length: size }` when no Range was asked for), and any downstream branch that conflates "object.range truthy" with "client wanted partial content" will leak 206s into no-Range fetches in dev.
+4. **Response headers** — `Cache-Control: public, max-age=31536000, immutable`, `ETag` from R2, `Accept-Ranges: bytes`, `applyCsp(headers, 'asset-body')` (`default-src 'none'; sandbox` + `X-Content-Type-Options: nosniff` + `CORP: cross-origin`)
+5. **Content-Range** branch for 206 partial responses (suffix and offset+length forms) — entered only when `hasRange`, same reason as above
+6. **Edge cache populate** — `waitUntil(cache.put())` on full 200 (not 206/304); `body.tee()` for simultaneous cache write + response
 
-Response codes: 200 (full), 206 (range), 304 (conditional / If-None-Match), 404 (not found)
+Response codes: 200 (full), 206 (range), 304 (conditional), 404 (not found)
 
-### Unfurl Route — `GET /api/unfurl?url=<encoded>` (`worker/src/unfurl.ts`)
+### Unfurl Route — `GET /?url=<encoded>` (`workers/unfurl/src/unfurl.ts`)
 
-Zod middleware (`zValidator('query', unfurlQuery)`) validates + normalizes URL + SSRF guard before handler. Fetches page, extracts OG/Twitter metadata via HTMLRewriter, stores OG image + favicon to R2 (content-addressed), returns JSON. Direct image URLs stored as OG image with filename as title. Edge-cached 7 days by SHA-256 of normalized URL. Called by image worker's `unfurlDirect()`.
+`zValidator('query', unfurlQuery)` from `@avlo/worker-shared` validates + normalizes URL + SSRF refine (H9) before handler. Fetches page, extracts OG/Twitter metadata via HTMLRewriter, stores OG image + favicon to R2 (content-addressed via `IMAGES` binding, shared with images worker), returns JSON typed against `UnfurlResponseBody` (exported from `workers/unfurl/src/app-type.ts` — single source of truth for the wire contract). Direct image URLs stored as OG image with filename as title. Edge-cached 7 days under `syntheticCacheUrl('unfurl', sha256(url))`.
 
-Response codes: 200 (success, has title or OG image), 204 (no useful metadata), 400 (invalid URL / SSRF), 502 (upstream fetch failed)
+All responses get `applyCsp(headers, 'api-json')` (H5) including empty 502/204 bodies.
 
-Detailed docs: `core/bookmark/CLAUDE.md`
+Response codes: 200 (success, has title or OG image), 204 (no useful metadata), 400 (invalid URL / SSRF refine), 502 (upstream fetch failed)
 
-### R2 Buckets (`wrangler.toml`)
+Detailed docs: `client/src/core/bookmark/CLAUDE.md`
 
-| Binding | Bucket Name | Purpose |
-|---------|-------------|---------|
-| `ASSETS` | `avlo-assets` | Image blobs (content-addressed, immutable) |
-| `DOCS` | `avlo-docs` | Y.Doc V2 snapshots (rooms) |
+### R2 Buckets
+
+| Binding | Bucket Name | Workers | Purpose |
+|---------|-------------|---------|---------|
+| `IMAGES` | `avlo-assets` | images, unfurl | Image blobs (content-addressed, immutable) |
+| `DOCS` | `avlo-docs` | main | Y.Doc V2 snapshots (rooms) |
 
 ### Dev Proxy (`client/vite.config.ts`)
 
+Driven by `scripts/dev-ports.json` (single source of truth) + `PORT_OFFSET`:
+
 ```
-/api/*     → http://localhost:8787  (Hono routes)
-/parties/* → ws://localhost:8787    (PartyServer WebSocket)
+/parties     → ws://localhost:${MAIN}     (PartyServer WebSocket)
+/api/images  → http://localhost:${IMAGES} (strips /api/images prefix → worker sees /:key)
+/api/unfurl  → http://localhost:${UNFURL} (strips /api/unfurl prefix → worker sees /?url=)
 ```
 
-Client port: 3000 (`VITE_PORT`). Worker port: 8787 (`WORKER_PORT`).
+Client port: 3000 (`VITE_PORT`). Base worker ports: 8787/8788/8789. Parallel dev (`PORT_OFFSET=3 VITE_PORT=3001 npm run dev`) shifts all uniformly.
+
+Client URL building uses `@avlo/api-client` typed `hc<App>` — `imagesClient[':key'].$url({ param: { key: id } })` produces the right cross-origin URL in prod (`https://images.avlo.io/<key>`) and an absolute localhost URL in dev (`${location.origin}/api/images/<key>` → e.g. `http://localhost:3000/api/images/<key>`), driven by `import.meta.env.PROD` in `packages/api-client/src/origins.ts`. The dev origin must be absolute: a bare path base throws `Invalid URL` inside Hono's `$url(...)` URL constructor.
 
 **Testing SW:** `npm run -w client build && npm run -w client preview` (preview has same proxy config). Dev mode doesn't build SW — worker's `readAssetBlob()` handles this transparently.
 

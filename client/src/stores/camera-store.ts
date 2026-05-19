@@ -357,6 +357,21 @@ export function screenToWorld(clientX: number, clientY: number): [number, number
 }
 
 /**
+ * Zero-alloc screen→world. Writes into `out`, returns true; returns false
+ * (out untouched) if the canvas isn't mounted. For hot per-pointer-move
+ * callers — see screenToWorld for the allocating form.
+ */
+export function screenToWorldInto(clientX: number, clientY: number, out: [number, number]): boolean {
+  const rect = getCanvasRect();
+  if (rect.width === 0) return false;
+  const { scale, pan } = useCameraStore.getState();
+  const s = Math.max(1e-6, scale);
+  out[0] = (clientX - rect.left) / s + pan.x;
+  out[1] = (clientY - rect.top) / s + pan.y;
+  return true;
+}
+
+/**
  * Convert world coordinates to screen (client) coordinates.
  */
 export function worldToClient(worldX: number, worldY: number): [number, number] {

@@ -1,8 +1,10 @@
 /**
  * InputManager - Single owner of ALL DOM event registration
  *
- * Attaches: pointer/wheel/drag on canvas, keyboard/paste on document, blur on window.
- * Forwards pointer events → CanvasRuntime, keyboard events → keyboard-manager.
+ * Attaches: pointer/wheel/drag on canvas, keyboard/paste + presence pointer
+ * (pointermove/pointerout) on document, blur on window.
+ * Forwards canvas pointer events → CanvasRuntime, keyboard events →
+ * keyboard-manager, document presence pointer events → presence-pointer.
  *
  * Owns modifier key state (module-level). Updated from both pointer AND keyboard
  * events — always fresh regardless of input source. Tools read via exported getters.
@@ -15,6 +17,7 @@
 
 import type { CanvasRuntime } from './CanvasRuntime';
 import { handleBlur, handleKeyDown, handleKeyUp, handlePaste } from './keyboard-manager';
+import { handlePresenceBlur, handlePresencePointerMove, handlePresencePointerOut } from './presence/presence-pointer';
 
 // ============================================
 // MODIFIER STATE
@@ -82,6 +85,10 @@ export class InputManager {
     document.addEventListener('keyup', this.onKeyUp);
     document.addEventListener('paste', this.onPaste);
     window.addEventListener('blur', this.onBlur);
+
+    // Presence pointer (document — full-viewport cursor broadcast, fires over DOM chrome)
+    document.addEventListener('pointermove', this.onPresencePointerMove, { passive: true });
+    document.addEventListener('pointerout', this.onPresencePointerOut, { passive: true });
   }
 
   detach(): void {
@@ -100,6 +107,9 @@ export class InputManager {
     document.removeEventListener('keyup', this.onKeyUp);
     document.removeEventListener('paste', this.onPaste);
     window.removeEventListener('blur', this.onBlur);
+
+    document.removeEventListener('pointermove', this.onPresencePointerMove);
+    document.removeEventListener('pointerout', this.onPresencePointerOut);
 
     clearModifiers();
   }
@@ -151,5 +161,11 @@ export class InputManager {
   private onBlur = () => {
     clearModifiers();
     handleBlur();
+    handlePresenceBlur();
   };
+
+  // === Presence pointer events (document) — forward to presence-pointer ===
+
+  private onPresencePointerMove = (e: PointerEvent) => handlePresencePointerMove(e);
+  private onPresencePointerOut = (e: PointerEvent) => handlePresencePointerOut(e);
 }

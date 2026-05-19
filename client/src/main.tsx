@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { router } from './router';
 import './index.css';
 import { ensureFontsLoaded } from './core/text/font-loader';
-import { resetFontMetrics } from './core/text/text-system';
+import { resetFontMetrics } from './core/text/text-measure';
 
 async function init() {
   try {

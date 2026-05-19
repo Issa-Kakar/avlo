@@ -18,7 +18,7 @@ Imperative modules for keyboard shortcuts, DOM event registration, modifier stat
 
 ## InputManager — Event Registration & Modifier State
 
-Single owner of ALL DOM event listeners. Forwards to CanvasRuntime (pointer/wheel/drop) and keyboard-manager (keydown/keyup/paste/blur).
+Single owner of ALL DOM event listeners. Forwards to CanvasRuntime (canvas pointer/wheel/drop), keyboard-manager (keydown/keyup/paste/blur), and presence-pointer (document pointermove/pointerout, plus window blur).
 
 ### Event Registration
 
@@ -37,9 +37,11 @@ Single owner of ALL DOM event listeners. Forwards to CanvasRuntime (pointer/whee
 | `keydown` | document | updateModifiers → handleKeyDown |
 | `keyup` | document | updateModifiers → handleKeyUp |
 | `paste` | document | handlePaste |
-| `blur` | window | clearModifiers → handleBlur |
+| `pointermove` (presence) | document | handlePresencePointerMove → broadcast world cursor |
+| `pointerout` (presence) | document | handlePresencePointerOut → clearCursor on window exit |
+| `blur` | window | clearModifiers → handleBlur → handlePresenceBlur |
 
-All pointer events registered with `{ passive: false }`.
+All **canvas** pointer events registered with `{ passive: false }`; the two **document** presence pointer listeners use `{ passive: true }` (they never `preventDefault`).
 
 ### Modifier State
 
@@ -342,11 +344,16 @@ Pan direction matches "grab" semantics: ArrowRight → content moves right (pan.
 
 ```
 User Input → InputManager (DOM events)
-  ├── Pointer events → updateModifiers() → CanvasRuntime.*
+  ├── Canvas pointer events → updateModifiers() → CanvasRuntime.*
   │     ├── handlePointerDown → spacebar pan check → MMB pan → tool dispatch
   │     ├── handlePointerMove → cursor tracking + edge scroll + tool.move()
   │     ├── handlePointerUp → tool.end() + stopEdgeScroll
   │     └── handleWheel → zoom (velocity boost + Ctrl pinch)
+  │
+  ├── Document presence pointer → presence-pointer.*
+  │     ├── handlePresencePointerMove → screenToWorldInto → updateCursor
+  │     ├── handlePresencePointerOut → clearCursor (on genuine window exit)
+  │     └── handlePresenceBlur → clearCursor (window blur; via onBlur)
   │
   ├── Keyboard events → updateModifiers() → keyboard-manager.*
   │     ├── handleKeyDown → guard hierarchy → modifier/bare dispatch

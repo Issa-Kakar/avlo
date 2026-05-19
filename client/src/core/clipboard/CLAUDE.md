@@ -65,6 +65,8 @@ interface SerializedParagraph {
 
 **Pending Y-type construction gotcha.** Fragment builders (`deserializeFragment`, `prosemirrorJsonToFragment`, `pasteExternalText`, `pasteUrlAsText`) never read `.length` on the in-flight Y.XmlFragment / Y.XmlText — Yjs warns on reads from unattached types ("Invalid access: Add Yjs type to a document before reading data"). Instead, collect children in a plain JS array and `fragment.insert(0, children)` once at the end; track text-delta positions with a local counter. Writes on pending types queue fine and are integrated atomically when the root is attached via `yObj.set('content', fragment)`.
 
+**Attribute inheritance gotcha.** Always pass `{}` (not `undefined`) to `Y.XmlText.insert(idx, str, attrs)`. Yjs treats `undefined` as "inherit `currentAttributes` from the cursor position" — so on integration, an unmarked op following a marked one silently absorbs the prior segment's bold/italic/highlight. Passing `{}` triggers Yjs's `insertText` cleanup branch which nulls every inherited key, producing the correct "plain text" insertion. Single inserts at position 0 of a fresh Y.XmlText are safe (empty `currentAttributes`, nothing to inherit) — the 2-arg sites in `pasteExternalText` / `pasteUrlAsText` / the `Y.Text` branch of `pasteInternal` are fine.
+
 ---
 
 ## Copy

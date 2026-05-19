@@ -6,7 +6,9 @@
     "paths": {
       "@/*": ["./src/*"],
       "@avlo/shared": ["../packages/shared/src/index.ts"],
-      "@avlo/shared/*": ["../packages/shared/src/*"]
+      "@avlo/shared/*": ["../packages/shared/src/*"],
+      "@avlo/api-client": ["../packages/api-client/src/index.ts"],
+      "@avlo/api-client/*": ["../packages/api-client/src/*"]
     },
     "types": ["vite/client", "node", "react", "react-dom"],
     "noEmit": true,
@@ -17,6 +19,5 @@
     "skipLibCheck": true
   },
   "include": ["src/**/*", "vite.config.ts"],
-  "exclude": ["node_modules", "dist", "src/sw.ts"],
-  "references": [{ "path": "../packages/shared" }]
+  "exclude": ["node_modules", "dist", "src/sw.ts"]
 }

@@ -34,7 +34,7 @@ core/connectors/
 ├── anchor-atoms.ts       # anchorFramePoint, elbowAnchorPoint, fillElbowAnchorPointInto, anchorRecordFromSnap, getEndpointEdgePosition
 ├── connector-utils.ts    # Direction primitives, spatialRelation, elbow direction resolution
 ├── snap.ts               # findBestSnapTarget + two pipelines + shared edge probe
-├── routing-context.ts    # Centerlines, routing bounds, stubs, grid construction
+├── routing-context.ts    # Centerlines, routing bounds, stubs, grid construction + flicker side-pin
 ├── routing-astar.ts      # computeAStarRouteInto — typed-array pool + generation counter
 ├── connector-paths.ts    # Path2D builders (polyline + arrows, trim compensation)
 ├── connector-router.ts   # Route cache + reverse shape→connector map + detach helper
@@ -134,6 +134,7 @@ Authoritative list. Mirror code-side comments in `reroute-connector.ts` (lines 4
 9. **`connectorType` is read once at `buildRouteContext`** and stored as `pipeline: AnyPipeline`. No helper below the entry boundary inspects it.
 10. **A* uses generation-counter pooling.** Module-level typed arrays (`closedGen` / `gScores` / `fScores` / `parentNode` / `pathCells`, `MAX_CELLS = 64`, `MAX_NODES = 256`); `astarGen` bumps per call → "clear" is a single increment. Pool exhaustion is dev-mode warned.
 11. **No bbox-dummy.** `objectsById` never holds a connector handle with a `[0,0,0,0]` placeholder. `rerouteCanonical(id, yObj)` takes `yObj` directly to skip the `getHandle(connectorId)` round-trip.
+12. **Route count: ≥2 or -1, never 1.** Every routing fn (`Pipeline.routeInto`, `computeAStarRouteInto`, `computeStraightRouteInto`) emits ≥2 points or signals failure with -1. Returning 1 propagates as `count < 2` through `runDrag` (→ -1, skips `outBbox` write) and `rerouteCanonical` (→ `routes.delete(id)`); `updateEndpointDrag`'s NEW-dirty-rect gate (`count > 0`) bails → half-cleared canvas + cached gesture-start fallback. Degenerate coincident-endpoint routes emit two identical points; `paintConnectorFromPoints` strokes zero-length with `lineCap='round'` as a dot.
 
 ---
 
@@ -228,6 +229,7 @@ Bypasses A* entirely. `computeStraightRouteInto(start, end, outPoints)` writes 2
 - **Fallbacks:** no path → recurse with `EMPTY_OBSTACLES`; still nothing → direct `[startPos, endPos]`.
 - **Dynamic routing bounds** encode centerline knowledge in their edges (`routing-context.ts`). Facing-side = centerline (when shapes face each other); non-facing padded by approach offset = `CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`. Stubs land on centerlines automatically.
 - **Centerline computation** (`computeAxisCenterline`) returns `null` when ranges overlap, when a Free→Anchored gap is below approach offset, or when gap ≤ `EDGE_CLEARANCE_W`.
+- **Flicker side-pin** (`fillFlickerPin` → `fillSimpleGrid`): same-axis anchored pair with tangential-axis overlap and at least one non-facing stub gives two cost-tied wrap corridors — A* picks arbitrarily and the choice flips on micro-changes upstream (mouse jitter, unrelated handle drags). Grid collapses the four per-shape tangential edges to the outer envelope and drops one side by the anchor tangential delta — deterministic, matches "go where start is". Inactive when shapes are perpendicular-axis or facing-facing.
 
 **Direction resolution** (`resolveElbowDirections`):
 - Anchored→Anchored: stored `dir`s.

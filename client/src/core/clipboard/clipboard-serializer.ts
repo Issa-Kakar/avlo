@@ -142,7 +142,8 @@ export function deserializeFragment(content: SerializedContent): Y.XmlFragment {
 
     let textPos = 0;
     for (const op of para.delta) {
-      text.insert(textPos, op.insert, op.attributes);
+      // `{}` not undefined — Yjs treats undefined as "inherit currentAttributes" and leaks the prior segment's marks into this one.
+      text.insert(textPos, op.insert, op.attributes ?? {});
       textPos += op.insert.length;
     }
 
