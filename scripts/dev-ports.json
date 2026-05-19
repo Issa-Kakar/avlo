@@ -1,5 +1,5 @@
 {
-  "_comment": "Base wrangler dev ports per worker. We deliberately skip 8788/8789 because some WSL2 / Windows-host environments reserve them (cloudflared / kernel mirror). Parallel dev (npm run dev:p) sets PORT_OFFSET=5, so the offset must stay >= max(ports) - min(ports) + 1 = 5 today. Bump to 10 when adding a 4th worker.",
+  "_comment": "Base wrangler dev ports per worker. We deliberately skip 8788/8789 because some WSL2 / Windows-host environments reserve them (cloudflared / kernel mirror); 3001 is also reserved at the WSL2/Windows level on at least one of our hosts, which is why dev:p uses VITE_PORT=5180 instead of 3001. Parallel dev (npm run dev:p) sets PORT_OFFSET=5, so the offset must stay >= max(ports) - min(ports) + 1 = 5 today. Bump to 10 when adding a 4th worker.",
   "main": 8787,
   "images": 8790,
   "unfurl": 8791
