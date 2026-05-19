@@ -151,6 +151,10 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     // selectedSet narrows to the dragged connector by drill invariant — the
     // `else` arm below is unreachable for non-connectors and intentionally
     // omitted (impossible state, no fallback paint).
+    //
+    // Background (non-selected, non-attached) non-connector handles also
+    // reach this branch — the main loop above only skips selected/attached
+    // during transform, so the rest flow through to be drawn normally.
     if (!isTransforming || !selectedSet.has(handle.id)) {
       drawObject(ctx, handle);
       continue;
@@ -430,8 +434,8 @@ function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHa
 function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   switch (handle.kind) {
     case 'shape': {
-      const entry = getScaleEntry('shape', handle.id);
-      if (!entry) break;
+      // freeze cannot return null (verified 2026-05-19: shape Y.Map always carries a frame)
+      const entry = getScaleEntry('shape', handle.id)!;
       const { frame } = entry.out;
 
       const r = readShapeRender(handle.y);
@@ -441,8 +445,8 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
     }
 
     case 'image': {
-      const entry = getScaleEntry('image', handle.id);
-      if (!entry) break;
+      // freeze cannot return null (verified 2026-05-19: image Y.Map always carries a frame)
+      const entry = getScaleEntry('image', handle.id)!;
       drawImage(ctx, handle, entry.out.frame);
       break;
     }

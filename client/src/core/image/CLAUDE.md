@@ -540,7 +540,7 @@ Images return an empty `new Path2D()` — they don't use the geometry cache. Cac
 
 ## Hit Testing & Selection
 
-Hit testing flows through `core/spatial/kind-capability.ts` — `framedCap<'image'>((h) => getFrame(h.y))`, return `'fill'` (always opaque). No per-image cases in `EraserTool` or `snap.ts`; image is a `BINDABLE_KIND` so snap/reroute are kind-agnostic via `isBindableKind` / `frameOf`.
+Hit testing flows through `core/spatial/hit-dispatch.ts` — image joins code in the `tightFramedHitPoint` / `tightFramedHitCircle` fast path (handle's `minX/maxX/minY/maxY` envelope mirrors are read directly; stored bbox === frame for both kinds). `hitRectFor` returns `true` unconditionally — the rbush envelope filter IS the precision rect check. Paint is `'ink'` on hit. No per-image cases in `EraserTool` or `snap.ts`; image is a `BINDABLE_KIND` so snap/reroute are kind-agnostic via `isBindableKind` / `frameOf`.
 
 - **Selection kind:** value is `'image'` (the type is `SelectionKind = ObjectKind | 'none' | 'mixed'`). `computeStyles()` returns `EMPTY_STYLES` for `kind === 'image'` (no color/width/fill controls).
 - **Connector topology:** Images included — `fillFrameFromBind()` in `tools/selection/connector-topology.ts` handles `case 'shape': case 'image'` together: `copyFrame(scratch, e.out.frame)`. Behavior (always uniform, mixed+side = edge-pin) is encoded by the `ScaleApplyTable` in `tools/selection/transform.ts`, not in topology.

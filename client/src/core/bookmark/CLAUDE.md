@@ -315,8 +315,8 @@ All worker logs prefixed `[unfurl]`.
 
 ## Integration Points
 
-### Hit Testing — `core/spatial/kind-capability.ts`
-`framedCap<'bookmark'>((h) => getBookmarkFrame(h.id))` — same dispatch as text/code/image/note. Bookmarks return `'fill'` (always opaque). All marquee + point picking flows through the spatial pipeline; **no per-bookmark cases in `EraserTool` or `snap.ts`**.
+### Hit Testing — `core/spatial/hit-dispatch.ts`
+Bookmark closes over `getBookmarkFrame(h.id)` via the shared `paddedHit*FromFrame` helpers (same precision-pass model as text and note — bbox carries shadow pad, so the rbush envelope is coarser than the frame). Paint is `'ink'` on hit. All marquee + point picking flows through the spatial pipeline; **no per-bookmark cases in `EraserTool` or `snap.ts`**.
 
 ### Selection
 - `SelectionKind` value: `'bookmark'` (the type is `ObjectKind | 'none' | 'mixed'`)

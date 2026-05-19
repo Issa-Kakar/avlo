@@ -2,9 +2,9 @@
  * Object Query — the single entry point for spatial hit testing.
  *
  * Three point-pickers and one region-membership query. Each owns its full
- * pipeline (rbush envelope → optional prefilter → getHandle → cap dispatch →
- * in-place z-sort → inline picker walk) and returns the single result its
- * caller actually wants. No call site materializes an intermediate hit array,
+ * pipeline (rbush envelope → optional prefilter → hit dispatch → in-place
+ * z-sort → inline picker walk) and returns the single result its caller
+ * actually wants. No call site materializes an intermediate hit array,
  * no call site passes option-bag knobs, no per-call `new Set` allocation.
  *
  * Region + Radius helpers live here too (used only by the picker entry
@@ -13,10 +13,10 @@
 
 import { getFrame } from '@/core/accessors';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
-import type { BindableHandle, ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { BINDABLE_KINDS, type BindableHandle, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { getSpatialIndex } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
-import { type AnyCapability, KIND, type Paint } from './kind-capability';
+import { hitCircleFor, hitPointFor, hitRectFor, type Paint } from './hit-dispatch';
 
 // ============================================================================
 // Radius + Region
@@ -49,9 +49,7 @@ function regionEnvelope(region: Region): BBoxTuple {
 // Bindable kind set — built once at import
 // ============================================================================
 
-const BINDABLE_KINDS_SET: ReadonlySet<ObjectKind> = new Set<ObjectKind>(
-  (Object.keys(KIND) as ObjectKind[]).filter((k) => KIND[k].bindable),
-);
+const BINDABLE_KINDS_SET: ReadonlySet<ObjectKind> = new Set<ObjectKind>(BINDABLE_KINDS);
 
 // ============================================================================
 // Internal scratch — never leaks to callers
@@ -61,6 +59,9 @@ interface Cand {
   readonly handle: ObjectHandle;
   readonly paint: Paint;
 }
+
+// Reused across the three pickers; consumers never retain past one picker call (single-threaded JS).
+const _collectHitsScratch: Cand[] = [];
 
 /** ULID-desc z-sort (top first), in-place. */
 function sortTopFirst(cs: Cand[]): void {
@@ -75,11 +76,11 @@ function shapeArea(h: ObjectHandle): number {
 
 /** Shared hit-collection loop for the three pickers. */
 function collectHits(entries: readonly ObjectHandle[], p: Point, r: number, kindFilter: ReadonlySet<ObjectKind> | null): Cand[] {
-  const out: Cand[] = [];
+  const out = _collectHitsScratch;
+  out.length = 0;
   for (const e of entries) {
     if (kindFilter && !kindFilter.has(e.kind)) continue;
-    const cap = KIND[e.kind] as AnyCapability;
-    const paint = cap.hitPoint(e, p, r);
+    const paint = hitPointFor(e, p, r);
     if (paint === null) continue;
     out.push({ handle: e, paint });
   }
@@ -92,15 +93,14 @@ function collectHits(entries: readonly ObjectHandle[], p: Point, r: number, kind
 
 /**
  * IDs of objects whose geometry actually intersects `region`. Envelope
- * prefilter via rbush, then per-kind precise intersect (`cap.hitRect` for
- * rect regions, `cap.hitCircle` for point regions). Returns `string[]` so
+ * prefilter via rbush, then per-kind precise intersect (`hitRectFor` for
+ * rect regions, `hitCircleFor` for point regions). Returns `string[]` so
  * consumers don't `.map(h => h.id)` afterward.
  *
- * Tight-bbox fast path: when `cap.hitRect === null` (kinds whose stored
- * rbush bbox equals their frame — currently image and code), the envelope
- * filter we just passed IS the precision rect check, so we skip the cap
- * call. See `tightFramedCap` in `kind-capability.ts`. Marquee runs precision
- * for every viewport entry, so dropping the redundant Y.Map.get +
+ * Tight-bbox fast path: for kinds whose stored rbush bbox equals their
+ * frame (image, code), `hitRectFor` returns `true` unconditionally — the
+ * envelope filter we just passed IS the precision rect check. Marquee
+ * runs precision for every viewport entry, so skipping a redundant
  * `bboxesIntersect` per image/code matters when many are on screen.
  */
 export function queryHandleIds(region: Region): string[] {
@@ -108,8 +108,7 @@ export function queryHandleIds(region: Region): string[] {
   const entries = getSpatialIndex().queryBBox(env);
   const out: string[] = [];
   for (const e of entries) {
-    const cap = KIND[e.kind] as AnyCapability;
-    const ok = region.kind === 'rect' ? cap.hitRect === null || cap.hitRect(e, region.bbox) : cap.hitCircle(e, region.p, region.r);
+    const ok = region.kind === 'rect' ? hitRectFor(e, region.bbox) : hitCircleFor(e, region.p, region.r);
     if (ok) out.push(e.id);
   }
   return out;

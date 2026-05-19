@@ -2,10 +2,8 @@
  * Handle hit testing — non-spatial sibling layer.
  *
  * Resize handles and connector endpoint dots are tiny, transient, and derived
- * from selection state — they don't live in the spatial index. But the mental
- * model ("find the nearest probe within a radius") matches the spatial
- * pipeline, so we keep the same vocabulary here without touching the spatial
- * index.
+ * from selection state — they don't live in the spatial index. Same `Radius`
+ * vocabulary, no spatial index, no paint logic.
  *
  * Scale conversion is owned inside via tagged `Radius` — no call site does
  * its own `/scale`.
@@ -16,41 +14,8 @@ import { SLOT_END, SLOT_START, type Slot } from '@/core/connectors/reroute-conne
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { getHandle } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
-import { computeHandles } from '@/stores/selection-store';
 import type { HandleId } from '@/tools/types';
-import { type Radius, resolveRadius } from './object-query';
-
-// ============================================================================
-// Generic point-probe nearest lookup
-// ============================================================================
-
-export interface HandleProbe<T> {
-  readonly center: Point;
-  readonly value: T;
-}
-
-/**
- * Find the nearest probe within `radius` of `at`. Returns the probe's value,
- * or `null` if no probe is in range. Squared-distance comparison — no
- * `Math.hypot` per probe.
- */
-export function hitNearest<T>(opts: { at: Point; radius: Radius; probes: Iterable<HandleProbe<T>> }): T | null {
-  const r = resolveRadius(opts.radius);
-  const r2 = r * r;
-  const [px, py] = opts.at;
-  let bestDist2 = Infinity;
-  let best: T | null = null;
-  for (const probe of opts.probes) {
-    const dx = px - probe.center[0];
-    const dy = py - probe.center[1];
-    const d2 = dx * dx + dy * dy;
-    if (d2 <= r2 && d2 < bestDist2) {
-      bestDist2 = d2;
-      best = probe.value;
-    }
-  }
-  return best;
-}
+import { resolveRadius } from './object-query';
 
 // ============================================================================
 // Resize handles (bespoke — side handles are edge strips, not midpoints)
@@ -81,44 +46,41 @@ export function shouldShowHandles(bbox: BBoxTuple, scale?: number): boolean {
 }
 
 /**
- * Resize-handle hit test. Kept bespoke: corners are point-probes but the
- * N/S/E/W side handles are edge strips (hit anywhere along the edge, not just
- * the midpoint). A pure `hitNearest` circle probe would be harder to grab.
+ * Resize-handle hit test. Corner-tie order (NW first, then NE/SE/SW) is preserved
+ * — matches pre-refactor first-match semantics for zero-size bbox edge cases.
+ * Side handles are edge strips (hit anywhere along the edge, not just the midpoint).
  */
 export function hitResizeHandle(at: Point, bbox: BBoxTuple): HandleId | null {
   if (!shouldShowHandles(bbox)) return null;
   const handleRadius = resolveRadius({ px: HANDLE_HIT_PX });
-  const [worldX, worldY] = at;
-  const corners = computeHandles(bbox);
+  const r2 = handleRadius * handleRadius;
+  const wx = at[0];
+  const wy = at[1];
+  const x0 = bbox[0];
+  const y0 = bbox[1];
+  const x2 = bbox[2];
+  const y2 = bbox[3];
 
-  for (const h of corners) {
-    const dx = worldX - h.x;
-    const dy = worldY - h.y;
-    if (dx * dx + dy * dy <= handleRadius * handleRadius) {
-      return h.id;
-    }
-  }
+  const dxL = wx - x0;
+  const dxR = wx - x2;
+  const dyT = wy - y0;
+  const dyB = wy - y2;
+  if (dxL * dxL + dyT * dyT <= r2) return 'nw';
+  if (dxR * dxR + dyT * dyT <= r2) return 'ne';
+  if (dxR * dxR + dyB * dyB <= r2) return 'se';
+  if (dxL * dxL + dyB * dyB <= r2) return 'sw';
 
   const edgeTolerance = handleRadius;
-
-  if (Math.abs(worldY - bbox[1]) <= edgeTolerance && worldX > bbox[0] + handleRadius && worldX < bbox[2] - handleRadius) {
-    return 'n';
-  }
-  if (Math.abs(worldY - bbox[3]) <= edgeTolerance && worldX > bbox[0] + handleRadius && worldX < bbox[2] - handleRadius) {
-    return 's';
-  }
-  if (Math.abs(worldX - bbox[0]) <= edgeTolerance && worldY > bbox[1] + handleRadius && worldY < bbox[3] - handleRadius) {
-    return 'w';
-  }
-  if (Math.abs(worldX - bbox[2]) <= edgeTolerance && worldY > bbox[1] + handleRadius && worldY < bbox[3] - handleRadius) {
-    return 'e';
-  }
+  if (Math.abs(wy - y0) <= edgeTolerance && wx > x0 + handleRadius && wx < x2 - handleRadius) return 'n';
+  if (Math.abs(wy - y2) <= edgeTolerance && wx > x0 + handleRadius && wx < x2 - handleRadius) return 's';
+  if (Math.abs(wx - x0) <= edgeTolerance && wy > y0 + handleRadius && wy < y2 - handleRadius) return 'w';
+  if (Math.abs(wx - x2) <= edgeTolerance && wy > y0 + handleRadius && wy < y2 - handleRadius) return 'e';
 
   return null;
 }
 
 // ============================================================================
-// Connector endpoint dots (hitNearest + generator)
+// Connector endpoint dots
 // ============================================================================
 
 /** Screen-space hit radius for connector endpoint dots */
@@ -129,16 +91,51 @@ export interface EndpointHit {
   slot: Slot;
 }
 
-function* iterEndpointDotProbes(selectedIds: readonly string[]): Generator<HandleProbe<EndpointHit>> {
-  for (const id of selectedIds) {
-    const handle = getHandle(id);
-    if (!handle || handle.kind !== 'connector') continue;
-    yield { center: getEndpointEdgePosition(handle, 'start'), value: { connectorId: id, slot: SLOT_START } };
-    yield { center: getEndpointEdgePosition(handle, 'end'), value: { connectorId: id, slot: SLOT_END } };
-  }
-}
-
-/** Nearest connector endpoint dot within screen-space radius. */
+/**
+ * Nearest connector endpoint dot within screen-space radius. Two slots per
+ * connector are unrolled for monomorphism; corner-tie order matches the
+ * pre-refactor generator (walks `selectedIds` order, end-after-start within
+ * each connector).
+ *
+ * Allocation: zero per probed connector; one terminal `EndpointHit` per hit
+ * (returns `null` on miss).
+ *
+ * `getEndpointEdgePosition` still allocates a `Point` tuple per call — an
+ * `*Into(out)` variant in `core/connectors/anchor-atoms.ts` would close the
+ * last per-pointermove alloc on this path (out of scope here).
+ */
 export function hitEndpointDot(at: Point, selectedIds: readonly string[]): EndpointHit | null {
-  return hitNearest({ at, radius: { px: ENDPOINT_DOT_HIT_PX }, probes: iterEndpointDotProbes(selectedIds) });
+  const r = resolveRadius({ px: ENDPOINT_DOT_HIT_PX });
+  const r2 = r * r;
+  const px = at[0];
+  const py = at[1];
+  let bestD2 = Infinity;
+  let bestId: string | null = null;
+  let bestSlot: Slot = SLOT_START;
+
+  for (const id of selectedIds) {
+    const h = getHandle(id);
+    if (!h || h.kind !== 'connector') continue;
+    const startPos = getEndpointEdgePosition(h, 'start');
+    let dx = px - startPos[0];
+    let dy = py - startPos[1];
+    let d2 = dx * dx + dy * dy;
+    if (d2 <= r2 && d2 < bestD2) {
+      bestD2 = d2;
+      bestId = id;
+      bestSlot = SLOT_START;
+    }
+
+    const endPos = getEndpointEdgePosition(h, 'end');
+    dx = px - endPos[0];
+    dy = py - endPos[1];
+    d2 = dx * dx + dy * dy;
+    if (d2 <= r2 && d2 < bestD2) {
+      bestD2 = d2;
+      bestId = id;
+      bestSlot = SLOT_END;
+    }
+  }
+
+  return bestId === null ? null : { connectorId: bestId, slot: bestSlot };
 }
