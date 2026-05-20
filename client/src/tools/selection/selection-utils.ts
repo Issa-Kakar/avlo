@@ -107,7 +107,6 @@ export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyle
   return {
     color: color.value ?? '#262626',
     colorMixed: color.mixed,
-    colorSecond: color.mixed ? color.second : null,
     width: width.mixed ? null : width.value,
     fillColor: fill.value,
     fillColorMixed: fill.mixed,
@@ -128,7 +127,6 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
   return (
     a.color === b.color &&
     a.colorMixed === b.colorMixed &&
-    a.colorSecond === b.colorSecond &&
     a.width === b.width &&
     a.fillColor === b.fillColor &&
     a.fillColorMixed === b.fillColorMixed &&

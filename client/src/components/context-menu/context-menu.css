@@ -282,13 +282,6 @@
   min-width: 24px;
 }
 
-.ctx-size-item-value {
-  margin-left: auto;
-  color: #9ca3af;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
 /* ===== Filter Button ===== */
 
 .ctx-btn-filter {
@@ -350,32 +343,6 @@
 
 .ctx-btn-danger {
   color: #48525b;
-}
-
-/* ===== Size Label Button ===== */
-
-.ctx-size-label-btn {
-  height: 34px;
-  padding: 0 10px;
-  gap: 6px;
-  display: inline-flex;
-  align-items: center;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  outline: none;
-  font-family: var(--font-ui);
-  transition: background 150ms ease;
-}
-
-.ctx-size-label-btn:hover {
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.ctx-size-label-btn:focus-visible {
-  outline: 2px solid #3b82f6;
-  outline-offset: -1px;
 }
 
 /* ===== Color Picker Popover ===== */
@@ -637,4 +604,114 @@
 
 .ctx-submenu-fontsize .ctx-submenu-item {
   justify-content: center;
+}
+
+/* ===== Stroke / Connector Color — Teardrop Trigger ===== */
+
+.ctx-btn-teardrop {
+  width: 34px;
+  padding: 0;
+}
+
+.ctx-btn-teardrop svg {
+  width: 22px;
+  height: 22px;
+}
+
+.ctx-btn-teardrop[aria-expanded="true"],
+.ctx-btn-teardrop[aria-expanded="true"]:hover,
+.ctx-btn-teardrop[aria-expanded="true"]:active {
+  background: #1b1f22;
+}
+
+/* ===== Context Color Picker (toolbar picker on a light surface) ===== */
+
+.ctx-submenu-cp {
+  min-width: auto;
+  padding: 0;
+}
+
+.ctx-cp-grid {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.ctx-cp-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform 100ms ease;
+}
+
+.ctx-cp-swatch:hover {
+  transform: scale(1.1);
+}
+
+/* Near-white swatches blend into the white picker — a darker edge restores
+   contrast (mirror of the toolbar picker's white edge on near-black). */
+.ctx-cp-swatch[data-near-white] {
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+/* Selected swatch: white gap ring + a halo in the swatch's own color. */
+.ctx-cp-swatch.is-active {
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 4px var(--ctx-cp-ring);
+}
+
+/* ===== Stroke Width — Bars Trigger ===== */
+
+.ctx-btn-weight {
+  width: 34px;
+  padding: 0;
+  color: #48525b;
+}
+
+.ctx-btn-weight svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ctx-btn-weight[aria-expanded="true"],
+.ctx-btn-weight[aria-expanded="true"]:hover,
+.ctx-btn-weight[aria-expanded="true"]:active {
+  background: #1b1f22;
+  color: #fff;
+}
+
+/* ===== Stroke Width — Tier Menu ===== */
+
+.ctx-submenu-weight {
+  min-width: 170px;
+}
+
+.ctx-weight-item {
+  height: 36px;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #48525b;
+  white-space: nowrap;
+}
+
+.ctx-weight-item svg {
+  flex-shrink: 0;
+}
+
+/* Active tier: filled selected-toggle tone, white icon + label + check. */
+.ctx-weight-item-active,
+.ctx-weight-item-active:hover {
+  background: #282e34;
+  color: #fff;
+}
+
+.ctx-weight-check {
+  margin-left: auto;
 }

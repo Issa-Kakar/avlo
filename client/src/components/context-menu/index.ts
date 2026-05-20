@@ -28,5 +28,4 @@ export {
 } from './icons';
 export { MenuButton } from './MenuButton';
 export { ShapeTypeDropdown } from './ShapeTypeDropdown';
-export { SizeLabel } from './SizeLabel';
 export { TypefaceButton } from './TypefaceButton';

@@ -14,7 +14,8 @@
 > **Filter-menu vocabulary (alignment targets):**
 > - **Body / secondary text:** `#48525b`. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon. The menu's "everything else" color.
 > - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
-> - **Open-trigger bg:** `#1b1f22`. The "menu is hosting a submenu" state — distinct from the routine icon-toggle tone.
+> - **Open-trigger bg:** `#1b1f22`. The "menu is hosting a submenu" state — distinct from the routine icon-toggle tone. Also the open-state bg for the `StrokeColorControl` teardrop and `StrokeWidthControl` bars triggers.
+> - **Active / selected fill:** `#282e34`. The "this is the current value" tone — the stroke-width menu's active tier row today; the intended active state for routine icon toggles (font / alignment / shape-type pick) as they align. A different role from `#1b1f22` (submenu-host) — don't collapse them.
 > - **Open-trigger primary text:** pure white.
 > - **Open-trigger FILTER subtitle:** `#D4B89B` (warm sand). Intentional warm third pole in the otherwise cool slate palette; deliberately stays subordinate to white (~2× contrast hierarchy). `fill 150ms ease` transition.
 > - **Icons:** 20×20, sourced from `components/toolbar/icons/*` (not the legacy `context-menu/icons/FilterIcons.tsx` pictograms). `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
@@ -22,14 +23,16 @@
 > - **Labels singular:** `Stroke` / `Shape` / `Connector` / `Image`. Two-word singulars (`Code Block`, `Sticky Note`) untouched.
 > - **Trash button:** `.ctx-btn-danger` repointed to `#48525b` (class name kept — describes the destructive *action*; visual is now neutral). Mural 24-viewBox glyph in `icons/TrashIcon.tsx`. Hover override deleted; base `.ctx-btn:hover` carries it. Currently rendered for every kind via `CommonActionsGroup`; **planned** removal from per-kind menus, leaving it only in mixed. Don't preemptively delete.
 >
-> **Reserved (not yet wired):**
-> - `#282e34` — future "icon-clicked / selected toggle" bg for routine icon buttons (font / alignment / shape-type pick active). Strictly distinct from `#1b1f22` (submenu-host); do not collapse the two — they're different roles.
+> **Aligned to the new vocabulary:** `FilterObjectsDropdown` (the base), plus
+> `StrokeColorControl` (teardrop trigger → light-surface palette grid) and
+> `StrokeWidthControl` (bars trigger → tier menu). Stroke + connector selections
+> are fully off the legacy color/size widgets.
 >
 > **Surfaces still on legacy vocabulary** (their values below are not canon):
-> - Per-kind groups: `{Stroke,Shape,Text,Note,Connector,Code}StyleGroup`.
-> - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover`.
+> - Per-kind groups: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup` (`StrokeStyleGroup` + `ConnectorGroup` are aligned — see above).
+> - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover` (shape / text / note fill + shape border still use these).
 > - Dropdowns: `ShapeTypeDropdown`, `LanguageDropdown`, `AlignDropdown`, `NoteAlignDropdown`, `TypefaceButton`.
-> - `FontSizeStepper`, `SizeLabel`.
+> - `FontSizeStepper`.
 > - Bar shell — `.ctx-menu` blur / border / shadow / radius are untouched.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` via class-specific rules.
 > - Overflow `…` button — placeholder, no handler.
@@ -183,16 +186,16 @@ All bars end with: `| Trash | ... |` (the `...` overflow button has no functiona
 ### `strokesOnly`
 
 ```
-[Size S/M/L/XL] | [Color filled-circle]  |  Trash  ...
+[Width tier-menu] | [Color teardrop]  |  Trash  ...
 ```
 
-- **Size** — stroke width. Presets: 6=S, 10=M, 14=L, 18=XL. Non-preset values show "Size" with blank label.
-- **Color** — filled circle. Mixed colors show SVG diagonal split of first two. Dropdown: 9x2 color grid (18 colors).
+- **Width** — `StrokeWidthControl`. Bars-icon trigger → Thinnest / Thin / Thick / Thickest menu. Pen scale `4 / 7 / 10 / 13` (`toolbar/weights.ts` `STROKE_WEIGHTS`). Active tier row filled `#282e34`; off-preset widths leave no row active.
+- **Color** — `StrokeColorControl`. Teardrop trigger filled with the current color — a three-swatch drop when colors are mixed (no more half-circle split). Dropdown: 6-col palette grid mimicking the toolbar picker on a white surface (no dark bg, no custom-hex). Open-trigger bg `#1b1f22`.
 
 ### `shapesOnly`
 
 ```
-[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] | [NoteAlign] | [TextColor] [Highlight] | [Border hollow-circle] [Fill filled-circle] | [Size S/M/L/XL]  |  Trash  ...
+[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] | [NoteAlign] | [TextColor] [Highlight] | [Border hollow-circle] [Fill filled-circle] | [Width tier-menu]  |  Trash  ...
 ```
 
 Shapes now include the full text formatting suite for shape labels:
@@ -206,7 +209,7 @@ Shapes now include the full text formatting suite for shape labels:
 - **Highlight** — self-subscribes to `selectInlineHighlightColor`. Marker pen icon with colored bar.
 - **Border** — hollow circle variant. Dropdown: 9x2 grid. Calls `setSelectedColor`.
 - **Fill** — filled circle variant. Mixed fills show SVG diagonal split. Dropdown: 9x2 grid with no-fill slot. `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
-- **Size** — border/stroke width (rightmost). Same presets as strokes.
+- **Width** — border width (rightmost). `StrokeWidthControl` on the outline scale `2 / 4 / 6 / 8` — shapes and connectors share this scale (not the pen `4 / 7 / 10 / 13`).
 
 **Device-UI-store fallback for unlabeled shapes:** When a shape has no label, `computeStyles` returns `null` for `fontSize`/`labelColor`. `ShapeStyleGroup` reads `deviceTextSize` and `deviceTextColor` from `device-ui-store` as fallback values. This ensures the menu shows the values that would be used if the user starts typing to create a label — matching the "what you see is what you'd get" principle.
 
@@ -245,11 +248,11 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 ### `connectorsOnly`
 
 ```
-[Size S/M/L/XL] | [Color filled-circle]  |  Trash  ...
+[Width tier-menu] | [Color teardrop]  |  Trash  ...
 ```
 
-- **Size** — connector width. Presets: 2=S, 4=M, 6=L, 8=XL.
-- **Color** — same as strokes.
+- **Width** — `StrokeWidthControl`. Outline scale `2 / 4 / 6 / 8` (shared with shapes).
+- **Color** — `StrokeColorControl`, same as strokes.
 
 ### `codeOnly`
 
@@ -293,7 +296,8 @@ ContextMenu                         <- gate on menuOpen, renders null when close
 | `ColorPickerPopover` | `color, variant?, secondColor?, mode?, selectedColor?, onSelect?` | Dropdown: 9x2 grid. Fill mode adds no-fill slot. |
 | `TextColorPopover` | `color, onSelect?` | Dropdown: 9x2 grid. "A" icon trigger with color bar. |
 | `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. 4x2 rounded-square grid + none. |
-| `SizeLabel` | `value, kind, onSelect?` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
+| `StrokeColorControl` | `color, mixed, onSelect` | Stroke/connector color. Teardrop trigger (current color, or a three-swatch drop when `mixed`) → 6-col palette grid. Toolbar picker mimicked on a light surface. Open-trigger bg `#1b1f22`. |
+| `StrokeWidthControl` | `widths, value, onSelect` | Stroke/shape/connector width. Bars-icon trigger → four-tier menu (Thinnest…Thickest). Active tier row `#282e34`. `widths` is the per-kind 4-preset list. |
 | `FontSizeStepper` | `value, onDecrement?, onIncrement?, onSelectSize?` | Chevron up/down arrows + SVG text center value + dropdown of presets. |
 | `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Compact horizontal 3-icon dropdown. |
 | `NoteAlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign` + `textAlignV`. Two-row submenu: H-align (left/center/right) + divider + V-align (top/middle/bottom). |
@@ -304,7 +308,7 @@ ContextMenu                         <- gate on menuOpen, renders null when close
 | `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. 16x16 icon. |
 | `ItalicButton` | (internal memo) | Self-subscribes to `selectInlineItalic`. 16x16 icon. |
 
-### Dropdown Pattern (`useDropdown` hook, shared by 8 components)
+### Dropdown Pattern (`useDropdown` hook, shared by 12 components)
 
 All dropdowns use the `useDropdown()` hook which encapsulates:
 - `open` state + `containerRef` for outside-click detection
@@ -338,8 +342,7 @@ Dropdown positioned via CSS absolute (`ctx-submenu` class, centered or left-alig
 ```typescript
 interface SelectedStyles {
   color: string;                  // First object's stroke/border color (default '#262626')
-  colorMixed: boolean;            // Multiple different stroke colors
-  colorSecond: string | null;     // Second stroke color for split indicator
+  colorMixed: boolean;            // Multiple different stroke colors (strokes, connectors)
   width: number | null;           // Uniform width or null if mixed
   fillColor: string | null;       // First shape/text/note fill color, null = no fill
   fillColorMixed: boolean;        // Multiple different fill colors
@@ -489,7 +492,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `ColorPickerPopover.tsx` | 9x2 color grid dropdown. `mode='fill'` adds no-fill slot. |
 | `TextColorPopover.tsx` | 9x2 color grid. "A" icon trigger with color bar. |
 | `HighlightPickerPopover.tsx` | Self-subscribing. 4x2 rounded-square grid + none swatch. |
-| `SizeLabel.tsx` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
+| `StrokeColorControl.tsx` | Stroke/connector color — teardrop trigger + light-surface palette grid (toolbar picker mimic). |
+| `StrokeWidthControl.tsx` | Stroke/shape/connector width — bars trigger + Thinnest…Thickest tier menu. |
 | `FontSizeStepper.tsx` | Chevron up/down arrows + SVG center value + preset dropdown |
 | `AlignDropdown.tsx` | Self-subscribing alignment dropdown (3 H-align icons, horizontal compact submenu) |
 | `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Two-row submenu: left/center/right + divider + top/middle/bottom. |
@@ -513,6 +517,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`, `IconStickySquareFold` |
 | `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) |
 | `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) |
+| `ColorTeardrop.tsx` | `ColorTeardrop` (props: `color`, `mixed?`) — solid color drop, or a three-swatch drop when `mixed` |
+| `StrokeWidthIcons.tsx` | `IconWeightBars` (trigger) + `IconWeight1`–`IconWeight4` (diagonal tier glyphs) |
 | `TrashIcon.tsx` | `IconTrash` |
 
 **Convention:** `fill="currentColor"` with fill-based paths (not stroke), except step/chevron arrows which use `stroke="currentColor"`. SVG text elements use `textRendering="geometricPrecision"` to prevent subpixel shift during scale animation. `IconStepUp`/`IconStepDown` are 10x6 viewBox chevron arrows, rendered at 12x7 CSS size inside 18x14 buttons. Vertical alignment icons (`IconAlignVTop/Middle/Bottom`) use 24x24 viewBox Mural SVG paths.
@@ -523,6 +529,9 @@ All property mutations (including style-only changes like color, fill, opacity) 
 
 - `.ctx-btn-sq`: 34x34, padding 0. Inner SVG 18x18.
 - `.ctx-btn-color`: 34x34. Inner SVG 20x20.
+- `.ctx-btn-teardrop` / `.ctx-btn-weight`: 34x34 color / width triggers. `[aria-expanded="true"]` → bg `#1b1f22` (the weight bars icon also flips to white).
+- `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; `.is-active` adds a check + own-color halo ring.
+- `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu. `.ctx-weight-item-active` fills the current tier row `#282e34`, white icon/label/check.
 - `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x14, SVG 12x7.
 - `.ctx-fontsize-value`: 32px min-width, 28px height, SVG 30x16 viewBox.
 - `.ctx-submenu-fontsize`: 56px min-width, items center-aligned (`justify-content: center`).

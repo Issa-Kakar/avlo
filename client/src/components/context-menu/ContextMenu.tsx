@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import './context-menu.css';
+import { CONNECTOR_WEIGHTS, STROKE_WEIGHTS } from '@/components/toolbar/weights';
 import { getHandleKind } from '@/runtime/room-runtime';
 import { selectTextColor, selectTextSize, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { SelectionStore } from '@/stores/selection-store';
@@ -37,9 +38,15 @@ import { LanguageDropdown } from './LanguageDropdown';
 import { MenuButton } from './MenuButton';
 import { NoteAlignDropdown } from './NoteAlignDropdown';
 import { ShapeTypeDropdown } from './ShapeTypeDropdown';
-import { SizeLabel } from './SizeLabel';
+import { StrokeColorControl } from './StrokeColorControl';
+import { StrokeWidthControl } from './StrokeWidthControl';
 import { TextColorPopover } from './TextColorPopover';
 import { TypefaceButton } from './TypefaceButton';
+
+// Pen strokes keep the marker scale (4/7/10/13); shapes + connectors share the
+// thin-outline scale (2/4/6/8).
+const STROKE_WIDTHS = STROKE_WEIGHTS.map((w) => w.width);
+const OUTLINE_WIDTHS = CONNECTOR_WEIGHTS.map((w) => w.width);
 
 // === Selectors (stable module-level references) ===
 
@@ -51,7 +58,6 @@ const selectKindCounts = (s: SelectionStore) => s.kindCounts;
 const selectStrokeStyles = (s: SelectionStore) => ({
   color: s.selectedStyles.color,
   colorMixed: s.selectedStyles.colorMixed,
-  colorSecond: s.selectedStyles.colorSecond,
   width: s.selectedStyles.width,
 });
 const selectShapeStyles = (s: SelectionStore) => ({
@@ -73,7 +79,6 @@ const selectTextStyles = (s: SelectionStore) => ({
 const selectConnectorStyles = (s: SelectionStore) => ({
   color: s.selectedStyles.color,
   colorMixed: s.selectedStyles.colorMixed,
-  colorSecond: s.selectedStyles.colorSecond,
   width: s.selectedStyles.width,
 });
 const selectNoteStyles = (s: SelectionStore) => ({
@@ -88,19 +93,12 @@ const MixedFilterGroup = memo(function MixedFilterGroup() {
 });
 
 const StrokeStyleGroup = memo(function StrokeStyleGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectStrokeStyles));
+  const { color, colorMixed, width } = useSelectionStore(useShallow(selectStrokeStyles));
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
+      <StrokeWidthControl widths={STROKE_WIDTHS} value={width} onSelect={setSelectedWidth} />
       <div className="ctx-divider" />
-      <ColorPickerPopover
-        color={color}
-        variant="filled"
-        secondColor={colorMixed ? colorSecond : undefined}
-        mode="stroke"
-        selectedColor={color}
-        onSelect={setSelectedColor}
-      />
+      <StrokeColorControl color={color} mixed={colorMixed} onSelect={setSelectedColor} />
     </ButtonGroup>
   );
 });
@@ -142,7 +140,7 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
         onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
       />
       <div className="ctx-divider" />
-      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
+      <StrokeWidthControl widths={OUTLINE_WIDTHS} value={width} onSelect={setSelectedWidth} />
     </ButtonGroup>
   );
 });
@@ -235,19 +233,12 @@ const CodeStyleGroup = memo(function CodeStyleGroup() {
 });
 
 const ConnectorGroup = memo(function ConnectorGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectConnectorStyles));
+  const { color, colorMixed, width } = useSelectionStore(useShallow(selectConnectorStyles));
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
+      <StrokeWidthControl widths={OUTLINE_WIDTHS} value={width} onSelect={setSelectedWidth} />
       <div className="ctx-divider" />
-      <ColorPickerPopover
-        color={color}
-        variant="filled"
-        secondColor={colorMixed ? colorSecond : undefined}
-        mode="stroke"
-        selectedColor={color}
-        onSelect={setSelectedColor}
-      />
+      <StrokeColorControl color={color} mixed={colorMixed} onSelect={setSelectedColor} />
     </ButtonGroup>
   );
 });
