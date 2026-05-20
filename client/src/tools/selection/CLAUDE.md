@@ -463,7 +463,7 @@ Per object in ULID order:
 | Kind | uniform | reflow | edgePin (fallback) |
 |---|---|---|---|
 | shape | Build fresh Path2D from `entry.out.frame`, guard on bbox size | — | — |
-| image | Bitmap at `entry.out.frame` | — | — |
+| image | Bitmap at `entry.out.bbox` | — | — |
 | stroke | `ctx.scale(factor)` on cached Path2D | — | `renderTranslatedEntry` |
 | text | Cached layout + `ctx.scale(ratio)` around `out.origin` | Render `entry.out.layout` at `out.origin` | `renderTranslatedEntry` |
 | code | Cached layout + `ctx.scale(ratio)` around `out.bbox` corner | Render `entry.out.layout` at `out.origin` | `renderTranslatedEntry` |

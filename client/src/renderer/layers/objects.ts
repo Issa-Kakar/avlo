@@ -42,7 +42,6 @@ import { paintShapeFrame } from './shape-preview';
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateHandles: ObjectHandle[] = [];
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
-const _imageFrameScratch: FrameTuple = [0, 0, 0, 0];
 
 // Per-frame editing-id snapshot, written once at the top of `drawObjects` and
 // read by leaf `draw*` functions. Avoids one `useSelectionStore.getState()`
@@ -391,38 +390,36 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   renderCodeLayout(ctx, layout, r.originX, r.originY, r.fontSize, spans, source, title, output, outputCache);
 }
 
-function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOverride?: FrameTuple): void {
+/**
+ * Draw an image filling `bbox`. Image bbox === frame — zero stroke padding
+ * (`computeBBoxForInto` case 'image'), so the envelope read as `[x, y, w, h]`
+ * IS the draw rect; `hit-dispatch.ts` derives the hit-rect the same way.
+ * `bbox` defaults to the live `handle.bbox`; the scale preview passes the
+ * transformed `entry.out.bbox` — one rect shape, both call sites.
+ */
+function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, bbox: BBoxTuple = handle.bbox): void {
   const meta = getImageMeta(handle.id);
   if (!meta) return; // cold-miss race — observer fills the cache before render
   const bitmap = getBitmap(meta.assetId);
 
-  let frame: FrameTuple;
-  if (frameOverride) {
-    frame = frameOverride;
-  } else {
-    // Image bbox === frame, zero padding — hit-dispatch.ts derives the hit-rect
-    // from the same handle envelope, so the draw rect tracks it 1:1.
-    const b = handle.bbox;
-    _imageFrameScratch[0] = b[0];
-    _imageFrameScratch[1] = b[1];
-    _imageFrameScratch[2] = b[2] - b[0];
-    _imageFrameScratch[3] = b[3] - b[1];
-    frame = _imageFrameScratch;
-  }
+  const x = bbox[0];
+  const y = bbox[1];
+  const w = bbox[2] - bbox[0];
+  const h = bbox[3] - bbox[1];
 
   ctx.save();
   ctx.globalAlpha = readImageOpacity(handle.y);
   if (bitmap) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, frame[0], frame[1], frame[2], frame[3]);
+    ctx.drawImage(bitmap, x, y, w, h);
   } else {
     // Placeholder: light gray rect with subtle border
     ctx.fillStyle = '#f0f0f0';
-    ctx.fillRect(frame[0], frame[1], frame[2], frame[3]);
+    ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = '#d1d5db';
     ctx.lineWidth = 1;
-    ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
+    ctx.strokeRect(x, y, w, h);
   }
   ctx.restore();
 }
@@ -463,7 +460,7 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
     case 'image': {
       // freeze cannot return null (verified 2026-05-19: image Y.Map always carries a frame)
       const entry = getScaleEntry('image', handle.id)!;
-      drawImage(ctx, handle, entry.out.frame);
+      drawImage(ctx, handle, entry.out.bbox);
       break;
     }
 
