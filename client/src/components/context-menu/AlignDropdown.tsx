@@ -37,7 +37,7 @@ export function AlignDropdown() {
                 close();
               }}
             >
-              <Icon width={18} height={18} />
+              <Icon width={20} height={20} />
             </button>
           ))}
         </div>

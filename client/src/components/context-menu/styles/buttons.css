@@ -4,15 +4,15 @@
    declaration order, so the whole .ctx-btn family stays in this one file. */
 
 .ctx-btn {
-  height: 34px;
-  min-width: 34px;
+  height: 32px;
+  min-width: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0 6px;
   background: transparent;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   color: var(--ctx-text);
   cursor: pointer;
   font-family: var(--font-ui);
@@ -47,7 +47,7 @@
 /* ===== Button Variants ===== */
 
 .ctx-btn-sq {
-  width: 34px;
+  width: 32px;
   padding: 0;
 }
 
@@ -57,7 +57,7 @@
 }
 
 .ctx-btn-color {
-  width: 34px;
+  width: 32px;
   padding: 0;
 }
 

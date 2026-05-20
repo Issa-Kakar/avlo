@@ -60,9 +60,7 @@ export const ShapeMenu = memo(function ShapeMenu() {
         <div className="ctx-divider" />
         <BoldButton />
         <ItalicButton />
-        <div className="ctx-divider" />
         <NoteAlignDropdown />
-        <div className="ctx-divider" />
         <TextColorPopover color={effectiveLabelColor} onSelect={setSelectedTextColor} />
         <HighlightPickerPopover onSelect={setSelectedHighlight} />
         <div className="ctx-divider" />

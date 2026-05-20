@@ -50,9 +50,7 @@ export const TextMenu = memo(function TextMenu() {
         <div className="ctx-divider" />
         <BoldButton />
         <ItalicButton />
-        <div className="ctx-divider" />
         <AlignDropdown />
-        <div className="ctx-divider" />
         <TextColorPopover color={effectiveColor} onSelect={setSelectedTextColor} />
         <HighlightPickerPopover onSelect={setSelectedHighlight} />
         <div className="ctx-divider" />

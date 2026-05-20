@@ -1,14 +1,14 @@
 /* ===== Context Menu — Shape Type Dropdown ===== */
 
 .ctx-btn-type {
-  height: 34px;
+  height: 32px;
   padding: 0 8px;
   gap: 6px;
   display: inline-flex;
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: 7px;
+  border-radius: 8px;
   cursor: pointer;
   outline: none;
   font-family: var(--font-ui);

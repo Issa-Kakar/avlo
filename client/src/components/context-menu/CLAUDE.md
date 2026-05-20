@@ -36,7 +36,7 @@
 > - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover` (shape / text / note fill + shape border still use these).
 > - Dropdowns: `ShapeTypeDropdown`, `LanguageDropdown`.
 > - `FontSizeStepper`.
-> - Bar shell — `.ctx-menu` blur / border / shadow untouched; `.ctx-btn` radius bumped 6 → 7px.
+> - Bar shell — `.ctx-menu` blur / border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
 > - Overflow `…` button — placeholder, no handler.
 >
@@ -198,7 +198,7 @@ All bars end with: `| Trash | ... |` (the `...` overflow button has no functiona
 ### `shapesOnly`
 
 ```
-[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] | [NoteAlign] | [TextColor] [Highlight] | [Border hollow-circle] [Fill filled-circle] | [Width tier-menu]  |  Trash  ...
+[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [NoteAlign] [TextColor] [Highlight] | [Border hollow-circle] [Fill filled-circle] | [Width tier-menu]  |  Trash  ...
 ```
 
 Shapes now include the full text formatting suite for shape labels:
@@ -219,7 +219,7 @@ Shapes now include the full text formatting suite for shape labels:
 ### `textOnly`
 
 ```
-[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] | [Align] | [TextColor] [Highlight] | [Fill filled-circle]  |  Trash  ...
+[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [Align] [TextColor] [Highlight] | [Fill filled-circle]  |  Trash  ...
 ```
 
 - **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text<->shape conversion). Includes Sticky Note item.
@@ -234,7 +234,7 @@ Shapes now include the full text formatting suite for shape labels:
 ### `notesOnly`
 
 ```
-[NoteType] | [Typeface] | [B] [I] | [NoteAlign] | [Highlight] | [Fill filled-circle]  |  Trash  ...
+[NoteType] | [Typeface] | [B] [I] [NoteAlign] [Highlight] | [Fill filled-circle]  |  Trash  ...
 ```
 
 Sticky notes have a dedicated bar with no text color control (note text is hardcoded `#1a1a1a`) and no font size stepper (font size is derived from scale):
@@ -552,10 +552,10 @@ absolutely-positioned submenus, inherits them): `--ctx-engaged` (#1b1f22),
 overlay scale (`--ctx-black-a05` … `--ctx-black-a20`). Tokens are pure
 indirection — identical pixels.
 
-- `.ctx-btn-sq`: 34x34, padding 0. Inner SVG 18x18.
+- `.ctx-btn-sq`: 32x32, padding 0. Inner SVG 18x18.
 - `.ctx-btn-fmt`: bold / italic toggles + align triggers. Inner SVG 20x20. `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
-- `.ctx-btn-color`: 34x34. Inner SVG 20x20.
-- `.ctx-btn-teardrop` / `.ctx-btn-weight`: 34x34 color / width triggers. `.ctx-btn-weight` icon rests at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.
+- `.ctx-btn-color`: 32x32. Inner SVG 20x20.
+- `.ctx-btn-teardrop` / `.ctx-btn-weight`: 32x32 color / width triggers. `.ctx-btn-weight` icon rests at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.
 - `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; `.is-active` adds a check + own-color halo ring.
 - `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu — `padding: 8px`, `border-radius: 12px`, 3px row gap. Rows left-aligned (icon · word · inline checkmark). `.ctx-weight-item-active` fills the tier row `#282e34`, white icon/label/check.
 - `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x14, SVG 12x7.

@@ -54,7 +54,7 @@ export function NoteAlignDropdown() {
                   close();
                 }}
               >
-                <Icon width={18} height={18} />
+                <Icon width={20} height={20} />
               </button>
             ))}
           </div>
@@ -70,7 +70,7 @@ export function NoteAlignDropdown() {
                   close();
                 }}
               >
-                <Icon width={18} height={18} />
+                <Icon width={20} height={20} />
               </button>
             ))}
           </div>

@@ -27,9 +27,7 @@ export const NoteMenu = memo(function NoteMenu() {
         <div className="ctx-divider" />
         <BoldButton />
         <ItalicButton />
-        <div className="ctx-divider" />
         <NoteAlignDropdown />
-        <div className="ctx-divider" />
         <HighlightPickerPopover onSelect={setSelectedHighlight} />
         <div className="ctx-divider" />
         <ColorPickerPopover

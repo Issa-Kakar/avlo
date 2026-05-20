@@ -2,14 +2,14 @@
 
 .ctx-btn-font {
   padding: 0 6px;
-  gap: 6px;
+  gap: 8px;
   min-width: 56px;
 }
 
 /* Font-picker chevron — Mural filled glyph, solid --ctx-engaged-tier ink. */
 .ctx-font-chevron {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   color: var(--ctx-engaged-tier);
   flex-shrink: 0;
 }
@@ -19,11 +19,14 @@
   transform: none;
   min-width: 150px;
   border-radius: 12px;
+  padding: 8px;
 }
 
 .ctx-submenu-font .ctx-type-item {
-  height: 40px;
+  height: auto;
+  padding: 6px 8px;
   font-size: 15px;
+  line-height: 1.4;
 }
 
 /* Active font row — selected typeface fills --ctx-engaged, name + check go white. */
