@@ -36,7 +36,7 @@
 > - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover` (shape / text / note fill + shape border still use these).
 > - Dropdowns: `ShapeTypeDropdown`, `LanguageDropdown`.
 > - `FontSizeStepper`.
-> - Bar shell — `.ctx-menu` blur / border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
+> - Bar shell — `.ctx-menu` border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
 > - Overflow `…` button — placeholder, no handler.
 >
