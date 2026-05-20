@@ -148,8 +148,8 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
 const BoldButton = memo(function BoldButton() {
   const bold = useSelectionStore(selectInlineBold);
   return (
-    <MenuButton className="ctx-btn-sq" active={bold} onClick={toggleSelectedBold}>
-      <IconBold style={{ width: 16, height: 16 }} />
+    <MenuButton className="ctx-btn-sq ctx-btn-fmt" active={bold} onClick={toggleSelectedBold}>
+      <IconBold />
     </MenuButton>
   );
 });
@@ -157,8 +157,8 @@ const BoldButton = memo(function BoldButton() {
 const ItalicButton = memo(function ItalicButton() {
   const italic = useSelectionStore(selectInlineItalic);
   return (
-    <MenuButton className="ctx-btn-sq" active={italic} onClick={toggleSelectedItalic}>
-      <IconItalic style={{ width: 16, height: 16 }} />
+    <MenuButton className="ctx-btn-sq ctx-btn-fmt" active={italic} onClick={toggleSelectedItalic}>
+      <IconItalic />
     </MenuButton>
   );
 });

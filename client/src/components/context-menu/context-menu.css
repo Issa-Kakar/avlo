@@ -29,7 +29,7 @@
   padding: 0 6px;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   color: #374151;
   cursor: pointer;
   font-family: var(--font-ui);
@@ -83,6 +83,23 @@
   height: 20px;
 }
 
+/* ===== Format buttons — bold / italic toggles + align trigger =====
+   Engaged (active toggle or open dropdown) fills #1b1f22, icon flips white. */
+
+.ctx-btn-fmt svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ctx-btn-fmt.active,
+.ctx-btn-fmt.active:hover,
+.ctx-btn-fmt[aria-expanded="true"],
+.ctx-btn-fmt[aria-expanded="true"]:hover,
+.ctx-btn-fmt[aria-expanded="true"]:active {
+  background: #1b1f22;
+  color: #fff;
+}
+
 /* Color button with dropdown chevron */
 .ctx-btn-color-dd {
   width: 46px;
@@ -104,8 +121,16 @@
 
 .ctx-btn-font {
   padding: 0 6px;
-  gap: 4px;
+  gap: 6px;
   min-width: 56px;
+}
+
+/* Font-picker chevron — Mural filled glyph, solid #282e34 ink. */
+.ctx-font-chevron {
+  width: 12px;
+  height: 12px;
+  color: #282e34;
+  flex-shrink: 0;
 }
 
 /* ===== Divider ===== */
@@ -417,7 +442,7 @@
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   cursor: pointer;
   outline: none;
   font-family: var(--font-ui);
@@ -443,11 +468,19 @@
   left: 0;
   transform: none;
   min-width: 150px;
+  border-radius: 12px;
 }
 
 .ctx-submenu-font .ctx-type-item {
   height: 40px;
   font-size: 15px;
+}
+
+/* Active font row — selected typeface fills #1b1f22, name + check go white. */
+.ctx-submenu-font .ctx-submenu-item-active,
+.ctx-submenu-font .ctx-submenu-item-active:hover {
+  background: #1b1f22;
+  color: #fff;
 }
 
 /* ===== Alignment Dropdown ===== */
@@ -478,14 +511,15 @@
   background: rgba(0, 0, 0, 0.05);
 }
 
-.ctx-align-item-active {
-  background: rgba(59, 130, 246, 0.08);
-  color: #3b82f6;
+.ctx-align-item-active,
+.ctx-align-item-active:hover {
+  background: #1b1f22;
+  color: #fff;
 }
 
 .ctx-align-item svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 
 .ctx-submenu-note-align {
@@ -494,7 +528,8 @@
   min-width: auto;
   padding: 4px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: 2px;
 }
 
@@ -503,10 +538,12 @@
   gap: 2px;
 }
 
+/* Vertical separator between the H-align and V-align groups (flat row). */
 .ctx-align-divider {
-  height: 1px;
-  background: rgba(0, 0, 0, 0.1);
-  margin: 2px 0;
+  width: 1px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.12);
+  margin: 0 4px;
 }
 
 /* biome-ignore lint/style/noDescendingSpecificity: lint-false-positive —
@@ -671,7 +708,7 @@
 .ctx-btn-weight {
   width: 34px;
   padding: 0;
-  color: #48525b;
+  color: #1b1f22;
 }
 
 .ctx-btn-weight svg {
@@ -689,12 +726,20 @@
 /* ===== Stroke Width — Tier Menu ===== */
 
 .ctx-submenu-weight {
-  min-width: 170px;
+  min-width: 140px;
+  border-radius: 12px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
+/* Rows stay left-aligned (consistent icon/word x across rows); the check
+   sits inline after the word on the active row, not pinned to the edge. */
 .ctx-weight-item {
   height: 36px;
   gap: 10px;
+  padding: 0 10px;
   font-size: 12px;
   font-weight: 700;
   color: #48525b;
@@ -710,8 +755,4 @@
 .ctx-weight-item-active:hover {
   background: #282e34;
   color: #fff;
-}
-
-.ctx-weight-check {
-  margin-left: auto;
 }

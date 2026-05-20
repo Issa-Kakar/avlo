@@ -3,26 +3,20 @@ import type React from 'react';
 type SvgProps = React.SVGProps<SVGSVGElement>;
 
 export const IconAlignTextLeft = (props: SvgProps) => (
-  <svg viewBox="1 2 14 12" fill="currentColor" aria-hidden="true" {...props}>
-    <rect x="2" y="3" width="12" height="2" rx="1" />
-    <rect x="2" y="7" width="8" height="2" rx="1" />
-    <rect x="2" y="11" width="10" height="2" rx="1" />
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M5 5a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2H5Zm0 8a1 1 0 1 0 0 2h14a1 1 0 1 0 0-2H5Zm-1-3a1 1 0 0 1 1-1h8a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1Zm1 7a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2H5Z" />
   </svg>
 );
 
 export const IconAlignTextCenter = (props: SvgProps) => (
-  <svg viewBox="1 2 14 12" fill="currentColor" aria-hidden="true" {...props}>
-    <rect x="2" y="3" width="12" height="2" rx="1" />
-    <rect x="4" y="7" width="8" height="2" rx="1" />
-    <rect x="3" y="11" width="10" height="2" rx="1" />
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M5 5a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2H5Zm0 8a1 1 0 1 0 0 2h14a1 1 0 1 0 0-2H5Zm2-3a1 1 0 0 1 1-1h8a1 1 0 1 1 0 2H8a1 1 0 0 1-1-1Zm1 7a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2H8Z" />
   </svg>
 );
 
 export const IconAlignTextRight = (props: SvgProps) => (
-  <svg viewBox="1 2 14 12" fill="currentColor" aria-hidden="true" {...props}>
-    <rect x="2" y="3" width="12" height="2" rx="1" />
-    <rect x="6" y="7" width="8" height="2" rx="1" />
-    <rect x="4" y="11" width="10" height="2" rx="1" />
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M5 5a1 1 0 0 0 0 2h14a1 1 0 1 0 0-2H5Zm0 8a1 1 0 1 0 0 2h14a1 1 0 1 0 0-2H5Zm5-3a1 1 0 0 1 1-1h8a1 1 0 1 1 0 2h-8a1 1 0 0 1-1-1Zm1 7a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-8Z" />
   </svg>
 );
 

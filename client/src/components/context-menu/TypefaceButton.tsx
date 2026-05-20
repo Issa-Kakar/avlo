@@ -4,7 +4,7 @@ import { selectTextFontFamily, useDeviceUIStore } from '@/stores/device-ui-store
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedFontFamily } from '@/tools/selection/selection-actions';
-import { IconCheck } from './icons/UtilityIcons';
+import { IconCheck, IconChevronDownFilled } from './icons/UtilityIcons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
@@ -30,10 +30,11 @@ export function TypefaceButton() {
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton className="ctx-btn-font" onMouseDown={toggle} aria-expanded={open}>
         <svg width={40} height={16} viewBox="0 0 40 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
-          <text x="0" y="13" fill="#374151" fontSize="16" fontWeight="500" fontFamily={cssFallback} textRendering="geometricPrecision">
+          <text x="0" y="13" fill="#282e34" fontSize="16" fontWeight="500" fontFamily={cssFallback} textRendering="geometricPrecision">
             {current.display}
           </text>
         </svg>
+        <IconChevronDownFilled className="ctx-font-chevron" />
       </MenuButton>
 
       {open && (

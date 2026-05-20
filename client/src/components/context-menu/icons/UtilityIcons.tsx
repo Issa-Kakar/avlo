@@ -8,6 +8,13 @@ export const IconChevronDown = (props: SvgProps) => (
   </svg>
 );
 
+/** Mural filled down-chevron (chevronUpFilled, mirrored). viewBox tight to the glyph. */
+export const IconChevronDownFilled = (props: SvgProps) => (
+  <svg viewBox="6.293 9 11.414 6.707" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M6.293 10.707A1 1 0 0 1 7 9h10a1 1 0 0 1 .707 1.707l-5 5a1 1 0 0 1-1.414 0l-5-5Z" />
+  </svg>
+);
+
 export const IconMinus = (props: SvgProps) => (
   <svg viewBox="0 0 12 12" fill="none" aria-hidden="true" {...props}>
     <path d="M2.5 6H9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -29,8 +36,8 @@ export const IconMoreDots = (props: SvgProps) => (
 );
 
 export const IconCheck = (props: SvgProps) => (
-  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
-    <path d="M12.207 4.793a1 1 0 0 1 0 1.414l-5 5a1 1 0 0 1-1.414 0l-2.5-2.5a1 1 0 1 1 1.414-1.414L6.5 9.086l4.293-4.293a1 1 0 0 1 1.414 0Z" />
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M18.842 5.41a1.5 1.5 0 0 1 .479 2.067l-6.632 10.63a2 2 0 0 1-3.176.288L5.061 13.5a1.5 1.5 0 0 1 .1-2.119l.37-.336a1.5 1.5 0 0 1 2.119.1l2.896 3.184a.25.25 0 0 0 .397-.036l5.408-8.669a1.5 1.5 0 0 1 2.067-.478l.424.264Z" />
   </svg>
 );
 

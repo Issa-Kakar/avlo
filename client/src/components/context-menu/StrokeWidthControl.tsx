@@ -42,7 +42,7 @@ export function StrokeWidthControl({ widths, value, onSelect }: StrokeWidthContr
               >
                 <Icon width={20} height={20} />
                 <span>{TIER_LABELS[i]}</span>
-                {active && <IconCheck className="ctx-weight-check" width={15} height={15} />}
+                {active && <IconCheck width={18} height={18} />}
               </button>
             );
           })}

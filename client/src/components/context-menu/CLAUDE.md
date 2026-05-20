@@ -14,8 +14,8 @@
 > **Filter-menu vocabulary (alignment targets):**
 > - **Body / secondary text:** `#48525b`. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon. The menu's "everything else" color.
 > - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
-> - **Open-trigger bg:** `#1b1f22`. The "menu is hosting a submenu" state — distinct from the routine icon-toggle tone. Also the open-state bg for the `StrokeColorControl` teardrop and `StrokeWidthControl` bars triggers.
-> - **Active / selected fill:** `#282e34`. The "this is the current value" tone — the stroke-width menu's active tier row today; the intended active state for routine icon toggles (font / alignment / shape-type pick) as they align. A different role from `#1b1f22` (submenu-host) — don't collapse them.
+> - **Engaged dark fill:** `#1b1f22`, white text/icons. The "this control is engaged" tone — open-state triggers (`FilterObjectsDropdown`, the `StrokeColorControl` teardrop, the `StrokeWidthControl` bars, the align triggers), active toggles (bold / italic), and the active selected row inside a dropdown (align submenu item, font picker row). An earlier doc split `#1b1f22` (submenu-host) from `#282e34` (active value) — that split is collapsed; `#1b1f22` now covers both.
+> - **Stroke-width active tier:** `#282e34`, white. The lone remaining use of this slightly-lighter dark — `.ctx-weight-item-active` only. Not yet reconciled to `#1b1f22`.
 > - **Open-trigger primary text:** pure white.
 > - **Open-trigger FILTER subtitle:** `#D4B89B` (warm sand). Intentional warm third pole in the otherwise cool slate palette; deliberately stays subordinate to white (~2× contrast hierarchy). `fill 150ms ease` transition.
 > - **Icons:** 20×20, sourced from `components/toolbar/icons/*` (not the legacy `context-menu/icons/FilterIcons.tsx` pictograms). `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
@@ -23,18 +23,21 @@
 > - **Labels singular:** `Stroke` / `Shape` / `Connector` / `Image`. Two-word singulars (`Code Block`, `Sticky Note`) untouched.
 > - **Trash button:** `.ctx-btn-danger` repointed to `#48525b` (class name kept — describes the destructive *action*; visual is now neutral). Mural 24-viewBox glyph in `icons/TrashIcon.tsx`. Hover override deleted; base `.ctx-btn:hover` carries it. Currently rendered for every kind via `CommonActionsGroup`; **planned** removal from per-kind menus, leaving it only in mixed. Don't preemptively delete.
 >
-> **Aligned to the new vocabulary:** `FilterObjectsDropdown` (the base), plus
-> `StrokeColorControl` (teardrop trigger → light-surface palette grid) and
-> `StrokeWidthControl` (bars trigger → tier menu). Stroke + connector selections
-> are fully off the legacy color/size widgets.
+> **Aligned to the new vocabulary:** `FilterObjectsDropdown` (the base);
+> `StrokeColorControl` + `StrokeWidthControl` (teardrop / bars triggers); and
+> the text-formatting slice — bold / italic, `AlignDropdown`, `NoteAlignDropdown`,
+> `TypefaceButton` — reskinned to Mural glyphs with `.ctx-btn-fmt` engaged
+> states. Stroke + connector selections are fully off the legacy color/size
+> widgets. (The text slice still has tweaks pending — values are current, not
+> final.)
 >
 > **Surfaces still on legacy vocabulary** (their values below are not canon):
-> - Per-kind groups: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup` (`StrokeStyleGroup` + `ConnectorGroup` are aligned — see above).
+> - Per-kind group *layout* is unchanged: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup`. The bold/italic/align/typeface controls inside them are reskinned; the color popovers + font-size stepper are not.
 > - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover` (shape / text / note fill + shape border still use these).
-> - Dropdowns: `ShapeTypeDropdown`, `LanguageDropdown`, `AlignDropdown`, `NoteAlignDropdown`, `TypefaceButton`.
+> - Dropdowns: `ShapeTypeDropdown`, `LanguageDropdown`.
 > - `FontSizeStepper`.
-> - Bar shell — `.ctx-menu` blur / border / shadow / radius are untouched.
-> - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` via class-specific rules.
+> - Bar shell — `.ctx-menu` blur / border / shadow untouched; `.ctx-btn` radius bumped 6 → 7px.
+> - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
 > - Overflow `…` button — placeholder, no handler.
 >
 > **Task scope comes from the prompt, not this doc.** The body below describes
@@ -201,10 +204,10 @@ All bars end with: `| Trash | ... |` (the `...` overflow button has no functiona
 Shapes now include the full text formatting suite for shape labels:
 
 - **ShapeType** — leftmost. Shows current type icon, or composite `IconShapes` when mixed/null. Dropdown: Rectangle, Circle, Diamond, Rounded, Text, Sticky Note (text/note are no-op placeholders). Calls `setSelectedShapeType(key)`.
-- **Typeface** — self-subscribing. Shows current font rendered in its own typeface. Dropdown: 4 items (Draw/Inter/Lora/Mono). Calls `setSelectedFontFamily(family)`. Persists to `device-ui-store.textFontFamily`.
+- **Typeface** — self-subscribing. Trigger: current font in its own typeface + a filled down-chevron, both `#282e34`; the trigger stays light when open. Dropdown: 4 items (Draw/Inter/Lora/Mono), the active row filled `#1b1f22` with a checkmark. Calls `setSelectedFontFamily(family)`. Persists to `device-ui-store.textFontFamily`.
 - **FontSize** — stepper with dropdown. `IconStepUp`/`IconStepDown` chevron arrows (not +/-). Display range: 1-999. Stepper steps through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. Dropdown lists all presets with checkmark. Dropdown items center-aligned (`ctx-submenu-fontsize` with `justify-content: center`).
-- **Bold** / **Italic** — self-subscribing `memo` components. Active state (blue) when entire selection has the style applied uniformly. Same TipTap/`formatFragment()` dual path as text objects.
-- **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Same component as notes — H-align row (left/center/right) + divider + V-align row (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Persists to `device-ui-store.shapeAlign`/`shapeAlignV`.
+- **Bold** / **Italic** — self-subscribing `memo` components. `.ctx-btn-fmt` square buttons; active state fills `#1b1f22` (white icon) when the entire selection has the style uniformly. Same TipTap/`formatFragment()` dual path as text objects.
+- **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Chevron-less `.ctx-btn-fmt` trigger (`#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Persists to `device-ui-store.shapeAlign`/`shapeAlignV`.
 - **TextColor** — "A" icon with colored bar. When no label exists on the shape, falls back to `device-ui-store.textColor`. Calls `setSelectedTextColor`.
 - **Highlight** — self-subscribes to `selectInlineHighlightColor`. Marker pen icon with colored bar.
 - **Border** — hollow circle variant. Dropdown: 9x2 grid. Calls `setSelectedColor`.
@@ -223,7 +226,7 @@ Shapes now include the full text formatting suite for shape labels:
 - **Typeface** — same as shapesOnly.
 - **FontSize** — same stepper with chevron arrows. Only renders if `fontSize !== null`.
 - **Bold** / **Italic** — same self-subscribing components.
-- **Alignment** — `AlignDropdown`. Self-subscribing. Compact horizontal row of 3 icon buttons (left/center/right), active icon gets blue highlight. Defaults to `'left'` when null. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
+- **Alignment** — `AlignDropdown`. Self-subscribing. Chevron-less `.ctx-btn-fmt` trigger (`#1b1f22` when open). Submenu: a horizontal row of 3 icon buttons (left/center/right), the active item filled `#1b1f22`. Defaults to `'left'` when null. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
 - **TextColor** — "A" icon with colored bar. Falls back to `'#262626'` when `labelColor` is null.
 - **Highlight** — same as shapesOnly.
 - **Fill** — filled circle variant, identical pattern to shape fill. No border/stroke controls (text objects don't have stroke).
@@ -239,7 +242,7 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 - **NoteType** — always shows `IconStickySquareFold`. Same `ShapeTypeDropdown` with `mode='note'`. Dropdown items include all shape types + text + sticky note (all no-op, type conversion not yet implemented).
 - **Typeface** — same self-subscribing `TypefaceButton`. Persists to `device-ui-store.noteFontFamily` (not `textFontFamily`).
 - **Bold** / **Italic** — same self-subscribing components. Uses TipTap chain when editor active, `formatFragment()` when not.
-- **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Trigger: current H-align icon + chevron. Submenu: H-align row (left/center/right) + divider + V-align row (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Notes use top-left origin so no anchor math needed for H-align (just sets `align` key). V-align sets `alignV` key. Persists to `device-ui-store.noteAlign`/`noteAlignV`.
+- **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Trigger: current H-align icon, no chevron (`.ctx-btn-fmt`, `#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Notes use top-left origin so no anchor math needed for H-align (just sets `align` key). V-align sets `alignV` key. Persists to `device-ui-store.noteAlign`/`noteAlignV`.
 - **Highlight** — same as other kinds.
 - **Fill** — filled circle variant. Default color `'#FEF3AC'` (warm sticky yellow). No no-fill slot needed (notes always have fill). Device-ui persist is skipped (note fill is per-object, not a device default).
 
@@ -297,16 +300,16 @@ ContextMenu                         <- gate on menuOpen, renders null when close
 | `TextColorPopover` | `color, onSelect?` | Dropdown: 9x2 grid. "A" icon trigger with color bar. |
 | `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. 4x2 rounded-square grid + none. |
 | `StrokeColorControl` | `color, mixed, onSelect` | Stroke/connector color. Teardrop trigger (current color, or a three-swatch drop when `mixed`) → 6-col palette grid. Toolbar picker mimicked on a light surface. Open-trigger bg `#1b1f22`. |
-| `StrokeWidthControl` | `widths, value, onSelect` | Stroke/shape/connector width. Bars-icon trigger → four-tier menu (Thinnest…Thickest). Active tier row `#282e34`. `widths` is the per-kind 4-preset list. |
+| `StrokeWidthControl` | `widths, value, onSelect` | Stroke/shape/connector width. Bars-icon trigger (icon `#1b1f22`) → four-tier menu (Thinnest…Thickest), left-aligned rows. Active tier row `#282e34`. `widths` is the per-kind 4-preset list. |
 | `FontSizeStepper` | `value, onDecrement?, onIncrement?, onSelectSize?` | Chevron up/down arrows + SVG text center value + dropdown of presets. |
-| `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Compact horizontal 3-icon dropdown. |
-| `NoteAlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign` + `textAlignV`. Two-row submenu: H-align (left/center/right) + divider + V-align (top/middle/bottom). |
-| `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. 4-item font family dropdown. |
+| `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Chevron-less `.ctx-btn-fmt` trigger → horizontal 3-icon submenu. |
+| `NoteAlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign` + `textAlignV`. Chevron-less `.ctx-btn-fmt` trigger → one flat submenu row: H-align · vertical divider · V-align. |
+| `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. Trigger = font name + filled down-chevron; 4-item dropdown, active row `#1b1f22`. |
 | `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. 6-item dropdown (rect, circle, diamond, rounded, text, sticky note). Trigger icon: shapes mode = current type or composite, text mode = `IconTextType`, note mode = `IconStickySquareFold`. |
 | `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block, Sticky Note). |
 | `LanguageDropdown` | (no props) | Self-subscribes to `selectedStyles.codeLanguage`. 3-item language picker. |
-| `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. 16x16 icon. |
-| `ItalicButton` | (internal memo) | Self-subscribes to `selectInlineItalic`. 16x16 icon. |
+| `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
+| `ItalicButton` | (internal memo) | Self-subscribes to `selectInlineItalic`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
 
 ### Dropdown Pattern (`useDropdown` hook, shared by 12 components)
 
@@ -495,9 +498,9 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `StrokeColorControl.tsx` | Stroke/connector color — teardrop trigger + light-surface palette grid (toolbar picker mimic). |
 | `StrokeWidthControl.tsx` | Stroke/shape/connector width — bars trigger + Thinnest…Thickest tier menu. |
 | `FontSizeStepper.tsx` | Chevron up/down arrows + SVG center value + preset dropdown |
-| `AlignDropdown.tsx` | Self-subscribing alignment dropdown (3 H-align icons, horizontal compact submenu) |
-| `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Two-row submenu: left/center/right + divider + top/middle/bottom. |
-| `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families, ShapeTypeDropdown pattern) |
+| `AlignDropdown.tsx` | Self-subscribing alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; 3 H-align icons in a horizontal submenu. |
+| `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; one flat submenu row: H-align · vertical divider · V-align. |
+| `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families). Trigger = name + filled down-chevron; active dropdown row `#1b1f22`. |
 | `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 6-item type switcher. Modes: `'shapes'`/`'text'`/`'note'`. |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts (incl. Code Block, Sticky Note) |
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
@@ -509,11 +512,11 @@ All property mutations (including style-only changes like color, fill, opacity) 
 
 | File | Exports |
 |------|---------|
-| `UtilityIcons.tsx` | `IconChevronDown`, `IconMinus`, `IconPlus`, `IconMoreDots`, `IconCheck`, `IconNoFill`, `IconStepUp`, `IconStepDown` |
+| `UtilityIcons.tsx` | `IconChevronDown` (stroked), `IconChevronDownFilled` (Mural filled, font-picker), `IconMinus`, `IconPlus`, `IconMoreDots`, `IconCheck` (Mural `check` glyph, 24-viewBox), `IconNoFill`, `IconStepUp`, `IconStepDown` |
 | `FilterIcons.tsx` | `IconShapes`, `IconPenStroke`, `IconConnectorLine`, `IconTextType`, `IconCodeBlock` |
 | `CodeIcons.tsx` | `IconCodeLines` (22x16 viewBox, filled digits + stroke code bars) |
-| `AlignIcons.tsx` | `IconAlignTextLeft`, `IconAlignTextCenter`, `IconAlignTextRight`, `IconAlignVTop`, `IconAlignVMiddle`, `IconAlignVBottom` |
-| `FormatIcons.tsx` | `IconBold` (20x20 viewBox), `IconItalic` (20x20 viewBox) |
+| `AlignIcons.tsx` | `IconAlignTextLeft/Center/Right` + `IconAlignVTop/Middle/Bottom` — all Mural `textAlign*` glyphs, 24-viewBox |
+| `FormatIcons.tsx` | `IconBold`, `IconItalic` — Mural `textStyleBold`/`textStyleItalic` glyphs, 24-viewBox |
 | `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`, `IconStickySquareFold` |
 | `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) |
 | `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) |
@@ -521,21 +524,22 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `StrokeWidthIcons.tsx` | `IconWeightBars` (trigger) + `IconWeight1`–`IconWeight4` (diagonal tier glyphs) |
 | `TrashIcon.tsx` | `IconTrash` |
 
-**Convention:** `fill="currentColor"` with fill-based paths (not stroke), except step/chevron arrows which use `stroke="currentColor"`. SVG text elements use `textRendering="geometricPrecision"` to prevent subpixel shift during scale animation. `IconStepUp`/`IconStepDown` are 10x6 viewBox chevron arrows, rendered at 12x7 CSS size inside 18x14 buttons. Vertical alignment icons (`IconAlignVTop/Middle/Bottom`) use 24x24 viewBox Mural SVG paths.
+**Convention:** `fill="currentColor"` with fill-based paths (not stroke), except step/chevron arrows which use `stroke="currentColor"`. SVG text elements use `textRendering="geometricPrecision"` to prevent subpixel shift during scale animation. `IconStepUp`/`IconStepDown` are 10x6 viewBox chevron arrows, rendered at 12x7 CSS size inside 18x14 buttons. Alignment icons (`IconAlignText*`, `IconAlignV*`) and bold/italic all use 24×24 Mural SVG paths.
 
 ---
 
 ## CSS Notable Details
 
 - `.ctx-btn-sq`: 34x34, padding 0. Inner SVG 18x18.
+- `.ctx-btn-fmt`: bold / italic toggles + align triggers. Inner SVG 20x20. `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
 - `.ctx-btn-color`: 34x34. Inner SVG 20x20.
-- `.ctx-btn-teardrop` / `.ctx-btn-weight`: 34x34 color / width triggers. `[aria-expanded="true"]` → bg `#1b1f22` (the weight bars icon also flips to white).
+- `.ctx-btn-teardrop` / `.ctx-btn-weight`: 34x34 color / width triggers. `.ctx-btn-weight` icon rests at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.
 - `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; `.is-active` adds a check + own-color halo ring.
-- `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu. `.ctx-weight-item-active` fills the current tier row `#282e34`, white icon/label/check.
+- `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu — `padding: 8px`, `border-radius: 12px`, 3px row gap. Rows left-aligned (icon · word · inline checkmark). `.ctx-weight-item-active` fills the tier row `#282e34`, white icon/label/check.
 - `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x14, SVG 12x7.
 - `.ctx-fontsize-value`: 32px min-width, 28px height, SVG 30x16 viewBox.
 - `.ctx-submenu-fontsize`: 56px min-width, items center-aligned (`justify-content: center`).
-- `.ctx-submenu-note-align`: flex column, centered. Contains `.ctx-align-row` (flex row, gap 2px) + `.ctx-align-divider` (1px separator).
+- `.ctx-submenu-note-align`: flex **row**, centered. `.ctx-align-row` (H group, then V group) split by `.ctx-align-divider` — a vertical 1×24 separator.
 - `.ctx-divider`: 1px wide, 24px tall, rgba(0,0,0,0.18).
 
 ---

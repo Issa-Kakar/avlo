@@ -15,4 +15,4 @@ export { IconCircleType, IconDiamondType, IconRectType, IconRoundedRectType, Ico
 export { IconWeight1, IconWeight2, IconWeight3, IconWeight4, IconWeightBars } from './StrokeWidthIcons';
 export { TextColorIcon } from './TextColorIcon';
 export { IconTrash } from './TrashIcon';
-export { IconCheck, IconChevronDown, IconMinus, IconMoreDots, IconNoFill, IconPlus } from './UtilityIcons';
+export { IconCheck, IconChevronDown, IconChevronDownFilled, IconMinus, IconMoreDots, IconNoFill, IconPlus } from './UtilityIcons';

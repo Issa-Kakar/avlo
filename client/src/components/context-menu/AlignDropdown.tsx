@@ -3,7 +3,6 @@ import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedTextAlign } from '@/tools/selection/selection-actions';
 import { IconAlignTextCenter, IconAlignTextLeft, IconAlignTextRight } from './icons/AlignIcons';
-import { IconChevronDown } from './icons/UtilityIcons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
@@ -23,9 +22,8 @@ export function AlignDropdown() {
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-type" onMouseDown={toggle} aria-expanded={open}>
-        <ActiveIcon width={16} height={16} />
-        <IconChevronDown className="ctx-dd-arrow" />
+      <MenuButton className="ctx-btn-sq ctx-btn-fmt" onMouseDown={toggle} aria-expanded={open}>
+        <ActiveIcon />
       </MenuButton>
       {open && (
         <div className="ctx-submenu ctx-submenu-align">
@@ -39,7 +37,7 @@ export function AlignDropdown() {
                 close();
               }}
             >
-              <Icon width={16} height={16} />
+              <Icon width={18} height={18} />
             </button>
           ))}
         </div>
