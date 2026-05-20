@@ -1,0 +1,62 @@
+/* ===== Context Menu — Bar Shell + Floating Container ===== */
+
+.ctx-menu {
+  display: inline-flex;
+  align-items: center;
+  height: 42px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--ctx-black-a06);
+  border-radius: 10px;
+  box-shadow:
+    0 2px 12px var(--ctx-black-a08),
+    0 1px 3px var(--ctx-black-a06);
+  gap: 2px;
+  user-select: none;
+  font-family: var(--font-ui);
+}
+
+.context-menu-floating {
+  position: fixed;
+  width: max-content;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.ctx-menu {
+  pointer-events: auto;
+  opacity: 1;
+  transition:
+    opacity 100ms linear,
+    transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ctx-hidden .ctx-menu {
+  visibility: hidden;
+  opacity: 0;
+  transform: scale(0.96);
+  pointer-events: none;
+  transition: none;
+}
+
+/* ===== Button Group ===== */
+
+.ctx-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ===== Divider ===== */
+
+.ctx-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--ctx-black-a18);
+  margin: 0 4px;
+  flex-shrink: 0;
+}

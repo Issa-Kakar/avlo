@@ -280,14 +280,16 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 ## React Component Tree
 
 ```
-ContextMenu                         <- gate on menuOpen, renders null when closed
-└── ContextMenuBar                  <- reads selectionKind + textEditingId, computes effectiveKind
-    ├── [kind-specific groups]      <- memo'd sub-components per kind
+ContextMenu                  <- gate on menuOpen, renders null when closed
+└── ContextMenuBar           <- computes effectiveKind, looks up MENU_BY_KIND
+    ├── <Menu />             <- one menus/* component (StrokeMenu … MixedMenu);
+    │   + <div .ctx-divider> <- the <Menu/> + divider pair is omitted for none/image
+    ├── CommonActionsGroup   <- Trash button -> deleteSelected()
     ├── <div className="ctx-divider" />
-    ├── CommonActionsGroup          <- Trash button -> deleteSelected()
-    ├── <div className="ctx-divider" />
-    └── OverflowButton              <- IconMoreDots, no handler (placeholder)
+    └── OverflowButton       <- IconMoreDots, no handler (placeholder)
 ```
+
+`ContextMenu.tsx` is a pure dispatcher — `MENU_BY_KIND` (a `Partial<Record<SelectionKind, ComponentType>>`) maps `effectiveKind` to one `menus/*` component; `none`/`image` map to nothing. Each `menus/*` component is `memo`'d and self-subscribing — it owns the store selector(s) for its kind (`useShallow` on every object-returning selector) and returns its `ButtonGroup` (Shape/Text/Note prepend a `ShapeTypeDropdown` + divider *outside* the group; `MixedMenu` returns a bare `FilterObjectsDropdown`). The dispatcher never re-renders on a style change — only the mounted menu does.
 
 ### Component Inventory
 
@@ -308,8 +310,8 @@ ContextMenu                         <- gate on menuOpen, renders null when close
 | `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. 6-item dropdown (rect, circle, diamond, rounded, text, sticky note). Trigger icon: shapes mode = current type or composite, text mode = `IconTextType`, note mode = `IconStickySquareFold`. |
 | `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block, Sticky Note). |
 | `LanguageDropdown` | (no props) | Self-subscribes to `selectedStyles.codeLanguage`. 3-item language picker. |
-| `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
-| `ItalicButton` | (internal memo) | Self-subscribes to `selectInlineItalic`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
+| `BoldButton` | `FormatButtons.tsx` | Self-subscribes to `selectInlineBold`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
+| `ItalicButton` | `FormatButtons.tsx` | Self-subscribes to `selectInlineItalic`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
 
 ### Dropdown Pattern (`useDropdown` hook, shared by 12 components)
 
@@ -486,9 +488,14 @@ All property mutations (including style-only changes like color, fill, opacity) 
 
 | File | Responsibility |
 |------|----------------|
-| `ContextMenu.tsx` | Gate (menuOpen) -> ContextMenuBar -> kind-branched groups |
+| `ContextMenu.tsx` | Slim dispatcher: gate (`menuOpen`) → `ContextMenuBar` → `effectiveKind` → `MENU_BY_KIND` lookup → shell (`<Menu/>` + dividers + chrome). The only file that imports `context-menu.css`. |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide/active lifecycle |
-| `context-menu.css` | All styling: floating container, bar glass effect, buttons, submenus, animations |
+| `context-menu.css` | Root CSS manifest — `@import`s the `styles/` foundation then every co-located component stylesheet, in cascade order. |
+| `menu-widths.ts` | `STROKE_WIDTHS` (pen `4/7/10/13`) + `OUTLINE_WIDTHS` (shape/connector `2/4/6/8`), derived from `toolbar/weights`. |
+| `menus/*.tsx` | One self-subscribing menu bar per `SelectionKind` — `StrokeMenu`, `ConnectorMenu`, `ShapeMenu`, `TextMenu`, `NoteMenu`, `CodeMenu`, `MixedMenu`. Each owns its store selector(s) + the JSX for its kind. |
+| `FormatButtons.tsx` | `BoldButton` + `ItalicButton` — shared by `ShapeMenu`/`TextMenu`/`NoteMenu`. |
+| `CommonActionsGroup.tsx` | Trash button (`deleteSelected`) — rendered for every kind. |
+| `OverflowButton.tsx` | `…` overflow button — placeholder, no handler. |
 | `MenuButton.tsx` | Base button primitive (`mouseDown preventDefault` keeps canvas focus) |
 | `ButtonGroup.tsx` | Flex row wrapper |
 | `ColorCircle.tsx` | Visual indicator: `filled` / `hollow` / `none` variants, optional `secondColor` split |
@@ -506,6 +513,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
 | `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
+| `styles/*.css` | CSS foundation imported first by the manifest: `tokens.css` (`--ctx-*` custom properties), `shell.css`, `buttons.css`, `dropdowns.css`, `color-grid.css`. |
+| `<Control>.css` | Per-control rules co-located beside the `.tsx` (`FontSizeStepper.css`, `StrokeWidthControl.css`, …). Reached through the `context-menu.css` manifest — control `.tsx` files import no CSS. |
 | `icons/` | Custom SVGs: fill-based paths for pixel-crisp rendering at small sizes |
 
 ### Icons
@@ -529,6 +538,19 @@ All property mutations (including style-only changes like color, fill, opacity) 
 ---
 
 ## CSS Notable Details
+
+**File layout.** `ContextMenu.tsx` imports one stylesheet — `context-menu.css`,
+a manifest that `@import`s the foundation (`styles/tokens.css` → `shell` →
+`buttons` → `dropdowns` → `color-grid`) then every co-located component
+stylesheet (`FontSizeStepper.css`, `StrokeWidthControl.css`, …). Cascade order
+is the `@import` order — foundation bases land before per-control modifiers;
+control `.tsx` files import no CSS (mirrors `toolbar/inspectors/Inspector.css`).
+`styles/tokens.css` defines the `--ctx-*` custom properties on
+`.context-menu-floating` (the portal class — every surface, incl. the
+absolutely-positioned submenus, inherits them): `--ctx-engaged` (#1b1f22),
+`--ctx-engaged-tier` (#282e34), the text/accent/sand colors, and a black-alpha
+overlay scale (`--ctx-black-a05` … `--ctx-black-a20`). Tokens are pure
+indirection — identical pixels.
 
 - `.ctx-btn-sq`: 34x34, padding 0. Inner SVG 18x18.
 - `.ctx-btn-fmt`: bold / italic toggles + align triggers. Inner SVG 20x20. `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.

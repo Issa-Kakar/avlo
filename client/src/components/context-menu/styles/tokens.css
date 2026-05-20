@@ -1,0 +1,30 @@
+/* ===== Context Menu — Design Tokens =====
+   One custom property per recurring literal. Scoped to the portal class
+   (.context-menu-floating) so every context-menu surface — including the
+   absolutely-positioned submenu popovers — inherits them. Pure indirection:
+   each token's value is copied verbatim from the literal it replaces. */
+
+.context-menu-floating {
+  /* Engaged dark fill — open-state triggers + active toggles + active rows. */
+  --ctx-engaged: #1b1f22;
+  /* Stroke-width active tier — the lone slightly-lighter dark. */
+  --ctx-engaged-tier: #282e34;
+
+  /* Text */
+  --ctx-text: #374151;
+  --ctx-text-secondary: #48525b;
+  --ctx-text-focal: #1f2937;
+
+  /* Accent (focus rings + selected swatch) + warm sand (open-trigger subtitle) */
+  --ctx-accent: #3b82f6;
+  --ctx-sand: #d4b89b;
+
+  /* Black-alpha overlay scale — borders, hovers, dividers, shadows. */
+  --ctx-black-a05: rgba(0, 0, 0, 0.05);
+  --ctx-black-a06: rgba(0, 0, 0, 0.06);
+  --ctx-black-a08: rgba(0, 0, 0, 0.08);
+  --ctx-black-a12: rgba(0, 0, 0, 0.12);
+  --ctx-black-a13: rgba(0, 0, 0, 0.13);
+  --ctx-black-a18: rgba(0, 0, 0, 0.18);
+  --ctx-black-a20: rgba(0, 0, 0, 0.2);
+}

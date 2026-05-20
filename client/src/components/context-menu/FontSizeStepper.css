@@ -1,0 +1,94 @@
+/* ===== Context Menu — Font Size Stepper ===== */
+
+.ctx-fontsize-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 5px;
+}
+
+.ctx-fontsize-value {
+  min-width: 32px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--ctx-text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  outline: none;
+  padding: 0 4px;
+}
+
+.ctx-fontsize-value:hover {
+  background: var(--ctx-black-a05);
+  border-radius: 4px;
+}
+
+.ctx-fontsize-value:focus-visible {
+  outline: 2px solid var(--ctx-accent);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+.ctx-fontsize-arrows {
+  display: flex;
+  flex-direction: column;
+  width: 18px;
+  gap: 1px;
+}
+
+.ctx-fontsize-arrow {
+  width: 18px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--ctx-text);
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+  border-radius: 3px;
+  transition: background 150ms ease;
+}
+
+.ctx-fontsize-arrow:hover {
+  background: var(--ctx-black-a08);
+}
+
+.ctx-fontsize-arrow:active {
+  background: var(--ctx-black-a12);
+}
+
+.ctx-fontsize-arrow:focus-visible {
+  outline: 2px solid var(--ctx-accent);
+  outline-offset: -1px;
+}
+
+.ctx-fontsize-arrow svg {
+  width: 12px;
+  height: 7px;
+}
+
+/* ===== Font Size Dropdown ===== */
+
+.ctx-submenu-fontsize {
+  min-width: 56px;
+}
+
+.ctx-submenu-fontsize .ctx-submenu-item {
+  justify-content: center;
+}
+
+.ctx-size-item-label {
+  font-weight: 500;
+  font-size: 15px;
+  min-width: 24px;
+}

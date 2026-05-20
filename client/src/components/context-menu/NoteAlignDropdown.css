@@ -1,0 +1,27 @@
+/* ===== Context Menu — Note Alignment Dropdown (H + V flat row) =====
+   The .ctx-align-item rows live in styles/dropdowns.css (shared with
+   AlignDropdown). */
+
+.ctx-submenu-note-align {
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+}
+
+.ctx-align-row {
+  display: flex;
+  gap: 2px;
+}
+
+/* Vertical separator between the H-align and V-align groups (flat row). */
+.ctx-align-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--ctx-black-a12);
+  margin: 0 4px;
+}

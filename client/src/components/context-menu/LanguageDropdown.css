@@ -1,0 +1,9 @@
+/* ===== Context Menu — Language Dropdown =====
+   The trigger reuses .ctx-btn-filter (styles/buttons.css); rows reuse
+   .ctx-type-item (styles/dropdowns.css). This file holds only the submenu. */
+
+.ctx-submenu-lang {
+  left: 0;
+  transform: none;
+  min-width: 150px;
+}

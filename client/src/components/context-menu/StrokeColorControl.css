@@ -1,0 +1,59 @@
+/* ===== Context Menu — Stroke / Connector Color Control ===== */
+
+/* Teardrop trigger. */
+.ctx-btn-teardrop {
+  width: 34px;
+  padding: 0;
+}
+
+.ctx-btn-teardrop svg {
+  width: 22px;
+  height: 22px;
+}
+
+.ctx-btn-teardrop[aria-expanded="true"],
+.ctx-btn-teardrop[aria-expanded="true"]:hover,
+.ctx-btn-teardrop[aria-expanded="true"]:active {
+  background: var(--ctx-engaged);
+}
+
+/* Context color picker — toolbar picker mimicked on a light surface. */
+.ctx-submenu-cp {
+  min-width: auto;
+  padding: 0;
+}
+
+.ctx-cp-grid {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.ctx-cp-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--ctx-black-a08);
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform 100ms ease;
+}
+
+.ctx-cp-swatch:hover {
+  transform: scale(1.1);
+}
+
+/* Near-white swatches blend into the white picker — a darker edge restores
+   contrast (mirror of the toolbar picker's white edge on near-black). */
+.ctx-cp-swatch[data-near-white] {
+  border-color: var(--ctx-black-a20);
+}
+
+/* Selected swatch: white gap ring + a halo in the swatch's own color. */
+.ctx-cp-swatch.is-active {
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 4px var(--ctx-cp-ring);
+}

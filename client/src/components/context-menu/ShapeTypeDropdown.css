@@ -1,0 +1,39 @@
+/* ===== Context Menu — Shape Type Dropdown ===== */
+
+.ctx-btn-type {
+  height: 34px;
+  padding: 0 8px;
+  gap: 6px;
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  outline: none;
+  font-family: var(--font-ui);
+  transition: background 150ms ease;
+}
+
+.ctx-btn-type:hover {
+  background: var(--ctx-black-a05);
+}
+
+.ctx-btn-type:focus-visible {
+  outline: 2px solid var(--ctx-accent);
+  outline-offset: -1px;
+}
+
+.ctx-submenu-type {
+  left: 0;
+  transform: none;
+  min-width: 170px;
+}
+
+/* Trigger chevron arrow. */
+.ctx-dd-arrow {
+  width: 9px;
+  height: 9px;
+  opacity: 0.55;
+  flex-shrink: 0;
+}

@@ -1,0 +1,12 @@
+/* ===== Context Menu — Alignment Dropdown =====
+   The .ctx-align-item rows live in styles/dropdowns.css (shared with
+   NoteAlignDropdown); this file holds only the submenu container. */
+
+.ctx-submenu-align {
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: auto;
+  padding: 4px;
+  display: flex;
+  gap: 2px;
+}

@@ -1,0 +1,37 @@
+/* ===== Context Menu — Color Grid =====
+   Shared 9-column swatch grid (ColorPickerPopover + TextColorPopover). */
+
+.ctx-color-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.ctx-color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ctx-black-a08);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 150ms ease;
+}
+
+.ctx-color-swatch:hover {
+  transform: scale(1.15);
+}
+
+.ctx-color-swatch:focus-visible {
+  outline: 2px solid var(--ctx-accent);
+  outline-offset: 2px;
+}
+
+.ctx-color-swatch.pastel {
+  border-color: var(--ctx-black-a13);
+}
+
+.ctx-color-swatch.selected {
+  border-color: var(--ctx-accent);
+  box-shadow: 0 0 0 1.5px var(--ctx-accent);
+}

@@ -1,0 +1,110 @@
+/* ===== Context Menu — Buttons =====
+   Base .ctx-btn family first, then every variant in source order — same-
+   specificity :hover vs .active / [aria-expanded] collisions resolve by
+   declaration order, so the whole .ctx-btn family stays in this one file. */
+
+.ctx-btn {
+  height: 34px;
+  min-width: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--ctx-text);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  transition: background 150ms ease;
+  outline: none;
+}
+
+.ctx-btn:hover {
+  background: var(--ctx-black-a05);
+}
+
+.ctx-btn:active {
+  background: var(--ctx-black-a08);
+}
+
+.ctx-btn.active {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--ctx-accent);
+}
+
+.ctx-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.ctx-btn:focus-visible {
+  outline: 2px solid var(--ctx-accent);
+  outline-offset: -1px;
+}
+
+/* ===== Button Variants ===== */
+
+.ctx-btn-sq {
+  width: 34px;
+  padding: 0;
+}
+
+.ctx-btn-sq svg {
+  width: 18px;
+  height: 18px;
+}
+
+.ctx-btn-color {
+  width: 34px;
+  padding: 0;
+}
+
+.ctx-btn-color svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ===== Format buttons — bold / italic toggles + align trigger =====
+   Engaged (active toggle or open dropdown) fills --ctx-engaged, icon flips white. */
+
+.ctx-btn-fmt svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ctx-btn-fmt.active,
+.ctx-btn-fmt.active:hover,
+.ctx-btn-fmt[aria-expanded="true"],
+.ctx-btn-fmt[aria-expanded="true"]:hover,
+.ctx-btn-fmt[aria-expanded="true"]:active {
+  background: var(--ctx-engaged);
+  color: #fff;
+}
+
+.ctx-btn-more {
+  min-width: 32px;
+}
+
+/* ===== Filter Button (FilterObjectsDropdown + LanguageDropdown trigger) ===== */
+
+.ctx-btn-filter {
+  padding: 0 8px;
+  gap: 6px;
+}
+
+.ctx-btn-filter[aria-expanded="true"],
+.ctx-btn-filter[aria-expanded="true"]:hover,
+.ctx-btn-filter[aria-expanded="true"]:active {
+  background: var(--ctx-engaged);
+  color: #ffffff;
+}
+
+/* ===== Danger Button =====
+   Class name kept for semantic role (destructive action); visual is neutral
+   per the redesign — base .ctx-btn:hover handles the hover bg. */
+
+.ctx-btn-danger {
+  color: var(--ctx-text-secondary);
+}
