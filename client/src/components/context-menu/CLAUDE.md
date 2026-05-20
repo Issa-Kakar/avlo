@@ -14,7 +14,7 @@
 > **Filter-menu vocabulary (alignment targets):**
 > - **Body / secondary text:** `#48525b`. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon. The menu's "everything else" color.
 > - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
-> - **Engaged dark fill:** `#1b1f22`, white text/icons. The "this control is engaged" tone — open-state triggers (`FilterObjectsDropdown`, the `StrokeColorControl` teardrop, the `StrokeWidthControl` bars, the align triggers), active toggles (bold / italic), and the active selected row inside a dropdown (align submenu item, font picker row). An earlier doc split `#1b1f22` (submenu-host) from `#282e34` (active value) — that split is collapsed; `#1b1f22` now covers both.
+> - **Engaged dark fill:** `#1b1f22`, white text/icons. The "this control is engaged" tone — open-state triggers (`FilterObjectsDropdown`, the `StrokeColorControl` teardrop, the `StrokeWidthControl` bars, the align triggers), active toggles (bold / italic, code header/output), and every dropdown's active selected row (`.ctx-submenu-item-active`). An earlier doc split `#1b1f22` (submenu-host) from `#282e34` (active value) — that split is collapsed; `#1b1f22` now covers both.
 > - **Stroke-width active tier:** `#282e34`, white. This slightly-lighter dark fills `.ctx-weight-item-active` and the font-size dropdown's active row. Not yet reconciled to `#1b1f22`.
 > - **Open-trigger primary text:** pure white.
 > - **Open-trigger FILTER subtitle:** `#D4B89B` (warm sand). Intentional warm third pole in the otherwise cool slate palette; deliberately stays subordinate to white (~2× contrast hierarchy). `fill 150ms ease` transition.
@@ -34,7 +34,7 @@
 > **Surfaces still on legacy vocabulary** (their values below are not canon):
 > - Per-kind group *layout* is unchanged: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup`. The bold/italic/align/typeface controls inside them are reskinned; the color popovers + font-size stepper are not.
 > - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover` (shape / text / note fill + shape border still use these).
-> - Dropdowns: `ShapeTypeDropdown`, `LanguageDropdown`.
+> - Dropdowns: `ShapeTypeDropdown`'s trigger only — its submenu rows, like every dropdown's, now take the dark `.ctx-submenu-item-active` fill (legacy blue gone). `LanguageDropdown` is migrated; see `codeOnly`.
 > - `FontSizeStepper`.
 > - Bar shell — `.ctx-menu` border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
@@ -260,12 +260,13 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 ### `codeOnly`
 
 ```
-[Language ▾] | [-FontSize+] | [CodeLines]  |  Trash  ...
+[Language ▾] | [-FontSize+] | [CodeLines] [Header] [Output]  |  Trash  ...
 ```
 
-- **Language** — `LanguageDropdown`. Self-subscribing to `selectedStyles.codeLanguage`. Trigger: "LANGUAGE" label + current name. Dropdown: 3 items (JavaScript, TypeScript, Python) with checkmark. Calls `setSelectedCodeLanguage(key)`.
+- **Language** — `LanguageDropdown`. Self-subscribing to `selectedStyles.codeLanguage`. Trigger mirrors the FILTER stack — a `LANGUAGE` eyebrow over the current language name — but both lines run w700, the value takes the typeface-picker ink (`#282e34`), and the trigger uses `.ctx-btn-lang` (no engaged open-state): a code block always has a language, so the trigger never reads "unset". Dropdown: 3 items (JavaScript, TypeScript, Python), active row dark-filled + checkmark. Calls `setSelectedCodeLanguage(key)`.
 - **FontSize** — same `FontSizeStepper` component. Wired to `incrementCodeFontSize`/`decrementCodeFontSize`/`setSelectedCodeFontSize`. Font size change proportionally scales code block width (`width * newFs/oldFs`). Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144.
 - **CodeLines** — `IconCodeLines` stateless action button. Calls `toggleCodeLineNumbers()` on `mouseDown`. No `active` state tracking — reads fresh from Y.Map each click to determine toggle direction. Atomically sets/unsets `lineNumbers` on all selected (or editing) code objects. Persists new value to `device-ui-store.codeLineNumbers` for new block defaults.
+- **Header** / **Output** — `IconCodeHeader` / `IconCodeOutput` toggle buttons (`.ctx-btn-sq ctx-btn-fmt`). Active when the code block's header bar / output panel is visible — engaged `#1b1f22` fill + white icon, the same active state as bold / italic. `mouseDown` calls `toggleCodeHeader` / `toggleCodeOutput`.
 
 ### `mixed`
 
@@ -554,7 +555,7 @@ absolutely-positioned submenus, inherits them): `--ctx-engaged` (#1b1f22),
 indirection — identical pixels.
 
 - `.ctx-btn-sq`: 32x32, padding 0. Inner SVG 18x18.
-- `.ctx-btn-fmt`: bold / italic toggles + align triggers. Inner SVG 20x20. `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
+- `.ctx-btn-fmt`: bold / italic + code header/output toggles, align triggers. Inner SVG 20x20 (code header/output keep a 16px inline size). `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
 - `.ctx-btn-color`: 32x32. Inner SVG 20x20.
 - `.ctx-btn-teardrop` / `.ctx-btn-weight`: 32x32 color / width triggers. `.ctx-btn-weight` icon rests at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.
 - `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; the active swatch shows a centered check, no ring (the white surface needs no halo).

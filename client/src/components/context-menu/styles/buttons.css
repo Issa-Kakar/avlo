@@ -29,11 +29,6 @@
   background: var(--ctx-black-a08);
 }
 
-.ctx-btn.active {
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--ctx-accent);
-}
-
 .ctx-btn:disabled {
   opacity: 0.4;
   pointer-events: none;
@@ -66,7 +61,7 @@
   height: 20px;
 }
 
-/* ===== Format buttons — bold / italic toggles + align trigger =====
+/* ===== Format buttons (.ctx-btn-fmt) — bold / italic + code header/output toggles, align triggers =====
    Engaged (active toggle or open dropdown) fills --ctx-engaged, icon flips white. */
 
 .ctx-btn-fmt svg {
@@ -87,7 +82,7 @@
   min-width: 32px;
 }
 
-/* ===== Filter Button (FilterObjectsDropdown + LanguageDropdown trigger) ===== */
+/* ===== Filter Button (FilterObjectsDropdown trigger) ===== */
 
 .ctx-btn-filter {
   padding: 0 8px;
@@ -99,6 +94,15 @@
 .ctx-btn-filter[aria-expanded="true"]:active {
   background: var(--ctx-engaged);
   color: #ffffff;
+}
+
+/* ===== Language Button (LanguageDropdown trigger) =====
+   Filter chrome minus the engaged open-state — a code block always has a
+   selected language, so the trigger needs no "engaged" fill. */
+
+.ctx-btn-lang {
+  padding: 0 8px;
+  gap: 6px;
 }
 
 /* ===== Danger Button =====

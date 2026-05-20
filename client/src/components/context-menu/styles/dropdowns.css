@@ -40,9 +40,12 @@
   background: var(--ctx-black-a05);
 }
 
-.ctx-submenu-item-active {
-  background: rgba(59, 130, 246, 0.08);
-  color: var(--ctx-accent);
+/* Active / selected row — engaged dark fill, white text/icons.
+   FontSizeStepper overrides to the tier color for the size grid. */
+.ctx-submenu-item-active,
+.ctx-submenu-item-active:hover {
+  background: var(--ctx-engaged);
+  color: #fff;
 }
 
 /* ===== Type Rows (shared by ShapeTypeDropdown, TypefaceButton, LanguageDropdown) ===== */

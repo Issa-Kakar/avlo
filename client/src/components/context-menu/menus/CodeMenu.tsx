@@ -39,10 +39,10 @@ export const CodeMenu = memo(function CodeMenu() {
       <MenuButton className="ctx-btn-sq" onMouseDown={toggleCodeLineNumbers}>
         <IconCodeLines style={{ width: 22, height: 16 }} />
       </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={headerVisible === true} onMouseDown={toggleCodeHeader}>
+      <MenuButton className="ctx-btn-sq ctx-btn-fmt" active={headerVisible === true} onMouseDown={toggleCodeHeader}>
         <IconCodeHeader style={{ width: 16, height: 16 }} />
       </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={outputVisible === true} onMouseDown={toggleCodeOutput}>
+      <MenuButton className="ctx-btn-sq ctx-btn-fmt" active={outputVisible === true} onMouseDown={toggleCodeOutput}>
         <IconCodeOutput style={{ width: 16, height: 16 }} />
       </MenuButton>
     </ButtonGroup>

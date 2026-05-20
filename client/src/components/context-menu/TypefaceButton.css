@@ -28,10 +28,3 @@
   font-size: 15px;
   line-height: 1.4;
 }
-
-/* Active font row — selected typeface fills --ctx-engaged, name + check go white. */
-.ctx-submenu-font .ctx-submenu-item-active,
-.ctx-submenu-font .ctx-submenu-item-active:hover {
-  background: var(--ctx-engaged);
-  color: #fff;
-}
