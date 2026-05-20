@@ -12,7 +12,7 @@
  *   text, shape, note       → text layout cache (shape labels use text cache too)
  *   code                    → code system cache
  *   bookmark                → bookmark layout cache
- *   image                   → no per-id cache (managed by image-manager)
+ *   image                   → image meta cache
  *
  * Connector route + reverse-map state lives in `ConnectorRouter` owned by RoomDocManager.
  * Cleared via `connectorRouter.clear()` in `destroy()`, not from here.
@@ -20,6 +20,7 @@
 
 import { bookmarkCache } from '@/core/bookmark/bookmark-render';
 import { codeSystem } from '@/core/code/code-system';
+import { imageCache } from '@/core/image/image-cache';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { ObjectKind } from '@/core/types/objects';
 import { clearGeometry, evictGeometry } from './geometry-cache';
@@ -39,6 +40,9 @@ export function removeObjectCaches(id: string, kind: ObjectKind): void {
     case 'bookmark':
       bookmarkCache.evict(id);
       break;
+    case 'image':
+      imageCache.evict(id);
+      break;
   }
 }
 
@@ -48,4 +52,5 @@ export function clearAllObjectCaches(): void {
   textLayoutCache.clear();
   codeSystem.clear();
   bookmarkCache.clear();
+  imageCache.clear();
 }

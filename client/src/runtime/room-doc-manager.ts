@@ -11,7 +11,7 @@ import { getCodeProps } from '@/core/accessors';
 import { codeSystem } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
-import { hydrateImages, registerBookmarkMeta, registerImageMeta, unregisterMedia } from '@/core/image/image-manager';
+import { hydrateImages } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
@@ -299,7 +299,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.spatialIndex.remove(handle); // identity removal; envelope mirrors still describe the live entry
       this.zOrder.releaseSlot(handle.slot, handle.z);
       removeObjectCaches(id, handle.kind);
-      if (handle.kind === 'image' || handle.kind === 'bookmark') unregisterMedia(id);
       invalidateIfVisible(handle.bbox, vp);
       this.objectsById.delete(id);
     }
@@ -324,16 +323,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         continue;
       }
 
-      // Non-connector branch
+      // Non-connector branch. computeBBoxForInto populates the kind's subsystem
+      // cache as a side effect — image meta + text/code/note/bookmark layout.
       computeBBoxForInto(id, kind, yObj, scratch);
       const bboxChanged = this.upsertHandle(id, kind, yObj, scratch, vp, false);
-
-      // Media meta cache: idempotent re-register on every touch. AssetIds are
-      // immutable post-creation and bookmarks are written atomically (offline/failed
-      // unfurl → text object, never a partial bookmark), so this is effectively an
-      // insert-only call — the per-touch invocation just keeps the wiring simple.
-      if (kind === 'image') registerImageMeta(id, yObj);
-      else if (kind === 'bookmark') registerBookmarkMeta(id, yObj);
 
       if (bboxChanged) {
         changed.add(id);
@@ -427,8 +420,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Pass 1: build handles for everything except connectors. Connectors only get
     // their anchorIds + shapeToConnectors entries here — bbox + route deferred to pass 2.
-    // Media meta caches (imageMeta, bookmarkAssetIds) are populated inline so that
-    // the immediately-following hydrateImages() call reads them.
+    // `computeBBoxFor` populates each kind's subsystem cache (image meta + text/code/
+    // note/bookmark layout) so the immediately-following hydrateImages() reads them.
     // Slot acquisition is deferred to zOrder.load() below so slots are densely packed [0..N-1].
     this.objects.forEach((yObj, key) => {
       const id = String(key);
@@ -446,8 +439,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const handle = createHandle(id, kind, yObj, bbox, z, -1); // slot=-1 sentinel; zOrder.load assigns
       this.objectsById.set(id, handle);
       handles.push(handle);
-      if (kind === 'image') registerImageMeta(id, yObj);
-      else if (kind === 'bookmark') registerBookmarkMeta(id, yObj);
     });
 
     // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).

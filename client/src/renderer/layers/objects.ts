@@ -1,6 +1,7 @@
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
 import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
+import { getImageMeta } from '@/core/image/image-cache';
 import { getBitmap } from '@/core/image/image-manager';
 import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel } from '@/core/text/shape-label';
 import { drawStickyNote } from '@/core/text/sticky-note';
@@ -28,7 +29,7 @@ import {
   readCodeRender,
   readConnectorBaseRender,
   readConnectorRender,
-  readImageRender,
+  readImageOpacity,
   readShapeLabelRender,
   readShapeLabelRenderNoFrame,
   readShapeRender,
@@ -41,6 +42,7 @@ import { paintShapeFrame } from './shape-preview';
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateHandles: ObjectHandle[] = [];
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
+const _imageFrameScratch: FrameTuple = [0, 0, 0, 0];
 
 // Per-frame editing-id snapshot, written once at the top of `drawObjects` and
 // read by leaf `draw*` functions. Avoids one `useSelectionStore.getState()`
@@ -390,12 +392,26 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 }
 
 function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOverride?: FrameTuple): void {
-  const r = readImageRender(handle.y);
-  const frame = frameOverride ?? r.frame!;
-  const bitmap = getBitmap(r.assetId!);
+  const meta = getImageMeta(handle.id);
+  if (!meta) return; // cold-miss race — observer fills the cache before render
+  const bitmap = getBitmap(meta.assetId);
+
+  let frame: FrameTuple;
+  if (frameOverride) {
+    frame = frameOverride;
+  } else {
+    // Image bbox === frame, zero padding — hit-dispatch.ts derives the hit-rect
+    // from the same handle envelope, so the draw rect tracks it 1:1.
+    const b = handle.bbox;
+    _imageFrameScratch[0] = b[0];
+    _imageFrameScratch[1] = b[1];
+    _imageFrameScratch[2] = b[2] - b[0];
+    _imageFrameScratch[3] = b[3] - b[1];
+    frame = _imageFrameScratch;
+  }
 
   ctx.save();
-  ctx.globalAlpha = r.opacity;
+  ctx.globalAlpha = readImageOpacity(handle.y);
   if (bitmap) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';

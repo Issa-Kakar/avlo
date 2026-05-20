@@ -114,7 +114,7 @@ All paths relative to `client/src/` unless noted.
 | `connectors/` | Elbow A* + straight routing, snap. Entry: `connector-router.ts`, `snap.ts`, `reroute-connector.ts`, `anchor-atoms.ts`, `connector-paths.ts`, `constants.ts`. See CLAUDE.md |
 | `text/` | Layout engine + three-tier cache + sticky notes. Entry: `text-system.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
 | `code/` | Two-tier tokenization + CodeMirror + canvas renderer. Entry: `code-system.ts`, `code-tokens.ts`, `lezer-worker.ts`, `code-theme.ts`. See CLAUDE.md |
-| `image/` | Offline-first pipeline + 2 web workers. Entry: `image-manager.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
+| `image/` | Offline-first pipeline + 2 web workers. Entry: `image-manager.ts`, `image-cache.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
 | `clipboard/` | Nonce-based clipboard + serializer. Entry: `clipboard-actions.ts`, `clipboard-serializer.ts`. See CLAUDE.md |
 | `z-order/` | `ZRankTable` (SoA Uint32 ranks + slot pool) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
@@ -364,8 +364,7 @@ applyObjectChanges:                                 // _newBBoxScratch reused pe
   // Phase A — deletions (router maps already updated inline above)
   for id in deleted:
     spatialIndex.remove(id, handle.bbox)
-    removeObjectCaches(id, kind)                    // geometry + text/code/bookmark
-    if image|bookmark: unregisterMedia(id)
+    removeObjectCaches(id, kind)                    // geometry + text/code/bookmark/image
     invalidateIfVisible(handle.bbox, vp)
     objectsById.delete(id)
   selection.onObjectsDeleted(deleted)
@@ -376,8 +375,6 @@ applyObjectChanges:                                 // _newBBoxScratch reused pe
     if connector: router.computeBBox(id, y, scratch)             // style-only (color/width/cap)
     else:         computeBBoxForInto(id, kind, y, scratch)       // ★ populates subsystem caches
     bboxChanged = upsertHandle(id, kind, y, scratch, vp)         // spatial + evict + dirty rect
-    if image:    registerImageMeta(id, y)
-    if bookmark: registerBookmarkMeta(id, y)
     if bboxChanged & bindable(kind): router.onBindableChanged(id)
 
   // Phase C — drain reroute queue (router-owned)
@@ -404,7 +401,7 @@ computeBBoxForInto(id, kind, y, out) {
   switch (kind) {
     case 'stroke':    out := pointsToBBox + widthPad
     case 'shape':     out := getFrame + widthPad
-    case 'image':     out := getFrame
+    case 'image':     out := getFrame; ensureImageMeta(id, y)  // populates imageCache
     case 'text':      out := computeTextBBox(id, props)      // populates textLayoutCache + frame
     case 'note':      out := computeNoteBBox(id, props)      // populates textLayoutCache + frame
     case 'code':      out := computeCodeBBox(id, y)          // populates codeSystem    + frame
@@ -433,9 +430,10 @@ computeBBoxForInto(id, kind, y, out) {
 | `bookmarkCache` (layout + frame) | `core/bookmark/bookmark-render.ts` | `getBookmarkFrame` |
 | `connectorRouter.routes` (per-id pooled `Point[]` + reverse `shape→connectors`) | `core/connectors/connector-router.ts` (owned by RDM) | `getConnectorRoute`, `getAttachedConnectors` |
 | `geometryCache` (Path2D, ConnectorPaths) | `renderer/geometry-cache.ts` | `getPath`, `getConnectorPaths` |
-| image bitmaps + `imageMeta` / `bookmarkAssetIds` | `core/image/image-manager.ts` | `getBitmap(assetId)` |
+| `imageCache` (per-id assetId + natural dims digest) | `core/image/image-cache.ts` | `getImageMeta`, `forEachImageMeta` |
+| image bitmaps (per-assetId) | `core/image/image-manager.ts` | `getBitmap(assetId)` |
 
-**Eviction.** `removeObjectCaches(id, kind)` (`renderer/object-cache.ts`) routes geometry + text/code/bookmark on delete; `clearAllObjectCaches()` on teardown. **Image is not in this dispatch** — Phase A calls `unregisterMedia(id)` separately. Connector routes evict via `router.removeConnector` from `onObjectDeleted`. Tool-owned per-object DOM (TextTool, CodeTool) tears down via its own `dispose()` chain.
+**Eviction.** `removeObjectCaches(id, kind)` (`renderer/object-cache.ts`) routes geometry + text/code/bookmark/image on delete; `clearAllObjectCaches()` on teardown. Connector routes evict via `router.removeConnector` from `onObjectDeleted`. Tool-owned per-object DOM (TextTool, CodeTool) tears down via its own `dispose()` chain.
 
 **Out-of-band dirty-rect publishers** (everything that isn't the deep observer): tool gestures (`tool.move/end` → `invalidate{World,Overlay,WorldBBox}`), image-manager bitmap-arrival handler, `codeSystem.applyWorkerSpans`, camera-store subscribers (pan/zoom).
 

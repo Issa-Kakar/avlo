@@ -45,7 +45,7 @@ Width is fixed at `BOOKMARK_WIDTH = 300`. Frame is derived: `[origin[0], origin[
 | `workers/unfurl/src/unfurl.ts` | CF Worker route — Zod validation, SSRF guard, HTMLRewriter, image fetch/R2 store, edge cache |
 | `workers/unfurl/src/app-type.ts` | Public mock app + `UnfurlResponseBody` wire contract |
 | `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain`, `prettifyDomain` |
-| `core/accessors.ts` | `getBookmarkProps`, `getBookmarkUrl`, `getBookmarkAssetIds` |
+| `core/accessors.ts` | `getBookmarkProps`, `getBookmarkUrl` |
 
 ---
 
@@ -93,12 +93,11 @@ handleUnfurlFailed(objectId): pasteUrlAsText fallback + cleanup
 
 ### Image Pipeline for OG + Favicon
 
-Bookmark asset IDs flow through the **same decode pipeline as images**, but always at level 0 (ppsp = Infinity, no mip selection). Registration is observer-fed:
+Bookmark asset IDs flow through the **same decode pipeline as images**, but always at level 0 (ppsp = Infinity, no mip selection). The og/favicon ids are sourced from the `BookmarkLayout` cache — no separate metadata map:
 
-- `registerBookmarkMeta(id, yObj)` — called by RoomDocManager on insert/change; stores `{ ogId, favId }` in `bookmarkAssetIds` map
-- `unregisterMedia(id)` — on delete
-- `manageImageViewport()` — per frame, iterates visible bookmark `ObjectHandle`s (rbush items are handles) + reads `bookmarkAssetIds`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
-- `hydrateImages()` (zero-arg) — at room join, reads observer-populated caches; bookmark assets contribute at level 0 using the handle's bbox
+- `computeBookmarkBBox` → `getLayout` stores `ogImageAssetId` / `faviconAssetId` on the layout; `bookmarkCache.evict(id)` (via `removeObjectCaches`) clears it on delete
+- `manageImageViewport()` — per frame, iterates visible bookmark `ObjectHandle`s (rbush items are handles) + reads `bookmarkCache.getLayoutById`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
+- `hydrateImages()` (zero-arg) — at room join, reads `bookmarkCache.forEachLayout`; bookmark assets contribute at level 0 using the handle's bbox
 
 OG images ≤ 300wu (card width); favicons 18×18.
 
@@ -184,12 +183,13 @@ Painted in the **same `drawBookmark` pass** as the rest of the card via a `hover
 
 ```typescript
 interface BookmarkLayout {
-  titleLines: string[];      // ≤ TITLE_MAX_LINES (2)
-  descLines: string[];       // ≤ DESC_MAX_LINES (3)
-  totalHeight: number;
-  hasOgImage: boolean;
+  titleLines: string[];           // ≤ TITLE_MAX_LINES (2)
+  descLines: string[];            // ≤ DESC_MAX_LINES (3)
+  totalHeight: number;            // equals stored `height`
+  ogImageAssetId: string | null;  // null → text card; non-null → full card
+  faviconAssetId: string | null;  // sole source for the favicon decode
   ogDisplayH: number;
-  displayDomain: string;     // prettifyDomain(domain), cached here
+  displayDomain: string;          // prettifyDomain(domain), cached here
 }
 ```
 
@@ -200,7 +200,7 @@ Module-level `Map<string, BookmarkLayout>` keyed by id. `buildLayout(data)` is t
 **Invalidation:**
 - `bookmarkCache.evict(id)` — on delete (called from `renderer/object-cache.ts`)
 - `bookmarkCache.clear()` — on room teardown
-- Auto-recompute on next render after Y.Map change
+- Insert-only otherwise (`getLayout`); the Case-C unfurl-recovery path in `bookmark-unfurl.ts` evicts before its `transact` so the observer rebuilds a fresh layout
 
 ### Hit-Test & Hover Helpers
 
@@ -346,7 +346,7 @@ Bookmark is in `BINDABLE_KINDS` (`core/types/objects.ts`) — snap and reroute a
 `frameOf(handle)` dispatch includes `bookmark: (h) => getBookmarkFrame(h.id)`.
 
 ### BBox — `core/geometry/bbox.ts`
-`case 'bookmark'` → `computeBookmarkBBox(id, props)`. Populates layout + frame caches as side effects. Shadow padding via `BOOKMARK_SHADOW_*_RATIO` (local to `bookmark-render.ts`, asymmetric — extends mostly downward); the props-incomplete fallback imports the same ratios.
+`case 'bookmark'` → `computeBookmarkBBox(id, props)`. Populates layout + frame caches as side effects. Shadow padding via `BOOKMARK_SHADOW_*_RATIO` (local to `bookmark-render.ts`, asymmetric — extends mostly downward).
 
 ### Object Cache — `renderer/object-cache.ts`
 No bookmark-specific case (no Path2D/ConnectorPaths). Eviction routes `bookmarkCache.evict(id)` via `removeObjectCaches`.
@@ -355,9 +355,8 @@ No bookmark-specific case (no Path2D/ConnectorPaths). Eviction routes `bookmarkC
 `case 'bookmark': drawBookmark(ctx, handle, _hoveredOpenBookmarkId === handle.id)` in `drawObject`. Hoist is one identity compare.
 
 ### RoomDocManager
-- Hydrate: per-handle build calls `registerBookmarkMeta(id, yObj)` inline (no separate `mediaHandles[]` collection)
-- Observer: bbox recomputes on any Y.Map change; `registerBookmarkMeta` re-runs on update
-- Delete: `bookmarkCache.evict(id)` + `unregisterMedia(id)` via `removeObjectCaches`
+- Hydrate / observer: `computeBBoxFor{,Into}` → `computeBookmarkBBox` populates the layout cache (og/favicon ids included) — the documented `computeBBoxFor` cache hook, no ad-hoc registration
+- Delete: `bookmarkCache.evict(id)` via `removeObjectCaches`
 
 ### CanvasRuntime
 - `stop()` → `cleanupOnRoomTeardown()` (clears placeholders + pending map)

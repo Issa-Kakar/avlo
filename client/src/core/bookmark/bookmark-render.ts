@@ -226,7 +226,8 @@ interface BookmarkLayout {
   titleLines: string[];
   descLines: string[];
   totalHeight: number;
-  hasOgImage: boolean;
+  ogImageAssetId: string | null;
+  faviconAssetId: string | null;
   ogDisplayH: number;
   displayDomain: string;
 }
@@ -253,6 +254,10 @@ export const bookmarkCache = {
    */
   getLayoutById(id: string): BookmarkLayout | null {
     return layoutCache.get(id) ?? null;
+  },
+  /** Cold-path iteration — image-manager hydrate + bitmap-region fallback. */
+  forEachLayout(fn: (id: string, layout: BookmarkLayout) => void): void {
+    for (const [id, layout] of layoutCache) fn(id, layout);
   },
 };
 
@@ -388,17 +393,19 @@ interface LayoutInput {
   ogImageAssetId?: string;
   ogImageWidth?: number;
   ogImageHeight?: number;
+  faviconAssetId?: string;
 }
 
 function buildLayout(data: LayoutInput): BookmarkLayout {
-  const hasOgImage = !!data.ogImageAssetId;
-  const ogDisplayH = hasOgImage ? ogDisplayHeight(data.ogImageWidth ?? 0, data.ogImageHeight ?? 0) : 0;
+  const ogImageAssetId = data.ogImageAssetId ?? null;
+  const faviconAssetId = data.faviconAssetId ?? null;
+  const ogDisplayH = ogImageAssetId !== null ? ogDisplayHeight(data.ogImageWidth ?? 0, data.ogImageHeight ?? 0) : 0;
   const textWidth = BOOKMARK_WIDTH - CARD_PADDING * 2;
   const titleLines = wrapText(data.title ?? '', textWidth, TITLE_MAX_LINES, TITLE_FONT);
   const descLines = wrapText(data.description ?? '', textWidth, DESC_MAX_LINES, DESC_FONT);
   const displayDomain = prettifyDomain(data.domain ?? '');
-  const totalHeight = computeLayoutHeight(hasOgImage, ogDisplayH, titleLines.length, descLines.length);
-  return { titleLines, descLines, totalHeight, hasOgImage, ogDisplayH, displayDomain };
+  const totalHeight = computeLayoutHeight(ogImageAssetId !== null, ogDisplayH, titleLines.length, descLines.length);
+  return { titleLines, descLines, totalHeight, ogImageAssetId, faviconAssetId, ogDisplayH, displayDomain };
 }
 
 function computeLayoutHeight(hasOgImage: boolean, ogH: number, titleLineCount: number, descLineCount: number): number {
@@ -509,30 +516,23 @@ export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle
   ctx.translate(r.originX, r.originY);
   ctx.scale(r.scale, r.scale);
 
-  renderBookmarkBody(ctx, 0, 0, r.height, CARD_FILL);
+  renderBookmarkBody(ctx, 0, 0, layout.totalHeight, CARD_FILL);
 
-  if (layout.hasOgImage) {
-    drawFullCard(ctx, BOOKMARK_WIDTH, layout, r.ogImageAssetId, r.faviconAssetId, hoveredOpen);
+  if (layout.ogImageAssetId !== null) {
+    drawFullCard(ctx, BOOKMARK_WIDTH, layout, hoveredOpen);
   } else if (layout.titleLines.length > 0) {
-    drawTextCard(ctx, BOOKMARK_WIDTH, layout, r.faviconAssetId, hoveredOpen);
+    drawTextCard(ctx, BOOKMARK_WIDTH, layout, hoveredOpen);
   }
 
   ctx.restore();
 }
 
-function drawFullCard(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  layout: BookmarkLayout,
-  ogImageAssetId: string | undefined,
-  faviconAssetId: string | undefined,
-  hoveredOpen: boolean,
-): void {
+function drawFullCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, hoveredOpen: boolean): void {
   const displayH = layout.ogDisplayH;
 
   // OG image (top, with rounded top corners)
-  if (ogImageAssetId) {
-    const bitmap = getBitmap(ogImageAssetId);
+  if (layout.ogImageAssetId) {
+    const bitmap = getBitmap(layout.ogImageAssetId);
     if (bitmap) {
       ctx.save();
       ctx.beginPath();
@@ -568,16 +568,10 @@ function drawFullCard(
   if (layout.titleLines.length || layout.descLines.length) cursorY += SECTION_GAP;
 
   // Bottom row: favicon + display name (Open button is on the image — don't double-draw)
-  drawBottomRow(ctx, textX, cursorY, textWidth, layout, faviconAssetId, false, hoveredOpen);
+  drawBottomRow(ctx, textX, cursorY, textWidth, layout, false, hoveredOpen);
 }
 
-function drawTextCard(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  layout: BookmarkLayout,
-  faviconAssetId: string | undefined,
-  hoveredOpen: boolean,
-): void {
+function drawTextCard(ctx: CanvasRenderingContext2D, w: number, layout: BookmarkLayout, hoveredOpen: boolean): void {
   const textX = CARD_PADDING;
   const textWidth = w - CARD_PADDING * 2;
   let cursorY = CARD_PADDING;
@@ -587,7 +581,7 @@ function drawTextCard(
   cursorY = drawDescLines(ctx, textX, cursorY, layout.descLines);
   if (layout.titleLines.length || layout.descLines.length) cursorY += SECTION_GAP;
 
-  drawBottomRow(ctx, textX, cursorY, textWidth, layout, faviconAssetId, true, hoveredOpen);
+  drawBottomRow(ctx, textX, cursorY, textWidth, layout, true, hoveredOpen);
 }
 
 function drawTitleLines(ctx: CanvasRenderingContext2D, x: number, y: number, lines: string[]): number {
@@ -620,13 +614,12 @@ function drawBottomRow(
   rowY: number,
   rowWidth: number,
   layout: BookmarkLayout,
-  faviconAssetId: string | undefined,
   showOpenButton: boolean,
   hoveredOpen: boolean,
 ): void {
   let iconX = textX;
-  if (faviconAssetId) {
-    const favicon = getBitmap(faviconAssetId);
+  if (layout.faviconAssetId) {
+    const favicon = getBitmap(layout.faviconAssetId);
     if (favicon) {
       ctx.drawImage(favicon, iconX, rowY, FAVICON_SIZE, FAVICON_SIZE);
       iconX += FAVICON_SIZE + FAVICON_GAP;
@@ -671,7 +664,7 @@ const _openBtnWorldBBox: BBoxTuple = [0, 0, 0, 0];
  * Full card: overlaid on OG image bottom-right. Text card: right-aligned in the favicon row.
  */
 export function getOpenButtonLocalBounds(layout: BookmarkLayout): LocalRect {
-  if (layout.hasOgImage) {
+  if (layout.ogImageAssetId !== null) {
     _openBtnScratch.lx = BOOKMARK_WIDTH - OPEN_BTN_W - OPEN_BTN_MARGIN;
     _openBtnScratch.ly = layout.ogDisplayH - OPEN_BTN_H - OPEN_BTN_MARGIN;
     return _openBtnScratch;

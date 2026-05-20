@@ -362,14 +362,6 @@ export function getBookmarkUrl(y: Y.Map<unknown>): string | null {
   return (y.get('url') as string | undefined) ?? null;
 }
 
-/** Thin asset-id digest for the image manager's media meta cache. */
-export function getBookmarkAssetIds(y: Y.Map<unknown>): { ogId: string | null; favId: string | null } {
-  return {
-    ogId: (y.get('ogImageAssetId') as string | undefined) ?? null,
-    favId: (y.get('faviconAssetId') as string | undefined) ?? null,
-  };
-}
-
 // ============================================================================
 // STROKE-SPECIFIC ACCESSORS
 // ============================================================================

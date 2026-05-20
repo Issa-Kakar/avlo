@@ -57,7 +57,7 @@ image-actions.ts: createImageFromBlob(blob, worldX, worldY)
 
 Render path (synchronous, every frame):
    objects.ts → drawImage(ctx, handle)
-   → getFrame(handle.y), getAssetId(handle.y)
+   → getImageMeta(handle.id) → assetId  (frame from handle.bbox — image bbox === frame)
    → getBitmap(assetId) → ImageBitmap | null
    → bitmap ready? → ctx.drawImage(bitmap, x, y, w, h) with imageSmoothingQuality:'high'
    → not ready? → gray placeholder rect (#f0f0f0 fill, #d1d5db stroke)
@@ -154,6 +154,7 @@ Images use stored `frame` (like shapes), not derived frames (unlike text/code). 
 |------|----------------|
 | `image-actions.ts` | Entry points: `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization (`<img>` + canvas, 2048–4096px) |
 | `image-manager.ts` | Thin main-thread coordinator: bitmap cache, viewport management, two-worker routing, generation tracking |
+| `image-cache.ts` | Per-object-id `imageMeta` digest (assetId + natural dims). Populated insert-only by `computeBBoxForInto`, evicted by `removeObjectCaches` |
 | `image-worker.ts` | Web Worker (2 instances): Cache API reads/writes, SHA-256 hashing, dynamic resize decode, upload queue (primary), staleness tracking |
 | `../../sw.ts` | Service Worker: cache-first asset serving, app shell caching, offline support |
 
@@ -245,17 +246,13 @@ genCounter:        number                                                 // Mon
 errors:            Map<assetId, timestamp>                                // Failed assets, 15s cooldown
 inflightIngests:   Map<id, { resolve, reject }>                          // Ingest promise tracking
 
-// Observer-fed media metadata caches (replaces per-frame Y.Map reads)
-imageMeta:         Map<id, { assetId, nw, nh }>                          // Populated by RDM observer
-bookmarkAssetIds:  Map<id, { ogId, favId }>                              // Populated by RDM observer
-
 // Per-frame mark/sweep state
 _assetInfo:        Map<assetId, { ppsp, nw, nh, bbox, markedAtFrame }>   // Persists across frames
 _frameMark:        number                                                 // Bumped each tick
 _decodeQueue:      DecodeRequest[]                                        // Scratch, length-reset each frame
 ```
 
-**No `tracked` map, no `assetFrames` map.** Spatial index + the media-meta caches are the source of truth for visibility — `imageMeta` / `bookmarkAssetIds` hold the per-object asset digest; the spatial query gives us bboxes. The per-frame loop reads Y.Map zero times. Ref counting is implicit: multiple objects sharing an assetId all appear in the spatial query, max-aggregate ppsp and union-aggregate bbox into one `_assetInfo` entry.
+**No `tracked` map, no `assetFrames` map.** Spatial index + the subsystem caches are the source of truth for visibility — `imageCache` (`image-cache.ts`) holds the per-image asset digest, `bookmarkCache`'s layout holds og/favicon ids; the spatial query gives us bboxes. The per-frame loop reads Y.Map zero times. Ref counting is implicit: multiple objects sharing an assetId all appear in the spatial query, max-aggregate ppsp and union-aggregate bbox into one `_assetInfo` entry.
 
 ### Generation-Based Mip Superseding
 
@@ -275,10 +272,7 @@ Main: bitmap(A, gen=2) → pending.gen=2 → accept. bitmap(A, gen=1) → gen mi
 getBitmap(assetId): ImageBitmap | null              // Synchronous render path
 manageImageViewport(): void                          // Called from RenderLoop.tick() every frame
 ingest(blob): Promise<IngestResult>                  // Local drop: validate → hash → decode → bitmap
-hydrateImages(): void                                // Room join: reads observer-fed meta caches (no args)
-registerImageMeta(id, yObj): void                    // Called by RDM observer on image insert (idempotent — assetIds are immutable)
-registerBookmarkMeta(id, yObj): void                 // Called by RDM observer on bookmark insert (idempotent — bookmarks are atomic, no partial unfurl reaches Y.Doc)
-unregisterMedia(id): void                            // Called by RDM observer on image/bookmark delete
+hydrateImages(): void                                // Room join: reads imageCache + bookmarkCache (no args)
 enqueue(assetId): void                               // Queue upload to R2
 postToPrimary(msg): void                             // Forward message to primary worker (bookmark-unfurl)
 clear(): void                                        // Room teardown: close all bitmaps, clear caches
@@ -375,10 +369,10 @@ Global across rooms (content-addressed dedup).
 
 ### Viewport Management Flow (manageImageViewport)
 
-Called every frame from `RenderLoop.tick()`. Reads camera store + spatial index. **Zero Y.Map reads per frame** (asset digests live in observer-fed meta caches). **Zero allocations in steady state** (`_assetInfo` entries persist across frames via mark/sweep with `_frameMark`).
+Called every frame from `RenderLoop.tick()`. Reads camera store + spatial index. **Zero Y.Map reads per frame** (asset digests live in `imageCache` / `bookmarkCache`). **Zero allocations in steady state** (`_assetInfo` entries persist across frames via mark/sweep with `_frameMark`).
 
 1. Guard: `hasActiveRoom()` early-return. Bump `_frameMark`.
-2. **Mark Phase A (spatial):** Query spatial index with 5.5× padded viewport (2.25× per side). For each `ObjectHandle` of kind `image`/`bookmark` (rbush items are handles directly), look up the meta cache → `markAsset(...)`. Marking sets `markedAtFrame = _frameMark`, max-aggregates ppsp, union-aggregates bbox. Bookmarks pass `ppsp = Infinity, nw=1, nh=1` (level 0 unaffected by nw/nh).
+2. **Mark Phase A (spatial):** Query spatial index with 5.5× padded viewport (2.25× per side). For each `ObjectHandle` of kind `image`/`bookmark` (rbush items are handles directly), look up `imageCache` / `bookmarkCache` → `markAsset(...)`. Marking sets `markedAtFrame = _frameMark`, max-aggregates ppsp, union-aggregates bbox. Bookmarks pass `ppsp = Infinity, nw=1, nh=1` (level 0 unaffected by nw/nh).
 3. **Mark Phase B (transform overlay):** If `getTransformMode() ∈ {'scale','translate'}` and any image is selected, iterate `selectedIdSet`. For each image: read its live `getScaleEntry('image', id).out.bbox`, **intersect against the padded viewport (gates Ctrl+A from force-decoding off-screen)**, then `markAsset(...)`. Scale forces `ppsp = Infinity` for crisp preview; translate uses the live transformed width. This re-marks images whose stored bbox drifted out of the padded viewport during edge-scroll while their transform output is still on screen — fixes the bitmap-disappear bug.
 4. **Sweep:** Iterate `_assetInfo`; entries with stale `markedAtFrame` get deleted along with their bitmap (`bm.bitmap.close()`) and pending decode (cancel sent + `pending.delete`).
 5. **Dispatch:** Classify each marked asset by priority — `New` (no cached), `Upgrade` (`cached.level > neededLevel`), `Downgrade` (`neededLevel ≥ cached.level + 2`, hysteresis). Skip if pending decode already at correct level. Sort `_decodeQueue` ascending by priority, then post decode messages — worker FIFO order means new-in-view bitmaps land before downgrades.
@@ -386,10 +380,10 @@ Called every frame from `RenderLoop.tick()`. Reads camera store + spatial index.
 
 ### Hydration (hydrateImages)
 
-Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join. Takes no arguments — RDM populates the `imageMeta` / `bookmarkAssetIds` caches inline during its handle-build forEach, and `hydrateImages()` reads them. No second Y.Map traversal.
+Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join. Takes no arguments — RDM's handle-build forEach runs `computeBBoxFor`, which populates `imageCache` + `bookmarkCache` as a side effect, and `hydrateImages()` reads them. No second Y.Map traversal.
 
-1. Iterate `imageMeta` → for each image, `getHandle(id)` once for the current bbox, compute ppsp from `handle.bbox[2] - handle.bbox[0]` + camera state → mip level. Deduped by assetId (min level = highest quality).
-2. Iterate `bookmarkAssetIds` → contribute `ogImageAssetId` + `faviconAssetId` at level 0 (nw/nh unused at level 0).
+1. `forEachImageMeta` → for each image, `getHandle(id)` once for the current bbox, compute ppsp from `handle.bbox[2] - handle.bbox[0]` + camera state → mip level. Deduped by assetId (min level = highest quality).
+2. `bookmarkCache.forEachLayout` → contribute `ogImageAssetId` + `faviconAssetId` at level 0 (nw/nh unused at level 0).
 3. Manager splits visible vs offscreen via inline bbox-vs-`getVisibleBoundsTuple()` check.
 4. Group items by worker via hash routing (`assetId.charCodeAt(0) & 1`).
 5. Assign gen per visible item, pre-add to `pending` (prevents duplicate decode on first `manageImageViewport` tick).
@@ -398,11 +392,11 @@ Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join. Takes
    - **Visible (fire-and-forget):** `decodeAndSend` per item — results stream as each decode completes (no batching, no concurrency limiting)
    - **Prefetch (fire-and-forget):** `getAssetBlob` — cache-warm for scroll-in
 
-Empty meta caches AND empty assetMap both early-return: a room of bookmarks that haven't unfurled yet has bookmark handles but no asset IDs.
+An empty `assetMap` early-returns: a room of bookmarks that haven't unfurled yet has bookmark handles but no asset IDs.
 
 ### Bitmap Invalidation
 
-On `'bitmap'` message from worker: O(1) lookup via `_assetInfo` pre-computed union bbox. **Gated on actual visible viewport** — off-viewport bitmaps (decoded via aggressive padding) sit silently in `bitmaps` map, no dirty rect, no render work. Only assets intersecting the visible world bounds trigger `invalidateWorldBBox` (tuple-native, no allocation). Fallback (hydration, before first manageImageViewport tick): iterate the small `imageMeta` and `bookmarkAssetIds` caches (image-only / bookmark-only — not all objects), match by assetId, intersect against the visible viewport.
+On `'bitmap'` message from worker: O(1) lookup via `_assetInfo` pre-computed union bbox. **Gated on actual visible viewport** — off-viewport bitmaps (decoded via aggressive padding) sit silently in `bitmaps` map, no dirty rect, no render work. Only assets intersecting the visible world bounds trigger `invalidateWorldBBox` (tuple-native, no allocation). Fallback (hydration, before first manageImageViewport tick): iterate `imageCache` (`forEachImageMeta`) + `bookmarkCache` (`forEachLayout`), match by assetId, intersect against the visible viewport.
 
 On `'ingested'` message: same targeted invalidation. The ingest resolve also triggers Y.Doc mutation → observer → snapshot update → render anyway, but the invalidation ensures the bitmap renders on the same frame.
 
@@ -520,9 +514,8 @@ Client URL building uses `@avlo/api-client` typed `hc<App>` — `imagesClient[':
 ### Base Canvas (`renderer/layers/objects.ts`)
 
 `drawImage(ctx, handle)`:
-- Reads `getFrame(handle.y)` → `[x, y, w, h]`
-- Reads `getAssetId(handle.y)` → SHA-256 hex string
-- `getBitmap(assetId)` → synchronous `Map.get()`
+- `getImageMeta(handle.id)` → assetId (frame derives from `handle.bbox` — image bbox === frame, zero padding)
+- `getBitmap(meta.assetId)` → synchronous `Map.get()`
 - Bitmap ready → `ctx.save()`, `ctx.globalAlpha = opacity`, `ctx.imageSmoothingEnabled = true`, `ctx.imageSmoothingQuality = 'high'`, `ctx.drawImage(bitmap, x, y, w, h)`, `ctx.restore()`
 - Not ready → gray placeholder rect (`#f0f0f0` fill, `#d1d5db` stroke, 1px line width)
 
@@ -534,7 +527,7 @@ Commit updates Y.Doc `frame` — bitmap stays, ppsp recalculates next tick for m
 
 ### Object Cache (`renderer/object-cache.ts`)
 
-Images return an empty `new Path2D()` — they don't use the geometry cache. Cache eviction for images is a no-op.
+Images don't use the geometry cache (no Path2D). `removeObjectCaches` routes `case 'image'` → `imageCache.evict(id)`; `clearAllObjectCaches` → `imageCache.clear()`.
 
 ---
 
@@ -574,7 +567,7 @@ getNaturalDimensions(y: Y.Map) → [w, h] | null // Original pixel dimensions
 getImageProps(y: Y.Map) → ImageProps | null     // { assetId, frame, naturalWidth, naturalHeight, mimeType }
 ```
 
-`opacity` is stored on the Y.Map (read via the common `getOpacity()` accessor) but is not on `ImageProps` — `drawImage` reads it directly via `getOpacity(handle.y)` before painting.
+`opacity` is stored on the Y.Map but is not on `ImageProps` — `drawImage` reads it via `readImageOpacity(handle.y)` (`renderer/render-accessors.ts`) before painting.
 
 ---
 
