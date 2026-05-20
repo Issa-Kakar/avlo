@@ -1,4 +1,3 @@
-import type React from 'react';
 import { CheckIcon } from '@/components/toolbar/color/CheckIcon';
 import { checkmarkColorFor, colorsEqual, luminance, PALETTE, PALETTE_COLS } from '@/components/toolbar/color/palette';
 import { ColorTeardrop } from './icons';
@@ -28,7 +27,7 @@ export function StrokeColorControl({ color, mixed, onSelect }: StrokeColorContro
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton className="ctx-btn-teardrop" onMouseDown={toggle} aria-expanded={open}>
-        <ColorTeardrop color={color} mixed={mixed} />
+        <ColorTeardrop color={color} mixed={mixed} engaged={open} />
       </MenuButton>
       {open && (
         <div className="ctx-submenu ctx-submenu-cp">
@@ -38,9 +37,9 @@ export function StrokeColorControl({ color, mixed, onSelect }: StrokeColorContro
               return (
                 <button
                   key={c}
-                  className={`ctx-cp-swatch${active ? ' is-active' : ''}`}
+                  className="ctx-cp-swatch"
                   data-near-white={luminance(c) > NEAR_WHITE || undefined}
-                  style={active ? ({ background: c, '--ctx-cp-ring': c } as React.CSSProperties) : { background: c }}
+                  style={{ background: c }}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     onSelect(c);

@@ -50,10 +50,3 @@
 .ctx-cp-swatch[data-near-white] {
   border-color: var(--ctx-black-a20);
 }
-
-/* Selected swatch: white gap ring + a halo in the swatch's own color. */
-.ctx-cp-swatch.is-active {
-  box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 4px var(--ctx-cp-ring);
-}

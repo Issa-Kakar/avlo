@@ -8,8 +8,8 @@
 }
 
 .ctx-fontsize-value {
-  min-width: 32px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -22,7 +22,7 @@
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   outline: none;
-  padding: 0 4px;
+  padding: 0;
 }
 
 .ctx-fontsize-value:hover {
@@ -45,7 +45,7 @@
 
 .ctx-fontsize-arrow {
   width: 18px;
-  height: 14px;
+  height: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -73,18 +73,27 @@
 }
 
 .ctx-fontsize-arrow svg {
-  width: 12px;
-  height: 7px;
+  width: 11px;
+  height: 6.5px;
 }
 
 /* ===== Font Size Dropdown ===== */
 
 .ctx-submenu-fontsize {
-  min-width: 56px;
+  min-width: 0;
+  padding: 10px;
 }
 
 .ctx-submenu-fontsize .ctx-submenu-item {
+  width: 32px;
   justify-content: center;
+  padding: 0;
+}
+
+.ctx-submenu-fontsize .ctx-submenu-item-active,
+.ctx-submenu-fontsize .ctx-submenu-item-active:hover {
+  background: var(--ctx-engaged-tier);
+  color: #fff;
 }
 
 .ctx-size-item-label {

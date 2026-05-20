@@ -19,12 +19,14 @@
   --ctx-accent: #3b82f6;
   --ctx-sand: #d4b89b;
 
-  /* Black-alpha overlay scale — borders, hovers, dividers, shadows. */
+  /* Divider — blue-tinted hairline between menu groups. */
+  --ctx-divider: #2a52791f;
+
+  /* Black-alpha overlay scale — borders, hovers, shadows. */
   --ctx-black-a05: rgba(0, 0, 0, 0.05);
   --ctx-black-a06: rgba(0, 0, 0, 0.06);
   --ctx-black-a08: rgba(0, 0, 0, 0.08);
   --ctx-black-a12: rgba(0, 0, 0, 0.12);
   --ctx-black-a13: rgba(0, 0, 0, 0.13);
-  --ctx-black-a18: rgba(0, 0, 0, 0.18);
   --ctx-black-a20: rgba(0, 0, 0, 0.2);
 }

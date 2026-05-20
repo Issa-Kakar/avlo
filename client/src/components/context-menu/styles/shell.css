@@ -52,9 +52,9 @@
 /* ===== Divider ===== */
 
 .ctx-divider {
-  width: 1px;
+  width: 2px;
   height: 24px;
-  background: var(--ctx-black-a18);
+  background: var(--ctx-divider);
   margin: 0 4px;
   flex-shrink: 0;
 }

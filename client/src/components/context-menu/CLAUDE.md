@@ -15,7 +15,7 @@
 > - **Body / secondary text:** `#48525b`. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon. The menu's "everything else" color.
 > - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
 > - **Engaged dark fill:** `#1b1f22`, white text/icons. The "this control is engaged" tone — open-state triggers (`FilterObjectsDropdown`, the `StrokeColorControl` teardrop, the `StrokeWidthControl` bars, the align triggers), active toggles (bold / italic), and the active selected row inside a dropdown (align submenu item, font picker row). An earlier doc split `#1b1f22` (submenu-host) from `#282e34` (active value) — that split is collapsed; `#1b1f22` now covers both.
-> - **Stroke-width active tier:** `#282e34`, white. The lone remaining use of this slightly-lighter dark — `.ctx-weight-item-active` only. Not yet reconciled to `#1b1f22`.
+> - **Stroke-width active tier:** `#282e34`, white. This slightly-lighter dark fills `.ctx-weight-item-active` and the font-size dropdown's active row. Not yet reconciled to `#1b1f22`.
 > - **Open-trigger primary text:** pure white.
 > - **Open-trigger FILTER subtitle:** `#D4B89B` (warm sand). Intentional warm third pole in the otherwise cool slate palette; deliberately stays subordinate to white (~2× contrast hierarchy). `fill 150ms ease` transition.
 > - **Icons:** 20×20, sourced from `components/toolbar/icons/*` (not the legacy `context-menu/icons/FilterIcons.tsx` pictograms). `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
@@ -529,7 +529,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`, `IconStickySquareFold` |
 | `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) |
 | `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) |
-| `ColorTeardrop.tsx` | `ColorTeardrop` (props: `color`, `mixed?`) — solid color drop, or a three-swatch drop when `mixed` |
+| `ColorTeardrop.tsx` | `ColorTeardrop` (props: `color`, `mixed?`, `engaged?`) — solid color drop, or a three-swatch drop when `mixed`. Dark `color` + `engaged` → faint light rim so the drop doesn't vanish into the open trigger's dark bg. |
 | `StrokeWidthIcons.tsx` | `IconWeightBars` (trigger) + `IconWeight1`–`IconWeight4` (diagonal tier glyphs) |
 | `TrashIcon.tsx` | `IconTrash` |
 
@@ -548,20 +548,21 @@ control `.tsx` files import no CSS (mirrors `toolbar/inspectors/Inspector.css`).
 `styles/tokens.css` defines the `--ctx-*` custom properties on
 `.context-menu-floating` (the portal class — every surface, incl. the
 absolutely-positioned submenus, inherits them): `--ctx-engaged` (#1b1f22),
-`--ctx-engaged-tier` (#282e34), the text/accent/sand colors, and a black-alpha
-overlay scale (`--ctx-black-a05` … `--ctx-black-a20`). Tokens are pure
+`--ctx-engaged-tier` (#282e34), the text/accent/sand colors, `--ctx-divider`
+(#2a52791f), and a black-alpha overlay scale (`--ctx-black-a05` …
+`--ctx-black-a20`). Tokens are pure
 indirection — identical pixels.
 
 - `.ctx-btn-sq`: 32x32, padding 0. Inner SVG 18x18.
 - `.ctx-btn-fmt`: bold / italic toggles + align triggers. Inner SVG 20x20. `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
 - `.ctx-btn-color`: 32x32. Inner SVG 20x20.
 - `.ctx-btn-teardrop` / `.ctx-btn-weight`: 32x32 color / width triggers. `.ctx-btn-weight` icon rests at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.
-- `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; `.is-active` adds a check + own-color halo ring.
+- `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; the active swatch shows a centered check, no ring (the white surface needs no halo).
 - `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu — `padding: 8px`, `border-radius: 12px`, 3px row gap. Rows left-aligned (icon · word · inline checkmark). `.ctx-weight-item-active` fills the tier row `#282e34`, white icon/label/check.
-- `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x14, SVG 12x7.
-- `.ctx-fontsize-value`: 32px min-width, 28px height, SVG 30x16 viewBox.
-- `.ctx-submenu-fontsize`: 56px min-width, items center-aligned (`justify-content: center`).
-- `.ctx-submenu-note-align`: flex **row**, centered. `.ctx-align-row` (H group, then V group) split by `.ctx-align-divider` — a vertical 1×24 separator.
-- `.ctx-divider`: 1px wide, 24px tall, rgba(0,0,0,0.18).
+- `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x12, SVG 11x6.5.
+- `.ctx-fontsize-value`: 32x32, padding 0, SVG 30x16 viewBox.
+- `.ctx-submenu-fontsize`: `min-width: 0` + 10px padding (content-driven width); 32x32 items, center-aligned (`justify-content: center`), active row `#282e34` / white.
+- `.ctx-submenu-note-align`: flex **row**, centered. `.ctx-align-row` (H group, then V group) split by `.ctx-align-divider` — a vertical 2×24 separator.
+- `.ctx-divider`: 2px wide, 24px tall, `--ctx-divider` (#2a52791f).
 
 ---
