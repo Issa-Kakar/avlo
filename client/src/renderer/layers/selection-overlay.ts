@@ -45,6 +45,7 @@ import {
   transformHasChange,
 } from '@/tools/selection/transform';
 import type { EndpointDragTransform, TransformState } from '@/tools/selection/types';
+import { drawConnectorFlow } from './connector-flow';
 import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
 import { drawResizeHandles } from './handle-stamp';
 
@@ -118,6 +119,12 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   // 1. Marquee — independent of selection. Owned by SelectTool.
   const marqueeBBox = selectTool.getMarqueeBBox();
   if (marqueeBBox) drawMarqueeRect(ctx, marqueeBBox, scale);
+
+  // 1b. Connector flows — buttons + hover preview + live drag connector. Drawn
+  // before the empty-selection return so the drag preview survives the cleared
+  // selection mid-drag. Self-gates internally.
+  drawConnectorFlow(ctx);
+
   if (selectedIds.length === 0) return;
 
   const isTranslating = transform.kind === 'translate';
