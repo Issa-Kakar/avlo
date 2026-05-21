@@ -1,3 +1,4 @@
+import { maxZLength, renormalizeZ, Z_RENORM_MAX_KEY_LEN, Z_RENORM_ORIGIN } from '@avlo/shared';
 import type { Connection } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
@@ -55,6 +56,14 @@ export class RoomDurableObject extends YServer<Env> {
       // One microturn in case a final Yjs update just landed
       await Promise.resolve();
       try {
+        // Renorm z-keys if any object's key has grown past the threshold. Origin
+        // 'server-renorm' is NOT in client UndoManager.trackedOrigins, so this
+        // doesn't pollute undo history.
+        if (maxZLength(this.document) > Z_RENORM_MAX_KEY_LEN) {
+          this.document.transact(() => {
+            renormalizeZ(this.document);
+          }, Z_RENORM_ORIGIN);
+        }
         await this.onSave();
       } catch (err) {
         console.error('flush-on-last-disconnect failed:', err);

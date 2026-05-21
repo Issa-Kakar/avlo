@@ -23,6 +23,7 @@ import {
   selectAll,
 } from '@/core/clipboard/clipboard-actions';
 import { openImageFilePicker } from '@/core/image/image-actions';
+import { bringSelectedForward, bringSelectedToFront, sendSelectedBackward, sendSelectedToBack } from '@/core/z-order/z-actions';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { type ShapeVariant, setCursorOverride, setShapeMode, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -202,6 +203,16 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
       e.preventDefault();
       animateZoomReset();
       return;
+
+    case ']':
+      e.preventDefault();
+      if (!gestureActive) bringSelectedToFront();
+      return;
+
+    case '[':
+      e.preventDefault();
+      if (!gestureActive) sendSelectedToBack();
+      return;
   }
 }
 
@@ -247,6 +258,18 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
   if (key === 'i') {
     e.preventDefault();
     openImageFilePicker();
+    return;
+  }
+
+  // Z-order step ops — viewport-bound bisection
+  if (key === ']') {
+    e.preventDefault();
+    bringSelectedForward();
+    return;
+  }
+  if (key === '[') {
+    e.preventDefault();
+    sendSelectedBackward();
     return;
   }
 

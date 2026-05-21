@@ -2,7 +2,7 @@
  * RoomDocManager - Central authority for Y.Doc and real-time collaboration
  */
 
-import type { RoomId } from '@avlo/shared';
+import { getZ, isZKey, type RoomId, type YObjects, type ZKey } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
@@ -11,11 +11,12 @@ import { getCodeProps } from '@/core/accessors';
 import { codeSystem } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
-import { hydrateImages, registerBookmarkMeta, registerImageMeta, unregisterMedia } from '@/core/image/image-manager';
+import { hydrateImages } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { createHandle, isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
+import { ZRankTable } from '@/core/z-order/z-rank-table';
 import { evictGeometry } from '@/renderer/geometry-cache';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
@@ -25,9 +26,6 @@ import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import { bindUndoManagerToHistoryStore } from './history-bridge';
 import { attach, detach } from './presence/presence';
-
-// Type alias for Y structures
-type YObjects = Y.Map<Y.Map<unknown>>;
 
 /** Viewport-cull then publish a dirty rect. `vp` is a scratch tuple from `getVisibleBoundsTuple()`. */
 function invalidateIfVisible(b: BBoxTuple, vp: Readonly<BBoxTuple>): void {
@@ -40,6 +38,7 @@ export interface IRoomDocManager {
   readonly objectsById: ReadonlyMap<string, ObjectHandle>;
   readonly spatialIndex: ObjectSpatialIndex;
   readonly connectorRouter: ConnectorRouter;
+  readonly zOrder: ZRankTable;
 
   mutate(fn: () => void): void;
   destroy(): void;
@@ -81,6 +80,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   readonly objectsById = new Map<string, ObjectHandle>();
   readonly spatialIndex = new ObjectSpatialIndex();
   readonly connectorRouter = new ConnectorRouter();
+  readonly zOrder = new ZRankTable();
   private objectsObserver: ((events: Y.YEvent<Y.AbstractType<unknown>>[], tx: Y.Transaction) => void) | null = null;
 
   // Reused observer scratch — cleared/overwritten at top of each fire. Safe because the
@@ -192,6 +192,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear connector router state before object-cache teardown.
     this.connectorRouter.clear();
 
+    // Clear z-order rank table
+    this.zOrder.clear();
+
     // Clear all object caches (geometry + layout)
     clearAllObjectCaches();
 
@@ -248,6 +251,19 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             evictGeometry(id); // pre-evict Path2D so renderer doesn't re-check per draw
             router.onBindableChanged(id);
           }
+
+          // z key-edit: mirror Y onto handle.z + rank table synchronously with the fire.
+          // A z-only edit has no bbox impact, so Phase B's upsertHandle would no-op on
+          // bbox check. Updating here keeps next sort site's view consistent without
+          // re-reading y.get('z') in Phase B.
+          if (ev.keysChanged.has('z')) {
+            const handle = this.objectsById.get(id);
+            if (handle) {
+              const newZ = yObj.get('z') as ZKey;
+              this.zOrder.noteZChanged(handle.z, newZ);
+              handle.z = newZ;
+            }
+          }
         }
 
         if (path.length >= 2 && String(path[1] ?? '') === 'content') {
@@ -285,8 +301,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
       this.spatialIndex.remove(handle); // identity removal; envelope mirrors still describe the live entry
+      this.zOrder.releaseSlot(handle.slot, handle.z);
       removeObjectCaches(id, handle.kind);
-      if (handle.kind === 'image' || handle.kind === 'bookmark') unregisterMedia(id);
       invalidateIfVisible(handle.bbox, vp);
       this.objectsById.delete(id);
     }
@@ -311,16 +327,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         continue;
       }
 
-      // Non-connector branch
+      // Non-connector branch. computeBBoxForInto populates the kind's subsystem
+      // cache as a side effect — image meta + text/code/note/bookmark layout.
       computeBBoxForInto(id, kind, yObj, scratch);
       const bboxChanged = this.upsertHandle(id, kind, yObj, scratch, vp, false);
-
-      // Media meta cache: idempotent re-register on every touch. AssetIds are
-      // immutable post-creation and bookmarks are written atomically (offline/failed
-      // unfurl → text object, never a partial bookmark), so this is effectively an
-      // insert-only call — the per-touch invocation just keeps the wiring simple.
-      if (kind === 'image') registerImageMeta(id, yObj);
-      else if (kind === 'bookmark') registerBookmarkMeta(id, yObj);
 
       if (bboxChanged) {
         changed.add(id);
@@ -374,7 +384,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     const handle = this.objectsById.get(id);
 
     if (!handle) {
-      const fresh = createHandle(id, kind, yObj, newBBox);
+      const z = getZ(yObj);
+      if (!isZKey(z)) throw new Error(`upsertHandle: object ${id} (kind=${kind}) has no z key`);
+      const slot = this.zOrder.acquireSlot();
+      const fresh = createHandle(id, kind, yObj, newBBox, z, slot);
+      this.zOrder.noteAdd(z);
       this.objectsById.set(id, fresh);
       this.spatialIndex.insert(fresh);
       evictGeometry(id);
@@ -402,6 +416,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.objectsById.clear();
     this.spatialIndex.clear();
     this.connectorRouter.clear();
+    this.zOrder.clear();
     clearAllObjectCaches();
 
     const handles: ObjectHandle[] = [];
@@ -409,8 +424,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Pass 1: build handles for everything except connectors. Connectors only get
     // their anchorIds + shapeToConnectors entries here — bbox + route deferred to pass 2.
-    // Media meta caches (imageMeta, bookmarkAssetIds) are populated inline so that
-    // the immediately-following hydrateImages() call reads them.
+    // `computeBBoxFor` populates each kind's subsystem cache (image meta + text/code/
+    // note/bookmark layout) so the immediately-following hydrateImages() reads them.
+    // Slot acquisition is deferred to zOrder.load() below so slots are densely packed [0..N-1].
     this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
@@ -421,12 +437,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         return;
       }
 
+      const z = getZ(yObj);
+      if (!isZKey(z)) throw new Error(`hydrate: object ${id} (kind=${kind}) has no z key`);
       const bbox = computeBBoxFor(id, kind, yObj);
-      const handle = createHandle(id, kind, yObj, bbox);
+      const handle = createHandle(id, kind, yObj, bbox, z, -1); // slot=-1 sentinel; zOrder.load assigns
       this.objectsById.set(id, handle);
       handles.push(handle);
-      if (kind === 'image') registerImageMeta(id, yObj);
-      else if (kind === 'bookmark') registerBookmarkMeta(id, yObj);
     });
 
     // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).
@@ -437,9 +453,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     for (const id of deferredConnectorIds) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
+      const z = getZ(yObj);
+      if (!isZKey(z)) throw new Error(`hydrate: connector ${id} has no z key`);
       const bbox: BBoxTuple = [0, 0, 0, 0];
       this.connectorRouter.rerouteCanonical(id, yObj, bbox); // mutates bbox tuple in place
-      const handle = createHandle(id, 'connector', yObj, bbox); // reads post-reroute bbox into mirrors
+      const handle = createHandle(id, 'connector', yObj, bbox, z, -1); // slot=-1 sentinel; zOrder.load assigns
       this.objectsById.set(id, handle);
       handles.push(handle);
     }
@@ -447,6 +465,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (handles.length > 0) {
       this.spatialIndex.load(handles);
     }
+    this.zOrder.load(this.objectsById.values());
 
     hydrateImages();
     invalidateWorldAll();

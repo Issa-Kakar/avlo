@@ -63,7 +63,10 @@ export interface Aggregate<V> {
   readonly second: V | null;
 }
 
-// One-cast-per-loop dispatch bridge. Mirrors `object-query.ts:83` (`KIND[h.kind] as AnyCapability`).
+// One-cast-per-loop dispatch bridge — mirrors `tools/selection/transform.ts`'s
+// `APPLY_SCALE[kind]` cast. (Spatial hit dispatch was switched to a per-kind
+// switch in `core/spatial/hit-dispatch.ts`, so this is now the canonical
+// example of a mapped-table dispatch with biome-ignore.)
 // biome-ignore lint/suspicious/noExplicitAny: dispatch boundary; mapped table proves correctness at definition
 type AnyDescriptor = FieldDescriptor<any>;
 

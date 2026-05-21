@@ -26,11 +26,12 @@ import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { uniformFactor } from '@/core/geometry/scale-system';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
+import { computeHandles } from '@/core/types/handles';
 import type { ObjectHandle } from '@/core/types/objects';
 import { getConnectorRoute, getHandle } from '@/runtime/room-runtime';
 import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
-import { computeHandles, computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
+import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
 import type { EndpointDragEntry } from '@/tools/selection/connector-topology';
 import {
   getController,
@@ -44,6 +45,7 @@ import {
   transformHasChange,
 } from '@/tools/selection/transform';
 import type { EndpointDragTransform, TransformState } from '@/tools/selection/types';
+import { drawConnectorFlow } from './connector-flow';
 import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
 import { drawResizeHandles } from './handle-stamp';
 
@@ -117,6 +119,12 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   // 1. Marquee — independent of selection. Owned by SelectTool.
   const marqueeBBox = selectTool.getMarqueeBBox();
   if (marqueeBBox) drawMarqueeRect(ctx, marqueeBBox, scale);
+
+  // 1b. Connector flows — buttons + hover preview + live drag connector. Drawn
+  // before the empty-selection return so the drag preview survives the cleared
+  // selection mid-drag. Self-gates internally.
+  drawConnectorFlow(ctx);
+
   if (selectedIds.length === 0) return;
 
   const isTranslating = transform.kind === 'translate';

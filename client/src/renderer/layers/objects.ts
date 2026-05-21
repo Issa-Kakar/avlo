@@ -1,13 +1,14 @@
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
 import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
+import { getImageMeta } from '@/core/image/image-cache';
 import { getBitmap } from '@/core/image/image-manager';
 import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel } from '@/core/text/shape-label';
 import { drawStickyNote } from '@/core/text/sticky-note';
 import { renderTextLayout, textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
+import { getObjectsById, getSpatialIndex, getZOrder } from '@/runtime/room-runtime';
 import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -28,7 +29,7 @@ import {
   readCodeRender,
   readConnectorBaseRender,
   readConnectorRender,
-  readImageRender,
+  readImageOpacity,
   readShapeLabelRender,
   readShapeLabelRenderNoFrame,
   readShapeRender,
@@ -41,9 +42,6 @@ import { paintShapeFrame } from './shape-preview';
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateHandles: ObjectHandle[] = [];
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
-
-/** Stable ULID-asc comparator (oldest first). Hoisted so V8 sees one callable. */
-const _byIdAsc = (a: ObjectHandle, b: ObjectHandle): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 // Per-frame editing-id snapshot, written once at the top of `drawObjects` and
 // read by leaf `draw*` functions. Avoids one `useSelectionStore.getState()`
@@ -127,9 +125,12 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     cullInjected(injectIds, objectsById, viewport, transform, connEntries, epDragEntry, tdx, tdy);
   }
 
-  // Sort by ULID for deterministic draw order (oldest first -> newest on top).
-  // Main loop excludes inject-set IDs and injectIds is provably unique — no post-sort dedupe needed.
-  _candidateHandles.sort(_byIdAsc);
+  // Sort by fractional z-key rank (bottom -> top). Rank table is dirty-flag-guarded;
+  // clean frames early-out in one boolean. Main loop excludes inject-set IDs and
+  // injectIds is provably unique — no post-sort dedupe needed.
+  const zOrder = getZOrder();
+  zOrder.ensureRanksValid(objectsById.values());
+  _candidateHandles.sort(zOrder.handleAscCmp);
 
   for (let i = 0; i < _candidateHandles.length; i++) {
     const handle = _candidateHandles[i];
@@ -151,6 +152,10 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     // selectedSet narrows to the dragged connector by drill invariant — the
     // `else` arm below is unreachable for non-connectors and intentionally
     // omitted (impossible state, no fallback paint).
+    //
+    // Background (non-selected, non-attached) non-connector handles also
+    // reach this branch — the main loop above only skips selected/attached
+    // during transform, so the rest flow through to be drawn normally.
     if (!isTransforming || !selectedSet.has(handle.id)) {
       drawObject(ctx, handle);
       continue;
@@ -385,24 +390,36 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   renderCodeLayout(ctx, layout, r.originX, r.originY, r.fontSize, spans, source, title, output, outputCache);
 }
 
-function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOverride?: FrameTuple): void {
-  const r = readImageRender(handle.y);
-  const frame = frameOverride ?? r.frame!;
-  const bitmap = getBitmap(r.assetId!);
+/**
+ * Draw an image filling `bbox`. Image bbox === frame — zero stroke padding
+ * (`computeBBoxForInto` case 'image'), so the envelope read as `[x, y, w, h]`
+ * IS the draw rect; `hit-dispatch.ts` derives the hit-rect the same way.
+ * `bbox` defaults to the live `handle.bbox`; the scale preview passes the
+ * transformed `entry.out.bbox` — one rect shape, both call sites.
+ */
+function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, bbox: BBoxTuple = handle.bbox): void {
+  const meta = getImageMeta(handle.id);
+  if (!meta) return; // cold-miss race — observer fills the cache before render
+  const bitmap = getBitmap(meta.assetId);
+
+  const x = bbox[0];
+  const y = bbox[1];
+  const w = bbox[2] - bbox[0];
+  const h = bbox[3] - bbox[1];
 
   ctx.save();
-  ctx.globalAlpha = r.opacity;
+  ctx.globalAlpha = readImageOpacity(handle.y);
   if (bitmap) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, frame[0], frame[1], frame[2], frame[3]);
+    ctx.drawImage(bitmap, x, y, w, h);
   } else {
     // Placeholder: light gray rect with subtle border
     ctx.fillStyle = '#f0f0f0';
-    ctx.fillRect(frame[0], frame[1], frame[2], frame[3]);
+    ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = '#d1d5db';
     ctx.lineWidth = 1;
-    ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
+    ctx.strokeRect(x, y, w, h);
   }
   ctx.restore();
 }
@@ -430,8 +447,8 @@ function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHa
 function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   switch (handle.kind) {
     case 'shape': {
-      const entry = getScaleEntry('shape', handle.id);
-      if (!entry) break;
+      // freeze cannot return null (verified 2026-05-19: shape Y.Map always carries a frame)
+      const entry = getScaleEntry('shape', handle.id)!;
       const { frame } = entry.out;
 
       const r = readShapeRender(handle.y);
@@ -441,9 +458,9 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
     }
 
     case 'image': {
-      const entry = getScaleEntry('image', handle.id);
-      if (!entry) break;
-      drawImage(ctx, handle, entry.out.frame);
+      // freeze cannot return null (verified 2026-05-19: image Y.Map always carries a frame)
+      const entry = getScaleEntry('image', handle.id)!;
+      drawImage(ctx, handle, entry.out.bbox);
       break;
     }
 

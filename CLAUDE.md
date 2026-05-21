@@ -4,7 +4,7 @@
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,bookmark,clipboard,spatial,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence}`, `components/context-menu`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence}`, `components/context-menu`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -112,13 +112,14 @@ All paths relative to `client/src/` unless noted.
 | `geometry/scale-system.ts` | Pure math atoms: `uniformFactor`, `preservePosition`, `edgePinPosition1D`, `computeReflowWidth` |
 | `geometry/hit-primitives.ts` | Pure tuple-first hit math: point/segment/polyline/shape/rect/circle atoms |
 | `geometry/recognizer/` | $P/$Q shape recognizer — 550ms-hold match. Entry: `recognize.ts`, `hold-detector.ts`. See CLAUDE.md |
-| `spatial/` | Hit testing + region queries. Entry: `object-query.ts` (picker facade), `handle-hit.ts`. See CLAUDE.md |
+| `spatial/` | Hit testing + region queries. Entry: `object-query.ts` (picker facade), `handle-hit.ts`, `hit-dispatch.ts` (per-kind switch dispatchers). See CLAUDE.md |
 | `connectors/` | Elbow A* + straight routing, snap. Entry: `connector-router.ts`, `snap.ts`, `reroute-connector.ts`, `anchor-atoms.ts`, `connector-paths.ts`, `constants.ts`. See CLAUDE.md |
 | `text/` | Layout engine + three-tier cache + sticky notes. Entry: `text-system.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
 | `code/` | Two-tier tokenization + CodeMirror + canvas renderer. Entry: `code-system.ts`, `code-tokens.ts`, `lezer-worker.ts`, `code-theme.ts`. See CLAUDE.md |
-| `image/` | Offline-first pipeline + 2 web workers. Entry: `image-manager.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
+| `image/` | Offline-first pipeline + 2 web workers. Entry: `image-manager.ts`, `image-cache.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
 | `clipboard/` | Nonce-based clipboard + serializer. Entry: `clipboard-actions.ts`, `clipboard-serializer.ts`. See CLAUDE.md |
+| `z-order/` | `ZRankTable` (SoA Uint32 ranks + slot pool) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
 
 ### Stores
 | File | Responsibility |
@@ -274,7 +275,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
 
 ### Schemas
 
-All objects share `{ id (ULID), kind, ownerId, createdAt }`. **Color semantics:** `color` = stroke color (shape/stroke/connector) or text color (text); `fillColor` = background always; shapes use `labelColor` for label text. Per-kind fields:
+All objects share `{ id (ULID), kind, ownerId, createdAt, z: ZKey }`. `id` is creation-ordered and immutable (used for identity + references); `z` is a mutable fractional sort key (opaque, lex-comparable — see `core/z-order/` + `@avlo/shared/z-order`). **Color semantics:** `color` = stroke color (shape/stroke/connector) or text color (text); `fillColor` = background always; shapes use `labelColor` for label text. Per-kind fields:
 
 - **Stroke** (pen/highlighter) — `{ tool: 'pen'|'highlighter', color, width, opacity, points: [number,number][] }`
 - **Shape** (rect/ellipse/diamond/roundedRect) — `{ shapeType, color, width, opacity, fillColor?, frame: [x,y,w,h], content?: Y.XmlFragment, fontSize?, fontFamily?, labelColor? }`. Label fields added on first edit, removed if empty on close.
@@ -294,12 +295,14 @@ interface ObjectHandle {
   bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally, mutated in place by observer
   // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox.
   minX: number; minY: number; maxX: number; maxY: number;
+  z: ZKey;               // mirror of y.get('z'); mutated only by the observer's z-key-edit branch
+  slot: number;          // stable Uint32Array index into ZRankTable._ranks; immutable post-creation
 }
 ```
 
-The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariant:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator; it writes the tuple AND the mirrors atomically. No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
+The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariants:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator for the bbox tuple + envelope mirrors; it writes them atomically. `handle.z` is mutated only by the deep observer's `'z'` key handler (mirror of `y.get('z')`). `handle.slot` is assigned once by `ZRankTable.acquireSlot()` and never reassigned (the slot returns to the free-list on delete and is reusable, but no live handle ever changes its slot). No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
 
-Wrapper persists across observer fires; only `bbox`'s four slots + mirrors change. Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
+Wrapper persists across observer fires; only `bbox`'s four slots + mirrors (and `z` when the user reorders) change. Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
 
 ### Stored vs derived geometry
 
@@ -363,8 +366,7 @@ applyObjectChanges:                                 // _newBBoxScratch reused pe
   // Phase A — deletions (router maps already updated inline above)
   for id in deleted:
     spatialIndex.remove(id, handle.bbox)
-    removeObjectCaches(id, kind)                    // geometry + text/code/bookmark
-    if image|bookmark: unregisterMedia(id)
+    removeObjectCaches(id, kind)                    // geometry + text/code/bookmark/image
     invalidateIfVisible(handle.bbox, vp)
     objectsById.delete(id)
   selection.onObjectsDeleted(deleted)
@@ -375,8 +377,6 @@ applyObjectChanges:                                 // _newBBoxScratch reused pe
     if connector: router.computeBBox(id, y, scratch)             // style-only (color/width/cap)
     else:         computeBBoxForInto(id, kind, y, scratch)       // ★ populates subsystem caches
     bboxChanged = upsertHandle(id, kind, y, scratch, vp)         // spatial + evict + dirty rect
-    if image:    registerImageMeta(id, y)
-    if bookmark: registerBookmarkMeta(id, y)
     if bboxChanged & bindable(kind): router.onBindableChanged(id)
 
   // Phase C — drain reroute queue (router-owned)
@@ -403,7 +403,7 @@ computeBBoxForInto(id, kind, y, out) {
   switch (kind) {
     case 'stroke':    out := pointsToBBox + widthPad
     case 'shape':     out := getFrame + widthPad
-    case 'image':     out := getFrame
+    case 'image':     out := getFrame; ensureImageMeta(id, y)  // populates imageCache
     case 'text':      out := computeTextBBox(id, props)      // populates textLayoutCache + frame
     case 'note':      out := computeNoteBBox(id, props)      // populates textLayoutCache + frame
     case 'code':      out := computeCodeBBox(id, y)          // populates codeSystem    + frame
@@ -432,9 +432,10 @@ computeBBoxForInto(id, kind, y, out) {
 | `bookmarkCache` (layout + frame) | `core/bookmark/bookmark-render.ts` | `getBookmarkFrame` |
 | `connectorRouter.routes` (per-id pooled `Point[]` + reverse `shape→connectors`) | `core/connectors/connector-router.ts` (owned by RDM) | `getConnectorRoute`, `getAttachedConnectors` |
 | `geometryCache` (Path2D, ConnectorPaths) | `renderer/geometry-cache.ts` | `getPath`, `getConnectorPaths` |
-| image bitmaps + `imageMeta` / `bookmarkAssetIds` | `core/image/image-manager.ts` | `getBitmap(assetId)` |
+| `imageCache` (per-id assetId + natural dims digest) | `core/image/image-cache.ts` | `getImageMeta`, `forEachImageMeta` |
+| image bitmaps (per-assetId) | `core/image/image-manager.ts` | `getBitmap(assetId)` |
 
-**Eviction.** `removeObjectCaches(id, kind)` (`renderer/object-cache.ts`) routes geometry + text/code/bookmark on delete; `clearAllObjectCaches()` on teardown. **Image is not in this dispatch** — Phase A calls `unregisterMedia(id)` separately. Connector routes evict via `router.removeConnector` from `onObjectDeleted`. Tool-owned per-object DOM (TextTool, CodeTool) tears down via its own `dispose()` chain.
+**Eviction.** `removeObjectCaches(id, kind)` (`renderer/object-cache.ts`) routes geometry + text/code/bookmark/image on delete; `clearAllObjectCaches()` on teardown. Connector routes evict via `router.removeConnector` from `onObjectDeleted`. Tool-owned per-object DOM (TextTool, CodeTool) tears down via its own `dispose()` chain.
 
 **Out-of-band dirty-rect publishers** (everything that isn't the deep observer): tool gestures (`tool.move/end` → `invalidate{World,Overlay,WorldBBox}`), image-manager bitmap-arrival handler, `codeSystem.applyWorkerSpans`, camera-store subscribers (pan/zoom).
 

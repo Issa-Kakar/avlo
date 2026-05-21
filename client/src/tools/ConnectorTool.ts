@@ -13,9 +13,8 @@
  * @module lib/tools/ConnectorTool
  */
 
-import { ulid } from 'ulid';
-import * as Y from 'yjs';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
+import { createConnector } from '@/core/connectors/connector-actions';
 import { routeNewConnectorInto } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { ConnectorCap, ConnectorType, SnapTarget } from '@/core/connectors/types';
@@ -23,8 +22,7 @@ import type { Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { isCtrlHeld } from '@/runtime/InputManager';
-import { getObjects, transact } from '@/runtime/room-runtime';
-import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import type { ConnectorPreview, PointerTool, PreviewData } from './types';
 
 type Phase = 'idle' | 'creating';
@@ -207,37 +205,19 @@ export class ConnectorTool implements PointerTool {
     const toPos = this.toPosition;
     if (!fromPos || !toPos || this.routedCount < 2) return;
 
-    const id = ulid();
-    const userId = getUserId();
-    const fromSnap = this.fromSnap;
-    const toSnap = this.toSnap;
-    transact(() => {
-      const connectorMap = new Y.Map<unknown>();
+    // Single union per side. Anchor when snapped, Point otherwise. The deep
+    // observer populates the local route cache on Phase C (rerouteCanonical).
+    const start: ConnectorEndpoint = this.fromSnap ? anchorRecordFromSnap(this.fromSnap) : [fromPos[0], fromPos[1]];
+    const end: ConnectorEndpoint = this.toSnap ? anchorRecordFromSnap(this.toSnap) : [toPos[0], toPos[1]];
 
-      connectorMap.set('id', id);
-      connectorMap.set('kind', 'connector');
-
-      // Single union per side. Anchor when snapped, Point otherwise. Local route cache
-      // is populated by the deep observer on Phase C (rerouteCanonical).
-      const start: ConnectorEndpoint = fromSnap ? anchorRecordFromSnap(fromSnap) : ([fromPos[0], fromPos[1]] as Point);
-      const end: ConnectorEndpoint = toSnap ? anchorRecordFromSnap(toSnap) : ([toPos[0], toPos[1]] as Point);
-      connectorMap.set('start', start);
-      connectorMap.set('end', end);
-
-      // Caps and type — connectorType is ALWAYS stored now (required discriminated field)
-      connectorMap.set('startCap', this.frozenStartCap);
-      connectorMap.set('endCap', this.frozenEndCap);
-      connectorMap.set('connectorType', this.frozenConnectorType ?? 'elbow');
-
-      // Styling (connectors are always opacity 1 — not stored)
-      connectorMap.set('color', this.frozenColor);
-      connectorMap.set('width', this.frozenWidth);
-
-      // Metadata
-      connectorMap.set('ownerId', userId);
-      connectorMap.set('createdAt', Date.now());
-
-      getObjects().set(id, connectorMap);
+    createConnector({
+      start,
+      end,
+      startCap: this.frozenStartCap,
+      endCap: this.frozenEndCap,
+      connectorType: this.frozenConnectorType ?? 'elbow',
+      color: this.frozenColor,
+      width: this.frozenWidth,
     });
   }
 }

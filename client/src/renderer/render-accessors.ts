@@ -270,22 +270,11 @@ export function readCodeRender(y: Y.Map<unknown>): CodeRender {
 // IMAGE
 // =============================================================================
 //
-// naturalWidth/naturalHeight/mimeType NOT read — unused at render.
+// frame derives from handle.bbox (image bbox === frame, no padding); assetId +
+// natural dims live in imageCache. Only opacity is read off the Y.Map at draw.
 
-interface ImageRender {
-  frame: [number, number, number, number] | null;
-  assetId: string | null;
-  opacity: number;
-}
-
-const _imageScratch: ImageRender = { frame: null, assetId: null, opacity: 1 };
-
-export function readImageRender(y: Y.Map<unknown>): ImageRender {
-  const yi = y as YInternal;
-  _imageScratch.frame = readPrim<[number, number, number, number]>(yi, 'frame') ?? null;
-  _imageScratch.assetId = readPrim<string>(yi, 'assetId') ?? null;
-  _imageScratch.opacity = readPrim<number>(yi, 'opacity') ?? 1;
-  return _imageScratch;
+export function readImageOpacity(y: Y.Map<unknown>): number {
+  return readPrim<number>(y as YInternal, 'opacity') ?? 1;
 }
 
 // =============================================================================
@@ -332,25 +321,15 @@ export function readNoteRender(y: Y.Map<unknown>): NoteRender {
 // BOOKMARK
 // =============================================================================
 //
-// url/domain/title/description/etc NOT read — already in cached layout.
+// url/domain/title/description/height/og+favicon ids NOT read — all in cached layout.
 
 interface BookmarkRender {
   originX: number;
   originY: number;
   scale: number;
-  height: number;
-  ogImageAssetId: string | undefined;
-  faviconAssetId: string | undefined;
 }
 
-const _bookmarkScratch: BookmarkRender = {
-  originX: 0,
-  originY: 0,
-  scale: 1,
-  height: 0,
-  ogImageAssetId: undefined,
-  faviconAssetId: undefined,
-};
+const _bookmarkScratch: BookmarkRender = { originX: 0, originY: 0, scale: 1 };
 
 export function readBookmarkRender(y: Y.Map<unknown>): BookmarkRender {
   const yi = y as YInternal;
@@ -358,9 +337,6 @@ export function readBookmarkRender(y: Y.Map<unknown>): BookmarkRender {
   _bookmarkScratch.originX = origin ? origin[0] : 0;
   _bookmarkScratch.originY = origin ? origin[1] : 0;
   _bookmarkScratch.scale = readPrim<number>(yi, 'scale') ?? 1;
-  _bookmarkScratch.height = readPrim<number>(yi, 'height') ?? 0;
-  _bookmarkScratch.ogImageAssetId = readPrim<string>(yi, 'ogImageAssetId');
-  _bookmarkScratch.faviconAssetId = readPrim<string>(yi, 'faviconAssetId');
   return _bookmarkScratch;
 }
 

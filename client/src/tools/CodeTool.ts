@@ -6,6 +6,7 @@
  * All CM padding/sizing via CSS custom properties (--c-*) set as exact px.
  */
 
+import { generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { getCodeOutput, getCodeProps, getHeaderVisible, getLineNumbers, getOutputVisible } from '@/core/accessors';
@@ -36,7 +37,7 @@ import {
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
-import { getActiveRoomDoc, getHandle, getObjects, transact } from '@/runtime/room-runtime';
+import { getActiveRoomDoc, getHandle, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
 import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
@@ -188,6 +189,7 @@ export class CodeTool implements PointerTool {
       yObj.set('title', 'Untitled');
       yObj.set('ownerId', '');
       yObj.set('createdAt', Date.now());
+      yObj.set('z', generateZAtTop(getZOrder().maxZ()));
 
       getObjects().set(id, yObj);
       return id;

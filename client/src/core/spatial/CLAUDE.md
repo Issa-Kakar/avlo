@@ -16,11 +16,18 @@ reads, so queries return handles directly. No `IndexEntry` indirection, no
 ```
 client/src/core/spatial/
 ├── object-spatial-index.ts  — RBush wrapper, tuple-first             (~70 LOC)
-├── kind-capability.ts       — Per-kind hit predicates + Paint enum  (~155 LOC)
+├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers (~250 LOC)
 ├── object-query.ts          — Picker facade: 4 exports, no options  (~230 LOC)
-├── handle-hit.ts            — Resize handles + endpoint dots        (~145 LOC)
+├── handle-hit.ts            — Resize handles + endpoint dots        (~140 LOC)
 └── index.ts                 — Barrel; re-exports `ObjectSpatialIndex` only
 ```
+
+`hit-dispatch.ts` exposes three switch dispatchers (`hitPointFor` /
+`hitRectFor` / `hitCircleFor`) over eight named, monomorphic per-kind
+functions. Image + code share the tight-framed body (reads handle
+envelope mirrors directly — no `getFrame` call, no FrameTuple alloc).
+Stroke / connector / shape have bespoke geometry-aware bodies; text /
+note / bookmark close over their frame resolver via small inline helpers.
 
 ---
 
@@ -31,7 +38,7 @@ Call site → object-query.ts facade
               ├─ resolveRadius        ({px} ÷ scale | {world} passthrough)
               ├─ regionEnvelope       (rect or point-r → bbox)
               ├─ spatialIndex.queryBBox/queryRadius   (rbush returns ObjectHandle[])
-              ├─ collectHits          (kind prefilter, cap.hitPoint — no Map.get)
+              ├─ collectHits          (kind prefilter, hitPointFor switch — no Map.get)
               ├─ sortTopFirst         (ULID desc, in-place)
               └─ picker walk          (tournament | kind-match | accept+memo)
                        ↓
@@ -74,14 +81,15 @@ Resize handles + endpoint dots don't live in rbush; they're derived from
 selection state. Same `Radius` vocabulary, no spatial index, no paint logic.
 
 ```ts
-hitNearest({ at, radius, probes })           // squared-distance, generic
-hitResizeHandle(at, bbox) → HandleId | null  // bespoke: side handles are edge strips
-hitEndpointDot(at, selectedIds) → EndpointHit | null
-shouldShowHandles(bbox, scale?)              // visibility/hit gate
+hitResizeHandle(at, bbox) → HandleId | null    // inline 4-corner + 4-edge test
+hitEndpointDot(at, selectedIds) → EndpointHit | null   // unrolled 2-slot loop
+shouldShowHandles(bbox, scale?)                // visibility/hit gate
 ```
 
-Constants: `HANDLE_HIT_PX = 10`, `ENDPOINT_DOT_HIT_PX = 10`,
-`HANDLE_MIN_BBOX_PX = 12` (corner stamps physically meet below this).
+Corner positions for rendering come from `computeHandles(bbox)` in
+`core/types/handles.ts` (module-scope scratch). Constants: `HANDLE_HIT_PX = 10`,
+`ENDPOINT_DOT_HIT_PX = 10`, `HANDLE_MIN_BBOX_PX = 12` (corner stamps physically
+meet below this).
 
 ### Raw `queryBBox` — three consumers bypass the facade
 
@@ -99,11 +107,11 @@ filtering / dedup:
 
 ---
 
-## Paint classification (`kind-capability.ts`)
+## Paint classification (`hit-dispatch.ts`)
 
 ```ts
 type Paint = 'ink' | 'fill' | 'seethrough';
-hitPoint(h, p, r) → Paint | null     // null = geometric miss
+hitPointFor(h, p, r) → Paint | null     // null = geometric miss
 ```
 
 | Paint | Meaning | Source |
@@ -121,25 +129,25 @@ hitPoint(h, p, r) → Paint | null     // null = geometric miss
 3. **Only shapes produce `'fill'` / `'seethrough'`.** `shapeArea` (inline
    `f[2]*f[3]`) is only called when `paint ∈ {fill, seethrough}`, so frames of
    non-shape bindables are never read for area.
-4. **`cap.hitRect` may be `null`** — opt-out for kinds whose stored rbush bbox
-   equals their tight frame (currently image and code via `tightFramedCap`).
-   `queryHandleIds` checks for null and trusts the rbush envelope filter as
-   the precision rect check, skipping a redundant `bboxesIntersect` (and the
-   Y.Map.get inside the cap's frame resolver). Kinds with stored padding —
+4. **Tight-bbox fast path.** For kinds whose stored rbush bbox equals their
+   tight frame (currently image and code), `hitRectFor` returns `true`
+   unconditionally — the envelope filter that produced the candidate IS the
+   precision rect check, so a redundant `bboxesIntersect` (and the Y.Map.get
+   inside the frame resolver) is skipped. Tight-framed `hitPointFor` and
+   `hitCircleFor` read `handle.minX/maxX/minY/maxY` directly (no `getFrame` /
+   `getCodeFrame` call, no FrameTuple alloc). Kinds with stored padding —
    text (italic overhang + 2px vert), note/bookmark (shadow), shape (stroke +
-   ellipse/diamond geometry) — keep a real `hitRect` because their cap
-   legitimately filters out marquees touching only the padding zone.
+   ellipse/diamond geometry) — keep a real switch arm that filters out
+   marquees touching only the padding zone.
 
 ### Frame resolution (per kind)
 
-`framedCap` factory closes over a per-subsystem getter at `KIND` table init:
-
 | Kind | Frame source |
 |---|---|
-| text, note | `getTextFrame(id)` from `core/text/text-system` |
-| code | `getCodeFrame(id)` from `core/code/code-system` |
-| bookmark | `getBookmarkFrame(id)` from `core/bookmark/bookmark-render` |
-| image, shape | `getFrame(h.y)` (stored) |
+| text, note | `getTextFrame(id)` from `core/text/text-system` (padded — runs precision pass) |
+| bookmark | `getBookmarkFrame(id)` from `core/bookmark/bookmark-render` (padded) |
+| shape | `getFrame(h.y)` (stored) — shape-aware geometry, not a generic rect pass |
+| image, code | envelope mirrors (`handle.minX/maxX/minY/maxY`) — stored bbox === frame, zero padding |
 
 `null` from a frame getter ("not yet laid out") propagates to `hitPoint` →
 `null` → picker skips. Code that needs the frame of any bindable handle outside
@@ -147,10 +155,11 @@ hit testing uses `frameOf` from `core/geometry/frame-of.ts` (not a spatial
 concern — but it IS used inside `snap`'s accept callback, which is the consumer's
 choice, not the picker's).
 
-### `bindable` flag
+### Bindable kind set
 
-True for shape/text/code/image/note/bookmark. Read **once at module import** by
-`object-query.ts` to seed `BINDABLE_KINDS_SET` — never per-call `new Set`.
+`BINDABLE_KINDS` is exported from `core/types/objects.ts` and wrapped into a
+module-private `BINDABLE_KINDS_SET` by `object-query.ts` **once at module
+import** — never per-call `new Set`.
 
 ---
 
@@ -221,11 +230,18 @@ only inside `runtime/room-doc-manager.ts`. Consumers read it via
 
 ## When modifying
 
-- **New `ObjectKind`**: add a `KindCapability<K>` to `KIND`. `bindable` is read
-  once at import. For framed-rect kinds use `framedCap(getXxxFrame)` — or
-  `tightFramedCap` if the new kind's `bbox.ts` entry equals its frame with
-  zero padding (no shadow / stroke / overhang), which sets `hitRect: null`
-  and skips the redundant marquee precision pass.
+- **New `ObjectKind`**: add three arms (one per dispatcher) in `hit-dispatch.ts`
+  pointing at named `<kind>HitPoint` / `<kind>HitRect` / `<kind>HitCircle`
+  functions. If the kind is bindable, append it to `BINDABLE_KINDS` in
+  `core/types/objects.ts` (the spatial layer picks it up automatically). For
+  a new framed-rect kind:
+  - If the `bbox.ts` entry equals its frame with zero padding (no shadow /
+    stroke / overhang), join the existing `tightFramedHitPoint` /
+    `tightFramedHitCircle` shared functions and add a `case '<kind>':`
+    fall-through to the `hitRectFor` `return true` arm.
+  - Otherwise close over the frame resolver via `paddedHitPointFromFrame` /
+    `paddedHitRectFromFrame` / `paddedHitCircleFromFrame` helpers (see
+    text/note/bookmark).
 - **New consumer with hit-testing needs**: pick the closest existing picker by
   return shape (handle / id / typed accept result / `string[]`). Don't add a new
   picker export unless the occlusion model genuinely differs.

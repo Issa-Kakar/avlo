@@ -1,3 +1,4 @@
+import { generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { bboxToFrame, cornerFrame, frameToBbox, scaleBBoxAround } from '@/core/geometry/bounds';
@@ -5,7 +6,7 @@ import { HoldDetector } from '@/core/geometry/recognizer/hold-detector';
 import { computeBboxCenterExtents, recognizePerfectShapePointCloud } from '@/core/geometry/recognizer/recognize';
 import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getObjects, transact } from '@/runtime/room-runtime';
+import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { getUserId, isStrokeTool, resolveStrokeStyle, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { PointerTool, PreviewData, ShapeType } from './types';
@@ -366,6 +367,7 @@ export class DrawingTool implements PointerTool {
         m.set('points', points);
         m.set('ownerId', userId);
         m.set('createdAt', Date.now());
+        m.set('z', generateZAtTop(getZOrder().maxZ()));
         getObjects().set(strokeId, m);
       });
     } catch (err) {
@@ -404,6 +406,7 @@ export class DrawingTool implements PointerTool {
         m.set('frame', frame);
         m.set('ownerId', userId);
         m.set('createdAt', Date.now());
+        m.set('z', generateZAtTop(getZOrder().maxZ()));
         getObjects().set(shapeId, m);
       });
     } catch (err) {

@@ -9,6 +9,7 @@
  * - On commit: unmount editor, canvas renders from Y.XmlFragment
  */
 
+import { generateZAtTop } from '@avlo/shared';
 import { Editor } from '@tiptap/core';
 import Bold from '@tiptap/extension-bold';
 import Document from '@tiptap/extension-document';
@@ -50,7 +51,7 @@ import { getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-
 import { anchorFactor, FONT_FAMILIES } from '@/core/text/text-system';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
-import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, transact } from '@/runtime/room-runtime';
+import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
 import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
@@ -250,6 +251,7 @@ export class TextTool implements PointerTool {
         if (ui.text.fillColor) yObj.set('fillColor', ui.text.fillColor);
       }
 
+      yObj.set('z', generateZAtTop(getZOrder().maxZ()));
       getObjects().set(objectId, yObj);
     });
 

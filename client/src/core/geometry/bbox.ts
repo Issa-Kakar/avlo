@@ -1,15 +1,10 @@
 import type * as Y from 'yjs';
 import { getBookmarkProps, getEndCap, getFrame, getNoteProps, getPoints, getStartCap, getTextProps, getWidth } from '../accessors';
-import {
-  BOOKMARK_SHADOW_BOTTOM_RATIO,
-  BOOKMARK_SHADOW_SIDE_RATIO,
-  BOOKMARK_SHADOW_TOP_RATIO,
-  BOOKMARK_WIDTH,
-  computeBookmarkBBox,
-} from '../bookmark/bookmark-render';
+import { computeBookmarkBBox } from '../bookmark/bookmark-render';
 import { computeCodeBBox } from '../code/code-system';
 import { getConnectorRoute } from '../connectors/connector-router';
 import type { ConnectorCap } from '../connectors/types';
+import { ensureImageMeta } from '../image/image-cache';
 import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
 import { computeTextBBox } from '../text/text-system';
 import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
@@ -109,28 +104,17 @@ export function computeBBoxForInto(id: string, kind: ObjectKind, yMap: Y.Map<unk
       out[1] = frame[1];
       out[2] = frame[0] + frame[2];
       out[3] = frame[1] + frame[3];
+      ensureImageMeta(id, yMap);
       return;
     }
 
     case 'bookmark': {
       const props = getBookmarkProps(yMap);
-      if (props) {
-        copyBbox(computeBookmarkBBox(id, props), out);
+      if (!props) {
+        out[0] = out[1] = out[2] = out[3] = 0;
         return;
       }
-      // Inline fallback when props incomplete
-      const origin = (yMap.get('origin') as Point | undefined) ?? [0, 0];
-      const scale = (yMap.get('scale') as number) ?? 1;
-      const height = (yMap.get('height') as number) ?? 60;
-      const w = BOOKMARK_WIDTH * scale;
-      const h = height * scale;
-      const padTop = w * BOOKMARK_SHADOW_TOP_RATIO;
-      const padSide = w * BOOKMARK_SHADOW_SIDE_RATIO;
-      const padBottom = w * BOOKMARK_SHADOW_BOTTOM_RATIO;
-      out[0] = origin[0] - padSide;
-      out[1] = origin[1] - padTop;
-      out[2] = origin[0] + w + padSide;
-      out[3] = origin[1] + h + padBottom;
+      copyBbox(computeBookmarkBBox(id, props), out);
       return;
     }
 

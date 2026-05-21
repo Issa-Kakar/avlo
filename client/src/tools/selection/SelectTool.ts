@@ -19,9 +19,16 @@ import { getLastCursorWorld } from '@/runtime/cursor-tracking';
 import { isCtrlHeld, isCtrlOrMetaHeld, isShiftHeld } from '@/runtime/InputManager';
 import { getHandle } from '@/runtime/room-runtime';
 import { codeTool, panTool, textTool } from '@/runtime/tool-registry';
-import { worldToCanvas } from '@/stores/camera-store';
+import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
+import {
+  ConnectorFlowController,
+  type FlowRenderState,
+  type FlowSide,
+  flowButtonGate,
+  hitFlowButton,
+} from '@/tools/selection/connector-flow';
 import { getController } from '@/tools/selection/transform';
 import type { PointerTool, PreviewData } from '../types';
 
@@ -33,7 +40,7 @@ const CLICK_WINDOW_MS = 180; // Time threshold for gap click disambiguation
 
 // === Types ===
 
-type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endpointDrag';
+type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endpointDrag' | 'flowDrag';
 
 /**
  * Discriminated union of pointer-down classifications. Replaces four mutually-exclusive
@@ -46,7 +53,8 @@ type DownHit =
   | { kind: 'object'; handle: ObjectHandle; isSelected: boolean }
   | { kind: 'handle'; handleId: HandleId }
   | { kind: 'endpoint'; connectorId: string; slot: Slot }
-  | { kind: 'openButton'; handle: ObjectHandle };
+  | { kind: 'openButton'; handle: ObjectHandle }
+  | { kind: 'flowButton'; side: FlowSide; sourceId: string };
 
 // === SelectTool Class ===
 
@@ -81,6 +89,10 @@ export class SelectTool implements PointerTool {
   // objects.ts frame-top read of getHoveredOpenBookmarkId().
   private hoveredOpenBookmarkId: string | null = null;
 
+  // Connector-flow controller — owns flow-button hover + drag state. Never
+  // touches selection-store.transform (transform.kind stays 'none').
+  private readonly connectorFlow = new ConnectorFlowController();
+
   private updateMarqueeBBox(curX: number, curY: number): void {
     this.marqueeCurrent[0] = curX;
     this.marqueeCurrent[1] = curY;
@@ -89,6 +101,11 @@ export class SelectTool implements PointerTool {
 
   getMarqueeBBox(): Readonly<BBoxTuple> | null {
     return this.marqueeActive ? this.marqueeBBox : null;
+  }
+
+  /** Connector-flow render snapshot for the overlay (mirrors getMarqueeBBox). */
+  getConnectorFlowRender(): FlowRenderState {
+    return this.connectorFlow.getRenderSnapshot();
   }
 
   getHoveredOpenBookmarkId(): string | null {
@@ -157,6 +174,22 @@ export class SelectTool implements PointerTool {
         this.phase = 'pendingClick';
         setCursorOverride('grabbing');
         applyCursor();
+        invalidateOverlay();
+        return;
+      }
+    }
+
+    // 1b. Flow buttons — single bindable selection. Tested before the generic
+    // object hit so a button overlapping a neighboring object still starts a flow.
+    const flowGate = flowButtonGate();
+    if (flowGate) {
+      const flowSide = hitFlowButton([worldX, worldY], flowGate.bbox, useCameraStore.getState().scale);
+      if (flowSide) {
+        // Ensure the hover preview exists for end()'s commit — covers a touch
+        // tap with no prior hover move. Idempotent for the mouse path.
+        this.connectorFlow.updateHover(flowGate.handle.id, flowSide, flowGate.handle);
+        this.downHit = { kind: 'flowButton', side: flowSide, sourceId: flowGate.handle.id };
+        this.phase = 'pendingClick';
         invalidateOverlay();
         return;
       }
@@ -251,6 +284,23 @@ export class SelectTool implements PointerTool {
             break;
           }
 
+          case 'flowButton': {
+            if (!passMove) break;
+            const { side, sourceId } = this.downHit;
+            const handle = getHandle(sourceId);
+            if (!handle || !this.connectorFlow.beginDrag(sourceId, side, handle)) {
+              this.phase = 'idle';
+              break;
+            }
+            // Drag clears the selection — hides handles + buttons — then runs a
+            // live connector exactly like ConnectorTool.
+            this.phase = 'flowDrag';
+            this.connectorFlow.clearHover();
+            useSelectionStore.getState().clearSelection();
+            this.connectorFlow.updateDrag(worldX, worldY);
+            break;
+          }
+
           case 'endpoint': {
             // Connector mode only: dragging an endpoint dot
             if (!passMove) break;
@@ -336,6 +386,11 @@ export class SelectTool implements PointerTool {
         break;
       }
 
+      case 'flowDrag': {
+        this.connectorFlow.updateDrag(worldX, worldY);
+        break;
+      }
+
       case 'translate': {
         if (this.downWorld) {
           useSelectionStore.getState().updateTranslate(worldX - this.downWorld[0], worldY - this.downWorld[1]);
@@ -392,6 +447,14 @@ export class SelectTool implements PointerTool {
           case 'handle':
             // Clicked handle but didn't drag → no-op
             break;
+
+          case 'flowButton': {
+            // Click (no drag) → commit the precomputed hover preview.
+            const id = this.connectorFlow.commitHover();
+            if (id) store.setSelection([id]);
+            this.connectorFlow.clearHover();
+            break;
+          }
 
           case 'endpoint':
             // Clicked endpoint dot but didn't drag → drill down to single connector
@@ -469,6 +532,14 @@ export class SelectTool implements PointerTool {
         break;
       }
 
+      case 'flowDrag': {
+        // Commit the live connector; abort (too short) → reselect the source.
+        const id = this.connectorFlow.commitDrag() ?? this.connectorFlow.getSourceId();
+        if (id) useSelectionStore.getState().setSelection([id]);
+        this.connectorFlow.cancelDrag();
+        break;
+      }
+
       case 'translate':
       case 'scale':
       case 'endpointDrag': {
@@ -502,6 +573,8 @@ export class SelectTool implements PointerTool {
     useSelectionStore.getState().cancelTransform();
 
     this.marqueeActive = false;
+    this.connectorFlow.cancelDrag();
+    this.connectorFlow.clearHover();
     this.clearBookmarkOpenHoverIfAny();
     // Clear any cursor override on cancel
     setCursorOverride(null);
@@ -528,7 +601,8 @@ export class SelectTool implements PointerTool {
 
   getPreview(): PreviewData | null {
     const { selectedIds } = useSelectionStore.getState();
-    if (selectedIds.length === 0 && !this.marqueeActive) return null;
+    // The 3rd term keeps the drag preview alive after the flow drag clears the selection.
+    if (selectedIds.length === 0 && !this.marqueeActive && !this.connectorFlow.isDragging()) return null;
     return { kind: 'selection' };
   }
 
@@ -539,6 +613,7 @@ export class SelectTool implements PointerTool {
   onViewChange(): void {
     if (textTool.isEditorMounted()) textTool.onViewChange();
     if (codeTool.isEditorMounted()) codeTool.onViewChange();
+    if (this.phase === 'flowDrag') this.connectorFlow.onViewChange();
     invalidateOverlay();
     this.rehoverFromLastCursor();
   }
@@ -548,6 +623,7 @@ export class SelectTool implements PointerTool {
    */
   onPointerLeave(): void {
     this.clearBookmarkOpenHoverIfAny();
+    this.connectorFlow.clearHover();
     setCursorOverride(null);
     applyCursor();
   }
@@ -593,6 +669,19 @@ export class SelectTool implements PointerTool {
         return;
       }
     }
+
+    // Flow-button hover — grow the hovered button + compute its preview. The
+    // dots ARE the feedback, so the cursor stays the Select default (no override).
+    const flowGate = flowButtonGate();
+    const flowSide = flowGate ? hitFlowButton([worldX, worldY], flowGate.bbox, useCameraStore.getState().scale) : null;
+    if (flowGate && flowSide) {
+      this.clearBookmarkOpenHoverIfAny();
+      this.connectorFlow.updateHover(flowGate.handle.id, flowSide, flowGate.handle);
+      setCursorOverride(null);
+      applyCursor();
+      return;
+    }
+    this.connectorFlow.clearHover();
 
     // Bookmark Open-button hover — occlusion via `pickTopmostPaint` (framed
     // kinds always paint 'ink' on hit, so a bookmark winning the picker means

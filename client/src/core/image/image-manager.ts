@@ -6,8 +6,9 @@
  * Decode requests are hash-routed by assetId for consistent per-asset worker affinity.
  *
  * Per-frame loop (`manageImageViewport`): zero Y.Map reads, zero steady-state allocations.
- *   - Observer-fed `imageMeta` / `bookmarkAssetIds` caches hold the per-object digest
- *     (assetId / naturalWidth / naturalHeight, OR og+favicon ids). RDM keeps them in sync.
+ *   - The per-object asset digest lives in subsystem caches owned elsewhere: image
+ *     assetId + natural dims in `image-cache.ts`, bookmark og/favicon ids in
+ *     `bookmarkCache`'s layout. Both populated by the `computeBBoxFor` dispatch.
  *   - `_assetInfo` lives across frames; entries mark/sweep via `_frameMark` instead of
  *     clear/repopulate. Steady-state allocations: zero.
  *   - During translate/scale, the selected images' transform-output bbox is layered into
@@ -21,16 +22,16 @@
  * immediately. Workers discard stale results.
  */
 
-import type * as Y from 'yjs';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getHandle, getSpatialIndex, hasActiveRoom } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { getScaleEntry, getTransformMode } from '@/tools/selection/transform';
-import { getBookmarkAssetIds, getImageProps } from '../accessors';
 import { repositionAllPlaceholders } from '../bookmark/bookmark-placeholder';
+import { bookmarkCache } from '../bookmark/bookmark-render';
 import { handleUnfurlFailed, handleUnfurlResult } from '../bookmark/bookmark-unfurl';
 import type { BBoxTuple } from '../types/geometry';
+import { forEachImageMeta, getImageMeta } from './image-cache';
 import type { WorkerInbound, WorkerOutbound } from './image-worker';
 
 // ============================================================
@@ -84,64 +85,6 @@ const ERROR_COOLDOWN_MS = 15_000;
 /** Ingest promise tracking — maps worker request ID to promise handlers. */
 let ingestIdCounter = 0;
 const inflightIngests = new Map<string, { resolve: (result: IngestResult) => void; reject: (err: Error) => void }>();
-
-// ============================================================
-// Media metadata caches — observer-fed by RoomDocManager.
-// Per-frame code reads these instead of doing Y.Map.get() per image.
-// ============================================================
-
-interface ImageMetaEntry {
-  assetId: string;
-  nw: number;
-  nh: number;
-}
-
-interface BookmarkAssetIdsEntry {
-  ogId: string | null;
-  favId: string | null;
-}
-
-const imageMeta = new Map<string, ImageMetaEntry>();
-const bookmarkAssetIds = new Map<string, BookmarkAssetIdsEntry>();
-
-/** Register/update an image's asset digest. Called from RoomDocManager on insert + change. */
-export function registerImageMeta(id: string, yObj: Y.Map<unknown>): void {
-  const props = getImageProps(yObj);
-  if (!props) {
-    imageMeta.delete(id);
-    return;
-  }
-  const existing = imageMeta.get(id);
-  if (existing) {
-    existing.assetId = props.assetId;
-    existing.nw = props.naturalWidth;
-    existing.nh = props.naturalHeight;
-  } else {
-    imageMeta.set(id, { assetId: props.assetId, nw: props.naturalWidth, nh: props.naturalHeight });
-  }
-}
-
-/** Register/update a bookmark's og+favicon asset ids. Called from RoomDocManager on insert + change. */
-export function registerBookmarkMeta(id: string, yObj: Y.Map<unknown>): void {
-  const { ogId, favId } = getBookmarkAssetIds(yObj);
-  if (!ogId && !favId) {
-    bookmarkAssetIds.delete(id);
-    return;
-  }
-  const existing = bookmarkAssetIds.get(id);
-  if (existing) {
-    existing.ogId = ogId;
-    existing.favId = favId;
-  } else {
-    bookmarkAssetIds.set(id, { ogId, favId });
-  }
-}
-
-/** Remove a media object from both caches. Called from RoomDocManager on delete. */
-export function unregisterMedia(id: string): void {
-  imageMeta.delete(id);
-  bookmarkAssetIds.delete(id);
-}
 
 // ============================================================
 // Helpers
@@ -290,18 +233,18 @@ function invalidateBitmapRegion(assetId: string): void {
   // iterate the media-only caches, not all objects.
   if (!hasActiveRoom()) return;
   const vb = getVisibleBoundsTuple();
-  for (const [id, meta] of imageMeta) {
-    if (meta.assetId !== assetId) continue;
+  forEachImageMeta((id, meta) => {
+    if (meta.assetId !== assetId) return;
     const handle = getHandle(id);
-    if (!handle) continue;
+    if (!handle) return;
     if (bboxIntersects(handle.bbox, vb)) invalidateWorldBBox(handle.bbox);
-  }
-  for (const [id, ids] of bookmarkAssetIds) {
-    if (ids.ogId !== assetId && ids.favId !== assetId) continue;
+  });
+  bookmarkCache.forEachLayout((id, layout) => {
+    if (layout.ogImageAssetId !== assetId && layout.faviconAssetId !== assetId) return;
     const handle = getHandle(id);
-    if (!handle) continue;
+    if (!handle) return;
     if (bboxIntersects(handle.bbox, vb)) invalidateWorldBBox(handle.bbox);
-  }
+  });
 }
 
 // ============================================================
@@ -415,17 +358,17 @@ export function manageImageViewport(): void {
   const visible = getSpatialIndex().queryBBox(padded);
   for (const entry of visible) {
     if (entry.kind === 'image') {
-      const meta = imageMeta.get(entry.id);
+      const meta = getImageMeta(entry.id);
       if (!meta) continue;
       const w = entry.maxX - entry.minX;
       const ppsp = (w * scale * dpr) / meta.nw;
       markAsset(meta.assetId, ppsp, meta.nw, meta.nh, entry.minX, entry.minY, entry.maxX, entry.maxY);
     } else if (entry.kind === 'bookmark') {
-      const ids = bookmarkAssetIds.get(entry.id);
-      if (!ids) continue;
+      const layout = bookmarkCache.getLayoutById(entry.id);
+      if (!layout) continue;
       // Bookmarks always decode at level 0; nw/nh unused for level 0 (worker uses width=0,height=0).
-      if (ids.ogId) markAsset(ids.ogId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
-      if (ids.favId) markAsset(ids.favId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
+      if (layout.ogImageAssetId) markAsset(layout.ogImageAssetId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
+      if (layout.faviconAssetId) markAsset(layout.faviconAssetId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
     }
   }
 
@@ -438,7 +381,7 @@ export function manageImageViewport(): void {
     const { selectedIdSet, kindCounts } = useSelectionStore.getState();
     if (kindCounts.image > 0) {
       for (const id of selectedIdSet) {
-        const meta = imageMeta.get(id);
+        const meta = getImageMeta(id);
         if (!meta) continue;
         const tEntry = getScaleEntry('image', id);
         if (!tEntry) continue;
@@ -531,13 +474,11 @@ export function ingest(file: Blob): Promise<IngestResult> {
 }
 
 /**
- * Hydrate images on room join. Reads from the observer-fed `imageMeta` /
- * `bookmarkAssetIds` caches (RoomDocManager populates them before calling this).
+ * Hydrate images on room join. Reads `imageCache` + `bookmarkCache` (RoomDocManager's
+ * `computeBBoxFor` hydrate pass populates both before calling this).
  * Splits visible vs offscreen via handle.bbox, distributes across workers by hash routing.
  */
 export function hydrateImages(): void {
-  if (imageMeta.size === 0 && bookmarkAssetIds.size === 0) return;
-
   const { scale } = useCameraStore.getState();
   const dpr = window.devicePixelRatio || 1;
   const vb = getVisibleBoundsTuple();
@@ -545,9 +486,9 @@ export function hydrateImages(): void {
   // Per-assetId: best level + nw/nh + representative bbox
   const assetMap = new Map<string, { bbox: BBoxTuple; level: 0 | 1 | 2; nw: number; nh: number }>();
 
-  for (const [id, meta] of imageMeta) {
+  forEachImageMeta((id, meta) => {
     const handle = getHandle(id);
-    if (!handle) continue;
+    if (!handle) return;
     const frameW = handle.bbox[2] - handle.bbox[0];
     const ppsp = (frameW * scale * dpr) / meta.nw;
     const level = ppspToLevel(ppsp);
@@ -555,14 +496,14 @@ export function hydrateImages(): void {
     if (!existing || level < existing.level) {
       assetMap.set(meta.assetId, { bbox: handle.bbox, level, nw: meta.nw, nh: meta.nh });
     }
-  }
+  });
 
-  for (const [id, ids] of bookmarkAssetIds) {
+  bookmarkCache.forEachLayout((id, layout) => {
     const handle = getHandle(id);
-    if (!handle) continue;
-    if (ids.ogId) assetMap.set(ids.ogId, { bbox: handle.bbox, level: 0, nw: 0, nh: 0 });
-    if (ids.favId) assetMap.set(ids.favId, { bbox: handle.bbox, level: 0, nw: 0, nh: 0 });
-  }
+    if (!handle) return;
+    if (layout.ogImageAssetId) assetMap.set(layout.ogImageAssetId, { bbox: handle.bbox, level: 0, nw: 0, nh: 0 });
+    if (layout.faviconAssetId) assetMap.set(layout.faviconAssetId, { bbox: handle.bbox, level: 0, nw: 0, nh: 0 });
+  });
 
   if (assetMap.size === 0) return;
 
@@ -624,8 +565,6 @@ export function clear(): void {
   pending.clear();
   errors.clear();
   inflightIngests.clear();
-  imageMeta.clear();
-  bookmarkAssetIds.clear();
   _assetInfo.clear();
   _decodeQueue.length = 0;
   for (const w of workers) w.postMessage({ type: 'clear' } satisfies WorkerInbound);

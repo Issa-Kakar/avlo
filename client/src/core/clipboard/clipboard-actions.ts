@@ -8,7 +8,7 @@
  * @module lib/clipboard/clipboard-actions
  */
 
-import { normalizeUrl } from '@avlo/shared';
+import { generateNZAtTop, generateZAtTop, normalizeUrl } from '@avlo/shared';
 import { generateJSON } from '@tiptap/core';
 import Bold from '@tiptap/extension-bold';
 import Document from '@tiptap/extension-document';
@@ -20,7 +20,7 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getLastCursorWorld } from '@/runtime/cursor-tracking';
-import { getObjects, getObjectsById, getSpatialIndex, transact } from '@/runtime/room-runtime';
+import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { animateToFit } from '@/runtime/viewport/zoom';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
@@ -179,9 +179,20 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
   const userId = getUserId();
   const now = Date.now();
 
+  // Sort payload by stored z (asc) so the pasted set preserves its relative stacking
+  // while landing on top via fresh top-keys. Serializer captures z via the default
+  // per-key loop; we skip it in the per-iteration switch and assign fresh below.
+  const sortedPayload = [...payload.objects].sort((a, b) => {
+    const za = (a.props.z as string | undefined) ?? '';
+    const zb = (b.props.z as string | undefined) ?? '';
+    return za < zb ? -1 : za > zb ? 1 : 0;
+  });
+  const newZKeys = generateNZAtTop(getZOrder().maxZ(), sortedPayload.length);
+
   transact(() => {
     const objects = getObjects();
-    for (const obj of payload.objects) {
+    let zIdx = 0;
+    for (const obj of sortedPayload) {
       const newId = idMap.get(obj.props.id)!;
       const yObj = new Y.Map<unknown>();
 
@@ -236,6 +247,9 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
             }
             break;
           }
+          case 'z':
+            // Source z is preserved only for sortedPayload ordering above; assigned fresh below.
+            break;
           default:
             yObj.set(key, value);
         }
@@ -251,6 +265,7 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
         yObj.set('content', yText);
       }
 
+      yObj.set('z', newZKeys[zIdx++]);
       objects.set(newId, yObj);
     }
   });
@@ -416,6 +431,7 @@ function createPastedTextObject(fragment: Y.XmlFragment, charCount: number, posi
     if (textFillColor) yObj.set('fillColor', textFillColor);
     yObj.set('ownerId', userId);
     yObj.set('createdAt', Date.now());
+    yObj.set('z', generateZAtTop(getZOrder().maxZ()));
 
     getObjects().set(objectId, yObj);
   });

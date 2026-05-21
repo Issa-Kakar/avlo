@@ -463,7 +463,7 @@ Per object in ULID order:
 | Kind | uniform | reflow | edgePin (fallback) |
 |---|---|---|---|
 | shape | Build fresh Path2D from `entry.out.frame`, guard on bbox size | — | — |
-| image | Bitmap at `entry.out.frame` | — | — |
+| image | Bitmap at `entry.out.bbox` | — | — |
 | stroke | `ctx.scale(factor)` on cached Path2D | — | `renderTranslatedEntry` |
 | text | Cached layout + `ctx.scale(ratio)` around `out.origin` | Render `entry.out.layout` at `out.origin` | `renderTranslatedEntry` |
 | code | Cached layout + `ctx.scale(ratio)` around `out.bbox` corner | Render `entry.out.layout` at `out.origin` | `renderTranslatedEntry` |
@@ -568,7 +568,7 @@ interface Aggregate<V> { value: V | null; mixed: boolean; second: V | null }
 
 **Source-of-ids selection** (`getSelectedIds()` / `getTextSelectionIds()` / `getCodeIds()`) lives at the action layer in `selection-actions.ts`. It's "who's calling," not "what the field is." Trying to model it on the descriptor adds the wrong axis.
 
-**Correlated-union cast** at the dispatch boundary (`(f as AnyDescriptor).write[h.kind]`) — one cast per loop with `// biome-ignore`, mirroring the `APPLY_SCALE[kind][behavior]` cast in `transform.ts` and the `KIND[h.kind] as AnyCapability` cast in `object-query.ts`. The mapped table proves correctness at definition.
+**Correlated-union cast** at the dispatch boundary (`(f as AnyDescriptor).write[h.kind]`) — one cast per loop with `// biome-ignore`, mirroring the `APPLY_SCALE[kind][behavior]` cast in `transform.ts`. The mapped table proves correctness at definition. (Spatial hit dispatch moved away from this pattern in `core/spatial/hit-dispatch.ts` — see its switch-based dispatchers.)
 
 **Adding a property** is four mechanical edits, no control-flow change:
 1. Append one `FieldDescriptor` entry to `selection-field-table.ts`.

@@ -385,20 +385,6 @@ export function filterSelectionByKind(kind: ObjectKind): void {
   }
 }
 
-// === Handle Helpers ===
-
-/**
- * Compute handle positions for the four corners of a selection bounds.
- */
-export function computeHandles(bbox: BBoxTuple): { id: HandleId; x: number; y: number }[] {
-  return [
-    { id: 'nw', x: bbox[0], y: bbox[1] },
-    { id: 'ne', x: bbox[2], y: bbox[1] },
-    { id: 'se', x: bbox[2], y: bbox[3] },
-    { id: 'sw', x: bbox[0], y: bbox[3] },
-  ];
-}
-
 // === Text Editing Selectors ===
 
 export const selectTextEditingId = (state: SelectionStore) => state.textEditingId;

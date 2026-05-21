@@ -101,3 +101,33 @@ export const scaleOrigin = (h: HandleId, bounds: BBoxTuple): Point => handlePosi
 
 /** Cursor CSS string for a handle */
 export const handleCursor = (h: HandleId): string => CURSOR[h];
+
+// ---- Resize-handle corner positions (renderer + hit testing) ----
+
+interface Corner {
+  id: HandleId;
+  x: number;
+  y: number;
+}
+
+// `id` set once at module load, only `x`/`y` mutate per call — stable hidden classes.
+// Module-scope scratch: consumers MUST consume immediately (don't retain across calls).
+const _cornerScratch: readonly Corner[] = [
+  { id: 'nw', x: 0, y: 0 },
+  { id: 'ne', x: 0, y: 0 },
+  { id: 'se', x: 0, y: 0 },
+  { id: 'sw', x: 0, y: 0 },
+];
+
+export function computeHandles(bbox: BBoxTuple): readonly Corner[] {
+  const a = _cornerScratch as Corner[];
+  a[0].x = bbox[0];
+  a[0].y = bbox[1];
+  a[1].x = bbox[2];
+  a[1].y = bbox[1];
+  a[2].x = bbox[2];
+  a[2].y = bbox[3];
+  a[3].x = bbox[0];
+  a[3].y = bbox[3];
+  return a;
+}

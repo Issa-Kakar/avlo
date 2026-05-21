@@ -5,11 +5,11 @@
  * Loading state is local-only via HTML placeholder.
  */
 
-import { extractDomain } from '@avlo/shared';
+import { extractDomain, generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getHandle, getObjects, hasActiveRoom, transact } from '@/runtime/room-runtime';
+import { getHandle, getObjects, getZOrder, hasActiveRoom, transact } from '@/runtime/room-runtime';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -17,7 +17,7 @@ import { pasteUrlAsText } from '../clipboard/clipboard-actions';
 import { rasterizeSvg } from '../image/image-actions';
 import { ingest, postToPrimary } from '../image/image-manager';
 import { createPlaceholder, removeAllPlaceholders, removePlaceholder } from './bookmark-placeholder';
-import { BOOKMARK_WIDTH, computeBookmarkHeight } from './bookmark-render';
+import { BOOKMARK_WIDTH, bookmarkCache, computeBookmarkHeight } from './bookmark-render';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -168,6 +168,7 @@ export async function handleUnfurlResult(objectId: string, data: UnfurlResultDat
       if (faviconAssetId) yObj.set('faviconAssetId', faviconAssetId);
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
+      yObj.set('z', generateZAtTop(getZOrder().maxZ()));
       getObjects().set(objectId, yObj);
     });
 
@@ -190,6 +191,11 @@ export async function handleUnfurlResult(objectId: string, data: UnfurlResultDat
 
     const faviconAssetId = await resolveFaviconAssetId(data);
     if (!hasActiveRoom()) return;
+
+    // Evict the stale layout BEFORE the transact: this upgrade mutates
+    // title/og/favicon/height, but the layout cache is otherwise insert-only —
+    // clearing the slot lets the transaction's observer fire rebuild it fresh.
+    bookmarkCache.evict(objectId);
 
     // Upgrade existing bookmark with metadata
     transact(() => {

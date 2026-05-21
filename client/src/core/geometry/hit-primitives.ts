@@ -260,44 +260,15 @@ export function shapeEdgeHitTest(c: Point, tolerance: number, frame: FrameTuple,
 }
 
 /**
- * Shape hit test: returns distance (0 if inside) and interior flag.
- * Pure geometry — caller decides fill-awareness.
+ * Shape hit test (pure geometry — caller decides fill-awareness):
+ *   -1 → miss
+ *    0 → inside interior  (see-through unless filled)
+ *    1 → edge-only        (always 'ink')
  */
-export function shapeHitTest(
-  c: Point,
-  tolerance: number,
-  frame: FrameTuple,
-  shapeType: string,
-  strokeWidth: number,
-): { distance: number; insideInterior: boolean } | null {
-  const insideInterior = pointInsideShape(c, frame, shapeType);
-  if (insideInterior) {
-    return { distance: 0, insideInterior: true };
-  }
+export function shapeHitTest(c: Point, tolerance: number, frame: FrameTuple, shapeType: string, strokeWidth: number): -1 | 0 | 1 {
+  if (pointInsideShape(c, frame, shapeType)) return 0;
   const halfStroke = strokeWidth / 2;
-  const nearEdge = shapeEdgeHitTest(c, tolerance + halfStroke, frame, shapeType);
-  if (nearEdge !== null) {
-    return { distance: nearEdge, insideInterior: false };
-  }
-  return null;
-}
-
-/**
- * Point-vs-rect hit test for framed kinds (text/code/note/image/bookmark).
- * No shapeType switch, no stroke padding — these kinds always paint their
- * full frame and have no border to be near.
- */
-export function rectFrameHit(c: Point, r: number, frame: FrameTuple): { distance: number; insideInterior: boolean } | null {
-  const [x, y, w, h] = frame;
-  if (c[0] >= x && c[0] <= x + w && c[1] >= y && c[1] <= y + h) {
-    return { distance: 0, insideInterior: true };
-  }
-  const closestX = clamp(c[0], x, x + w);
-  const closestY = clamp(c[1], y, y + h);
-  const dx = c[0] - closestX;
-  const dy = c[1] - closestY;
-  const dist = Math.hypot(dx, dy);
-  return dist <= r ? { distance: dist, insideInterior: false } : null;
+  return shapeEdgeHitTest(c, tolerance + halfStroke, frame, shapeType) !== null ? 1 : -1;
 }
 
 /**
