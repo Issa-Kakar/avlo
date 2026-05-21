@@ -43,8 +43,8 @@ import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-st
 // TUNING CONSTANTS — all tunable
 // =============================================================================
 
-/** Candidate cross-center within ±16.5% of `crossDim` (middle-33% band). */
-const FLOW_ALIGN_TOLERANCE = 0.165;
+/** Candidate cross-center within ±25% of `crossDim` (middle-50% band). */
+const FLOW_ALIGN_TOLERANCE = 0.25;
 /** Candidate cutoff = `3 * flowDim` edge-to-edge (connector + shape + connector). */
 const FLOW_DIST_FACTOR = 3;
 /** Duplicate near edge sits `1 * flowDim` past S's edge. */
@@ -52,11 +52,11 @@ const FLOW_DUP_GAP_FACTOR = 1;
 /** Float-noise tolerance on the `gap ≥ 0` direction test. */
 const FLOW_EDGE_EPS = 0.5;
 /** Button center offset outward from the selection box (screen px). */
-export const FLOW_BTN_OFFSET_PX = 26;
+export const FLOW_BTN_OFFSET_PX = 22;
 /** Rest blue-dot radius (screen px). */
-export const FLOW_DOT_RADIUS_PX = 5;
+export const FLOW_DOT_RADIUS_PX = 3;
 /** Hovered button radius (screen px). */
-export const FLOW_BTN_HOVER_RADIUS_PX = 11;
+export const FLOW_BTN_HOVER_RADIUS_PX = 10;
 /** Hit radius (screen px). */
 const FLOW_BTN_HIT_PX = 14;
 /** Hover-preview alpha. */

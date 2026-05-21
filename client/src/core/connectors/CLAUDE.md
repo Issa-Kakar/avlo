@@ -310,6 +310,8 @@ Single paint atom owns every connector stroke (committed render, transform previ
 
 `buildConnectorPaths({ points, count, strokeWidth, startCap, endCap })` (in `connector-paths.ts`) returns `{ polyline, startArrow, endArrow }`. Rounded corners via `arcTo`, radius clamped to `min(CORNER_RADIUS_W (22), lenIn/2, lenOut/2)`. Arrow size = `max(ARROW_MIN_LENGTH_W (6), strokeWidth * 3)`, capped at `segLen / 2`. Polyline trimmed before each arrow-capped end so the stroke doesn't poke through.
 
+**Dimming a connector — flatten first.** The arrowhead is `fill()`-then-`stroke()` (the stroke rounds its corners) and the trimmed polyline butts against it — overlapping passes. Invisible at opacity 1 (opaque over opaque); under any fractional `globalAlpha`/blend mode every overlap double-composites into a darker seam (arrowhead-stroke over arrowhead-fill, polyline through the head). To draw a faded connector, render it opaque into an offscreen layer and composite the whole layer once: `paintFadedLayer` (`renderer/layers/connector-flow.ts`) — the hand-rolled equivalent of canvas `ctx.beginLayer()`.
+
 ---
 
 ## Constants (`constants.ts`)
