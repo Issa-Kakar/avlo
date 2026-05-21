@@ -1,15 +1,16 @@
-/* ===== Top Bar — Floating Logo Panel ===== */
+/* ===== Top Bars — floating chrome panels =====
+   `.top-bar` is the shared pill chrome (white fill, 12px radius, border,
+   two-layer shadow), reused verbatim by both bars. The left bar (TopBar —
+   logo / name / history) and the right bar (TopBarRight — avatars / Share)
+   differ only in edge position and internal padding/gap. */
 
 .top-bar {
   position: fixed;
   top: 7px;
-  left: 9px;
   z-index: 400;
   height: 48px;
   display: inline-flex;
   align-items: center;
-  padding: 0 6px 0 5px;
-  gap: 2px;
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 12px;
@@ -18,6 +19,21 @@
     0 0 1px rgba(0, 0, 0, 0.06);
   font-family: var(--font-ui);
   user-select: none;
+}
+
+/* Left bar — logo / name / history. */
+.top-bar-left {
+  left: 9px;
+  padding: 0 6px 0 5px;
+  gap: 2px;
+}
+
+/* Right bar — collaborator avatars / Share. Anchored to the right edge,
+   mirroring the left bar; `inline-flex` lets it grow leftward as peers join. */
+.top-bar-right {
+  right: 9px;
+  padding: 0 7px;
+  gap: 0;
 }
 
 /* Sidebar toggle button */
@@ -146,11 +162,66 @@
   height: 20px;
 }
 
+/* ===== Right bar — avatars + Share ===== */
+
+/* Divider between the avatar cluster and the Share button. Reuses the
+   .top-bar-divider line; symmetric margins (the left bar's first divider is
+   asymmetric to balance text mass — the right bar has none to balance). */
+.top-bar-right .top-bar-divider {
+  margin: 0 8px;
+}
+
+/* Share button — the app's primary action: a vivid coral (#ef4e3a), a warm
+   foil to the toolbar's cool electric blue. Text + icon share white via
+   currentColor (~3.6:1 — readable for a bold label, under strict AA). Flat,
+   with the left padding trimmed so the leading icon sits closer to the edge. */
+.top-bar-share {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px 0 9px;
+  border: none;
+  border-radius: 8px;
+  background: #ef4e3a;
+  color: #ffffff;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.top-bar-share:hover {
+  background: #d74634;
+}
+
+.top-bar-share:active {
+  background: #bf3e2e;
+  transform: scale(0.97);
+}
+
+.top-bar-share-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
 /* ===== Responsive ===== */
 
 @media (max-width: 768px) {
   .top-bar {
     top: 8px;
+  }
+
+  .top-bar-left {
     left: 8px;
+  }
+
+  .top-bar-right {
+    right: 8px;
   }
 }

@@ -577,7 +577,7 @@ lookup table (`VARIANT_HANDLERS` module-level; `WeightSelector`'s via
 
 `RoomPage.tsx` imports `{ Toolbar } from './toolbar'` and renders `<Toolbar />`
 inside its single Tailwind shell `<div>`, alongside `<Canvas />`, `<TopBar />`,
-the `.micro-cluster-right` cluster, and `<ZoomControls />`. The old
+`<TopBarRight />`, and `<ZoomControls />`. The old
 `.app-container > .workspace > .canvas-container` nest is gone — the shell is
 one `position: relative` div; the toolbar itself is `position: fixed`, so it
 never depended on that nest.

@@ -6,7 +6,7 @@ import './TopBar.css';
 
 export function TopBar() {
   return (
-    <div className="top-bar">
+    <div className="top-bar top-bar-left">
       <button className="top-bar-sidebar" aria-label="Toggle sidebar" tabIndex={-1}>
         <SidebarIcon className="top-bar-sidebar-icon" />
       </button>
