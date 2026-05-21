@@ -16,7 +16,7 @@
 }
 
 .ctx-btn-type:hover {
-  background: var(--ctx-black-a05);
+  background: var(--ctx-hover);
 }
 
 .ctx-btn-type:focus-visible {

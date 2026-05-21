@@ -37,7 +37,7 @@
 }
 
 .ctx-submenu-item:hover {
-  background: var(--ctx-black-a05);
+  background: var(--ctx-hover);
 }
 
 /* Active / selected row — engaged dark fill, white text/icons.
@@ -77,11 +77,11 @@
   background: transparent;
   border-radius: 4px;
   cursor: pointer;
-  color: var(--ctx-text);
+  color: var(--ctx-engaged);
 }
 
 .ctx-align-item:hover {
-  background: var(--ctx-black-a05);
+  background: var(--ctx-hover);
 }
 
 .ctx-align-item-active,

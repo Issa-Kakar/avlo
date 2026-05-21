@@ -15,7 +15,7 @@
   justify-content: center;
   background: transparent;
   border: none;
-  color: var(--ctx-text);
+  color: var(--ctx-engaged);
   font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 500;
@@ -26,7 +26,7 @@
 }
 
 .ctx-fontsize-value:hover {
-  background: var(--ctx-black-a05);
+  background: var(--ctx-hover);
   border-radius: 4px;
 }
 
@@ -51,7 +51,7 @@
   justify-content: center;
   background: transparent;
   border: none;
-  color: var(--ctx-text);
+  color: var(--ctx-engaged);
   cursor: pointer;
   padding: 0;
   outline: none;
@@ -60,7 +60,7 @@
 }
 
 .ctx-fontsize-arrow:hover {
-  background: var(--ctx-black-a08);
+  background: var(--ctx-hover);
 }
 
 .ctx-fontsize-arrow:active {
@@ -90,10 +90,10 @@
   padding: 0;
 }
 
-.ctx-submenu-fontsize .ctx-submenu-item-active,
-.ctx-submenu-fontsize .ctx-submenu-item-active:hover {
-  background: var(--ctx-engaged-tier);
-  color: #fff;
+/* Non-active number rows take the secondary-text ink (matches the typeface
+   dropdown); the :not() leaves the active row to .ctx-submenu-item-active. */
+.ctx-submenu-fontsize .ctx-submenu-item:not(.ctx-submenu-item-active) {
+  color: var(--ctx-text-secondary);
 }
 
 .ctx-size-item-label {

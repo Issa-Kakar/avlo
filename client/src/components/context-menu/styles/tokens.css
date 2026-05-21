@@ -21,9 +21,11 @@
 
   /* Divider — blue-tinted hairline between menu groups. */
   --ctx-divider: #2a52791f;
+  /* Hover wash — the divider's blue at a lighter alpha. A grey with a faint
+     blue cast; backs every non-engaged :hover across the menu. */
+  --ctx-hover: #2a527914;
 
-  /* Black-alpha overlay scale — borders, hovers, shadows. */
-  --ctx-black-a05: rgba(0, 0, 0, 0.05);
+  /* Black-alpha overlay scale — borders, shadows, press states. */
   --ctx-black-a06: rgba(0, 0, 0, 0.06);
   --ctx-black-a08: rgba(0, 0, 0, 0.08);
   --ctx-black-a12: rgba(0, 0, 0, 0.12);

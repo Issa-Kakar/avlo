@@ -12,30 +12,31 @@
 > Pull from this list — not from legacy values further down.
 >
 > **Filter-menu vocabulary (alignment targets):**
-> - **Body / secondary text:** `#48525b`. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon. The menu's "everything else" color.
+> - **Body / secondary text:** `#48525b` — the default for label / body text menu-wide. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon, the typeface + font-size dropdown rows. The menu's "everything else" color.
 > - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
-> - **Engaged dark fill:** `#1b1f22`, white text/icons. The "this control is engaged" tone — open-state triggers (`FilterObjectsDropdown`, the `StrokeColorControl` teardrop, the `StrokeWidthControl` bars, the align triggers), active toggles (bold / italic, code header/output), and every dropdown's active selected row (`.ctx-submenu-item-active`). An earlier doc split `#1b1f22` (submenu-host) from `#282e34` (active value) — that split is collapsed; `#1b1f22` now covers both.
-> - **Stroke-width active tier:** `#282e34`, white. This slightly-lighter dark fills `.ctx-weight-item-active` and the font-size dropdown's active row. Not yet reconciled to `#1b1f22`.
+> - **Engaged dark `#1b1f22`** — the menu's darkest tone, two roles. As a *fill* (white text/icons on it): the "this control is engaged" background — open-state triggers (`FilterObjectsDropdown`, the `StrokeColorControl` teardrop, the `StrokeWidthControl` bars, the align triggers), active toggles (bold / italic, code header/output), every dropdown's active selected row (`.ctx-submenu-item-active`). As *ink*: the resting color for most icons — bold / italic / align glyphs, the font-size value + arrows. The default icon color.
+> - **Tier dark `#282e34`** — a deliberate notch lighter than `#1b1f22`; kept, not debt. It reads better than the near-black on a few surfaces: the `.ctx-weight-item-active` stroke-width tier row, the `TypefaceButton` / `LanguageDropdown` trigger ink — reach for it where full `#1b1f22` sits too heavy.
 > - **Open-trigger primary text:** pure white.
 > - **Open-trigger FILTER subtitle:** `#D4B89B` (warm sand). Intentional warm third pole in the otherwise cool slate palette; deliberately stays subordinate to white (~2× contrast hierarchy). `fill 150ms ease` transition.
 > - **Icons:** 20×20, sourced from `components/toolbar/icons/*` (not the legacy `context-menu/icons/FilterIcons.tsx` pictograms). `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
 > - **Row protection:** `white-space: nowrap` on `.ctx-filter-item` — prevents subpixel wrap on borderline-fit labels (e.g. "Sticky Note" against `min-width: 140px`).
 > - **Labels singular:** `Stroke` / `Shape` / `Connector` / `Image`. Two-word singulars (`Code Block`, `Sticky Note`) untouched.
 > - **Trash button:** `.ctx-btn-danger` repointed to `#48525b` (class name kept — describes the destructive *action*; visual is now neutral). Mural 24-viewBox glyph in `icons/TrashIcon.tsx`. Hover override deleted; base `.ctx-btn:hover` carries it. Currently rendered for every kind via `CommonActionsGroup`; **planned** removal from per-kind menus, leaving it only in mixed. Don't preemptively delete.
+> - **Defaults, not laws.** Icon `#1b1f22` / text `#48525b` are menu-wide starting points; surfaces mix tones case-by-case, per the action / icon / text they carry.
 >
 > **Aligned to the new vocabulary:** `FilterObjectsDropdown` (the base);
-> `StrokeColorControl` + `StrokeWidthControl` (teardrop / bars triggers); and
-> the text-formatting slice — bold / italic, `AlignDropdown`, `NoteAlignDropdown`,
+> `StrokeColorControl` + `StrokeWidthControl` (teardrop / bars triggers); the
+> text-formatting slice — bold / italic, `AlignDropdown`, `NoteAlignDropdown`,
 > `TypefaceButton` — reskinned to Mural glyphs with `.ctx-btn-fmt` engaged
-> states. Stroke + connector selections are fully off the legacy color/size
-> widgets. (The text slice still has tweaks pending — values are current, not
-> final.)
+> states; and `FontSizeStepper` (value + arrows at `#1b1f22`, dropdown active
+> row + rows reconciled). Stroke + connector selections are fully off the
+> legacy color/size widgets. (The text slice still has tweaks pending —
+> values are current, not final.)
 >
 > **Surfaces still on legacy vocabulary** (their values below are not canon):
-> - Per-kind group *layout* is unchanged: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup`. The bold/italic/align/typeface controls inside them are reskinned; the color popovers + font-size stepper are not.
+> - Per-kind group *layout* is unchanged: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup`. The bold/italic/align/typeface/font-size controls inside them are reskinned; the color popovers are not.
 > - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover` (shape / text / note fill + shape border still use these).
 > - Dropdowns: `ShapeTypeDropdown`'s trigger only — its submenu rows, like every dropdown's, now take the dark `.ctx-submenu-item-active` fill (legacy blue gone). `LanguageDropdown` is migrated; see `codeOnly`.
-> - `FontSizeStepper`.
 > - Bar shell — `.ctx-menu` border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
 > - Overflow `…` button — placeholder, no handler.
@@ -550,8 +551,8 @@ control `.tsx` files import no CSS (mirrors `toolbar/inspectors/Inspector.css`).
 `.context-menu-floating` (the portal class — every surface, incl. the
 absolutely-positioned submenus, inherits them): `--ctx-engaged` (#1b1f22),
 `--ctx-engaged-tier` (#282e34), the text/accent/sand colors, `--ctx-divider`
-(#2a52791f), and a black-alpha overlay scale (`--ctx-black-a05` …
-`--ctx-black-a20`). Tokens are pure
+(#2a52791f), `--ctx-hover` (the blue-tinted hover wash), and a black-alpha
+overlay scale (`--ctx-black-a06` … `--ctx-black-a20`). Tokens are pure
 indirection — identical pixels.
 
 - `.ctx-btn-sq`: 32x32, padding 0. Inner SVG 18x18.
@@ -562,7 +563,7 @@ indirection — identical pixels.
 - `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu — `padding: 8px`, `border-radius: 12px`, 3px row gap. Rows left-aligned (icon · word · inline checkmark). `.ctx-weight-item-active` fills the tier row `#282e34`, white icon/label/check.
 - `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x12, SVG 11x6.5.
 - `.ctx-fontsize-value`: 32x32, padding 0, SVG 30x16 viewBox.
-- `.ctx-submenu-fontsize`: `min-width: 0` + 10px padding (content-driven width); 32x32 items, center-aligned (`justify-content: center`), active row `#282e34` / white.
+- `.ctx-submenu-fontsize`: `min-width: 0` + 10px padding (content-driven width); 32x32 items, center-aligned (`justify-content: center`), active row inherits the base `.ctx-submenu-item-active` (`#1b1f22` / white).
 - `.ctx-submenu-note-align`: flex **row**, centered. `.ctx-align-row` (H group, then V group) split by `.ctx-align-divider` — a vertical 2×24 separator.
 - `.ctx-divider`: 2px wide, 24px tall, `--ctx-divider` (#2a52791f).
 

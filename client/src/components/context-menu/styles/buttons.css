@@ -22,7 +22,7 @@
 }
 
 .ctx-btn:hover {
-  background: var(--ctx-black-a05);
+  background: var(--ctx-hover);
 }
 
 .ctx-btn:active {
@@ -62,7 +62,13 @@
 }
 
 /* ===== Format buttons (.ctx-btn-fmt) — bold / italic + code header/output toggles, align triggers =====
-   Engaged (active toggle or open dropdown) fills --ctx-engaged, icon flips white. */
+   Resting icon ink is --ctx-engaged, the menu's darkest tone (shared with the
+   engaged fill). Engaged (active toggle or open dropdown) fills --ctx-engaged
+   and the icon flips white. */
+
+.ctx-btn-fmt {
+  color: var(--ctx-engaged);
+}
 
 .ctx-btn-fmt svg {
   width: 20px;

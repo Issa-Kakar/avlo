@@ -21,7 +21,7 @@ export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize 
             <text
               x="15"
               y="12"
-              fill="#374151"
+              fill="currentColor"
               fontSize="15"
               fontWeight="550"
               fontFamily="var(--font-ui)"
