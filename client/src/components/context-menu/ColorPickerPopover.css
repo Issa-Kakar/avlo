@@ -1,6 +1,6 @@
 /* ===== Context Menu — Color Picker Popover (no-fill swatch) =====
-   The 9-col grid + .ctx-color-swatch live in styles/color-grid.css (shared
-   with TextColorPopover); this file holds only the fill-mode no-fill slot. */
+   The 9-col grid + .ctx-color-swatch live in styles/color-grid.css; this
+   file holds only the fill-mode no-fill slot. */
 
 .ctx-color-swatch-nofill {
   width: 28px;

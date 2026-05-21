@@ -1,5 +1,5 @@
 /* ===== Context Menu — Color Grid =====
-   Shared 9-column swatch grid (ColorPickerPopover + TextColorPopover). */
+   9-column swatch grid for ColorPickerPopover (border + fill). */
 
 .ctx-color-grid {
   display: grid;

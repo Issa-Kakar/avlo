@@ -27,3 +27,9 @@
   transform: none;
   min-width: 150px;
 }
+
+/* Rows run 700 — heavier than the shared .ctx-type-item 500 — to match the
+   all-700 language trigger. */
+.ctx-submenu-lang .ctx-type-item {
+  font-weight: 700;
+}
