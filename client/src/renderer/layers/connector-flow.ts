@@ -93,7 +93,7 @@ export function drawConnectorFlow(ctx: CanvasRenderingContext2D): void {
 
   if (render.preview) {
     const st = useDeviceUIStore.getState();
-    drawFlowPreview(ctx, gate.handle, render.preview, st.drawingSettings.color, st.connectorSize);
+    drawFlowPreview(ctx, gate.handle, render.preview, st.connector.color, st.connector.width);
   }
   drawFlowButtons(ctx, gate.bbox, render.preview, scale);
 }

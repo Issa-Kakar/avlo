@@ -380,7 +380,7 @@ export class ConnectorFlowController {
   private computeHoverPreview(sourceId: string, side: FlowSide, sourceHandle: ObjectHandle): FlowPreview | null {
     const frame = frameOf(sourceHandle);
     if (!frame) return null;
-    const width = useDeviceUIStore.getState().connectorSize;
+    const width = useDeviceUIStore.getState().connector.width;
     const srcSnap = buildElbowSnap(sourceId, SRC_ANCHOR[side], frame, SIDE_DIR[side]);
 
     // Candidate — route source midpoint → candidate's facing midpoint.
@@ -411,8 +411,8 @@ export class ConnectorFlowController {
     const frame = frameOf(sourceHandle);
     if (!frame) return false;
     const st = useDeviceUIStore.getState();
-    this.frozenColor = st.drawingSettings.color;
-    this.frozenWidth = st.connectorSize;
+    this.frozenColor = st.connector.color;
+    this.frozenWidth = st.connector.width;
     this.dragSourceId = sourceId;
     this.dragSide = side;
     this.fromSnap = buildElbowSnap(sourceId, SRC_ANCHOR[side], frame, SIDE_DIR[side]);
@@ -487,8 +487,8 @@ export class ConnectorFlowController {
     if (!hover) return null;
     const { sourceId, side, preview } = hover;
     const st = useDeviceUIStore.getState();
-    const color = st.drawingSettings.color;
-    const width = st.connectorSize;
+    const color = st.connector.color;
+    const width = st.connector.width;
 
     if (preview.kind === 'candidate') {
       return createConnector({
