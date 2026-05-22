@@ -64,6 +64,7 @@ only needs one stylesheet import.
 | `inspectors/ConnectorInspector.tsx` | 3 variant buttons (`line`/`arrow`/`elbow`) sourced via `VARIANT_ICONS` lookup, divider, `<WeightField presets={CONNECTOR_WEIGHTS}>` (popout), divider, `<ColorField>` (popout). The `arrow` slot reuses `IconArrow` (the toolbar tool icon) — same diagonal language as line/elbow. Active variant **derived** from caps via `deriveConnectorVariant` — never stored. The two popouts are mutually exclusive via a discriminated `OpenPicker = 'weight' \| 'color' \| null` state. `VARIANT_HANDLERS` + `VARIANT_ICONS` module-level. |
 | `inspectors/WeightSelector.tsx` | Memoized **controlled** presets-driven button row (`presets` / `value` / `onChange`). Returns a fragment so the buttons stay direct flex children of the surrounding container (inline `.inspector` or the `.weight-picker` popout). Per-preset `useMemo` handler table keyed on `[presets, onChange]` — both stable module-level refs in practice, so the table allocates exactly once per mount. |
 | `inspectors/WeightField.tsx/css` | Memoized stroke-width field — sibling of `ColorField`. One trigger button showing the nearest-preset icon (blue ONLY while the popout is open) + an absolutely-positioned `.weight-picker` popout that mounts a `<WeightSelector>` with the same presets. Owns a `usePickerDismiss` wrapper. Off-preset widths render the nearest tier's icon on the trigger; popout buttons all stay inactive (strict equality). Used by `ConnectorInspector` today; pen inspector still uses the inline `<WeightSelector>` while the popout UX is evaluated. |
+| `inspectors/StickyNotePanel.tsx/css` | Sticky-note color popout — **not** a `.inspector` pill; its own wider near-black panel of 12 `NOTE_COLOR_PALETTE` swatches drawn as miniature sticky notes. Mounted by `Toolbar` while `stickyPanelOpen`; swatch click → `setNoteFillColor` + `closeStickyPanel`. See "Sticky-Note Color Panel" below. |
 | `color/ColorSlots.tsx/css` | Memoized pen/highlighter **3-slot** column — definitionally 3-slot, iterates `SLOT_INDICES`. Owns a `usePickerDismiss` wrapper containing the slots + picker. `ColorSlots.css` styles the column (`.color-slots`) and opts its slots out of `ColorButton`'s hover-scale. |
 | `color/ColorField.tsx/css` | Memoized connector single-color field — sibling of `ColorSlots`, also built on `ColorButton`. One trigger button (no checkmark) + picker. Owns a `usePickerDismiss` wrapper. |
 | `color/ColorButton.tsx/css` | The shared swatch-button **primitive** (renamed from `ColorSlot`). `selected?` → checkmark + active ring; `expanded?` → picker-trigger aria — **decoupled**. `colorButtonStyle(color, selected)` centralizes the lone `React.CSSProperties` cast for `--slot-tint` — exported, so `ColorPicker`'s swatches reuse it for the same active ring. |
@@ -101,7 +102,8 @@ RoomPage
           │   ├─ <ToolButton> Connector
           │   └─ {activeTool === 'connector' && <ConnectorInspector />}   centered on Connector button
           ├─ <ToolButton> Pen, Code, Image, Eraser
-          └─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered on .toolbar-main (whole pill)
+          ├─ {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}   .inspector absolute, centered on .toolbar-main (whole pill)
+          └─ {stickyPanelOpen && <StickyNotePanel />}   own popout (not .inspector), centered on .toolbar-main
 ```
 
 `PenInspector` body (`tool: StrokeTool` prop):
@@ -182,7 +184,7 @@ Each handler is module-level in `Toolbar.tsx`:
 | 1 | Select | V | `setActiveTool('select')` | Default tool on every load (see persist). |
 | 2 | Pan | Space | `setActiveTool('pan')` | Permanent button; spacebar is an *ephemeral* pan, separate path. |
 | 3 | — | — | divider | |
-| 4 | Sticky Note | N | `setActiveTool('note')` | Routes to `TextTool` via `tool-registry`. |
+| 4 | Sticky Note | N | `setActiveTool('note')` | Routes to `TextTool` via `tool-registry`. The dock button (`clickNote`) also opens the color popout — toggles it when `note` is already active. See "Sticky-Note Color Panel". |
 | 5 | Text | T | `setActiveTool('text')` | |
 | 6 | Shapes | — | `setActiveTool('shape')` | Single dock entry-point. Variant is **whatever `s.shape.variant` already is** — persisted, so the user's last pick survives reloads. Opens `ShapeInspector` (5 variant buttons). R/O/D/3 keyboard shortcuts still atomically set `tool.active='shape'` + the variant (in `keyboard-manager.ts`'s `SHAPE_KEYS`). `roundedRect` has no shortcut yet — inspector-only. |
 | 7 | Connector | A | `setActiveTool('connector')` | Opens `ConnectorInspector`. |
@@ -229,12 +231,13 @@ type PointerInputKind = 'mouse' | 'trackpad';                  // workspace pref
 interface DeviceUIState {
   user:        { id: string; name: string; color: string };
   tool:        { active: Tool; cursorOverride: string | null };
+  stickyPanelOpen: boolean;     // ephemeral — sticky-note color popout; not persisted
   strokeWidth: number;          // top-level — shared by pen + highlighter
   strokeTools: Record<StrokeTool, StrokeCluster>;   // replaces `pen` + `highlighter`; no stored opacity
   shape:       { variant; color; fillColor; width; align; alignV };
   connector:   { color; width; type; startCap; endCap };
   text:        { color; align; size; fontFamily; highlightColor; fillColor };
-  note:        { align; alignV; fontFamily };
+  note:        { align; alignV; fontFamily; fillColor };
   code:        { lineNumbers; headerVisible };
 
   // Workspace preferences — flat top-level scalars (no cluster).
@@ -283,7 +286,7 @@ create<DeviceUIStore>()(
   subscribeWithSelector(
     persist(
       immer((set, get) => ({ ... })),
-      { name: 'avlo.toolbar.v2', version: 2, partialize, storage: createJSONStorage(localStorage) },
+      { name: 'avlo.toolbar.v3', version: 3, partialize, storage: createJSONStorage(localStorage) },
     ),
   ),
 );
@@ -297,9 +300,10 @@ create<DeviceUIStore>()(
 
 ### Persist key
 
-`name: 'avlo.toolbar.v2'`, `version: 2`. No `migrate`. Earlier `avlo.toolbar.v1`
-payloads (the pre-`strokeTools` `pen`/`highlighter` shape) are orphaned in
-localStorage and never read. **Bumping the key is the standard cheap "throw
+`name: 'avlo.toolbar.v3'`, `version: 3`. No `migrate`. Earlier `v1` / `v2`
+payloads are orphaned in localStorage and never read (`v3` bumped when
+`note.fillColor` joined the persisted `note` cluster — a shallow merge would
+drop a new nested field). **Bumping the key is the standard cheap "throw
 old payloads away" — there is no migration contract to preserve.** First load
 after a bump regenerates user identity through the init block.
 
@@ -309,6 +313,7 @@ after a bump regenerates user identity through the init block.
 |---|---|---|
 | `s.tool.active` | `applyCursor` | `device-ui-store.ts` (self-sub) |
 | `s.tool.cursorOverride` | `applyCursor` | `device-ui-store.ts` (self-sub) — keeps `setCursorOverride` a pure recipe |
+| `s.tool.active` | `closeStickyPanel()` when `active !== 'note'` | `device-ui-store.ts` (self-sub) — the sticky popout only lives in note mode |
 | `s.tool.active` | overlay invalidate-all | `renderer/OverlayRenderLoop.ts:31` — evicts live preview on tool switch |
 | `s.tool.active` (with prev) | `clearSelection()` when prev was `'select'` | `stores/selection-store.ts:416` — **one-way reaction; device-ui-store does NOT import selection-store** |
 
@@ -379,7 +384,7 @@ plain `Object.is` is correct (no `useShallow` needed for cluster reads).
 | Kind | Names |
 |---|---|
 | Cluster | `selectUser`, `selectShape`, `selectConnector`, `selectText`, `selectNote`, `selectCode` |
-| Scalar | `selectActiveTool`, `selectStrokeWidth`, `selectTextColor`, `selectTextAlign`, `selectTextSize`, `selectTextHighlightColor`, `selectTextFontFamily`, `selectPointerInput`, `selectGridEnabled`, `selectAlignObjects`, `selectEdgeScrolling`, `selectShowCollaboratorCursors`, `selectShowFlowConnectors`, `selectToolLock` |
+| Scalar | `selectActiveTool`, `selectStickyPanelOpen`, `selectStrokeWidth`, `selectTextColor`, `selectTextAlign`, `selectTextSize`, `selectTextHighlightColor`, `selectTextFontFamily`, `selectPointerInput`, `selectGridEnabled`, `selectAlignObjects`, `selectEdgeScrolling`, `selectShowCollaboratorCursors`, `selectShowFlowConnectors`, `selectToolLock` |
 
 `resolveStrokeStyle(s, tool)` is not a selector (it takes a second arg) but
 lives beside them — it's the stroke-tool read consumers use *instead of* a
@@ -434,6 +439,47 @@ slot updates the right column without subscribing to both clusters.
 | `OverlayRenderLoop.start()` | Subscribes to `s.tool.active` → `invalidateAll` | Evicts in-flight preview on tool switch. Replaces the prior whole-store subscription with selector form. |
 | `selection-store.ts` bottom | Subscribes to `s.tool.active` → `clearSelection()` when prev was `'select'` | Cross-store reaction lives here, not in device-ui-store. **Do not invert.** |
 | `selection-field-table.ts:250-267` | Per-property persist sinks: `setShapeColorPersist`, `setShapeFillColorPersist`, `setShapeWidthPersist`, `setStrokeWidthPersist`, `setConnectorColorPersist`, `setConnectorWidthPersist`, `setTextSize`, `setTextColor`, `setTextFillColor`, `setTextFontFamily`, `setNoteFontFamily`, `setTextAlign`, `setNoteAlign`, `setShapeAlign`, `setNoteAlignV`, `setShapeAlignV`, `setCodeLineNumbers`, `setCodeHeaderVisible` | These are the bridge between *selection-driven* edits in the context menu and *toolbar-driven* defaults. Editing a shape's stroke color in the context menu also updates `shape.color` so the next new shape inherits it. **Pen/highlighter slots are deliberately NOT persisted from selection** — editing a stroke's color does not overwrite the pen's active slot (the field table has no `stroke` persist for `COLOR` for this reason). |
+
+---
+
+## Sticky-Note Color Panel
+
+`StickyNotePanel` (`inspectors/StickyNotePanel.tsx/css`) — the popout for
+picking a sticky note's fill color. **Not** a tool inspector: those are
+narrow `--dock-bg` pills; this is its own wider near-black panel of 12
+swatches drawn as miniature sticky notes (chamfered fold — `::before`
+face, `::after` dog-ear; a ~130ms fade+slide entry). Swatch visuals are
+pure CSS — see the `StickyNotePanel.css` header comment.
+
+**Store surface** (`device-ui-store.ts`):
+
+- `note.fillColor` — chosen fill, default `#FFD95E`, persisted in the
+  `note` cluster; setter `setNoteFillColor`.
+- `stickyPanelOpen` — popout visibility. **Ephemeral — excluded from
+  `partialize`.** `openStickyPanel` / `closeStickyPanel` (idempotent) /
+  `toggleStickyPanel`; selector `selectStickyPanelOpen`.
+- `NOTE_COLOR_PALETTE` — 12 `{ name, fill }` entries, warm→cool→neutral.
+- A `s.tool.active` self-subscription closes the panel on any switch
+  away from `'note'`.
+
+**Behavior.** The dock's Sticky Note button (`clickNote`) toggles the
+panel when `note` is already active, else activates `note` + opens it.
+Also closes on Escape, on a tool switch, and on a note-create press.
+
+**Next steps — the picked color is not consumed downstream yet:**
+
+1. **Text-tool integration.** `TextTool.createTextObject` (`TextTool.ts:226`)
+   hardcodes the note fill — `TextTool.ts:246` writes the `NOTE_FILL_COLOR`
+   constant (`#FEF3AC`, `core/text/sticky-note.ts:37`). Wire it to read
+   `note.fillColor` so new notes use the picked color.
+2. **Color-aware rendering.** Sticky-note text is hardcoded `#1a1a1a` in
+   the canvas render (`core/text/sticky-note.ts:582`) and the Tiptap
+   editor overlay (`TextTool.ts:385`). It must derive from the fill for
+   contrast — dark text on light fills, light on the near-black 'Black'
+   sticky. Prior art: `color/palette.ts` `luminance`/`isDark`,
+   `presence-renderer.ts:90`.
+
+Full roadmap: `sticky-note-handoff.md` (repo root).
 
 ---
 
@@ -732,7 +778,7 @@ the prompt.**
   (R/O/D/3 cover the other four). Inspector currently surfaces variant
   + width; color (stroke vs fill) and icon-vs-button sizing are still
   open questions — expect movement here.
-- **Persist key bump** — flip `'avlo.toolbar.v2'` / `version: 2` if the
+- **Persist key bump** — flip `'avlo.toolbar.v3'` / `version: 3` if the
   state shape changes incompatibly. There's no migrate fn; old payloads
   are discarded.
 - **Eyedropper** — rendered but disabled in `ColorPicker.tsx`. Wire to

@@ -10,7 +10,6 @@ import './StickyNotePanel.css';
 function swatchStyle(fill: string, index: number): CSSProperties {
   return {
     '--fill': fill,
-    '--i': index,
     '--tilt': index % 2 === 0 ? '-2.6deg' : '2.6deg',
   } as CSSProperties;
 }
