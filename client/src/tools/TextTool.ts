@@ -54,7 +54,7 @@ import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
 import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
-import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { closeStickyPanel, getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import type { PointerTool, PreviewData } from './types';
@@ -105,6 +105,9 @@ export class TextTool implements PointerTool {
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
     const tool = useDeviceUIStore.getState().tool.active;
+    // A note-tool press on the canvas is a create/edit gesture (panning takes a
+    // separate path) — dismiss the sticky palette so it isn't left hanging.
+    if (tool === 'note') closeStickyPanel();
     this.hitTextId = pickTopmostOfKind([worldX, worldY], { px: 8 }, tool === 'note' ? 'note' : 'text');
   }
 

@@ -1,6 +1,13 @@
 import { memo, type ReactNode } from 'react';
 import { openImageFilePicker } from '@/core/image/image-actions';
-import { isStrokeTool, setActiveTool, useDeviceUIStore } from '@/stores/device-ui-store';
+import {
+  isStrokeTool,
+  openStickyPanel,
+  selectStickyPanelOpen,
+  setActiveTool,
+  toggleStickyPanel,
+  useDeviceUIStore,
+} from '@/stores/device-ui-store';
 import { IconArrow } from './icons/IconArrow';
 import { IconCode } from './icons/IconCode';
 import { IconEraser } from './icons/IconEraser';
@@ -14,6 +21,7 @@ import { IconText } from './icons/IconText';
 import { ConnectorInspector } from './inspectors/ConnectorInspector';
 import { PenInspector } from './inspectors/PenInspector';
 import { ShapeInspector } from './inspectors/ShapeInspector';
+import { StickyNotePanel } from './inspectors/StickyNotePanel';
 import './Toolbar.css';
 
 interface ToolButtonProps {
@@ -34,7 +42,18 @@ const ToolButton = memo(function ToolButton({ isActive, tooltip, onClick, childr
 // Pre-bound handlers so memoized ToolButton props are stable across renders.
 const clickSelect = () => setActiveTool('select');
 const clickPan = () => setActiveTool('pan');
-const clickNote = () => setActiveTool('note');
+// The Sticky Note button doubles as the palette toggle: it activates the note
+// tool and opens the color popout; clicking again (already on the note tool)
+// toggles the popout. Switching away from 'note' closes the popout via the
+// device-ui-store subscription, so no teardown is needed on the other tools.
+const clickNote = () => {
+  if (useDeviceUIStore.getState().tool.active === 'note') {
+    toggleStickyPanel();
+  } else {
+    setActiveTool('note');
+    openStickyPanel();
+  }
+};
 const clickText = () => setActiveTool('text');
 // Shape entry point. Variant is whatever was last persisted in s.shape.variant
 // — the inspector below switches it. R/O/D/3 keyboard shortcuts also flip the
@@ -49,6 +68,7 @@ const clickImage = () => openImageFilePicker();
 
 export function Toolbar() {
   const activeTool = useDeviceUIStore((s) => s.tool.active);
+  const stickyPanelOpen = useDeviceUIStore(selectStickyPanelOpen);
 
   return (
     <div className="toolbar-wrap">
@@ -99,6 +119,7 @@ export function Toolbar() {
         </ToolButton>
 
         {isStrokeTool(activeTool) && <PenInspector tool={activeTool} />}
+        {stickyPanelOpen && <StickyNotePanel />}
       </div>
     </div>
   );

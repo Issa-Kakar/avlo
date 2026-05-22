@@ -121,8 +121,8 @@
   transform: translateY(-50%) scale(1);
 }
 
-/* Hide tool-btn tooltips while any inspector is open (would overlap). */
-.toolbar-wrap:has(.inspector) .toolbar-main .tool-btn::after {
+/* Hide tool-btn tooltips while any inspector or the sticky panel is open. */
+.toolbar-wrap:has(.inspector, .sticky-panel) .toolbar-main .tool-btn::after {
   display: none;
 }
 

@@ -35,6 +35,31 @@ export const HIGHLIGHT_COLORS: readonly (string | null)[] = [
   '#b197fc',
 ];
 
+/** A sticky note's fill color + display name. */
+export interface NoteColor {
+  name: string;
+  fill: string;
+}
+
+// Sticky-note palette — 12 colors, 6 rows of 2. Ordered as a warm→cool→neutral
+// hue sweep so the popout reads as a continuous ramp top-to-bottom. Every fill
+// is light enough for black body text except 'Black' (white text); all are
+// saturated enough to hold up against the panel's black background.
+export const NOTE_COLOR_PALETTE: readonly NoteColor[] = [
+  { name: 'Yellow', fill: '#FFD95E' },
+  { name: 'Orange', fill: '#FFAD5C' },
+  { name: 'Red', fill: '#FF6E6E' },
+  { name: 'Pink', fill: '#FF8FB3' },
+  { name: 'Purple', fill: '#C193F2' },
+  { name: 'Blue', fill: '#8FB4FF' },
+  { name: 'Cyan', fill: '#73D2EE' },
+  { name: 'Teal', fill: '#67DEC6' },
+  { name: 'Green', fill: '#86DF9C' },
+  { name: 'Lime', fill: '#C5E27D' },
+  { name: 'White', fill: '#F2F1EC' },
+  { name: 'Black', fill: '#28282C' },
+];
+
 // Slot-based color storage — pen and highlighter each persist 3 colors
 // and an "active slot" pointer. The active slot's color is read at gesture
 // begin (no shared mirror field). Opacity is NOT stored — it's a module
@@ -77,6 +102,8 @@ export interface StrokeStyle {
 export interface DeviceUIState {
   user: { id: string; name: string; color: string };
   tool: { active: Tool; cursorOverride: string | null };
+  /** Sticky-note color-palette popout. Ephemeral UI — never persisted. */
+  stickyPanelOpen: boolean;
 
   // Shared by pen + highlighter. Honest top-level scalar — not "owned" by either tool.
   strokeWidth: number;
@@ -85,7 +112,7 @@ export interface DeviceUIState {
   shape: { variant: ShapeVariant; color: string; fillColor: string; width: number; align: TextAlign; alignV: TextAlignV };
   connector: { color: string; width: number; type: ConnectorType; startCap: ConnectorCap; endCap: ConnectorCap };
   text: { color: string; align: TextAlign; size: number; fontFamily: FontFamily; highlightColor: string | null; fillColor: string | null };
-  note: { align: TextAlign; alignV: TextAlignV; fontFamily: FontFamily };
+  note: { align: TextAlign; alignV: TextAlignV; fontFamily: FontFamily; fillColor: string };
   code: { lineNumbers: boolean; headerVisible: boolean };
 
   pointerInput: PointerInputKind;
@@ -104,6 +131,10 @@ export interface DeviceUIState {
 export interface DeviceUIActions {
   setActiveTool(tool: Tool): void;
   setCursorOverride(cursor: string | null): void;
+
+  openStickyPanel(): void;
+  closeStickyPanel(): void;
+  toggleStickyPanel(): void;
 
   setStrokeWidth(width: number): void;
 
@@ -135,6 +166,7 @@ export interface DeviceUIActions {
   setNoteAlign(align: TextAlign): void;
   setNoteAlignV(alignV: TextAlignV): void;
   setNoteFontFamily(family: FontFamily): void;
+  setNoteFillColor(color: string): void;
 
   setCodeLineNumbers(v: boolean): void;
   setCodeHeaderVisible(v: boolean): void;
@@ -156,6 +188,7 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
       immer((set, get) => ({
         user: { id: '', name: '', color: '' },
         tool: { active: 'select', cursorOverride: null },
+        stickyPanelOpen: false,
 
         strokeWidth: 4,
 
@@ -194,6 +227,7 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           align: 'center',
           alignV: 'middle',
           fontFamily: 'Grandstander',
+          fillColor: '#FFD95E',
         },
 
         code: { lineNumbers: true, headerVisible: true },
@@ -218,6 +252,21 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
             state.tool.cursorOverride = cursor;
           });
         },
+
+        openStickyPanel: () =>
+          set((state) => {
+            state.stickyPanelOpen = true;
+          }),
+        closeStickyPanel: () => {
+          if (!get().stickyPanelOpen) return;
+          set((state) => {
+            state.stickyPanelOpen = false;
+          });
+        },
+        toggleStickyPanel: () =>
+          set((state) => {
+            state.stickyPanelOpen = !state.stickyPanelOpen;
+          }),
 
         setStrokeWidth: (width) =>
           set((state) => {
@@ -329,6 +378,10 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           set((state) => {
             state.note.fontFamily = family;
           }),
+        setNoteFillColor: (color) =>
+          set((state) => {
+            state.note.fillColor = color;
+          }),
 
         setCodeLineNumbers: (v) =>
           set((state) => {
@@ -369,8 +422,8 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           }),
       })),
       {
-        name: 'avlo.toolbar.v2',
-        version: 2,
+        name: 'avlo.toolbar.v3',
+        version: 3,
         storage: createJSONStorage(() => localStorage),
         partialize: (s) => ({
           user: s.user,
@@ -388,7 +441,7 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           showCollaboratorCursors: s.showCollaboratorCursors,
           showFlowConnectors: s.showFlowConnectors,
           toolLock: s.toolLock,
-          // tool.active + tool.cursorOverride intentionally excluded.
+          // tool.active + tool.cursorOverride + stickyPanelOpen intentionally excluded.
         }),
       },
     ),
@@ -425,6 +478,10 @@ export const {
   setNoteAlign,
   setNoteAlignV,
   setNoteFontFamily,
+  setNoteFillColor,
+  openStickyPanel,
+  closeStickyPanel,
+  toggleStickyPanel,
   setCodeLineNumbers,
   setCodeHeaderVisible,
   setPointerInput,
@@ -503,12 +560,23 @@ export function setCursorOverride(cursor: string | null): void {
 useDeviceUIStore.subscribe((s) => s.tool.active, applyCursor);
 useDeviceUIStore.subscribe((s) => s.tool.cursorOverride, applyCursor);
 
+// The sticky-note palette popout only makes sense while the note tool is
+// active — any switch away from 'note' (toolbar, keyboard, shape-mode)
+// dismisses it. closeStickyPanel is idempotent, so non-note→non-note is a no-op.
+useDeviceUIStore.subscribe(
+  (s) => s.tool.active,
+  (active) => {
+    if (active !== 'note') closeStickyPanel();
+  },
+);
+
 // ============================================
 // SELECTORS
 // ============================================
 
 // Scalar selectors — Object.is suffices, no shallow.
 export const selectActiveTool = (s: DeviceUIState) => s.tool.active;
+export const selectStickyPanelOpen = (s: DeviceUIState) => s.stickyPanelOpen;
 export const selectStrokeWidth = (s: DeviceUIState) => s.strokeWidth;
 export const selectTextColor = (s: DeviceUIState) => s.text.color;
 export const selectTextAlign = (s: DeviceUIState) => s.text.align;

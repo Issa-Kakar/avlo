@@ -1,0 +1,146 @@
+/* Sticky-note color palette popout.
+
+   Unlike the tool inspectors (narrow --dock-bg pills), this is a wider near-black
+   panel: the user picks a sticky-note fill, so the swatches are rendered as
+   miniature sticky notes dropped on a dark board. A real drop shadow is
+   invisible on black, so depth is carried three other ways — a top-lit surface
+   gradient, a 1px rim-light bevel, and a folded corner — plus a color-matched
+   bloom on hover that reads as the note lifting toward the light. */
+
+.sticky-panel {
+  position: absolute;
+  /* Same offset + pill-centred anchoring as the pen inspector. The entry
+     animation only touches opacity, so it never fights this transform. */
+  left: calc(100% + 7px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 14px;
+  border-radius: 16px;
+  background: #0b0b0c;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow:
+    0 6px 24px -4px rgba(0, 0, 0, 0.55),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  z-index: 1;
+  animation: sticky-panel-in 130ms ease-out;
+}
+
+.sticky-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 58px);
+  gap: 10px;
+}
+
+/* --- a single sticky note ------------------------------------------------ */
+
+.sticky-swatch {
+  /* per-swatch knobs — --fill / --i / --tilt are set inline by the component */
+  --rim: 0.42; /* bright top inner edge (light catching the sheet) */
+  --edge: 0.055; /* faint outer ring so the tile keeps an edge on black */
+  --glow: var(--fill); /* hover bloom color */
+  --fold: color-mix(in srgb, var(--fill), #ffffff 30%);
+
+  position: relative;
+  width: 58px;
+  height: 58px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  /* lit top-left → body → deepened bottom-right: a sheet under overhead light */
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--fill), #ffffff 15%) 0%,
+    var(--fill) 47%,
+    color-mix(in srgb, var(--fill), #000000 9%) 100%
+  );
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, var(--rim)),
+    inset 0 -7px 9px -6px rgba(0, 0, 0, 0.26),
+    0 0 0 1px rgba(255, 255, 255, var(--edge));
+  transition:
+    transform 190ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 190ms ease;
+  animation: sticky-swatch-in 340ms cubic-bezier(0.34, 1.32, 0.58, 1) backwards;
+  animation-delay: calc(var(--i) * 20ms);
+}
+
+/* near-black note: its fill is ~the panel color, so soften the white rim,
+   strengthen the outer edge, and give the bloom a neutral light (a black glow
+   would be invisible). */
+.sticky-swatch[data-dark] {
+  --rim: 0.13;
+  --edge: 0.16;
+  --glow: rgba(255, 255, 255, 0.5);
+}
+
+/* folded bottom-right corner — the universal sticky-note tell.
+   ::before is the contact shadow the lifted flap casts onto the sheet;
+   ::after is the curled flap itself (dark at the tip, lit toward the crease). */
+.sticky-swatch::before,
+.sticky-swatch::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  border-bottom-right-radius: 5px;
+  pointer-events: none;
+}
+
+.sticky-swatch::before {
+  background: linear-gradient(315deg, rgba(0, 0, 0, 0.3) 53%, transparent 53%);
+  transform: translate(-1.5px, -1.5px);
+}
+
+.sticky-swatch::after {
+  background: linear-gradient(315deg, color-mix(in srgb, var(--fill), #000000 16%) 0%, var(--fold) 44%, transparent 50.5%);
+}
+
+/* --- hover -------------------------------------------------------------- */
+
+.sticky-swatch:hover {
+  transform: translateY(-3px) scale(1.06) rotate(var(--tilt, 0deg));
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, var(--rim)),
+    inset 0 -7px 9px -6px rgba(0, 0, 0, 0.26),
+    0 0 0 1px rgba(255, 255, 255, var(--edge)),
+    0 0 14px -1px color-mix(in srgb, var(--glow), transparent 58%),
+    0 13px 26px -7px color-mix(in srgb, var(--glow), transparent 46%);
+}
+
+@keyframes sticky-panel-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sticky-swatch-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.78);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 768px) {
+  .sticky-panel {
+    left: calc(100% + 6px);
+    padding: 11px;
+  }
+  .sticky-grid {
+    grid-template-columns: repeat(2, 52px);
+    gap: 8px;
+  }
+  .sticky-swatch {
+    width: 52px;
+    height: 52px;
+  }
+}
