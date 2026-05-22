@@ -149,7 +149,9 @@ bakeCanonicalEndpoint<E>(P, ep, cachedRoute, side: 'start'|'end') → E
 // SelectTool endpoint drag — slot drives one side, the other reads canonically from ctx.
 rerouteEndpointDragInto(ctx, slot: 0|1, override: SnapTarget|Point, outBbox, outPoints) → count
 
-// ConnectorTool — no Y.Map.
+// ConnectorTool + connector-flow previews — no Y.Map. An endpoint is a live
+// snap, a free Point, or a VirtualAnchor (a shape not yet in the doc — the
+// flow duplicate/sibling target; routes identically to the canonical reroute).
 routeNewConnectorInto(start, end, strokeWidth, type, outPoints) → count
 
 // RouteContext — gesture-stable inputs (start/end/cap/width/cachedRoute/connectorType/pipeline).

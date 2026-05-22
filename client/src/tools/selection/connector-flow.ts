@@ -21,6 +21,11 @@
  * candidate) never offsets — the absence of a candidate already means nothing
  * well-aligned sits in that sight-line.
  *
+ * Every preview routes through `routeNewConnectorInto` — the candidate to its
+ * snap target, a duplicate/sibling to a `VirtualAnchor` of the uncreated ghost
+ * shape — so the hovered elbow path is byte-identical to the canonical route the
+ * deep observer commits once the connector (and any duplicate) lands in the doc.
+ *
  * Pure geometry helpers (`flowButtonCenters` / `hitFlowButton` / `flowButtonGate`)
  * are shared by `SelectTool` (hit) and `renderer/layers/connector-flow.ts` (draw).
  *
@@ -30,10 +35,10 @@
 import { generateNZAtTop, type ZKey } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import { getEnd, getNoteProps, getShapeProps, getStart } from '@/core/accessors';
+import { getEnd, getHandleShapeType, getNoteProps, getShapeProps, getStart } from '@/core/accessors';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import { createConnector, insertConnector } from '@/core/connectors/connector-actions';
-import { routeNewConnectorInto } from '@/core/connectors/reroute-connector';
+import { routeNewConnectorInto, type VirtualAnchor } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { Dir, ElbowSnapTarget, SnapTarget } from '@/core/connectors/types';
 import { setBBoxXYWH } from '@/core/geometry/bounds';
@@ -542,6 +547,10 @@ export class ConnectorFlowController {
     if (!frame) return null;
     const width = useDeviceUIStore.getState().connectorSize;
     const srcSnap = buildElbowSnap(sourceId, SRC_ANCHOR[side], frame, SIDE_DIR[side]);
+    // The duplicate's routing shape type = the source's: a shape copies its
+    // `shapeType`, a note resolves to `'rect'` — `getHandleShapeType` returns
+    // both, matching exactly what `bakeCanonicalEndpoint` reads post-commit.
+    const dupShapeType = getHandleShapeType(sourceHandle);
     const duplicable = sourceHandle.kind === 'shape' || sourceHandle.kind === 'note';
 
     const candidate = findFlowCandidate(sourceHandle, side, frame);
@@ -553,7 +562,7 @@ export class ConnectorFlowController {
       // accepted last resort.
       if (duplicable && hasRedundantConnector(sourceId, candidate.handle.id, side)) {
         const spot = findClearSiblingFrame(side, frame, candidate.frame);
-        if (spot) return this.makeDuplicatePreview(side, spot, srcSnap, width);
+        if (spot) return this.makeDuplicatePreview(side, spot, srcSnap, dupShapeType, width);
       }
 
       // Connect straight to the candidate — source midpoint → its facing midpoint.
@@ -565,17 +574,30 @@ export class ConnectorFlowController {
     // No candidate — a clear sight-line ahead. Shape/note spawns a wired-up
     // clone straight in front; the offset search plays no part here.
     if (duplicable) {
-      return this.makeDuplicatePreview(side, computeDupFrame(side, frame), srcSnap, width);
+      return this.makeDuplicatePreview(side, computeDupFrame(side, frame), srcSnap, dupShapeType, width);
     }
 
     // text / code / image / bookmark with no candidate → drag-only.
     return { kind: 'dragOnly', side };
   }
 
-  /** Build a `duplicate` preview — routes the source midpoint → the ghost's facing midpoint. */
-  private makeDuplicatePreview(side: FlowSide, dupFrame: FrameTuple, srcSnap: ElbowSnapTarget, width: number): FlowPreview {
-    const ca = CAND_ANCHOR[side];
-    const dupEnd: Point = [dupFrame[0] + ca[0] * dupFrame[2], dupFrame[1] + ca[1] * dupFrame[3]];
+  /**
+   * Build a `duplicate` preview. The ghost end is a `VirtualAnchor` — its frame
+   * + shapeType + facing anchor — so the previewed elbow path is byte-identical
+   * to the canonical reroute the observer runs once the duplicate is committed
+   * (same anchored→anchored direction resolution, obstacle set, edge-clearance
+   * stub). Routing it as a bare free point — the old behaviour — derived the end
+   * direction from the raw delta and dropped the dup as an obstacle, so an
+   * offset sibling's arrow could enter from the wrong side.
+   */
+  private makeDuplicatePreview(
+    side: FlowSide,
+    dupFrame: FrameTuple,
+    srcSnap: ElbowSnapTarget,
+    dupShapeType: string,
+    width: number,
+  ): FlowPreview {
+    const dupEnd: VirtualAnchor = { kind: 'virtual', frame: dupFrame, shapeType: dupShapeType, anchor: CAND_ANCHOR[side] };
     this.routedCount = routeNewConnectorInto(srcSnap, dupEnd, width, 'elbow', this.routeBuf);
     return { kind: 'duplicate', side, dupFrame, route: this.routeBuf, routeCount: this.routedCount };
   }

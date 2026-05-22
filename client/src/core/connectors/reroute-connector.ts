@@ -19,7 +19,9 @@
  *     accepts a live SnapTarget or a free Point.
  *
  *   routeNewConnectorInto(start, end, strokeWidth, type, outPoints) → count
- *     Caller: ConnectorTool (creation). No Y.Map read.
+ *     Caller: ConnectorTool + connector-flow previews. No Y.Map read. An
+ *     endpoint may be a live snap, a free point, or a VirtualAnchor — a shape
+ *     not yet in the doc (the flow duplicate/sibling target).
  *
  * @module core/connectors/reroute-connector
  */
@@ -77,6 +79,23 @@ const STRAIGHT_PT_END: Point = [0, 0];
 
 /** Per-side override for endpoint-drag reroutes (live snap or free position). */
 export type EndpointDragOverride = SnapTarget | Point;
+
+/**
+ * A routing endpoint for a shape not yet in the doc — the target of a
+ * connector-flow duplicate/sibling preview, shown before the shape is committed.
+ * Carries the frame + shapeType + normalized anchor explicitly, so routing
+ * builds the exact anchored endpoint `bakeCanonicalEndpoint` will build off the
+ * committed shape. Discriminated from `SnapTarget` and a free `Point` by `kind`.
+ */
+export interface VirtualAnchor {
+  kind: 'virtual';
+  frame: FrameTuple;
+  shapeType: string;
+  anchor: Point;
+}
+
+/** A `routeNewConnectorInto` endpoint — live snap, free point, or uncreated (virtual) anchor. */
+export type NewConnectorEndpointInput = SnapTarget | Point | VirtualAnchor;
 
 /** Endpoint slot index — 0 = start, 1 = end. Used by drag-style entry. */
 export type Slot = 0 | 1;
@@ -211,9 +230,20 @@ function fallbackPoint(cachedRoute: Point[] | null, side: 'start' | 'end'): Poin
   return [0, 0];
 }
 
-/** SelectTool drag override + ConnectorTool's new-connector input share this shape. */
-function resolveSnap<E>(P: Pipeline<E>, input: SnapTarget | Point): E {
+/**
+ * Resolve a new-connector endpoint input to a pipeline endpoint.
+ *  - free `Point`      → free endpoint.
+ *  - `VirtualAnchor`   → anchored endpoint from the explicit frame/shapeType — no
+ *                        handle lookup (the shape is not in the doc yet).
+ *  - live `SnapTarget` → anchored from the target handle's live frame, or free
+ *                        at the snap position if that handle is gone.
+ * Shared by the endpoint-drag override and `routeNewConnectorInto`.
+ */
+function resolveSnap<E>(P: Pipeline<E>, input: NewConnectorEndpointInput): E {
   if (Array.isArray(input)) return P.newFree(input);
+  if (input.kind === 'virtual') {
+    return P.newAnchored(input.frame, input.shapeType, { anchor: input.anchor, shapeId: '', interior: false });
+  }
   const handle = getHandle(input.shapeId);
   const frame = frameOf(handle);
   if (!frame) return P.newFree(input.position);
@@ -462,12 +492,16 @@ export function rerouteEndpointDragInto(
 }
 
 /**
- * Route a new connector (no Y.Map data) for ConnectorTool's creation preview.
- * Allocation-free once the caller's `outPoints` is warm.
+ * Route a new connector (no Y.Map data) for creation previews — `ConnectorTool`
+ * and the Select-tool connector flows. Each endpoint is a live `SnapTarget`, a
+ * free `Point`, or a `VirtualAnchor` (a not-yet-created shape). Routing through
+ * a `VirtualAnchor` is byte-identical to the canonical reroute the deep observer
+ * runs once that shape lands — same anchored→anchored direction resolution,
+ * obstacle set, and edge clearance. Allocation-free once `outPoints` is warm.
  */
 export function routeNewConnectorInto(
-  start: SnapTarget | Point,
-  end: SnapTarget | Point,
+  start: NewConnectorEndpointInput,
+  end: NewConnectorEndpointInput,
   strokeWidth: number,
   connectorType: ConnectorType,
   outPoints: Point[],
