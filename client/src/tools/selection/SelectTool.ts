@@ -1,4 +1,4 @@
-import { getConnectorType } from '@/core/accessors';
+import { getConnectorType, getHandleShapeType } from '@/core/accessors';
 import { openBookmarkUrl } from '@/core/bookmark/bookmark-actions';
 import { getOpenButtonWorldBBox, hitTestOpenButton } from '@/core/bookmark/bookmark-render';
 import { isAnchored } from '@/core/connectors/anchor-atoms';
@@ -183,7 +183,7 @@ export class SelectTool implements PointerTool {
     // object hit so a button overlapping a neighboring object still starts a flow.
     const flowGate = flowButtonGate();
     if (flowGate) {
-      const flowSide = hitFlowButton([worldX, worldY], flowGate.bbox, useCameraStore.getState().scale);
+      const flowSide = hitFlowButton([worldX, worldY], flowGate.bbox, getHandleShapeType(flowGate.handle), useCameraStore.getState().scale);
       if (flowSide) {
         // Ensure the hover preview exists for end()'s commit — covers a touch
         // tap with no prior hover move. Idempotent for the mouse path.
@@ -673,7 +673,9 @@ export class SelectTool implements PointerTool {
     // Flow-button hover — grow the hovered button + compute its preview. The
     // dots ARE the feedback, so the cursor stays the Select default (no override).
     const flowGate = flowButtonGate();
-    const flowSide = flowGate ? hitFlowButton([worldX, worldY], flowGate.bbox, useCameraStore.getState().scale) : null;
+    const flowSide = flowGate
+      ? hitFlowButton([worldX, worldY], flowGate.bbox, getHandleShapeType(flowGate.handle), useCameraStore.getState().scale)
+      : null;
     if (flowGate && flowSide) {
       this.clearBookmarkOpenHoverIfAny();
       this.connectorFlow.updateHover(flowGate.handle.id, flowSide, flowGate.handle);

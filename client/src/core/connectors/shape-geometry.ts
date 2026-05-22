@@ -8,10 +8,11 @@
  *   - `rayShapeExitPoint(origin, direction, frame, shapeType, outPoint): boolean`
  *     Where a ray from an interior point exits the shape boundary.
  *
- * Plus a midpoint atom (`midpointFor`) — N/E/S/W edge midpoints. Rect / ellipse /
- * diamond / roundedRect share bbox-side positions; triangle returns true edge
- * centers (apex / right-edge mid / base center / left-edge mid) so snap dots
- * stay on the shape.
+ * Plus two midpoint atoms: `midpointFor` (world N/E/S/W edge midpoints) and
+ * `midpointAnchorFor` (the same in normalized [0-1] anchor space). Rect /
+ * ellipse / diamond / roundedRect share bbox-side positions; triangle returns
+ * true edge centers (apex / right-edge mid / base center / left-edge mid) so
+ * snap dots stay on the shape.
  *
  * **Non-re-entrance.** The internal helpers fill caller-owned out-tuples and use
  * stack-local scalars only — no module-level scratch leaks between calls. Caller
@@ -105,6 +106,22 @@ export function midpointFor(frame: FrameTuple, shapeType: string, side: Dir, out
       out[1] = y + h / 2;
       return;
   }
+}
+
+/** Unit frame — a shape midpoint evaluated here IS its normalized [0-1] anchor. */
+const UNIT_FRAME: FrameTuple = [0, 0, 1, 1];
+
+/**
+ * Fill `out` with the normalized [0-1, 0-1] anchor of `side`'s midpoint — the
+ * frame-independent counterpart of `midpointFor`.
+ *
+ * It is literally `midpointFor` evaluated in the unit frame, so the normalized
+ * anchor can never drift from the world-space midpoint. Triangle E/W resolve to
+ * the slanted-edge centers (normalized x of 0.75 / 0.25); every other shape and
+ * side is a bbox cardinal.
+ */
+export function midpointAnchorFor(shapeType: string, side: Dir, out: Point): void {
+  midpointFor(UNIT_FRAME, shapeType, side, out);
 }
 
 // ============================================================================
