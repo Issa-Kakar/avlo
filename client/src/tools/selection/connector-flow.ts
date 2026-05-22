@@ -13,6 +13,14 @@
  * committed duplicate + connector flow through the normal observer pipeline;
  * only the *previews* are overlay-only.
  *
+ * Candidate placement is semantics-aware. When a well-aligned target exists but
+ * an existing connector already wires the source's hovered midpoint to it,
+ * clicking would only stack a second identical connector — so the preview
+ * instead becomes a fresh sibling node, placed in clear space beside that
+ * target (probed against the spatial index). The plain straight duplicate (no
+ * candidate) never offsets — the absence of a candidate already means nothing
+ * well-aligned sits in that sight-line.
+ *
  * Pure geometry helpers (`flowButtonCenters` / `hitFlowButton` / `flowButtonGate`)
  * are shared by `SelectTool` (hit) and `renderer/layers/connector-flow.ts` (draw).
  *
@@ -22,19 +30,20 @@
 import { generateNZAtTop, type ZKey } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import { getNoteProps, getShapeProps } from '@/core/accessors';
+import { getEnd, getNoteProps, getShapeProps, getStart } from '@/core/accessors';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import { createConnector, insertConnector } from '@/core/connectors/connector-actions';
 import { routeNewConnectorInto } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { Dir, ElbowSnapTarget, SnapTarget } from '@/core/connectors/types';
+import { setBBoxXYWH } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint, ObjectHandle, StoredElbowAnchor } from '@/core/types/objects';
 import { isBindableKind } from '@/core/types/objects';
 import { isCtrlHeld } from '@/runtime/InputManager';
-import { getHandle, getObjects, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
+import { getAttachedConnectors, getHandle, getObjects, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
@@ -45,12 +54,22 @@ import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-st
 
 /** Candidate cross-center within ±25% of `crossDim` (middle-50% band). */
 const FLOW_ALIGN_TOLERANCE = 0.25;
-/** Candidate cutoff = `3 * flowDim` edge-to-edge (connector + shape + connector). */
-const FLOW_DIST_FACTOR = 3;
+/** Candidate cutoff = `4 * flowDim` edge-to-edge — connector + shape + connector, plus slack. */
+const FLOW_DIST_FACTOR = 4;
 /** Duplicate near edge sits `1 * flowDim` past S's edge. */
 const FLOW_DUP_GAP_FACTOR = 1;
 /** Float-noise tolerance on the `gap ≥ 0` direction test. */
 const FLOW_EDGE_EPS = 0.5;
+/**
+ * Gap a sibling keeps from the candidate (and from any object it slides past),
+ * as a fraction of the sibling's cross dimension. Redundant-connector sibling
+ * placement only — the straight duplicate never offsets.
+ */
+const FLOW_SIBLING_GAP_FACTOR = 0.25;
+/** How far a sibling may slide past the candidate before giving up, in sibling widths. */
+const FLOW_OFFSET_MAX_REACH = 4;
+/** Tolerance for "an anchor sits on the side midpoint" (normalized [0..1] units). */
+const FLOW_ANCHOR_EPS = 0.02;
 /** Button center offset outward from the selection box (screen px). */
 export const FLOW_BTN_OFFSET_PX = 22;
 /** Rest blue-dot radius (screen px). */
@@ -77,7 +96,9 @@ export const FLOW_SIDES: readonly FlowSide[] = ['n', 'e', 's', 'w'];
 /**
  * Hover preview — what a click on the hovered button would commit.
  *  - `candidate` — a nearby aligned object: preview the elbow route to it.
- *  - `duplicate` — no candidate, duplicable source: ghost duplicate + route.
+ *  - `duplicate` — duplicable source spawns a sibling node: straight ahead with
+ *    no candidate, or offset into clear space when the candidate is already
+ *    wired up. Carries the ghost frame + route.
  *  - `dragOnly`  — no candidate, non-duplicable source: nothing to preview.
  * `route` aliases the controller's pooled buffer; iterate by `routeCount`.
  */
@@ -292,6 +313,135 @@ function computeDupFrame(side: FlowSide, f: Readonly<FrameTuple>): FrameTuple {
   }
 }
 
+// =============================================================================
+// SEMANTIC PLACEMENT — redundancy check + clear-space search
+// =============================================================================
+
+// Module scratches for the clear-spot search — written + read synchronously.
+const _spotFrame: FrameTuple = [0, 0, 0, 0];
+const _spotBbox: BBoxTuple = [0, 0, 0, 0];
+
+/**
+ * Source-sized placement frame aligned beside `cand`: connector-facing edge
+ * level with the candidate's, centered on the candidate's cross axis. The
+ * clear-spot search slides this perpendicular to the hover axis.
+ */
+function computeSiblingBaseFrame(side: FlowSide, src: Readonly<FrameTuple>, cand: Readonly<FrameTuple>): FrameTuple {
+  const dw = src[2];
+  const dh = src[3];
+  const candCx = cand[0] + cand[2] / 2;
+  const candCy = cand[1] + cand[3] / 2;
+  switch (side) {
+    case 'n': // candidate above — level the bottom edges
+      return [candCx - dw / 2, cand[1] + cand[3] - dh, dw, dh];
+    case 's': // candidate below — level the top edges
+      return [candCx - dw / 2, cand[1], dw, dh];
+    case 'e': // candidate right — level the left edges
+      return [cand[0], candCy - dh / 2, dw, dh];
+    case 'w': // candidate left — level the right edges
+      return [cand[0] + cand[2] - dw, candCy - dh / 2, dw, dh];
+  }
+}
+
+/**
+ * Slide a sibling frame along the perpendicular axis from `startC` until it
+ * clears every bindable, stepping just past each blocker's edge (+ `gap`).
+ * `base` fixes the along-axis position + extents; only `base[pIdx]` moves.
+ * Returns the cleared perpendicular centre, or `null` once `c` runs past `limit`.
+ */
+function slideClear(base: FrameTuple, pIdx: number, half: number, gap: number, dir: number, startC: number, limit: number): number | null {
+  let c = startC;
+  for (let guard = 0; guard < 64; guard++) {
+    if (dir > 0 ? c > limit : c < limit) return null;
+    _spotFrame[0] = base[0];
+    _spotFrame[1] = base[1];
+    _spotFrame[2] = base[2];
+    _spotFrame[3] = base[3];
+    _spotFrame[pIdx] = c - half;
+    setBBoxXYWH(_spotBbox, _spotFrame[0], _spotFrame[1], _spotFrame[2], _spotFrame[3]);
+    const hits = getSpatialIndex().queryBBox(_spotBbox);
+    let blocked = false;
+    let next = c;
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i];
+      if (!isBindableKind(h.kind)) continue;
+      blocked = true;
+      // Centre that puts the sibling's near edge `gap` past this blocker's edge.
+      const past = dir > 0 ? (pIdx === 0 ? h.maxX : h.maxY) + gap + half : (pIdx === 0 ? h.minX : h.minY) - gap - half;
+      if (dir > 0 ? past > next : past < next) next = past;
+    }
+    if (!blocked) return c;
+    c = next;
+  }
+  return null;
+}
+
+/**
+ * Closest clear sibling placement beside the candidate (redundant-connector
+ * case). The sibling keeps the candidate's facing-edge alignment — only the
+ * perpendicular offset is searched. Both directions start flush-adjacent to the
+ * candidate and slide outward just past any blocker; the clear spot nearest the
+ * candidate wins. The first slot accounts for the candidate's OWN dimensions, so
+ * it is genuinely adjacent whatever the candidate's size. `null` when both
+ * directions run past the reach cap → caller uses the redundant connector.
+ */
+function findClearSiblingFrame(side: FlowSide, src: Readonly<FrameTuple>, cand: Readonly<FrameTuple>): FrameTuple | null {
+  const base = computeSiblingBaseFrame(side, src, cand);
+  const pIdx = side === 'e' || side === 'w' ? 1 : 0; // e/w hover slides Y, n/s slides X
+  const pExt = pIdx + 2;
+  const sibCross = base[pExt];
+  const half = sibCross / 2;
+  const gap = sibCross * FLOW_SIBLING_GAP_FACTOR;
+  const candC = cand[pIdx] + cand[pExt] / 2;
+  // First slot flush-adjacent to the candidate (its half-extent + sibling's +
+  // gap); the cap allows a few sibling widths of sliding past blockers.
+  const flushOffset = cand[pExt] / 2 + half + gap;
+  const maxOffset = cand[pExt] / 2 + half + FLOW_OFFSET_MAX_REACH * sibCross;
+  // Tie-break leads toward the source's cross axis (the tidier side).
+  const firstDir = candC > src[pIdx] + src[pExt] / 2 ? -1 : 1;
+
+  let bestC = 0;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < 2; i++) {
+    const dir = i === 0 ? firstDir : -firstDir;
+    const c = slideClear(base, pIdx, half, gap, dir, candC + dir * flushOffset, candC + dir * maxOffset);
+    if (c !== null && Math.abs(c - candC) < bestDist) {
+      bestDist = Math.abs(c - candC);
+      bestC = c;
+    }
+  }
+  if (bestDist === Number.POSITIVE_INFINITY) return null;
+  const out: FrameTuple = [base[0], base[1], base[2], base[3]];
+  out[pIdx] = bestC - half;
+  return out;
+}
+
+/**
+ * True when an existing connector already ties the source's `side`-midpoint to
+ * `candidateId`, in either direction — which makes the straight flow connection
+ * redundant (clicking would only stack a second connector at the same spot).
+ */
+function hasRedundantConnector(sourceId: string, candidateId: string, side: FlowSide): boolean {
+  const attached = getAttachedConnectors(sourceId);
+  if (!attached) return false;
+  const mid = SRC_ANCHOR[side];
+  for (const cid of attached) {
+    const cy = getObjects().get(cid);
+    if (!cy) continue;
+    const start = getStart(cy);
+    const end = getEnd(cy);
+    // Both endpoints must be shape-bound for the connector to link two shapes.
+    if (!start || !end || Array.isArray(start) || Array.isArray(end)) continue;
+    let srcAnchor: [number, number] | null = null;
+    if (start.id === sourceId && end.id === candidateId) srcAnchor = start.anchor;
+    else if (start.id === candidateId && end.id === sourceId) srcAnchor = end.anchor;
+    if (srcAnchor && Math.abs(srcAnchor[0] - mid[0]) <= FLOW_ANCHOR_EPS && Math.abs(srcAnchor[1] - mid[1]) <= FLOW_ANCHOR_EPS) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Insert a blank duplicate of `source` (shape or note) at `dupFrame`. Copies
  * style + size, NOT content (the user types into it). MUST run inside `transact()`.
@@ -377,31 +527,57 @@ export class ConnectorFlowController {
     this.hover = null;
   }
 
+  /**
+   * Resolve what a click on the hovered button commits. Decision matrix:
+   *  - candidate, not redundant     → connect straight to it.
+   *  - candidate, redundant         → sibling node in clear space beside it
+   *                                   (else the redundant connector — accepted).
+   *  - no candidate, duplicable     → duplicate straight ahead. Never offset:
+   *                                   no candidate already means nothing
+   *                                   well-aligned sits in that sight-line.
+   *  - no candidate, non-duplicable → drag-only.
+   */
   private computeHoverPreview(sourceId: string, side: FlowSide, sourceHandle: ObjectHandle): FlowPreview | null {
     const frame = frameOf(sourceHandle);
     if (!frame) return null;
     const width = useDeviceUIStore.getState().connectorSize;
     const srcSnap = buildElbowSnap(sourceId, SRC_ANCHOR[side], frame, SIDE_DIR[side]);
+    const duplicable = sourceHandle.kind === 'shape' || sourceHandle.kind === 'note';
 
-    // Candidate — route source midpoint → candidate's facing midpoint.
     const candidate = findFlowCandidate(sourceHandle, side, frame);
     if (candidate) {
+      // Redundant: an existing connector already ties this midpoint to the
+      // candidate. Rather than stack a second identical connector, place a
+      // fresh sibling in clear space beside the candidate — when the source is
+      // duplicable and such a spot exists. Otherwise the connector below is the
+      // accepted last resort.
+      if (duplicable && hasRedundantConnector(sourceId, candidate.handle.id, side)) {
+        const spot = findClearSiblingFrame(side, frame, candidate.frame);
+        if (spot) return this.makeDuplicatePreview(side, spot, srcSnap, width);
+      }
+
+      // Connect straight to the candidate — source midpoint → its facing midpoint.
       const candSnap = buildElbowSnap(candidate.handle.id, CAND_ANCHOR[side], candidate.frame, OPPOSITE_DIR[side]);
       this.routedCount = routeNewConnectorInto(srcSnap, candSnap, width, 'elbow', this.routeBuf);
       return { kind: 'candidate', side, targetId: candidate.handle.id, route: this.routeBuf, routeCount: this.routedCount };
     }
 
-    // Duplicate — only shape/note can spawn a wired-up clone.
-    if (sourceHandle.kind === 'shape' || sourceHandle.kind === 'note') {
-      const dupFrame = computeDupFrame(side, frame);
-      const ca = CAND_ANCHOR[side];
-      const dupEnd: Point = [dupFrame[0] + ca[0] * dupFrame[2], dupFrame[1] + ca[1] * dupFrame[3]];
-      this.routedCount = routeNewConnectorInto(srcSnap, dupEnd, width, 'elbow', this.routeBuf);
-      return { kind: 'duplicate', side, dupFrame, route: this.routeBuf, routeCount: this.routedCount };
+    // No candidate — a clear sight-line ahead. Shape/note spawns a wired-up
+    // clone straight in front; the offset search plays no part here.
+    if (duplicable) {
+      return this.makeDuplicatePreview(side, computeDupFrame(side, frame), srcSnap, width);
     }
 
     // text / code / image / bookmark with no candidate → drag-only.
     return { kind: 'dragOnly', side };
+  }
+
+  /** Build a `duplicate` preview — routes the source midpoint → the ghost's facing midpoint. */
+  private makeDuplicatePreview(side: FlowSide, dupFrame: FrameTuple, srcSnap: ElbowSnapTarget, width: number): FlowPreview {
+    const ca = CAND_ANCHOR[side];
+    const dupEnd: Point = [dupFrame[0] + ca[0] * dupFrame[2], dupFrame[1] + ca[1] * dupFrame[3]];
+    this.routedCount = routeNewConnectorInto(srcSnap, dupEnd, width, 'elbow', this.routeBuf);
+    return { kind: 'duplicate', side, dupFrame, route: this.routeBuf, routeCount: this.routedCount };
   }
 
   // --- Drag ---
