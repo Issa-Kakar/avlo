@@ -12,8 +12,7 @@ import {
 } from '@/tools/selection/selection-actions';
 import { AlignDropdown } from '../AlignDropdown';
 import { ButtonGroup } from '../ButtonGroup';
-import { ColorPickerPopover } from '../ColorPickerPopover';
-import { NO_FILL } from '../color-palette';
+import { FillColorControl } from '../FillColorControl';
 import { FontSizeStepper } from '../FontSizeStepper';
 import { BoldButton, ItalicButton } from '../FormatButtons';
 import { HighlightPickerPopover } from '../HighlightPickerPopover';
@@ -26,11 +25,10 @@ const selectTextStyles = (s: SelectionStore) => ({
   labelColor: s.selectedStyles.labelColor,
   fillColor: s.selectedStyles.fillColor,
   fillColorMixed: s.selectedStyles.fillColorMixed,
-  fillColorSecond: s.selectedStyles.fillColorSecond,
 });
 
 export const TextMenu = memo(function TextMenu() {
-  const { fontSize, labelColor, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(useShallow(selectTextStyles));
+  const { fontSize, labelColor, fillColor, fillColorMixed } = useSelectionStore(useShallow(selectTextStyles));
   const effectiveColor = labelColor ?? '#262626';
   return (
     <>
@@ -54,14 +52,7 @@ export const TextMenu = memo(function TextMenu() {
         <TextColorPopover color={effectiveColor} onSelect={setSelectedTextColor} />
         <HighlightPickerPopover onSelect={setSelectedHighlight} />
         <div className="ctx-divider" />
-        <ColorPickerPopover
-          color={fillColor ?? '#fff'}
-          variant={fillColor === null && !fillColorMixed ? 'none' : 'filled'}
-          secondColor={fillColorMixed ? fillColorSecond : undefined}
-          mode="fill"
-          selectedColor={fillColor}
-          onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
-        />
+        <FillColorControl fillColor={fillColor} mixed={fillColorMixed} onSelect={setSelectedFillColor} />
       </ButtonGroup>
     </>
   );

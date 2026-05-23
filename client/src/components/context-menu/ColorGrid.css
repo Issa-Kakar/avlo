@@ -1,0 +1,23 @@
+/* ===== Context Menu — Color Grid (no-fill swatch) =====
+   ColorGrid's grid + swatch rules (.ctx-cp-grid / .ctx-cp-swatch) are reused
+   from StrokeColorControl.css; this file holds only the no-fill swatch —
+   FILL_PALETTE[0] in the fill + border pickers. */
+
+.ctx-cp-swatch-nofill {
+  /* Inner border hidden — the thicker outer ring below carries the affordance,
+     so the no-fill swatch doesn't read as a heavier copy of the white swatch's
+     1px --ctx-black-a20 edge. */
+  border-color: transparent;
+  background-color: #fff;
+  background-image: linear-gradient(
+    to top right,
+    transparent calc(50% - 1px),
+    #9ca3af calc(50% - 1px),
+    #9ca3af calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+  /* Thicker outer ring — sits outside the swatch (no layout shift) and is
+     distinctly darker than the white swatch's faint edge, so "no fill" reads
+     as its own option, not as off-white. */
+  box-shadow: 0 0 0 2px #6b7280;
+}

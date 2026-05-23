@@ -51,7 +51,7 @@ const currentCodeFontSize = (): number => useSelectionStore.getState().selectedS
 
 // === Property Actions ===
 
-export const setSelectedColor = (color: string): void => applyField(getSelectedIds(), COLOR, color);
+export const setSelectedColor = (color: string | null): void => applyField(getSelectedIds(), COLOR, color);
 export const setSelectedWidth = (width: number): void => applyField(getSelectedIds(), WIDTH, width);
 export const setSelectedShapeType = (shapeType: string): void => applyField(getSelectedIds(), SHAPE_TYPE, shapeType);
 export const setSelectedFillColor = (fillColor: string | null): void => applyField(getTextSelectionIds(), FILL_COLOR, fillColor);

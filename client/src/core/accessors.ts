@@ -59,6 +59,12 @@ export function getColor(y: Y.Map<unknown>, fallback = '#000'): string {
   return (y.get('color') as string | undefined) ?? fallback;
 }
 
+/** Stroke/border color, or null when the key is absent — symmetric with
+ *  getFillColor. Used where "no color" is a meaningful state (shape stroke). */
+export function getColorOrNull(y: Y.Map<unknown>): string | null {
+  return (y.get('color') as string | undefined) ?? null;
+}
+
 export function getOpacity(y: Y.Map<unknown>, fallback = 1): number {
   return (y.get('opacity') as number | undefined) ?? fallback;
 }

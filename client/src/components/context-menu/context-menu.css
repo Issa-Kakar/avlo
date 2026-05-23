@@ -1,7 +1,8 @@
 /* ===== Context Menu — CSS Manifest =====
    The single stylesheet ContextMenu.tsx imports. @import order is load-bearing
-   — the foundation (tokens → shell → buttons → dropdowns → color-grid) lands
-   before the per-control stylesheets so shared bases precede their modifiers.
+   — the foundation (tokens → shell → buttons → dropdowns) lands before the
+   per-control stylesheets so shared bases precede their modifiers. ColorGrid
+   follows StrokeColorControl since it modifies that file's swatch base.
    Component .tsx files import no CSS; each control's rules are co-located in
    its own stylesheet, reached through this manifest. */
 
@@ -9,11 +10,9 @@
 @import "./styles/shell.css";
 @import "./styles/buttons.css";
 @import "./styles/dropdowns.css";
-@import "./styles/color-grid.css";
 
 @import "./FontSizeStepper.css";
 @import "./FilterObjectsDropdown.css";
-@import "./ColorPickerPopover.css";
 @import "./HighlightPickerPopover.css";
 @import "./ShapeTypeDropdown.css";
 @import "./TypefaceButton.css";
@@ -21,5 +20,5 @@
 @import "./NoteAlignDropdown.css";
 @import "./LanguageDropdown.css";
 @import "./StrokeColorControl.css";
+@import "./ColorGrid.css";
 @import "./StrokeWidthControl.css";
-@import "./ColorCircle.css";

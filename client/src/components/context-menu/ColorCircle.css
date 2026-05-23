@@ -1,5 +1,0 @@
-/* ===== Context Menu — Color Circle (no-fill checkered variant) ===== */
-
-.ctx-color-none {
-  background: repeating-conic-gradient(#d1d5db 0% 25%, #fff 0% 50%) 50% / 6px 6px;
-}

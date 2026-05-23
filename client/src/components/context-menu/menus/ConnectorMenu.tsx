@@ -9,7 +9,9 @@ import { StrokeColorControl } from '../StrokeColorControl';
 import { StrokeWidthControl } from '../StrokeWidthControl';
 
 const selectConnectorStyles = (s: SelectionStore) => ({
-  color: s.selectedStyles.color,
+  // SelectedStyles.color is nullable (no-stroke shapes); connectors are never
+  // null at runtime — coalesce so StrokeColorControl's string prop stays honest.
+  color: s.selectedStyles.color ?? '#262626',
   colorMixed: s.selectedStyles.colorMixed,
   width: s.selectedStyles.width,
 });

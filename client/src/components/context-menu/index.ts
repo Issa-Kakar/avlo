@@ -1,7 +1,6 @@
 export { ButtonGroup } from './ButtonGroup';
-export { ColorCircle } from './ColorCircle';
 export { ContextMenu } from './ContextMenu';
-export { CONTEXT_MENU_COLORS, NO_FILL } from './color-palette';
+export { NO_FILL } from './color-palette';
 export { FilterObjectsDropdown } from './FilterObjectsDropdown';
 export { FontSizeStepper } from './FontSizeStepper';
 export {
@@ -16,7 +15,6 @@ export {
   IconDiamondType,
   IconMinus,
   IconMoreDots,
-  IconNoFill,
   IconPenStroke,
   IconPlus,
   IconRectType,

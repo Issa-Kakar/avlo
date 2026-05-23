@@ -46,8 +46,8 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
 // ============================================================================
 
 export interface SelectedStyles {
-  /** First object's stroke/border color. Used by all kinds. */
-  color: string;
+  /** First object's stroke/border color, null = no stroke (shapes). Used by all kinds. */
+  color: string | null;
   /** Multiple different stroke colors detected. Used by strokes and connectors. */
   colorMixed: boolean;
   /** Uniform stroke width, null if mixed. Used by strokes, shapes, connectors. */
@@ -56,8 +56,6 @@ export interface SelectedStyles {
   fillColor: string | null;
   /** Multiple different fill colors detected. Used by shapesOnly. */
   fillColorMixed: boolean;
-  /** Second fill color for split indicator. Only set when fillColorMixed. */
-  fillColorSecond: string | null;
   /** Uniform shape type, 'text' for textOnly, null if mixed. Used by shapesOnly, textOnly. */
   shapeType: string | null;
   /** First text object's fontSize (rounded). Used by textOnly. */
@@ -79,12 +77,11 @@ export interface SelectedStyles {
 }
 
 export const EMPTY_STYLES: SelectedStyles = {
-  color: '#262626',
+  color: null,
   colorMixed: false,
   width: null,
   fillColor: null,
   fillColorMixed: false,
-  fillColorSecond: null,
   shapeType: null,
   fontSize: null,
   textAlign: null,

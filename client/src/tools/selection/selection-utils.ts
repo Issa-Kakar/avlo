@@ -105,12 +105,11 @@ export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyle
   const output = foldField(handles, OUTPUT_VISIBLE);
 
   return {
-    color: color.value ?? '#262626',
+    color: color.value,
     colorMixed: color.mixed,
     width: width.mixed ? null : width.value,
     fillColor: fill.value,
     fillColorMixed: fill.mixed,
-    fillColorSecond: fill.mixed ? fill.second : null,
     shapeType: shape.mixed ? null : (shape.value ?? (kind === 'text' ? 'text' : null)),
     fontSize: kind === 'code' ? codeFs.value : fontSize.value,
     textAlign: align.mixed ? null : align.value,
@@ -130,7 +129,6 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.width === b.width &&
     a.fillColor === b.fillColor &&
     a.fillColorMixed === b.fillColorMixed &&
-    a.fillColorSecond === b.fillColorSecond &&
     a.shapeType === b.shapeType &&
     a.fontSize === b.fontSize &&
     a.textAlign === b.textAlign &&

@@ -11,21 +11,24 @@ interface StrokeWidthControlProps {
   /** Uniform width, or null when the selection is mixed. */
   value: number | null;
   onSelect: (width: number) => void;
+  /** Greyed + non-interactive — a no-stroke shape has no meaningful width. */
+  disabled?: boolean;
 }
 
 /**
  * Stroke / shape-outline / connector width: a bars-icon trigger opening a
  * four-tier menu (Thinnest…Thickest). The active tier row is filled #282e34.
+ * `disabled` (no-stroke shape) greys the trigger and blocks the dropdown.
  */
-export function StrokeWidthControl({ widths, value, onSelect }: StrokeWidthControlProps) {
+export function StrokeWidthControl({ widths, value, onSelect, disabled }: StrokeWidthControlProps) {
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-weight" onMouseDown={toggle} aria-expanded={open}>
+      <MenuButton className="ctx-btn-weight" onMouseDown={toggle} aria-expanded={open} disabled={disabled}>
         <IconWeightBars />
       </MenuButton>
-      {open && (
+      {open && !disabled && (
         <div className="ctx-submenu ctx-submenu-weight">
           {widths.map((w, i) => {
             const Icon = TIER_ICONS[i];

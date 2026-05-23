@@ -19,6 +19,13 @@
   color: #fff;
 }
 
+/* No-stroke shape: width is inert. Base .ctx-btn:disabled supplies
+   opacity + pointer-events:none (blocking the dropdown); recolor the icon to
+   the secondary grey so it reads as disabled, not just a dimmed dark. */
+.ctx-btn-weight:disabled {
+  color: var(--ctx-text-secondary);
+}
+
 /* Tier menu (Thinnest…Thickest). */
 .ctx-submenu-weight {
   min-width: 140px;

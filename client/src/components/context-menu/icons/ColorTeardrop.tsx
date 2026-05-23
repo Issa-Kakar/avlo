@@ -13,15 +13,23 @@ interface ColorTeardropProps extends React.SVGProps<SVGSVGElement> {
 // Rim around the drop. Closed (white menu) → dark, so the drop reads as a
 // shape. Open → the trigger bg is #1b1f22; the dark rim merges in and the drop
 // reads as a pure swatch — but a dark drop would then vanish into that bg, so
-// it gets a faint light edge instead.
-const RIM = '#1b1f22';
-const RIM_EDGE = 'rgba(255, 255, 255, 0.25)';
+// it gets a faint light edge instead. Shared with the fill icon's ring.
+export const RIM = '#1b1f22';
+export const RIM_EDGE = 'rgba(255, 255, 255, 0.25)';
 
 // Mixed-indicator swatches — pulled from the toolbar picker palette so the
 // "many colors" glyph is built from real app colors rather than a stock trio.
-const MIX_TOP = '#FF8A47';
-const MIX_LEFT = '#4CAF50';
-const MIX_RIGHT = '#2196F3';
+// Shared with the border icon's three-ring mixed glyph.
+export const MIX_TOP = '#FF8A47';
+export const MIX_LEFT = '#4CAF50';
+export const MIX_RIGHT = '#2196F3';
+
+/** Adaptive rim color for a fill/teardrop swatch — a dark fill on the open
+ *  (dark) trigger gets a faint light edge so it doesn't vanish; otherwise the
+ *  dark rim so the swatch reads as a shape against the white menu. */
+export function adaptiveRim(color: string, engaged?: boolean): string {
+  return engaged && isDark(color) ? RIM_EDGE : RIM;
+}
 
 /** Color trigger glyph — a teardrop filled with the current color, or a
  *  three-swatch drop when the selection holds multiple colors. */
@@ -39,7 +47,7 @@ export const ColorTeardrop = ({ color, mixed, engaged, ...props }: ColorTeardrop
       </svg>
     );
   }
-  const rim = engaged && isDark(color) ? RIM_EDGE : RIM;
+  const rim = adaptiveRim(color, engaged);
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
       <path

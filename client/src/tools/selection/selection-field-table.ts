@@ -17,6 +17,7 @@ import {
   getAlign,
   getAlignV,
   getColor,
+  getColorOrNull,
   getContent,
   getFillColor,
   getFontFamily,
@@ -59,8 +60,6 @@ export interface FieldDescriptor<V> {
 export interface Aggregate<V> {
   readonly value: V | null;
   readonly mixed: boolean;
-  /** Second distinct value, for two-color split UI. */
-  readonly second: V | null;
 }
 
 // One-cast-per-loop dispatch bridge — mirrors `tools/selection/transform.ts`'s
@@ -120,14 +119,14 @@ function setHighlightOnContent(h: ObjectHandle, v: string | null): void {
 
 /**
  * First-or-mixed read aggregation. First handle whose reader returns a non-undefined
- * value sets `value`; subsequent differing values set `mixed = true` + `second`.
- * Skips handles that fail `accepts` or have no reader for their kind.
+ * value sets `value`; the first subsequent differing value sets `mixed` and ends
+ * the fold (mixed is terminal). Skips handles that fail `accepts` or have no
+ * reader for their kind.
  */
 export function foldField<V>(handles: readonly ObjectHandle[], f: FieldDescriptor<V>): Aggregate<V> {
   const fAny = f as AnyDescriptor;
   const eq = f.equals ?? Object.is;
   let value: V | null = null;
-  let second: V | null = null;
   let mixed = false;
   let hasFirst = false;
 
@@ -141,13 +140,13 @@ export function foldField<V>(handles: readonly ObjectHandle[], f: FieldDescripto
     if (!hasFirst) {
       value = v;
       hasFirst = true;
-    } else if (!mixed && !eq(value as V, v)) {
+    } else if (!eq(value as V, v)) {
       mixed = true;
-      second = v;
+      break;
     }
   }
 
-  return { value, mixed, second };
+  return { value, mixed };
 }
 
 /**
@@ -275,25 +274,36 @@ const setCodeHeaderVisible = (v: boolean) => useDeviceUIStore.getState().setCode
 
 // Stroke/shape border + connector + text 'color'. Code/note/image/bookmark
 // don't render a stroke color — omitted so code-only selections fall back to
-// the EMPTY_STYLES default '#262626' instead of getColor's '#000' fallback.
-export const COLOR: FieldDescriptor<string> = {
+// the EMPTY_STYLES default null instead of getColor's '#000' fallback.
+//
+// Shape stroke is optional: read returns null (never undefined — undefined
+// would make foldField *skip* a no-stroke shape, hiding it from a mixed
+// selection), write tombstones the key. Stroke/text/connector are never
+// null at runtime — their write/persist guard it for type symmetry only.
+export const COLOR: FieldDescriptor<string | null> = {
   read: {
     stroke: (h) => getColor(h.y),
-    shape: (h) => getColor(h.y),
+    shape: (h) => getColorOrNull(h.y),
     text: (h) => getColor(h.y),
     connector: (h) => getColor(h.y),
   },
   write: {
-    stroke: (h, v) => h.y.set('color', v),
-    shape: (h, v) => h.y.set('color', v),
-    text: (h, v) => h.y.set('color', v),
-    connector: (h, v) => h.y.set('color', v),
+    stroke: (h, v) => v !== null && h.y.set('color', v),
+    shape: (h, v) => (v === null ? h.y.delete('color') : h.y.set('color', v)),
+    text: (h, v) => v !== null && h.y.set('color', v),
+    connector: (h, v) => v !== null && h.y.set('color', v),
   },
   persist: {
     // stroke: NO persist — pen/highlighter slots are independent of selected stroke color.
-    shape: setShapeColorPersist,
-    text: setTextColor,
-    connector: setConnectorColorPersist,
+    shape: (v) => {
+      if (v !== null) setShapeColorPersist(v);
+    },
+    text: (v) => {
+      if (v !== null) setTextColor(v);
+    },
+    connector: (v) => {
+      if (v !== null) setConnectorColorPersist(v);
+    },
   },
 };
 

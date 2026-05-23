@@ -52,10 +52,3 @@ export const IconStepDown = (props: SvgProps) => (
     <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
-
-export const IconNoFill = (props: SvgProps) => (
-  <svg viewBox="0 0 18 18" fill="none" aria-hidden="true" {...props}>
-    <circle cx="9" cy="9" r="7" stroke="#9CA3AF" strokeWidth="1.8" />
-    <line x1="4" y1="14" x2="14" y2="4" stroke="#9CA3AF" strokeWidth="1.8" strokeLinecap="round" />
-  </svg>
-);
