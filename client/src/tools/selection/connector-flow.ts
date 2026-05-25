@@ -38,7 +38,6 @@ import * as Y from 'yjs';
 import { getEnd, getHandleShapeType, getNoteProps, getShapeProps, getStart } from '@/core/accessors';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import { createConnector, insertConnector } from '@/core/connectors/connector-actions';
-import { directionVector } from '@/core/connectors/connector-utils';
 import { routeNewConnectorInto, type VirtualAnchor } from '@/core/connectors/reroute-connector';
 import { midpointAnchorFor } from '@/core/connectors/shape-geometry';
 import { findBestSnapTarget } from '@/core/connectors/snap';
@@ -149,35 +148,39 @@ const _btnCenters: [Point, Point, Point, Point] = [
   [0, 0],
   [0, 0],
 ];
-// Scratch for one normalized midpoint anchor — consumed within flowButtonCenters' loop.
-const _anchorScratch: Point = [0, 0];
 
 /**
- * The 4 flow-button centers — each shape's N/E/S/W midpoint mapped through the
- * selection box, then pushed `FLOW_BTN_OFFSET_PX` outward along the cardinal.
- * Shape-aware: a triangle's E/W buttons sit at the slanted-edge midpoints, not
- * the bbox corners, so a button lines up with the connector it spawns. Returns
- * a module scratch in `FLOW_SIDES` order — read it before the next call.
+ * The 4 flow-button centers — bbox cardinal positions pushed `FLOW_BTN_OFFSET_PX`
+ * outward from the selection box. The buttons are pure UI affordances and live
+ * at the bbox edges regardless of shape geometry, so a triangle's E button sits
+ * outside the bbox like every other shape's E button (consistent click target,
+ * never crowded into the interior). The connector anchor is shape-aware and
+ * resolved separately via `flowAnchor` — a triangle's E/W connector routes from
+ * the slanted-edge midpoint even though the button sits at the bbox edge.
+ * Returns a module scratch in `FLOW_SIDES` order — read it before the next call.
  */
-export function flowButtonCenters(b: Readonly<BBoxTuple>, shapeType: string, scale: number): readonly Point[] {
+export function flowButtonCenters(b: Readonly<BBoxTuple>, scale: number): readonly Point[] {
   const off = FLOW_BTN_OFFSET_PX / scale;
-  const bx = b[0];
-  const by = b[1];
-  const bw = b[2] - b[0];
-  const bh = b[3] - b[1];
-  for (let i = 0; i < 4; i++) {
-    const dir = SIDE_DIR[FLOW_SIDES[i]];
-    midpointAnchorFor(shapeType, dir, _anchorScratch);
-    const v = directionVector(dir);
-    _btnCenters[i][0] = bx + _anchorScratch[0] * bw + v[0] * off;
-    _btnCenters[i][1] = by + _anchorScratch[1] * bh + v[1] * off;
-  }
+  const cx = (b[0] + b[2]) / 2;
+  const cy = (b[1] + b[3]) / 2;
+  // n
+  _btnCenters[0][0] = cx;
+  _btnCenters[0][1] = b[1] - off;
+  // e
+  _btnCenters[1][0] = b[2] + off;
+  _btnCenters[1][1] = cy;
+  // s
+  _btnCenters[2][0] = cx;
+  _btnCenters[2][1] = b[3] + off;
+  // w
+  _btnCenters[3][0] = b[0] - off;
+  _btnCenters[3][1] = cy;
   return _btnCenters;
 }
 
 /** Which flow button (if any) `at` is over. */
-export function hitFlowButton(at: Point, b: Readonly<BBoxTuple>, shapeType: string, scale: number): FlowSide | null {
-  const centers = flowButtonCenters(b, shapeType, scale);
+export function hitFlowButton(at: Point, b: Readonly<BBoxTuple>, scale: number): FlowSide | null {
+  const centers = flowButtonCenters(b, scale);
   const r = FLOW_BTN_HIT_PX / scale;
   const r2 = r * r;
   for (let i = 0; i < 4; i++) {
