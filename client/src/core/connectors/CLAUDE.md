@@ -18,7 +18,7 @@ Two routing modes (elbow + straight), one shared pipeline. Routes are determinis
 
 | Task | Files |
 |---|---|
-| Add a shape kind to snap/route | `shape-geometry.ts` (`projectAnchorToEdge`, `rayShapeExitPoint`), `snap.ts` |
+| Add a shape kind to snap/route | `shape-geometry.ts` (`projectAnchorToEdge`, `rayShapeExitPoint`, `midpointFor`), `snap.ts` |
 | Change snap thresholds / tiers | `constants.ts`, `snap.ts` |
 | Change reroute on transform | `reroute-connector.ts`, `tools/selection/connector-topology.ts` |
 | Add a connector type | Y.Map schema + `types.ts` + `snap.ts` + `reroute-connector.ts` |
@@ -30,13 +30,14 @@ Two routing modes (elbow + straight), one shared pipeline. Routes are determinis
 core/connectors/
 ├── types.ts              # Dir, SnapTarget, RoutingContext, Grid
 ├── constants.ts          # SNAP_CONFIG, ROUTING_CONFIG, EDGE_CLEARANCE_W + bundle getters
-├── shape-geometry.ts     # projectAnchorToEdge, rayShapeExitPoint, midpointFor
+├── shape-geometry.ts     # projectAnchorToEdge, rayShapeExitPoint, midpointFor, midpointAnchorFor
 ├── anchor-atoms.ts       # anchorFramePoint, elbowAnchorPoint, fillElbowAnchorPointInto, anchorRecordFromSnap, getEndpointEdgePosition
 ├── connector-utils.ts    # Direction primitives, spatialRelation, elbow direction resolution
 ├── snap.ts               # findBestSnapTarget + two pipelines + shared edge probe
 ├── routing-context.ts    # Centerlines, routing bounds, stubs, grid construction + flicker side-pin
 ├── routing-astar.ts      # computeAStarRouteInto — typed-array pool + generation counter
 ├── connector-paths.ts    # Path2D builders (polyline + arrows, trim compensation)
+├── connector-actions.ts  # createConnector / insertConnector — the connector Y.Map builder
 ├── connector-router.ts   # Route cache + reverse shape→connector map + detach helper
 ├── reroute-connector.ts  # Pipeline<E> + Side helpers + 3 entry points
 └── binary-heap.ts        # MinHeap for A*
@@ -149,7 +150,9 @@ bakeCanonicalEndpoint<E>(P, ep, cachedRoute, side: 'start'|'end') → E
 // SelectTool endpoint drag — slot drives one side, the other reads canonically from ctx.
 rerouteEndpointDragInto(ctx, slot: 0|1, override: SnapTarget|Point, outBbox, outPoints) → count
 
-// ConnectorTool — no Y.Map.
+// ConnectorTool + connector-flow previews — no Y.Map. An endpoint is a live
+// snap, a free Point, or a VirtualAnchor (a shape not yet in the doc — the
+// flow duplicate/sibling target; routes identically to the canonical reroute).
 routeNewConnectorInto(start, end, strokeWidth, type, outPoints) → count
 
 // RouteContext — gesture-stable inputs (start/end/cap/width/cachedRoute/connectorType/pipeline).
@@ -176,7 +179,7 @@ findBestSnapTarget(ctx: SnapContext): SnapTarget | null
 type SnapTarget = ElbowSnapTarget | StraightSnapTarget;  // discriminated by `kind`
 ```
 
-Iterates Z-order via `pickTopmostBindable`. Connectable kinds = `BINDABLE_KINDS` (shape, text, code; text/code use derived frames as filled rects).
+Iterates Z-order via `pickTopmostBindable`. Connectable kinds = `BINDABLE_KINDS` (shape, text, code, image, note, bookmark; non-shape kinds snap against their frame as a plain rect).
 
 **Fill-aware ordering (in `pickTopmostBindable`):**
 1. Filled shape interior → occluding; snap or reject, stop scanning.
@@ -198,7 +201,7 @@ Iterates Z-order via `pickTopmostBindable`. Connectable kinds = `BINDABLE_KINDS`
 2. Midpoint stickiness — within 16px → `midpointSide: Dir, interior: false` (it's an edge anchor).
 3. Clamped interior — anchor = clamped cursor, `[0.01, 0.99]` per axis.
 
-**Ctrl held** → `isCtrlHeld()` (live, from `cursor-tracking.ts`) forces `snap = null` before every `findBestSnapTarget` call.
+**Ctrl held** → `isCtrlHeld()` (live, from `runtime/InputManager.ts`) forces `snap = null` before every `findBestSnapTarget` call.
 
 `position` on every `SnapTarget` is the **un-offset** visual dot AND the un-offset routing endpoint. Per-type offset (elbow cardinal / straight along-line) runs in routing — snap never bakes offsets into `position`.
 
@@ -282,7 +285,7 @@ Lifecycle:
 
 ## Anchor Atoms (`anchor-atoms.ts`)
 
-Six classifiers / writers. Interior-ness is stored; elbow `dir` is supplied by the caller (derived via `projectAnchorToEdge`).
+Eight classifiers / writers. Interior-ness is stored; elbow `dir` is supplied by the caller (derived via `projectAnchorToEdge`).
 
 | Function | Purpose |
 |---|---|
@@ -329,7 +332,8 @@ Derived: `computeArrowLength(strokeWidth)`, `computeArrowWidth(strokeWidth)`, `c
 
 | Need | Call |
 |---|---|
-| Create new connector | `routeNewConnectorInto(start, end, w, type, outPoints)` |
+| Route a new connector (preview) | `routeNewConnectorInto(start, end, w, type, outPoints)` |
+| Create a connector (Y.Map) | `createConnector(params)`, or `insertConnector(params, z)` inside an open `transact()` |
 | Reroute on endpoint drag | `rerouteEndpointDragInto(ctx, slot, snap\|pt, outBbox, outPoints)` |
 | Reroute under shape transform | `runTopologyScale` / `runTopologyTranslate` (per-frame, partitioned) |
 | Bake a canonical endpoint | `bakeCanonicalEndpoint(P, ep, cachedRoute, side)` |
@@ -339,6 +343,7 @@ Derived: `computeArrowLength(strokeWidth)`, `computeArrowWidth(strokeWidth)`, `c
 | Find snap target | `findBestSnapTarget(ctx)` |
 | Connectors anchored to a shape | `getAttachedConnectors(shapeId)` |
 | Detach on shape delete | `detachConnectorFromShape(cId, sId)` (inside `transact()`) |
+| Side midpoint → normalized anchor | `midpointAnchorFor(shapeType, dir, out)` |
 | Anchor → frame point | `anchorFramePoint(anchor, frame)` |
 | Elbow routing point (with cardinal offset) | `elbowAnchorPoint(anchor, frame, dir)` |
 | Write-into elbow point | `fillElbowAnchorPointInto(out, anchor, frame, dir)` |

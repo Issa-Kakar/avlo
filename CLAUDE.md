@@ -250,7 +250,7 @@ All tools implement `PointerTool` (`tools/types.ts`): `canBegin`, `begin(pointer
 
 Module-level room context. `connectRoom(roomId)` from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`.
+**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`/`getZOrder()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`.
 
 Prefer `getHandle(id)` over `getObjectsById().get(id)`. Prefer `transact(fn)` over `getActiveRoomDoc().mutate(fn)` — `transact` returns whatever `fn` returns, so callers can elide the `let foo; transact(()=>{ foo = ... })` dance.
 
@@ -285,6 +285,26 @@ All objects share `{ id (ULID), kind, ownerId, createdAt, z: ZKey }`. `id` is cr
 - **Note** — `{ origin: [topLeftX, topLeftY], scale, fontFamily, align, alignV, fillColor, content: Y.XmlFragment }`. No fontSize/width (derived from content + scale). Text color hardcoded `#1a1a1a`; `fillColor` per-instance, default `#FEF3AC`.
 - **Image** — `{ assetId: 64-hex, frame, naturalWidth, naturalHeight, mimeType, opacity? }`. Content-addressed (same file → same `assetId`).
 - **Bookmark** — `{ url, domain, origin, height, scale?, title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId? }`. Frame derived (`getBookmarkFrame(id)`). State implied by which optional fields are set.
+
+### Creating an object
+
+One pattern for every kind: inside a single `transact()`, build a `Y.Map`, set the shared + per-kind fields, then `getObjects().set(id, m)`. The deep observer does everything downstream — handle, spatial index, caches, dirty rect — so never touch those by hand.
+
+```ts
+const id = ulid();
+transact(() => {
+  const m = new Y.Map();
+  m.set('id', id);
+  m.set('kind', 'shape'); // ObjectKind
+  // …per-kind fields — see Schemas above…
+  m.set('ownerId', getUserId()); // device-ui-store
+  m.set('createdAt', Date.now());
+  m.set('z', generateZAtTop(getZOrder().maxZ())); // newest on top
+  getObjects().set(id, m);
+});
+```
+
+**`z` is mandatory and never hand-authored** — a fractional sort key minted against the current stack. Generators (`generateZAtTop` etc.) are exported from `@avlo/shared`; `getZOrder()` (room-runtime) returns the client `ZRankTable`, whose `.maxZ()`/`.minZ()` give the current top/bottom `z` (`null` on an empty doc). One object on top → `generateZAtTop(getZOrder().maxZ())`. N objects in one `transact` → `generateNZAtTop(getZOrder().maxZ(), n): ZKey[]` — mint once, assign in order (see `clipboard-actions.ts`). `*AtBottom` (minZ) / `*Between` variants cover the other anchors; reorder actions live in `core/z-order/`.
 
 ### ObjectHandle (live reference, IS the rbush item)
 ```ts
@@ -457,9 +477,6 @@ Per-frame hoisting in `drawObjects`: editing IDs (incl. `_textEditingId` threade
 Two helpers, one per Content subclass. `readPrim` reads `val.content.arr[0]` (ContentAny — every primitive/array/object key); `readY` reads `val.content.type` (ContentType — the single `'content'` key on shape labels). Both check `!val.deleted` (Yjs tombstones an Item rather than removing it from `_map` on `.delete(key)` — fillColor=null in `selection-field-table.ts`, empty-label close in `TextTool.ts`). Both bypass `Content.getContent()` so there's no `[this.type]` allocation for ContentType to depend on EA for. ~10 ns/key (vs ~109 ns for `y.get()`). `Y.Map._map` items always have `length === 1` (merges blocked by deleted-state asymmetry — proven from Yjs source), so `arr[0]` is correct without a `length - 1` lookup. One `readXxxRender(y)` per leaf draw fn writes into a per-kind module-level scratch returned by reference. Each `draw*` consumes its scratch before the next reader fires — no cross-reader hazards.
 
 Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById`, `noteCachedLayout`, `codeSystem.getLayoutById`, `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, fontSize, ...)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantees; see Cache Architecture). Geometry-cache trusts entries — `shapeType` keychange pre-evicts via `evictGeometry(id)` in the observer rather than a per-draw re-check. Defensive guards stripped on the hot path: bbox-size (`scaleFrameNonUniform` clamps to `MIN_SHAPE_FRAME_DIM + 2·pad`), `n < 2` (already in `paintConnectorFromPoints`), null `assetId`/`frame` on image (observer contract).
-
-### Overlay loop animation
-`AnimationController` (`renderer/animation/`) is a push-based singleton: jobs return `true` from `frame()` to request another rAF; controller calls `invalidate()` from the loop. Built-in jobs: `EraserTrailAnimation` (decaying trail). Registered once in `OverlayRenderLoop.start()`. (Peer cursors are NOT a job — `PresenceCursorRenderer` renders them as DOM `<img>` elements above the editor overlay with its own rAF; see `runtime/presence/CLAUDE.md`.)
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
