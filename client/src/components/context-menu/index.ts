@@ -14,14 +14,12 @@ export {
   IconConnectorLine,
   IconDiamondType,
   IconMinus,
-  IconMoreDots,
   IconPenStroke,
   IconPlus,
   IconRectType,
   IconRoundedRectType,
   IconShapes,
   IconTextType,
-  IconTrash,
   TextColorIcon,
 } from './icons';
 export { MenuButton } from './MenuButton';

@@ -27,14 +27,6 @@ export const IconPlus = (props: SvgProps) => (
   </svg>
 );
 
-export const IconMoreDots = (props: SvgProps) => (
-  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
-    <circle cx="8" cy="4" r="1.8" />
-    <circle cx="8" cy="8" r="1.8" />
-    <circle cx="8" cy="12" r="1.8" />
-  </svg>
-);
-
 export const IconCheck = (props: SvgProps) => (
   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
     <path d="M18.842 5.41a1.5 1.5 0 0 1 .479 2.067l-6.632 10.63a2 2 0 0 1-3.176.288L5.061 13.5a1.5 1.5 0 0 1 .1-2.119l.37-.336a1.5 1.5 0 0 1 2.119.1l2.896 3.184a.25.25 0 0 0 .397-.036l5.408-8.669a1.5 1.5 0 0 1 2.067-.478l.424.264Z" />

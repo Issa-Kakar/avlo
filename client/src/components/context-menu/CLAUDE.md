@@ -7,12 +7,12 @@
 > canonical.** Read it as the snapshot-shape you're about to mutate.
 >
 > The **filter dropdown** (`FilterObjectsDropdown`, mixed-selection menu) is
-> the solid base. Its trigger states, row layout, trash button, and the
-> tokens below are the design vocabulary every other surface will align to.
+> the solid base. Its trigger states, row layout, and the tokens below are
+> the design vocabulary every other surface will align to.
 > Pull from this list — not from legacy values further down.
 >
 > **Filter-menu vocabulary (alignment targets):**
-> - **Body / secondary text:** `#48525b` — the default for label / body text menu-wide. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), trash icon, the typeface + font-size dropdown rows. The menu's "everything else" color.
+> - **Body / secondary text:** `#48525b` — the default for label / body text menu-wide. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), the typeface + font-size dropdown rows. The menu's "everything else" color.
 > - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
 > - **Engaged dark `#1b1f22`** — the menu's darkest tone, two roles. As a *fill* (white text/icons on it): the "this control is engaged" background — open-state triggers (`FilterObjectsDropdown`, the `StrokeColorControl` teardrop, the `StrokeWidthControl` bars, the align triggers), active toggles (bold / italic, code header/output), every dropdown's active selected row (`.ctx-submenu-item-active`). As *ink*: the resting color for most icons — bold / italic / align glyphs, the font-size value + arrows. The default icon color.
 > - **Tier dark `#282e34`** — a deliberate notch lighter than `#1b1f22`; kept, not debt. It reads better than the near-black on a few surfaces: the `.ctx-weight-item-active` stroke-width tier row, the `TypefaceButton` / `LanguageDropdown` trigger ink — reach for it where full `#1b1f22` sits too heavy.
@@ -21,7 +21,7 @@
 > - **Icons:** 20×20, sourced from `components/toolbar/icons/*` (not the legacy `context-menu/icons/FilterIcons.tsx` pictograms). `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
 > - **Row protection:** `white-space: nowrap` on `.ctx-filter-item` — prevents subpixel wrap on borderline-fit labels (e.g. "Sticky Note" against `min-width: 140px`).
 > - **Labels singular:** `Stroke` / `Shape` / `Connector` / `Image`. Two-word singulars (`Code Block`, `Sticky Note`) untouched.
-> - **Trash button:** `.ctx-btn-danger` repointed to `#48525b` (class name kept — describes the destructive *action*; visual is now neutral). Mural 24-viewBox glyph in `icons/TrashIcon.tsx`. Hover override deleted; base `.ctx-btn:hover` carries it. Currently rendered for every kind via `CommonActionsGroup`; **planned** removal from per-kind menus, leaving it only in mixed. Don't preemptively delete.
+> - **Lock button:** `.ctx-btn-lock` (icon ink `var(--ctx-engaged)`). Mural 24-viewBox glyph in `icons/LockIcon.tsx`, 18×18 inside `.ctx-btn-sq`. Rendered by the shell as the leftmost button on every bar — including `image` / `bookmark`, where it's the *entire* bar. No-op placeholder; locking is not implemented yet. Trash + overflow `…` were lifted into the upcoming right-click menu; the `IconTrash` source survives at `icons/TrashIcon.tsx` for reuse elsewhere in the app, but nothing in the context menu imports it.
 > - **Defaults, not laws.** Icon `#1b1f22` / text `#48525b` are menu-wide starting points; surfaces mix tones case-by-case, per the action / icon / text they carry.
 >
 > **Aligned to the new vocabulary:** `FilterObjectsDropdown` (the base);
@@ -42,7 +42,6 @@
 > - Dropdowns: `ShapeTypeDropdown`'s trigger only — its submenu rows, like every dropdown's, now take the dark `.ctx-submenu-item-active` fill (legacy blue gone). `LanguageDropdown` is migrated; see `codeOnly`.
 > - Bar shell — `.ctx-menu` border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
-> - Overflow `…` button — placeholder, no handler.
 >
 > **Task scope comes from the prompt, not this doc.** The body below describes
 > *what currently exists*. The prompt tells you what to change.
@@ -188,12 +187,12 @@ This means:
 
 The same resolution happens in `refreshStyles()` when `textEditingId` is set and `selectedIds` is empty — the snapshot is checked to determine whether to use `'notesOnly'` or `'textOnly'`.
 
-All bars end with: `| Trash | ... |` (the `...` overflow button has no functionality yet).
+Every bar starts with `[Lock]` (shell-rendered — always present, leftmost, even when it's the entire bar for `image` / `bookmark`). The per-kind sections below describe only the content right of that lock.
 
 ### `strokesOnly`
 
 ```
-[Width tier-menu] | [Color teardrop]  |  Trash  ...
+[Width tier-menu] | [Color teardrop]
 ```
 
 - **Width** — `StrokeWidthControl`. Bars-icon trigger → Thinnest / Thin / Thick / Thickest menu. Pen scale `4 / 7 / 10 / 13` (`toolbar/weights.ts` `STROKE_WEIGHTS`). Active tier row filled `#282e34`; off-preset widths leave no row active.
@@ -202,7 +201,7 @@ All bars end with: `| Trash | ... |` (the `...` overflow button has no functiona
 ### `shapesOnly`
 
 ```
-[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [NoteAlign] [TextColor] [Highlight] | [Border hollow-circle] [Fill filled-circle] | [Width tier-menu]  |  Trash  ...
+[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [NoteAlign] [TextColor] [Highlight] | [Border hollow-circle] [Fill filled-circle] | [Width tier-menu]
 ```
 
 Shapes now include the full text formatting suite for shape labels:
@@ -223,7 +222,7 @@ Shapes now include the full text formatting suite for shape labels:
 ### `textOnly`
 
 ```
-[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [Align] [TextColor] [Highlight] | [Fill filled-circle]  |  Trash  ...
+[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [Align] [TextColor] [Highlight] | [Fill filled-circle]
 ```
 
 - **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text<->shape conversion). Includes Sticky Note item.
@@ -238,7 +237,7 @@ Shapes now include the full text formatting suite for shape labels:
 ### `notesOnly`
 
 ```
-[NoteType] | [Typeface] | [B] [I] [NoteAlign] [Highlight] | [Fill filled-circle]  |  Trash  ...
+[NoteType] | [Typeface] | [B] [I] [NoteAlign] [Highlight] | [Fill filled-circle]
 ```
 
 Sticky notes have a dedicated bar with no text color control (note text is hardcoded `#1a1a1a`) and no font size stepper (font size is derived from scale):
@@ -255,7 +254,7 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 ### `connectorsOnly`
 
 ```
-[Width tier-menu] | [Color teardrop]  |  Trash  ...
+[Width tier-menu] | [Color teardrop]
 ```
 
 - **Width** — `StrokeWidthControl`. Outline scale `2 / 4 / 6 / 8` (shared with shapes).
@@ -264,7 +263,7 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 ### `codeOnly`
 
 ```
-[Language ▾] | [-FontSize+] | [CodeLines] [Header] [Output]  |  Trash  ...
+[Language ▾] | [-FontSize+] | [CodeLines] [Header] [Output]
 ```
 
 - **Language** — `LanguageDropdown`. Self-subscribing to `selectedStyles.codeLanguage`. Trigger mirrors the FILTER stack — a `LANGUAGE` eyebrow over the current language name — but both lines run w700, the value takes the typeface-picker ink (`#282e34`), and the trigger uses `.ctx-btn-lang` (no engaged open-state): a code block always has a language, so the trigger never reads "unset". Dropdown: 3 items (JavaScript, TypeScript, Python), active row dark-filled + checkmark. Calls `setSelectedCodeLanguage(key)`.
@@ -275,10 +274,10 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 ### `mixed`
 
 ```
-[Filter "{N} objects"]  |  Trash  ...
+[Filter "{N} objects"]
 ```
 
-- **Filter** — `FilterObjectsDropdown`. Shows count of total objects. Dropdown lists each kind with count > 0 (icon + label + count): Strokes, Shapes, Text, Connectors, Code Block, Sticky Note. Clicking a kind calls `filterSelectionByKind(kind)` — filters `selectedIds` to that kind only. No style controls for mixed.
+- **Filter** — `FilterObjectsDropdown`. Shows count of total objects. Dropdown lists each kind with count > 0 (icon + label + count): Stroke, Shape, Text, Connector, Code Block, Sticky Note, Image, Link. The Link row covers bookmark objects — icon sourced from `toolbar/icons/IconLink` (interlocking-chain glyph, 16-viewBox, three filled paths). Clicking a kind calls `filterSelectionByKind(kind)` — filters `selectedIds` to that kind only. No style controls for mixed.
 
 ---
 
@@ -287,14 +286,12 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 ```
 ContextMenu                  <- gate on menuOpen, renders null when closed
 └── ContextMenuBar           <- computes effectiveKind, looks up MENU_BY_KIND
-    ├── <Menu />             <- one menus/* component (StrokeMenu … MixedMenu);
-    │   + <div .ctx-divider> <- the <Menu/> + divider pair is omitted for none/image
-    ├── CommonActionsGroup   <- Trash button -> deleteSelected()
-    ├── <div className="ctx-divider" />
-    └── OverflowButton       <- IconMoreDots, no handler (placeholder)
+    ├── LockButton           <- no-op placeholder, always leftmost (every kind incl. image/bookmark)
+    └── <div .ctx-divider>   <- omitted when MENU_BY_KIND has no entry → lock-only bar
+        + <Menu />           <- one menus/* component (StrokeMenu … MixedMenu)
 ```
 
-`ContextMenu.tsx` is a pure dispatcher — `MENU_BY_KIND` (a `Partial<Record<SelectionKind, ComponentType>>`) maps `effectiveKind` to one `menus/*` component; `none`/`image` map to nothing. Each `menus/*` component is `memo`'d and self-subscribing — it owns the store selector(s) for its kind (`useShallow` on every object-returning selector) and returns its `ButtonGroup` (Shape/Text/Note prepend a `ShapeTypeDropdown` + divider *outside* the group; `MixedMenu` returns a bare `FilterObjectsDropdown`). The dispatcher never re-renders on a style change — only the mounted menu does.
+`ContextMenu.tsx` is a pure dispatcher — `MENU_BY_KIND` (a `Partial<Record<SelectionKind, ComponentType>>`) maps `effectiveKind` to one `menus/*` component; `none` / `image` / `bookmark` map to nothing, leaving the shell's `LockButton` as the entire bar for those kinds. Each `menus/*` component is `memo`'d and self-subscribing — it owns the store selector(s) for its kind (`useShallow` on every object-returning selector) and returns its `ButtonGroup` (Shape/Text/Note prepend a `ShapeTypeDropdown` + divider *outside* the group; `MixedMenu` returns a bare `FilterObjectsDropdown`). The dispatcher never re-renders on a style change — only the mounted menu does.
 
 ### Component Inventory
 
@@ -495,14 +492,13 @@ All property mutations (including style-only changes like color, fill, opacity) 
 
 | File | Responsibility |
 |------|----------------|
-| `ContextMenu.tsx` | Slim dispatcher: gate (`menuOpen`) → `ContextMenuBar` → `effectiveKind` → `MENU_BY_KIND` lookup → shell (`<Menu/>` + dividers + chrome). The only file that imports `context-menu.css`. |
+| `ContextMenu.tsx` | Slim dispatcher: gate (`menuOpen`) → `ContextMenuBar` → `effectiveKind` → `MENU_BY_KIND` lookup → shell (`<LockButton/>` + optional divider + `<Menu/>`). The only file that imports `context-menu.css`. |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide/active lifecycle |
 | `context-menu.css` | Root CSS manifest — `@import`s the `styles/` foundation then every co-located component stylesheet, in cascade order. |
 | `menu-widths.ts` | `STROKE_WIDTHS` (pen `4/7/10/13`) + `OUTLINE_WIDTHS` (shape/connector `2/4/6/8`), derived from `toolbar/weights`. |
 | `menus/*.tsx` | One self-subscribing menu bar per `SelectionKind` — `StrokeMenu`, `ConnectorMenu`, `ShapeMenu`, `TextMenu`, `NoteMenu`, `CodeMenu`, `MixedMenu`. Each owns its store selector(s) + the JSX for its kind. |
 | `FormatButtons.tsx` | `BoldButton` + `ItalicButton` — shared by `ShapeMenu`/`TextMenu`/`NoteMenu`. |
-| `CommonActionsGroup.tsx` | Trash button (`deleteSelected`) — rendered for every kind. |
-| `OverflowButton.tsx` | `…` overflow button — placeholder, no handler. |
+| `LockButton.tsx` | Shell lock button — no-op placeholder, leftmost on every bar (incl. image/bookmark where it's the whole bar). `IconLock` 18×18 inside `.ctx-btn-sq .ctx-btn-lock`. |
 | `MenuButton.tsx` | Base button primitive (`mouseDown preventDefault` keeps canvas focus) |
 | `ButtonGroup.tsx` | Flex row wrapper |
 | `ColorCircle.tsx` | Visual indicator: `filled` / `hollow` / `none` variants, optional `secondColor` split |
@@ -519,7 +515,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; one flat submenu row: H-align · vertical divider · V-align. |
 | `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families). Trigger = name + filled down-chevron; active dropdown row `#1b1f22`. |
 | `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 6-item type switcher. Modes: `'shapes'`/`'text'`/`'note'`. |
-| `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts (incl. Code Block, Sticky Note) |
+| `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts. Eight kinds: Stroke, Shape, Text, Connector, Code Block, Sticky Note, Image, Link. Link = bookmark; icon sourced from `toolbar/icons/IconLink`. |
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
 | `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
@@ -531,7 +527,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 
 | File | Exports |
 |------|---------|
-| `UtilityIcons.tsx` | `IconChevronDown` (stroked), `IconChevronDownFilled` (Mural filled, font-picker), `IconMinus`, `IconPlus`, `IconMoreDots`, `IconCheck` (Mural `check` glyph, 24-viewBox), `IconStepUp`, `IconStepDown` |
+| `UtilityIcons.tsx` | `IconChevronDown` (stroked), `IconChevronDownFilled` (Mural filled, font-picker), `IconMinus`, `IconPlus`, `IconCheck` (Mural `check` glyph, 24-viewBox), `IconStepUp`, `IconStepDown` |
 | `FilterIcons.tsx` | `IconShapes`, `IconPenStroke`, `IconConnectorLine`, `IconTextType`, `IconCodeBlock` |
 | `CodeIcons.tsx` | `IconCodeLines` (22x16 viewBox, filled digits + stroke code bars) |
 | `AlignIcons.tsx` | `IconAlignTextLeft/Center/Right` + `IconAlignVTop/Middle/Bottom` — all Mural `textAlign*` glyphs, 24-viewBox |
@@ -544,7 +540,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `ColorBorderIcon.tsx` | `IconColorBorder` (props: `color`, `mixed`) — hollow frame-glyph; mirrors the fill glyph's footprint as a border-equivalent. |
 | `ColorTeardrop.tsx` | `ColorTeardrop` (props: `color`, `mixed?`, `engaged?`) — solid color drop, or a three-swatch drop when `mixed`. Dark `color` + `engaged` → faint light rim so the drop doesn't vanish into the open trigger's dark bg. |
 | `StrokeWidthIcons.tsx` | `IconWeightBars` (trigger) + `IconWeight1`–`IconWeight4` (diagonal tier glyphs) |
-| `TrashIcon.tsx` | `IconTrash` |
+| `LockIcon.tsx` | `IconLock` — Mural 24-viewBox lock glyph (shackle + body + keyhole via `evenodd`). Consumed by `LockButton`. |
+| `TrashIcon.tsx` | `IconTrash` — kept as a source for future reuse elsewhere in the app; **not imported by the context menu**. |
 
 **Convention:** `fill="currentColor"` with fill-based paths (not stroke), except step/chevron arrows which use `stroke="currentColor"`. SVG text elements use `textRendering="geometricPrecision"` to prevent subpixel shift during scale animation. `IconStepUp`/`IconStepDown` are 10x6 viewBox chevron arrows, rendered at 12x7 CSS size inside 18x14 buttons. Alignment icons (`IconAlignText*`, `IconAlignV*`) and bold/italic all use 24×24 Mural SVG paths.
 
@@ -567,6 +564,7 @@ overlay scale (`--ctx-black-a06` … `--ctx-black-a20`). Tokens are pure
 indirection — identical pixels.
 
 - `.ctx-btn-sq`: 32x32, padding 0. Inner SVG 18x18.
+- `.ctx-btn-lock`: composes with `.ctx-btn-sq` on the shell `LockButton`; sole override is icon ink at `var(--ctx-engaged)`.
 - `.ctx-btn-fmt`: bold / italic + code header/output toggles, align triggers. Inner SVG 20x20 (code header/output keep a 16px inline size). `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
 - `.ctx-btn-color`: 32x32, inner SVG 20x20. Resting icon ink `var(--ctx-engaged)` (`#1b1f22`); `[aria-expanded="true"]` → bg `var(--ctx-engaged)`, glyph flips white. Both `TextColorIcon` and `HighlightIcon` draw the colored bar via an explicit `fill={barColor}` (not `currentColor`), so the bar keeps its color through the engaged-dark flip.
 - `.ctx-btn-teardrop` / `.ctx-btn-weight`: 32x32 color / width triggers. `.ctx-btn-weight` icon rests at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.

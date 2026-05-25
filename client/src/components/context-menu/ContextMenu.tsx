@@ -4,7 +4,7 @@ import { getHandleKind } from '@/runtime/room-runtime';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind } from '@/tools/selection/types';
-import { CommonActionsGroup } from './CommonActionsGroup';
+import { LockButton } from './LockButton';
 import { CodeMenu } from './menus/CodeMenu';
 import { ConnectorMenu } from './menus/ConnectorMenu';
 import { MixedMenu } from './menus/MixedMenu';
@@ -12,7 +12,6 @@ import { NoteMenu } from './menus/NoteMenu';
 import { ShapeMenu } from './menus/ShapeMenu';
 import { StrokeMenu } from './menus/StrokeMenu';
 import { TextMenu } from './menus/TextMenu';
-import { OverflowButton } from './OverflowButton';
 
 // === Selectors (stable module-level references) ===
 
@@ -21,7 +20,8 @@ const selectKind = (s: SelectionStore) => s.selectionKind;
 const selectEditing = (s: SelectionStore) => s.textEditingId;
 const selectCodeEditing = (s: SelectionStore) => s.codeEditingId;
 
-// Per-kind menu bar. `none` / `image` intentionally have no menu.
+// Per-kind menu bar. `none` / `image` / `bookmark` intentionally have no menu
+// content — the lock button in the shell is the entire bar for those kinds.
 const MENU_BY_KIND: Partial<Record<SelectionKind, ComponentType>> = {
   stroke: StrokeMenu,
   connector: ConnectorMenu,
@@ -51,15 +51,13 @@ function ContextMenuBar() {
 
   return (
     <div className="ctx-menu">
+      <LockButton />
       {Menu && (
         <>
-          <Menu />
           <div className="ctx-divider" />
+          <Menu />
         </>
       )}
-      <CommonActionsGroup />
-      <div className="ctx-divider" />
-      <OverflowButton />
     </div>
   );
 }

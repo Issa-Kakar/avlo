@@ -95,8 +95,12 @@
   color: #fff;
 }
 
-.ctx-btn-more {
-  min-width: 32px;
+/* ===== Lock Button (leftmost shell button on every menu) =====
+   No-op placeholder for the locking feature. Icon at the menu's canonical
+   --ctx-engaged ink — a primary visual element, not a secondary action. */
+
+.ctx-btn-lock {
+  color: var(--ctx-engaged);
 }
 
 /* ===== Filter Button (FilterObjectsDropdown trigger) ===== */
@@ -120,12 +124,4 @@
 .ctx-btn-lang {
   padding: 0 8px;
   gap: 6px;
-}
-
-/* ===== Danger Button =====
-   Class name kept for semantic role (destructive action); visual is neutral
-   per the redesign — base .ctx-btn:hover handles the hover bg. */
-
-.ctx-btn-danger {
-  color: var(--ctx-text-secondary);
 }

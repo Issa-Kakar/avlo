@@ -2,6 +2,7 @@ import type React from 'react';
 import { IconArrow } from '@/components/toolbar/icons/IconArrow';
 import { IconCode } from '@/components/toolbar/icons/IconCode';
 import { IconImage } from '@/components/toolbar/icons/IconImage';
+import { IconLink } from '@/components/toolbar/icons/IconLink';
 import { IconPen } from '@/components/toolbar/icons/IconPen';
 import { IconShapes } from '@/components/toolbar/icons/IconShapes';
 import { IconStickyNote } from '@/components/toolbar/icons/IconStickyNote';
@@ -13,7 +14,6 @@ import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 // Keys are ObjectKind (singular), matching KindCounts / SelectionKind exactly.
-// 'bookmark' is intentionally omitted — no UI yet.
 const KIND_CONFIG: {
   key: ObjectKind;
   label: string;
@@ -26,6 +26,7 @@ const KIND_CONFIG: {
   { key: 'code', label: 'Code Block', Icon: IconCode },
   { key: 'note', label: 'Sticky Note', Icon: IconStickyNote },
   { key: 'image', label: 'Image', Icon: IconImage },
+  { key: 'bookmark', label: 'Link', Icon: IconLink },
 ];
 
 interface FilterObjectsDropdownProps {
