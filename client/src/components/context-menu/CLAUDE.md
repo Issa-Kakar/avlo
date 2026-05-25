@@ -28,14 +28,17 @@
 > `StrokeColorControl` + `StrokeWidthControl` (teardrop / bars triggers); the
 > text-formatting slice — bold / italic, `AlignDropdown`, `NoteAlignDropdown`,
 > `TypefaceButton` — reskinned to Mural glyphs with `.ctx-btn-fmt` engaged
-> states; and `FontSizeStepper` (value + arrows at `#1b1f22`, dropdown active
-> row + rows reconciled). Stroke + connector selections are fully off the
-> legacy color/size widgets. (The text slice still has tweaks pending —
-> values are current, not final.)
+> states; `FontSizeStepper` (value + arrows at `#1b1f22`, dropdown active
+> row + rows reconciled); `FillColorControl` + `BorderColorControl` on the
+> shared `ColorGrid` (6-col light-surface palette, `NoFillIcon` driving the
+> no-fill / no-stroke swatch); and `TextColorPopover` + `HighlightPickerPopover`
+> on the `.ctx-btn-color` engaged-dark trigger pattern (icon `#1b1f22` at rest,
+> bg + glyph flip on open, the colored bar stays its own color). Stroke +
+> connector selections are fully off the legacy color/size widgets. (The text
+> slice still has tweaks pending — values are current, not final.)
 >
 > **Surfaces still on legacy vocabulary** (their values below are not canon):
-> - Per-kind group *layout* is unchanged: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup`. The bold/italic/align/typeface/font-size controls inside them are reskinned; the color popovers are not.
-> - Popovers: `ColorPickerPopover`, `TextColorPopover`, `HighlightPickerPopover` (shape / text / note fill + shape border still use these).
+> - Per-kind group *layout* is unchanged: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup`. Their inner controls (bold / italic / align / typeface / font-size / fill / border / text-color / highlight) are all reskinned now; only the group-level wrapping is legacy.
 > - Dropdowns: `ShapeTypeDropdown`'s trigger only — its submenu rows, like every dropdown's, now take the dark `.ctx-submenu-item-active` fill (legacy blue gone). `LanguageDropdown` is migrated; see `codeOnly`.
 > - Bar shell — `.ctx-menu` border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
@@ -209,10 +212,10 @@ Shapes now include the full text formatting suite for shape labels:
 - **FontSize** — stepper with dropdown. `IconStepUp`/`IconStepDown` chevron arrows (not +/-). Display range: 1-999. Stepper steps through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. Dropdown lists all presets with checkmark. Dropdown items center-aligned (`ctx-submenu-fontsize` with `justify-content: center`).
 - **Bold** / **Italic** — self-subscribing `memo` components. `.ctx-btn-fmt` square buttons; active state fills `#1b1f22` (white icon) when the entire selection has the style uniformly. Same TipTap/`formatFragment()` dual path as text objects.
 - **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Chevron-less `.ctx-btn-fmt` trigger (`#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Persists to `device-ui-store.shapeAlign`/`shapeAlignV`.
-- **TextColor** — "A" icon with colored bar. When no label exists on the shape, falls back to `device-ui-store.textColor`. Calls `setSelectedTextColor`.
-- **Highlight** — self-subscribes to `selectInlineHighlightColor`. Marker pen icon with colored bar.
-- **Border** — hollow circle variant. Dropdown: 9x2 grid. Calls `setSelectedColor`.
-- **Fill** — filled circle variant. Mixed fills show SVG diagonal split. Dropdown: 9x2 grid with no-fill slot. `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
+- **TextColor** — `.ctx-btn-color` "A" icon with colored bar. Glyph rests `#1b1f22`, engaged-dark on open (bg flips, glyph flips white, bar keeps its color). When no label exists on the shape, falls back to `device-ui-store.textColor`. Calls `setSelectedTextColor`.
+- **Highlight** — `.ctx-btn-color` highlighter-marker glyph (24-viewBox Mural-style) with colored bar; self-subscribes to `selectInlineHighlightColor`. Same engaged-dark trigger pattern as TextColor.
+- **Border** — `BorderColorControl`: hollow frame-glyph trigger (`IconColorBorder`, reflects the current border color / mixed state) → shared `ColorGrid` 6-col palette with a no-stroke slot (the `NoFillIcon` swatch). Calls `setSelectedColor` (with `null` for no stroke).
+- **Fill** — `FillColorControl`: filled square-glyph trigger (`IconColorFill`, reflects the current fill / mixed split / engaged-dark on open). Same shared `ColorGrid` with a no-fill slot. `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
 - **Width** — border width (rightmost). `StrokeWidthControl` on the outline scale `2 / 4 / 6 / 8` — shapes and connectors share this scale (not the pen `4 / 7 / 10 / 13`).
 
 **Device-UI-store fallback for unlabeled shapes:** When a shape has no label, `computeStyles` returns `null` for `fontSize`/`labelColor`. `ShapeStyleGroup` reads `deviceTextSize` and `deviceTextColor` from `device-ui-store` as fallback values. This ensures the menu shows the values that would be used if the user starts typing to create a label — matching the "what you see is what you'd get" principle.
@@ -230,7 +233,7 @@ Shapes now include the full text formatting suite for shape labels:
 - **Alignment** — `AlignDropdown`. Self-subscribing. Chevron-less `.ctx-btn-fmt` trigger (`#1b1f22` when open). Submenu: a horizontal row of 3 icon buttons (left/center/right), the active item filled `#1b1f22`. Defaults to `'left'` when null. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
 - **TextColor** — "A" icon with colored bar. Falls back to `'#262626'` when `labelColor` is null.
 - **Highlight** — same as shapesOnly.
-- **Fill** — filled circle variant, identical pattern to shape fill. No border/stroke controls (text objects don't have stroke).
+- **Fill** — `FillColorControl`, identical pattern to shape fill (square fill-glyph trigger → shared `ColorGrid` with the no-fill slot). No border/stroke controls (text objects don't have stroke).
 
 ### `notesOnly`
 
@@ -245,7 +248,7 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 - **Bold** / **Italic** — same self-subscribing components. Uses TipTap chain when editor active, `formatFragment()` when not.
 - **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Trigger: current H-align icon, no chevron (`.ctx-btn-fmt`, `#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Notes use top-left origin so no anchor math needed for H-align (just sets `align` key). V-align sets `alignV` key. Persists to `device-ui-store.noteAlign`/`noteAlignV`.
 - **Highlight** — same as other kinds.
-- **Fill** — filled circle variant. Default color `'#FEF3AC'` (warm sticky yellow). No no-fill slot needed (notes always have fill). Device-ui persist is skipped (note fill is per-object, not a device default).
+- **Fill** — `NoteFillControl`: square fill-glyph trigger → light-surface palette (no no-fill slot — notes always have a fill). Default color `'#FEF3AC'` (warm sticky yellow). Device-ui persist is skipped (note fill is per-object, not a device default).
 
 **Note-specific device-ui persistence:** Font family and alignment actions detect `selectionKind === 'notesOnly'` and persist to note-specific device-ui fields (`noteFontFamily`, `noteAlign`, `noteAlignV`) rather than the text defaults.
 
@@ -300,9 +303,11 @@ ContextMenu                  <- gate on menuOpen, renders null when closed
 | `MenuButton` | `active?, ref?, ...HTMLButton` | Base primitive. `mouseDown preventDefault` keeps canvas focus. |
 | `ButtonGroup` | `children, className?` | Flex row wrapper (`ctx-group`). |
 | `ColorCircle` | `color, size?, variant?, secondColor?` | Visual indicator. Variants: `filled` (solid), `hollow` (border ring), `none` (checkered). `secondColor` renders SVG diagonal split (clip-path circle). |
-| `ColorPickerPopover` | `color, variant?, secondColor?, mode?, selectedColor?, onSelect?` | Dropdown: 9x2 grid. Fill mode adds no-fill slot. |
-| `TextColorPopover` | `color, onSelect?` | Dropdown: 9x2 grid. "A" icon trigger with color bar. |
-| `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. 4x2 rounded-square grid + none. |
+| `FillColorControl` | `fillColor, mixed, onSelect` | Shape / text / note fill — square fill-glyph trigger → shared `ColorGrid` 6×4 with `noFill` slot. |
+| `BorderColorControl` | `color, mixed, onSelect` | Shape border — hollow frame-glyph trigger → shared `ColorGrid` 6×4 with `noFill` (no-stroke) slot. |
+| `ColorGrid` | `palette, cols, value, mixed, noFill?, onSelect` | Presentational swatch grid shared by fill + border. `noFill` renders index 0 as a `NoFillIcon` swatch emitting `onSelect(null)`. |
+| `TextColorPopover` | `color, onSelect?` | "A"-glyph trigger with color bar → light-surface palette grid. `.ctx-btn-color` engaged-dark trigger. |
+| `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. Highlighter-marker trigger → 4x2 rounded-square highlight grid + none. `.ctx-btn-color` engaged-dark trigger. |
 | `StrokeColorControl` | `color, mixed, onSelect` | Stroke/connector color. Teardrop trigger (current color, or a three-swatch drop when `mixed`) → 6-col palette grid. Toolbar picker mimicked on a light surface. Open-trigger bg `#1b1f22`. |
 | `StrokeWidthControl` | `widths, value, onSelect` | Stroke/shape/connector width. Bars-icon trigger (icon `#1b1f22`) → four-tier menu (Thinnest…Thickest), left-aligned rows. Active tier row `#282e34`. `widths` is the per-kind 4-preset list. |
 | `FontSizeStepper` | `value, onDecrement?, onIncrement?, onSelectSize?` | Chevron up/down arrows + SVG text center value + dropdown of presets. |
@@ -501,9 +506,12 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `MenuButton.tsx` | Base button primitive (`mouseDown preventDefault` keeps canvas focus) |
 | `ButtonGroup.tsx` | Flex row wrapper |
 | `ColorCircle.tsx` | Visual indicator: `filled` / `hollow` / `none` variants, optional `secondColor` split |
-| `ColorPickerPopover.tsx` | 9x2 color grid dropdown. `mode='fill'` adds no-fill slot. |
-| `TextColorPopover.tsx` | 9x2 color grid. "A" icon trigger with color bar. |
-| `HighlightPickerPopover.tsx` | Self-subscribing. 4x2 rounded-square grid + none swatch. |
+| `FillColorControl.tsx` | Square fill-glyph trigger → shared `ColorGrid` 6×4 with `noFill` slot. |
+| `BorderColorControl.tsx` | Hollow frame-glyph trigger → shared `ColorGrid` 6×4 with `noFill` (no-stroke) slot. |
+| `NoteFillControl.tsx` | Sticky-note fill — light-surface palette, no no-fill slot (notes always have a fill). |
+| `ColorGrid.tsx` | Presentational swatch grid — `palette` + `cols` + `value` + `mixed` + optional `noFill` (renders index 0 as a `NoFillIcon` swatch). Shared body of every fill/border control. |
+| `TextColorPopover.tsx` | "A"-glyph + bar trigger (`.ctx-btn-color`, engaged-dark) → light-surface palette grid. |
+| `HighlightPickerPopover.tsx` | Self-subscribing. Highlighter trigger (`.ctx-btn-color`, engaged-dark) → 4x2 rounded-square highlight grid + none swatch. |
 | `StrokeColorControl.tsx` | Stroke/connector color — teardrop trigger + light-surface palette grid (toolbar picker mimic). |
 | `StrokeWidthControl.tsx` | Stroke/shape/connector width — bars trigger + Thinnest…Thickest tier menu. |
 | `FontSizeStepper.tsx` | Chevron up/down arrows + SVG center value + preset dropdown |
@@ -523,14 +531,17 @@ All property mutations (including style-only changes like color, fill, opacity) 
 
 | File | Exports |
 |------|---------|
-| `UtilityIcons.tsx` | `IconChevronDown` (stroked), `IconChevronDownFilled` (Mural filled, font-picker), `IconMinus`, `IconPlus`, `IconMoreDots`, `IconCheck` (Mural `check` glyph, 24-viewBox), `IconNoFill`, `IconStepUp`, `IconStepDown` |
+| `UtilityIcons.tsx` | `IconChevronDown` (stroked), `IconChevronDownFilled` (Mural filled, font-picker), `IconMinus`, `IconPlus`, `IconMoreDots`, `IconCheck` (Mural `check` glyph, 24-viewBox), `IconStepUp`, `IconStepDown` |
 | `FilterIcons.tsx` | `IconShapes`, `IconPenStroke`, `IconConnectorLine`, `IconTextType`, `IconCodeBlock` |
 | `CodeIcons.tsx` | `IconCodeLines` (22x16 viewBox, filled digits + stroke code bars) |
 | `AlignIcons.tsx` | `IconAlignTextLeft/Center/Right` + `IconAlignVTop/Middle/Bottom` — all Mural `textAlign*` glyphs, 24-viewBox |
 | `FormatIcons.tsx` | `IconBold`, `IconItalic` — Mural `textStyleBold`/`textStyleItalic` glyphs, 24-viewBox |
 | `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`, `IconStickySquareFold` |
-| `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) |
-| `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) |
+| `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) — "A" glyph + bar (`fill="currentColor"` glyph, explicit `fill={barColor}` bar, so the bar survives the engaged-dark color flip). |
+| `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) — Mural-style highlighter at 24-viewBox; body + tip on `currentColor`, bar takes `barColor` (with a gray-bar + separators fallback when `barColor` is `null`). |
+| `NoFillIcon.tsx` | `NoFillIcon` (props: `selected?`) — Mural `colorTransparent` paths verbatim (white bg + grey ring at `#9ca3af` + "/" slash at `#6b7280`, inset from corners). `selected` lays the `checkboxCustom` check + white halo on top so the check stays readable where it crosses the slash — slash stays drawn in both states. |
+| `ColorFillIcon.tsx` | `IconColorFill` (props: `fill`, `mixed`, `engaged?`) — square fill-glyph; reflects current fill, diagonal split when `mixed`, dark-edge tweaks when `engaged` on a dark trigger. |
+| `ColorBorderIcon.tsx` | `IconColorBorder` (props: `color`, `mixed`) — hollow frame-glyph; mirrors the fill glyph's footprint as a border-equivalent. |
 | `ColorTeardrop.tsx` | `ColorTeardrop` (props: `color`, `mixed?`, `engaged?`) — solid color drop, or a three-swatch drop when `mixed`. Dark `color` + `engaged` → faint light rim so the drop doesn't vanish into the open trigger's dark bg. |
 | `StrokeWidthIcons.tsx` | `IconWeightBars` (trigger) + `IconWeight1`–`IconWeight4` (diagonal tier glyphs) |
 | `TrashIcon.tsx` | `IconTrash` |
@@ -557,9 +568,10 @@ indirection — identical pixels.
 
 - `.ctx-btn-sq`: 32x32, padding 0. Inner SVG 18x18.
 - `.ctx-btn-fmt`: bold / italic + code header/output toggles, align triggers. Inner SVG 20x20 (code header/output keep a 16px inline size). `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
-- `.ctx-btn-color`: 32x32. Inner SVG 20x20.
+- `.ctx-btn-color`: 32x32, inner SVG 20x20. Resting icon ink `var(--ctx-engaged)` (`#1b1f22`); `[aria-expanded="true"]` → bg `var(--ctx-engaged)`, glyph flips white. Both `TextColorIcon` and `HighlightIcon` draw the colored bar via an explicit `fill={barColor}` (not `currentColor`), so the bar keeps its color through the engaged-dark flip.
 - `.ctx-btn-teardrop` / `.ctx-btn-weight`: 32x32 color / width triggers. `.ctx-btn-weight` icon rests at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.
 - `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; the active swatch shows a centered check, no ring (the white surface needs no halo).
+- `.ctx-cp-swatch-nofill`: the no-fill / no-stroke slot — strips `.ctx-cp-swatch`'s border + bg so the SVG (`NoFillIcon`) owns the surface. Same 22×22 footprint and hover-scale as the colored swatches; the icon's grey ring + slash are inside that footprint, never inflating it.
 - `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu — `padding: 8px`, `border-radius: 12px`, 3px row gap. Rows left-aligned (icon · word · inline checkmark). `.ctx-weight-item-active` fills the tier row `#282e34`, white icon/label/check.
 - `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x12, SVG 11x6.5.
 - `.ctx-fontsize-value`: 32x32, padding 0, SVG 30x16 viewBox.

@@ -54,11 +54,22 @@
 .ctx-btn-color {
   width: 32px;
   padding: 0;
+  color: var(--ctx-engaged);
 }
 
 .ctx-btn-color svg {
   width: 20px;
   height: 20px;
+}
+
+/* Engaged (open dropdown) — bg flips to --ctx-engaged, glyph (currentColor)
+   flips to white. The colored bar inside the icon uses an explicit `fill`
+   prop, not currentColor, so it stays its own color. */
+.ctx-btn-color[aria-expanded="true"],
+.ctx-btn-color[aria-expanded="true"]:hover,
+.ctx-btn-color[aria-expanded="true"]:active {
+  background: var(--ctx-engaged);
+  color: #fff;
 }
 
 /* ===== Format buttons (.ctx-btn-fmt) — bold / italic + code header/output toggles, align triggers =====

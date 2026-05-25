@@ -1,5 +1,6 @@
 import { CheckIcon } from '@/components/toolbar/color/CheckIcon';
 import { checkmarkColorFor, colorsEqual, luminance } from '@/components/toolbar/color/palette';
+import { NoFillIcon } from './icons/NoFillIcon';
 
 interface ColorGridProps {
   /** Swatches, row-major. With `noFill`, index 0 is the NO_FILL sentinel. */
@@ -29,6 +30,7 @@ export function ColorGrid({ palette, cols, value, mixed, noFill, onSelect }: Col
     <div className="ctx-cp-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
       {palette.map((c, i) => {
         if (noFill && i === 0) {
+          const selected = value === null && !mixed;
           return (
             <button
               key="no-fill"
@@ -38,7 +40,7 @@ export function ColorGrid({ palette, cols, value, mixed, noFill, onSelect }: Col
                 onSelect(null);
               }}
             >
-              {value === null && !mixed && <CheckIcon color="#000" size={13} />}
+              <NoFillIcon selected={selected} />
             </button>
           );
         }
