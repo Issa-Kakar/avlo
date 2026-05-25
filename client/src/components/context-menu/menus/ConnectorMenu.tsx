@@ -3,8 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import type { ConnectorType } from '@/core/types/objects';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { setSelectedColor, setSelectedWidth } from '@/tools/selection/selection-actions';
+import { setSelectedColor, setSelectedEndCap, setSelectedStartCap, setSelectedWidth } from '@/tools/selection/selection-actions';
 import { ButtonGroup } from '../ButtonGroup';
+import { ConnectorCapControl } from '../ConnectorCapControl';
 import { ConnectorTypeControl } from '../ConnectorTypeControl';
 import { LabelButton } from '../LabelButton';
 import { OUTLINE_WIDTHS } from '../menu-widths';
@@ -24,19 +25,33 @@ const selectConnectorStyles = (s: SelectionStore) => ({
   colorMixed: s.selectedStyles.colorMixed,
   width: s.selectedStyles.width,
   connectorType: s.selectedStyles.connectorType,
+  startCap: s.selectedStyles.startCap,
+  endCap: s.selectedStyles.endCap,
+  // Labels attach to a single connector — multi-select has no meaningful target,
+  // so the slot stays hidden until exactly one connector is selected.
+  singleConnector: s.kindCounts.total === 1,
 });
 
 export const ConnectorMenu = memo(function ConnectorMenu() {
-  const { color, colorMixed, width, connectorType } = useSelectionStore(useShallow(selectConnectorStyles));
+  const { color, colorMixed, width, connectorType, startCap, endCap, singleConnector } = useSelectionStore(
+    useShallow(selectConnectorStyles),
+  );
   return (
     <ButtonGroup>
       <StrokeColorControl color={color} mixed={colorMixed} onSelect={setSelectedColor} />
       <div className="ctx-divider" />
       <StrokeWidthControl widths={OUTLINE_WIDTHS} value={width} onSelect={setSelectedWidth} />
       <div className="ctx-divider" />
-      <ConnectorTypeControl value={connectorType} onSelect={setSelectedConnectorTypeNoop} />
+      <ConnectorCapControl slot="start" value={startCap} onSelect={setSelectedStartCap} />
+      <ConnectorCapControl slot="end" value={endCap} onSelect={setSelectedEndCap} />
       <div className="ctx-divider" />
-      <LabelButton />
+      <ConnectorTypeControl value={connectorType} onSelect={setSelectedConnectorTypeNoop} />
+      {singleConnector && (
+        <>
+          <div className="ctx-divider" />
+          <LabelButton />
+        </>
+      )}
     </ButtonGroup>
   );
 });

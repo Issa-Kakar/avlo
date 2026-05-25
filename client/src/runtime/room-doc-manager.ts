@@ -247,6 +247,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             if (startEnd || ev.keysChanged.has('connectorType')) {
               router.onConnectorEdited(id, yObj, startEnd);
             }
+            // Caps bake into the cached Path2D (arrowhead is built geometry, not
+            // paint-time chrome) — pre-evict regardless of bbox so a cap toggle
+            // whose extent doesn't dominate the route bbox still rebuilds. Phase B's
+            // bbox-driven eviction would otherwise leave the old Path2D in place.
+            if (ev.keysChanged.has('startCap') || ev.keysChanged.has('endCap')) {
+              evictGeometry(id);
+            }
           } else if (kind === 'shape' && ev.keysChanged.has('shapeType')) {
             evictGeometry(id); // pre-evict Path2D so renderer doesn't re-check per draw
             router.onBindableChanged(id);

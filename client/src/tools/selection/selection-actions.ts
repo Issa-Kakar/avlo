@@ -1,4 +1,5 @@
 import type { CodeLanguage, FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
+import type { ConnectorCap } from '@/core/types/objects';
 import { detachConnectorFromShape, getAttachedConnectors, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
 import { TEXT_FONT_SIZE_PRESETS, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -9,6 +10,7 @@ import {
   CODE_FONT_SIZE,
   CODE_LANGUAGE,
   COLOR,
+  END_CAP,
   FILL_COLOR,
   FONT_FAMILY,
   FONT_SIZE,
@@ -18,6 +20,7 @@ import {
   LINE_NUMBERS,
   OUTPUT_VISIBLE,
   SHAPE_TYPE,
+  START_CAP,
   TEXT_ALIGN,
   TEXT_ALIGN_V,
   TEXT_COLOR,
@@ -54,6 +57,8 @@ const currentCodeFontSize = (): number => useSelectionStore.getState().selectedS
 export const setSelectedColor = (color: string | null): void => applyField(getSelectedIds(), COLOR, color);
 export const setSelectedWidth = (width: number): void => applyField(getSelectedIds(), WIDTH, width);
 export const setSelectedShapeType = (shapeType: string): void => applyField(getSelectedIds(), SHAPE_TYPE, shapeType);
+export const setSelectedStartCap = (cap: ConnectorCap): void => applyField(getSelectedIds(), START_CAP, cap);
+export const setSelectedEndCap = (cap: ConnectorCap): void => applyField(getSelectedIds(), END_CAP, cap);
 export const setSelectedFillColor = (fillColor: string | null): void => applyField(getTextSelectionIds(), FILL_COLOR, fillColor);
 export const setSelectedTextColor = (color: string): void => applyField(getTextSelectionIds(), TEXT_COLOR, color);
 export const setSelectedFontSize = (size: number): void => applyField(getTextSelectionIds(), FONT_SIZE, clampInt(size, 1, 999));

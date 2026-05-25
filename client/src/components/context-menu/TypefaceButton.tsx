@@ -4,7 +4,7 @@ import { selectTextFontFamily, useDeviceUIStore } from '@/stores/device-ui-store
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedFontFamily } from '@/tools/selection/selection-actions';
-import { IconCheck, IconChevronDownFilled } from './icons/UtilityIcons';
+import { IconCheck } from './icons/UtilityIcons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
@@ -34,7 +34,6 @@ export function TypefaceButton() {
             {current.display}
           </text>
         </svg>
-        <IconChevronDownFilled className="ctx-font-chevron" />
       </MenuButton>
 
       {open && (

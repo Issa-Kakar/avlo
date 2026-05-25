@@ -8,13 +8,6 @@ export const IconChevronDown = (props: SvgProps) => (
   </svg>
 );
 
-/** Mural filled down-chevron (chevronUpFilled, mirrored). viewBox tight to the glyph. */
-export const IconChevronDownFilled = (props: SvgProps) => (
-  <svg viewBox="6.293 9 11.414 6.707" fill="currentColor" aria-hidden="true" {...props}>
-    <path d="M6.293 10.707A1 1 0 0 1 7 9h10a1 1 0 0 1 .707 1.707l-5 5a1 1 0 0 1-1.414 0l-5-5Z" />
-  </svg>
-);
-
 export const IconMinus = (props: SvgProps) => (
   <svg viewBox="0 0 12 12" fill="none" aria-hidden="true" {...props}>
     <path d="M2.5 6H9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

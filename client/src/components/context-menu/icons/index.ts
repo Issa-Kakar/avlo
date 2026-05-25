@@ -10,6 +10,7 @@ export { IconCodeHeader, IconCodeLines, IconCodeOutput } from './CodeIcons';
 export { IconColorBorder } from './ColorBorderIcon';
 export { IconColorFill } from './ColorFillIcon';
 export { ColorTeardrop } from './ColorTeardrop';
+export { IconTipArrow, IconTipNone } from './ConnectorCapIcons';
 export { IconConnectorOrthogonal, IconConnectorStraight } from './ConnectorTypeIcons';
 export { IconCodeBlock, IconConnectorLine, IconImages, IconPenStroke, IconShapes, IconTextType } from './FilterIcons';
 export { IconBold, IconItalic } from './FormatIcons';
@@ -28,4 +29,4 @@ export {
   IconSwitchTypeTriangle,
 } from './SwitchTypeIcons';
 export { TextColorIcon } from './TextColorIcon';
-export { IconCheck, IconChevronDown, IconChevronDownFilled, IconMinus, IconPlus } from './UtilityIcons';
+export { IconCheck, IconChevronDown, IconMinus, IconPlus } from './UtilityIcons';

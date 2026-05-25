@@ -20,6 +20,7 @@ import {
   getColorOrNull,
   getConnectorType,
   getContent,
+  getEndCap,
   getFillColor,
   getFontFamily,
   getFontSize,
@@ -30,11 +31,12 @@ import {
   getOrigin,
   getOutputVisible,
   getShapeType,
+  getStartCap,
   getWidth,
   hasLabel,
 } from '@/core/accessors';
 import { anchorFactor, getInlineStyles, getTextFrame } from '@/core/text/text-system';
-import type { ConnectorType, ObjectHandle, ObjectKind } from '@/core/types/objects';
+import type { ConnectorCap, ConnectorType, ObjectHandle, ObjectKind } from '@/core/types/objects';
 import { getHandle, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -256,6 +258,8 @@ const setShapeWidthPersist = (v: number) => useDeviceUIStore.getState().setShape
 const setStrokeWidthPersist = (v: number) => useDeviceUIStore.getState().setStrokeWidth(v);
 const setConnectorColorPersist = (v: string) => useDeviceUIStore.getState().setConnectorColor(v);
 const setConnectorWidthPersist = (v: number) => useDeviceUIStore.getState().setConnectorWidth(v);
+const setConnectorStartCapPersist = (v: ConnectorCap) => useDeviceUIStore.getState().setConnectorStartCap(v);
+const setConnectorEndCapPersist = (v: ConnectorCap) => useDeviceUIStore.getState().setConnectorEndCap(v);
 const setTextSize = (v: number) => useDeviceUIStore.getState().setTextSize(v);
 const setTextColor = (v: string) => useDeviceUIStore.getState().setTextColor(v);
 const setTextFillColor = (v: string | null) => useDeviceUIStore.getState().setTextFillColor(v);
@@ -530,4 +534,20 @@ export const OUTPUT_VISIBLE: FieldDescriptor<boolean> = {
 export const CONNECTOR_TYPE: FieldDescriptor<ConnectorType> = {
   read: { connector: (h) => getConnectorType(h.y) },
   write: {},
+};
+
+// Per-endpoint cap. Mixed selections surface the first connector's value —
+// the trigger has no "mixed" affordance (caps don't blend in UI), matching
+// CONNECTOR_TYPE's first-applicable read. Persists to device-ui so a fresh
+// connector picks up the user's most recent choice.
+export const START_CAP: FieldDescriptor<ConnectorCap> = {
+  read: { connector: (h) => getStartCap(h.y) },
+  write: { connector: (h, v) => h.y.set('startCap', v) },
+  persist: { connector: setConnectorStartCapPersist },
+};
+
+export const END_CAP: FieldDescriptor<ConnectorCap> = {
+  read: { connector: (h) => getEndCap(h.y) },
+  write: { connector: (h, v) => h.y.set('endCap', v) },
+  persist: { connector: setConnectorEndCapPersist },
 };

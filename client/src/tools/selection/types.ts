@@ -8,7 +8,7 @@ import type { Slot } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
-import type { ConnectorType, ObjectKind } from '@/core/types/objects';
+import type { ConnectorCap, ConnectorType, ObjectKind } from '@/core/types/objects';
 
 // ============================================================================
 // Selection Composition
@@ -77,6 +77,11 @@ export interface SelectedStyles {
   /** First connector's routing type. Used by connector-only. No mixed flag — the
    *  trigger reflects the first connector and routing types don't blend in UI. */
   connectorType: ConnectorType | null;
+  /** First connector's start cap. Used by connector-only. Same first-applicable
+   *  rule as `connectorType` — no mixed affordance. */
+  startCap: ConnectorCap | null;
+  /** First connector's end cap. Used by connector-only. */
+  endCap: ConnectorCap | null;
 }
 
 export const EMPTY_STYLES: SelectedStyles = {
@@ -95,6 +100,8 @@ export const EMPTY_STYLES: SelectedStyles = {
   codeHeaderVisible: null,
   codeOutputVisible: null,
   connectorType: null,
+  startCap: null,
+  endCap: null,
 };
 
 export interface InlineStyles {

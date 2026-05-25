@@ -2,16 +2,7 @@
 
 .ctx-btn-font {
   padding: 0 6px;
-  gap: 8px;
   min-width: 56px;
-}
-
-/* Font-picker chevron — Mural filled glyph, solid --ctx-engaged-tier ink. */
-.ctx-font-chevron {
-  width: 10px;
-  height: 10px;
-  color: var(--ctx-engaged-tier);
-  flex-shrink: 0;
 }
 
 .ctx-submenu-font {
