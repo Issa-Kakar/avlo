@@ -1,39 +1,71 @@
-/* ===== Context Menu — Shape Type Dropdown ===== */
+/* ===== Context Menu — Switch Type Dropdown =====
+   Rightmost trigger on shape/text/note bars + icon-only 4×2 grid popout.
+   Trigger reuses the engaged-dark flip pattern from .ctx-btn-color /
+   .ctx-btn-fmt / .ctx-btn-conntype (32×32 with a 20×20 SVG, --ctx-engaged
+   ink at rest, bg flips on open and the glyph goes white). */
 
-.ctx-btn-type {
-  height: 32px;
-  padding: 0 8px;
-  gap: 6px;
-  display: inline-flex;
-  align-items: center;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  outline: none;
-  font-family: var(--font-ui);
-  transition: background 150ms ease;
+.ctx-btn-switchtype {
+  width: 32px;
+  padding: 0;
+  color: var(--ctx-engaged);
 }
 
-.ctx-btn-type:hover {
+.ctx-btn-switchtype svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ctx-btn-switchtype[aria-expanded="true"],
+.ctx-btn-switchtype[aria-expanded="true"]:hover,
+.ctx-btn-switchtype[aria-expanded="true"]:active {
+  background: var(--ctx-engaged);
+  color: #fff;
+}
+
+/* Submenu — right-anchored to the trigger because the trigger sits on the
+   rightmost end of the bar; the popout extends leftward and stays inside
+   the menu's footprint. 4 columns × 36px = 144 + 3 × 4 gaps + 8×2 padding
+   = 172px total, so min-width: 0 lets the grid drive width. Cell size keeps
+   the bar's original 6px-padding ratio around the 24×24 icon (vs. 32/20
+   elsewhere) — the picker reads a touch bigger than the inline bar without
+   blowing up. */
+.ctx-submenu-switchtype {
+  left: auto;
+  right: 0;
+  transform: none;
+  min-width: 0;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(4, 36px);
+  grid-auto-rows: 36px;
+  gap: 4px;
+}
+
+/* Grid cell — 36px square, 24×24 icon centered. Resting ink --ctx-engaged
+   so both filled (Sticky / Text) and outlined (shape) icons render in the
+   menu's darkest tone; selected cell fills --ctx-engaged and the icon flips
+   white. The active state IS the cell — no checkmark. */
+.ctx-switchtype-item {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--ctx-engaged);
+  cursor: pointer;
+  outline: none;
+  padding: 0;
+}
+
+.ctx-switchtype-item:hover {
   background: var(--ctx-hover);
 }
 
-.ctx-btn-type:focus-visible {
-  outline: 2px solid var(--ctx-accent);
-  outline-offset: -1px;
-}
-
-.ctx-submenu-type {
-  left: 0;
-  transform: none;
-  min-width: 170px;
-}
-
-/* Trigger chevron arrow. */
-.ctx-dd-arrow {
-  width: 9px;
-  height: 9px;
-  opacity: 0.55;
-  flex-shrink: 0;
+.ctx-switchtype-item-active,
+.ctx-switchtype-item-active:hover {
+  background: var(--ctx-engaged);
+  color: #fff;
 }

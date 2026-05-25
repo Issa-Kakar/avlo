@@ -19,5 +19,13 @@ export { IconLock } from './LockIcon';
 export { NoFillIcon } from './NoFillIcon';
 export { IconCircleType, IconDiamondType, IconRectType, IconRoundedRectType, IconStickySquareFold } from './ShapeTypeIcons';
 export { IconWeight1, IconWeight2, IconWeight3, IconWeight4, IconWeightBars } from './StrokeWidthIcons';
+export {
+  IconSwitchType,
+  IconSwitchTypeCircle,
+  IconSwitchTypeDiamond,
+  IconSwitchTypeRect,
+  IconSwitchTypeRoundedRect,
+  IconSwitchTypeTriangle,
+} from './SwitchTypeIcons';
 export { TextColorIcon } from './TextColorIcon';
 export { IconCheck, IconChevronDown, IconChevronDownFilled, IconMinus, IconPlus } from './UtilityIcons';

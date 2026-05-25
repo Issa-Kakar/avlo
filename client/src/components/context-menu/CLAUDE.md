@@ -40,12 +40,16 @@
 > `StrokeWidthControl` tier-menu shell (Straight, Orthogonal); `LabelButton`
 > mirrors `LockButton` as the rightmost shell-button slot. Both are no-ops
 > today — `ConnectorTypeControl` is read-only on `selectedStyles.connectorType`
-> until route/endpoint switching is wired separately. (The text slice still
-> has tweaks pending — values are current, not final.)
+> until route/endpoint switching is wired separately. `ShapeTypeDropdown`
+> is the rightmost slot on shape/text/note bars — Mural `switchType` glyph
+> trigger (`.ctx-btn-switchtype`, engaged-dark on open) + a 4×2 icon-only
+> grid (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, one
+> trailing empty cell); shape-variant clicks call `setSelectedShapeType`,
+> Sticky/Text rows are no-op until TextTool-side conversion lands. (The
+> text slice still has tweaks pending — values are current, not final.)
 >
 > **Surfaces still on legacy vocabulary** (their values below are not canon):
-> - Per-kind group *layout* is unchanged: `ShapeStyleGroup`, `TextStyleGroup`, `NoteStyleGroup`, `CodeStyleGroup`. Their inner controls (bold / italic / align / typeface / font-size / fill / border / text-color / highlight) are all reskinned now; only the group-level wrapping is legacy.
-> - Dropdowns: `ShapeTypeDropdown`'s trigger only — its submenu rows, like every dropdown's, now take the dark `.ctx-submenu-item-active` fill (legacy blue gone). `LanguageDropdown` is migrated; see `codeOnly`.
+> - Per-kind menu inner controls (`ShapeMenu`, `TextMenu`, `NoteMenu`, `CodeMenu` body — bold / italic / align / typeface / font-size / fill / border / text-color / highlight) are all reskinned; only the menu wrapping is legacy.
 > - Bar shell — `.ctx-menu` border / shadow untouched; `.ctx-btn` family is 32×32 with an 8px radius.
 > - Base button color — `.ctx-btn { color: #374151 }` is the legacy text color; new surfaces override to `#48525b` / `#1b1f22` / `#282e34` via class-specific rules.
 >
@@ -207,31 +211,30 @@ Every bar starts with `[Lock]` (shell-rendered — always present, leftmost, eve
 ### `shapesOnly`
 
 ```
-[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [NoteAlign] [TextColor] [Highlight] | [Border hollow-circle] [Fill filled-circle] | [Width tier-menu]
+[Typeface] | [-FontSize+] | [B] [I] [NoteAlign] [TextColor] [Highlight] | [Fill filled-circle] [Border hollow-circle] | [Width tier-menu] | [SwitchType]
 ```
 
-Shapes now include the full text formatting suite for shape labels:
+Shapes include the full text formatting suite for shape labels:
 
-- **ShapeType** — leftmost. Shows current type icon, or composite `IconShapes` when mixed/null. Dropdown: Rectangle, Circle, Diamond, Rounded, Text, Sticky Note (text/note are no-op placeholders). Calls `setSelectedShapeType(key)`.
 - **Typeface** — self-subscribing. Trigger: current font in its own typeface + a filled down-chevron, both `#282e34`; the trigger stays light when open. Dropdown: 4 items (Draw/Inter/Lora/Mono), the active row filled `#1b1f22` with a checkmark. Calls `setSelectedFontFamily(family)`. Persists to `device-ui-store.textFontFamily`.
 - **FontSize** — stepper with dropdown. `IconStepUp`/`IconStepDown` chevron arrows (not +/-). Display range: 1-999. Stepper steps through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. Dropdown lists all presets with checkmark. Dropdown items center-aligned (`ctx-submenu-fontsize` with `justify-content: center`).
 - **Bold** / **Italic** — self-subscribing `memo` components. `.ctx-btn-fmt` square buttons; active state fills `#1b1f22` (white icon) when the entire selection has the style uniformly. Same TipTap/`formatFragment()` dual path as text objects.
 - **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Chevron-less `.ctx-btn-fmt` trigger (`#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Persists to `device-ui-store.shapeAlign`/`shapeAlignV`.
 - **TextColor** — `.ctx-btn-color` "A" icon with colored bar. Glyph rests `#1b1f22`, engaged-dark on open (bg flips, glyph flips white, bar keeps its color). When no label exists on the shape, falls back to `device-ui-store.textColor`. Calls `setSelectedTextColor`.
 - **Highlight** — `.ctx-btn-color` highlighter-marker glyph (24-viewBox Mural-style) with colored bar; self-subscribes to `selectInlineHighlightColor`. Same engaged-dark trigger pattern as TextColor.
-- **Border** — `BorderColorControl`: hollow frame-glyph trigger (`IconColorBorder`, reflects the current border color / mixed state) → shared `ColorGrid` 6-col palette with a no-stroke slot (the `NoFillIcon` swatch). Calls `setSelectedColor` (with `null` for no stroke).
 - **Fill** — `FillColorControl`: filled square-glyph trigger (`IconColorFill`, reflects the current fill / mixed split / engaged-dark on open). Same shared `ColorGrid` with a no-fill slot. `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
-- **Width** — border width (rightmost). `StrokeWidthControl` on the outline scale `2 / 4 / 6 / 8` — shapes and connectors share this scale (not the pen `4 / 7 / 10 / 13`).
+- **Border** — `BorderColorControl`: hollow frame-glyph trigger (`IconColorBorder`, reflects the current border color / mixed state) → shared `ColorGrid` 6-col palette with a no-stroke slot (the `NoFillIcon` swatch). Calls `setSelectedColor` (with `null` for no stroke).
+- **Width** — border width. `StrokeWidthControl` on the outline scale `2 / 4 / 6 / 8` — shapes and connectors share this scale (not the pen `4 / 7 / 10 / 13`).
+- **SwitchType** — rightmost. `IconSwitchType` (Mural `switchType` glyph) inside `.ctx-btn-switchtype` (32×32 button, 20×20 SVG, engaged-dark fill flip on open). Popout: icon-only 4×2 grid — Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell. 36×36 cells, 24×24 icons, right-anchored. Active cell = live `shapeType` filled `--ctx-engaged` with a white icon, no checkmark (the active state IS the cell). Shape-variant clicks call `setSelectedShapeType(key)`; Sticky/Text rows are non-destructive no-ops pending TextTool-side cross-type conversion (origin remap on alignment + `color`↔`labelColor` key remap).
 
 **Device-UI-store fallback for unlabeled shapes:** When a shape has no label, `computeStyles` returns `null` for `fontSize`/`labelColor`. `ShapeStyleGroup` reads `deviceTextSize` and `deviceTextColor` from `device-ui-store` as fallback values. This ensures the menu shows the values that would be used if the user starts typing to create a label — matching the "what you see is what you'd get" principle.
 
 ### `textOnly`
 
 ```
-[ShapeType] | [Typeface] | [-FontSize+] | [B] [I] [Align] [TextColor] [Highlight] | [Fill filled-circle]
+[Typeface] | [-FontSize+] | [B] [I] [Align] [TextColor] [Highlight] | [Fill filled-circle] | [SwitchType]
 ```
 
-- **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text<->shape conversion). Includes Sticky Note item.
 - **Typeface** — same as shapesOnly.
 - **FontSize** — same stepper with chevron arrows. Only renders if `fontSize !== null`.
 - **Bold** / **Italic** — same self-subscribing components.
@@ -239,21 +242,22 @@ Shapes now include the full text formatting suite for shape labels:
 - **TextColor** — "A" icon with colored bar. Falls back to `'#262626'` when `labelColor` is null.
 - **Highlight** — same as shapesOnly.
 - **Fill** — `FillColorControl`, identical pattern to shape fill (square fill-glyph trigger → shared `ColorGrid` with the no-fill slot). No border/stroke controls (text objects don't have stroke).
+- **SwitchType** — rightmost. Same component as shapesOnly's `SwitchType`, mounted with `mode='text'` — the `Text` row is the always-active cell regardless of selection state. Every cell is a no-op in this mode (cross-type conversion lands separately).
 
 ### `notesOnly`
 
 ```
-[NoteType] | [Typeface] | [B] [I] [NoteAlign] [Highlight] | [Fill filled-circle]
+[Typeface] | [B] [I] [NoteAlign] [Highlight] | [Fill filled-circle] | [SwitchType]
 ```
 
 Sticky notes have a dedicated bar with no text color control (note text is hardcoded `#1a1a1a`) and no font size stepper (font size is derived from scale):
 
-- **NoteType** — always shows `IconStickySquareFold`. Same `ShapeTypeDropdown` with `mode='note'`. Dropdown items include all shape types + text + sticky note (all no-op, type conversion not yet implemented).
 - **Typeface** — same self-subscribing `TypefaceButton`. Persists to `device-ui-store.noteFontFamily` (not `textFontFamily`).
 - **Bold** / **Italic** — same self-subscribing components. Uses TipTap chain when editor active, `formatFragment()` when not.
 - **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Trigger: current H-align icon, no chevron (`.ctx-btn-fmt`, `#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Notes use top-left origin so no anchor math needed for H-align (just sets `align` key). V-align sets `alignV` key. Persists to `device-ui-store.noteAlign`/`noteAlignV`.
 - **Highlight** — same as other kinds.
 - **Fill** — `NoteFillControl`: square fill-glyph trigger → light-surface palette (no no-fill slot — notes always have a fill). Default color `'#FEF3AC'` (warm sticky yellow). Device-ui persist is skipped (note fill is per-object, not a device default).
+- **SwitchType** — rightmost. Same component as shapesOnly's `SwitchType`, mounted with `mode='note'` — the `Sticky note` row is the always-active cell. Every cell is a no-op in this mode.
 
 **Note-specific device-ui persistence:** Font family and alignment actions detect `selectionKind === 'notesOnly'` and persist to note-specific device-ui fields (`noteFontFamily`, `noteAlign`, `noteAlignV`) rather than the text defaults.
 
@@ -299,7 +303,7 @@ ContextMenu                  <- gate on menuOpen, renders null when closed
         + <Menu />           <- one menus/* component (StrokeMenu … MixedMenu)
 ```
 
-`ContextMenu.tsx` is a pure dispatcher — `MENU_BY_KIND` (a `Partial<Record<SelectionKind, ComponentType>>`) maps `effectiveKind` to one `menus/*` component; `none` / `image` / `bookmark` map to nothing, leaving the shell's `LockButton` as the entire bar for those kinds. Each `menus/*` component is `memo`'d and self-subscribing — it owns the store selector(s) for its kind (`useShallow` on every object-returning selector) and returns its `ButtonGroup` (Shape/Text/Note prepend a `ShapeTypeDropdown` + divider *outside* the group; `MixedMenu` returns a bare `FilterObjectsDropdown`). The dispatcher never re-renders on a style change — only the mounted menu does.
+`ContextMenu.tsx` is a pure dispatcher — `MENU_BY_KIND` (a `Partial<Record<SelectionKind, ComponentType>>`) maps `effectiveKind` to one `menus/*` component; `none` / `image` / `bookmark` map to nothing, leaving the shell's `LockButton` as the entire bar for those kinds. Each `menus/*` component is `memo`'d and self-subscribing — it owns the store selector(s) for its kind (`useShallow` on every object-returning selector) and returns its `ButtonGroup` (Shape/Text/Note append a `ShapeTypeDropdown` + divider *inside* the group as the rightmost slot, paralleling `LabelButton` on `ConnectorMenu`; `MixedMenu` returns a bare `FilterObjectsDropdown`). The dispatcher never re-renders on a style change — only the mounted menu does.
 
 ### Component Inventory
 
@@ -320,7 +324,7 @@ ContextMenu                  <- gate on menuOpen, renders null when closed
 | `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Chevron-less `.ctx-btn-fmt` trigger → horizontal 3-icon submenu. |
 | `NoteAlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign` + `textAlignV`. Chevron-less `.ctx-btn-fmt` trigger → one flat submenu row: H-align · vertical divider · V-align. |
 | `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. Trigger = font name + filled down-chevron; 4-item dropdown, active row `#1b1f22`. |
-| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. 6-item dropdown (rect, circle, diamond, rounded, text, sticky note). Trigger icon: shapes mode = current type or composite, text mode = `IconTextType`, note mode = `IconStickySquareFold`. |
+| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. Rightmost slot on shape/text/note bars — `IconSwitchType` trigger (`.ctx-btn-switchtype`, engaged-dark on open) → icon-only 4×2 grid (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell). Active cell = current `shapeType` (shape mode) or fixed `text`/`note` row (text/note modes), filled `--ctx-engaged` with white icon. Shape-variant clicks call `setSelectedShapeType`; Sticky/Text rows no-op pending TextTool-side cross-type conversion. |
 | `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block, Sticky Note). |
 | `LanguageDropdown` | (no props) | Self-subscribes to `selectedStyles.codeLanguage`. 3-item language picker. |
 | `BoldButton` | `FormatButtons.tsx` | Self-subscribes to `selectInlineBold`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
@@ -526,7 +530,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `AlignDropdown.tsx` | Self-subscribing alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; 3 H-align icons in a horizontal submenu. |
 | `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; one flat submenu row: H-align · vertical divider · V-align. |
 | `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families). Trigger = name + filled down-chevron; active dropdown row `#1b1f22`. |
-| `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 6-item type switcher. Modes: `'shapes'`/`'text'`/`'note'`. |
+| `ShapeTypeDropdown.tsx` | Rightmost trigger (`.ctx-btn-switchtype`, `IconSwitchType`) + 4×2 icon-only grid popout (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded). Modes: `'shapes'` / `'text'` / `'note'`. Shape-variant clicks mutate via `setSelectedShapeType`; Sticky/Text rows no-op until TextTool-side conversion lands. |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts. Eight kinds: Stroke, Shape, Text, Connector, Code Block, Sticky Note, Image, Link. Link = bookmark; icon sourced from `toolbar/icons/IconLink`. |
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
@@ -547,6 +551,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `AlignIcons.tsx` | `IconAlignTextLeft/Center/Right` + `IconAlignVTop/Middle/Bottom` — all Mural `textAlign*` glyphs, 24-viewBox |
 | `FormatIcons.tsx` | `IconBold`, `IconItalic` — Mural `textStyleBold`/`textStyleItalic` glyphs, 24-viewBox |
 | `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`, `IconStickySquareFold` |
+| `SwitchTypeIcons.tsx` | `IconSwitchType` — Mural `switchType` glyph (24-viewBox, two stacked arrows wrapping a target ring) consumed by `.ctx-btn-switchtype`; `IconSwitchTypeRect` / `IconSwitchTypeCircle` / `IconSwitchTypeDiamond` / `IconSwitchTypeTriangle` / `IconSwitchTypeRoundedRect` — outlined 20-viewBox shape glyphs (`fill="none"`, `stroke="currentColor"`, `strokeWidth=2`, `strokeLinejoin=round`) for the grid items. Stroke=2 in 20-viewBox matches the toolbar `IconShapes` line weight at the dropdown's 24×24 CSS render. |
 | `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) — "A" glyph + bar (`fill="currentColor"` glyph, explicit `fill={barColor}` bar, so the bar survives the engaged-dark color flip). |
 | `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) — Mural-style highlighter at 24-viewBox; body + tip on `currentColor`, bar takes `barColor` (with a gray-bar + separators fallback when `barColor` is `null`). |
 | `NoFillIcon.tsx` | `NoFillIcon` (props: `selected?`) — Mural `colorTransparent` paths verbatim (white bg + grey ring at `#9ca3af` + "/" slash at `#6b7280`, inset from corners). `selected` lays the `checkboxCustom` check + white halo on top so the check stays readable where it crosses the slash — slash stays drawn in both states. |
@@ -582,11 +587,12 @@ indirection — identical pixels.
 - `.ctx-btn-label`: composes with `.ctx-btn-sq` on the connector-bar `LabelButton`; same `var(--ctx-engaged)` icon ink as `.ctx-btn-lock`.
 - `.ctx-btn-fmt`: bold / italic + code header/output toggles, align triggers. Inner SVG 20x20 (code header/output keep a 16px inline size). `.active` (toggle on) or `[aria-expanded="true"]` (dropdown open) → bg `#1b1f22`, white icon.
 - `.ctx-btn-color`: 32x32, inner SVG 20x20. Resting icon ink `var(--ctx-engaged)` (`#1b1f22`); `[aria-expanded="true"]` → bg `var(--ctx-engaged)`, glyph flips white. Both `TextColorIcon` and `HighlightIcon` draw the colored bar via an explicit `fill={barColor}` (not `currentColor`), so the bar keeps its color through the engaged-dark flip.
-- `.ctx-btn-teardrop` / `.ctx-btn-weight` / `.ctx-btn-conntype`: 32x32 color / width / connector-type triggers. `.ctx-btn-weight` and `.ctx-btn-conntype` icons rest at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon.
+- `.ctx-btn-teardrop` / `.ctx-btn-weight` / `.ctx-btn-conntype` / `.ctx-btn-switchtype`: 32x32 color / width / connector-type / switch-type triggers. `.ctx-btn-weight`, `.ctx-btn-conntype`, and `.ctx-btn-switchtype` icons rest at `#1b1f22`. `[aria-expanded="true"]` → bg `#1b1f22`, white icon. The switch-type SVG renders at 24×24 (vs. 20 on the others) so the Mural `switchType` glyph fills more of its 32×32 slot.
 - `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; the active swatch shows a centered check, no ring (the white surface needs no halo).
 - `.ctx-cp-swatch-nofill`: the no-fill / no-stroke slot — strips `.ctx-cp-swatch`'s border + bg so the SVG (`NoFillIcon`) owns the surface. Same 22×22 footprint and hover-scale as the colored swatches; the icon's grey ring + slash are inside that footprint, never inflating it.
 - `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu — `padding: 8px`, `border-radius: 12px`, 3px row gap. Rows left-aligned (icon · word · inline checkmark). `.ctx-weight-item-active` fills the tier row `#282e34`, white icon/label/check.
 - `.ctx-submenu-conntype` / `.ctx-conntype-item`: connector-type tier menu — same shell as the stroke-width tier menu (`min-width: 160px` to fit "Orthogonal"), `.ctx-conntype-item-active` fills `#282e34`.
+- `.ctx-submenu-switchtype` / `.ctx-switchtype-item`: switch-type icon-only grid popout — right-anchored (`left: auto; right: 0`) `repeat(4, 36px)` grid, 4px gap, 8px padding (~172×80 total). Each 36×36 cell hosts a 24×24 SVG, ink `--ctx-engaged`; `.ctx-switchtype-item-active` fills `--ctx-engaged` and the icon flips white (no checkmark — the active state IS the cell).
 - `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x12, SVG 11x6.5.
 - `.ctx-fontsize-value`: 32x32, padding 0, SVG 30x16 viewBox.
 - `.ctx-submenu-fontsize`: `min-width: 0` + 10px padding (content-driven width); 32x32 items, center-aligned (`justify-content: center`), active row inherits the base `.ctx-submenu-item-active` (`#1b1f22` / white).

@@ -19,19 +19,17 @@ const selectNoteStyles = (s: SelectionStore) => ({
 export const NoteMenu = memo(function NoteMenu() {
   const { fillColor, fillColorMixed } = useSelectionStore(useShallow(selectNoteStyles));
   return (
-    <>
-      <ShapeTypeDropdown mode="note" />
+    <ButtonGroup>
+      <TypefaceButton />
       <div className="ctx-divider" />
-      <ButtonGroup>
-        <TypefaceButton />
-        <div className="ctx-divider" />
-        <BoldButton />
-        <ItalicButton />
-        <NoteAlignDropdown />
-        <HighlightPickerPopover onSelect={setSelectedHighlight} />
-        <div className="ctx-divider" />
-        <NoteFillControl fillColor={fillColor} mixed={fillColorMixed} onSelect={setSelectedFillColor} />
-      </ButtonGroup>
-    </>
+      <BoldButton />
+      <ItalicButton />
+      <NoteAlignDropdown />
+      <HighlightPickerPopover onSelect={setSelectedHighlight} />
+      <div className="ctx-divider" />
+      <NoteFillControl fillColor={fillColor} mixed={fillColorMixed} onSelect={setSelectedFillColor} />
+      <div className="ctx-divider" />
+      <ShapeTypeDropdown mode="note" />
+    </ButtonGroup>
   );
 });

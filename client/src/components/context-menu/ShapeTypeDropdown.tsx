@@ -1,76 +1,90 @@
 import type React from 'react';
+import { IconStickyNote } from '@/components/toolbar/icons/IconStickyNote';
+import { IconText } from '@/components/toolbar/icons/IconText';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedShapeType } from '@/tools/selection/selection-actions';
-import { IconShapes, IconTextType } from './icons/FilterIcons';
-import { IconCircleType, IconDiamondType, IconRectType, IconRoundedRectType, IconStickySquareFold } from './icons/ShapeTypeIcons';
-import { IconCheck, IconChevronDown } from './icons/UtilityIcons';
+import {
+  IconSwitchType,
+  IconSwitchTypeCircle,
+  IconSwitchTypeDiamond,
+  IconSwitchTypeRect,
+  IconSwitchTypeRoundedRect,
+  IconSwitchTypeTriangle,
+} from './icons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 const selectShapeType = (s: SelectionStore) => s.selectedStyles.shapeType;
 
-const SHAPE_ICON: Record<string, React.FC<React.SVGProps<SVGSVGElement>>> = {
-  rect: IconRectType,
-  ellipse: IconCircleType,
-  diamond: IconDiamondType,
-  roundedRect: IconRoundedRectType,
-};
+// Grid flow: 4 columns × 2 rows, one trailing empty cell.
+//   [Sticky] [Text]    [Rect]   [Circle]
+//   [Diamond][Triangle][Rounded][ ]
+// `note` / `text` rows are placeholders for future cross-type conversion —
+// TextTool needs to handle origin remap on alignment + color-key remap
+// (color ↔ labelColor) during DOM editing before those become live actions.
+interface TypeItem {
+  key: string;
+  label: string;
+  Icon: React.FC<React.SVGProps<SVGSVGElement>>;
+}
 
-const TYPE_ITEMS: { key: string; label: string; Icon: React.FC<React.SVGProps<SVGSVGElement>> }[] = [
-  { key: 'rect', label: 'Rectangle', Icon: IconRectType },
-  { key: 'ellipse', label: 'Circle', Icon: IconCircleType },
-  { key: 'diamond', label: 'Diamond', Icon: IconDiamondType },
-  { key: 'roundedRect', label: 'Rounded', Icon: IconRoundedRectType },
-  { key: 'text', label: 'Text', Icon: IconTextType },
-  { key: 'note', label: 'Sticky Note', Icon: IconStickySquareFold },
+const ITEMS: readonly TypeItem[] = [
+  { key: 'note', label: 'Sticky note', Icon: IconStickyNote },
+  { key: 'text', label: 'Text', Icon: IconText },
+  { key: 'rect', label: 'Rectangle', Icon: IconSwitchTypeRect },
+  { key: 'ellipse', label: 'Circle', Icon: IconSwitchTypeCircle },
+  { key: 'diamond', label: 'Diamond', Icon: IconSwitchTypeDiamond },
+  { key: 'triangle', label: 'Triangle', Icon: IconSwitchTypeTriangle },
+  { key: 'roundedRect', label: 'Rounded', Icon: IconSwitchTypeRoundedRect },
 ];
+
+const SHAPE_VARIANT_KEYS = new Set(['rect', 'ellipse', 'diamond', 'triangle', 'roundedRect']);
 
 interface ShapeTypeDropdownProps {
   mode: 'shapes' | 'text' | 'note';
 }
 
+/**
+ * Type-switch dropdown — rightmost button on the shape/text/note bars.
+ * Trigger is the Mural `switchType` glyph (engaged-dark fill flip on open);
+ * popout is an icon-only 4×2 grid. Active cell fills `--ctx-engaged` with a
+ * white icon — no checkmark, the active state is the button itself.
+ *
+ * Active resolution: text bar → `text` row; note bar → `note` row; shape
+ * bar → live `shapeType` row (null = mixed → no active row).
+ */
 export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
   const { open, containerRef, toggle, close } = useDropdown();
   const shapeType = useSelectionStore(selectShapeType);
 
-  // Trigger icon: text mode always shows T, note mode always shows fold, shapes mode shows current type or composite
-  const TriggerIcon =
-    mode === 'text'
-      ? IconTextType
-      : mode === 'note'
-        ? IconStickySquareFold
-        : shapeType
-          ? (SHAPE_ICON[shapeType] ?? IconRectType)
-          : IconShapes;
+  const activeKey = mode === 'shapes' ? shapeType : mode === 'text' ? 'text' : 'note';
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-type" onMouseDown={toggle} aria-expanded={open}>
-        <TriggerIcon width={20} height={20} />
-        <IconChevronDown className="ctx-dd-arrow" />
+      <MenuButton className="ctx-btn-switchtype" onMouseDown={toggle} aria-expanded={open} aria-label="Switch type">
+        <IconSwitchType />
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu ctx-submenu-type">
-          {TYPE_ITEMS.map(({ key, label, Icon }) => {
-            const active = shapeType === key;
+        <div className="ctx-submenu ctx-submenu-switchtype">
+          {ITEMS.map(({ key, label, Icon }) => {
+            const active = activeKey === key;
             return (
               <button
                 key={key}
-                className={`ctx-submenu-item ctx-type-item${active ? ' ctx-submenu-item-active' : ''}`}
+                type="button"
+                className={`ctx-switchtype-item${active ? ' ctx-switchtype-item-active' : ''}`}
+                aria-label={label}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  if (mode === 'shapes' && key !== 'text') {
+                  if (mode === 'shapes' && SHAPE_VARIANT_KEYS.has(key)) {
                     setSelectedShapeType(key);
                   }
-                  // text→shape and shape→text conversions: future
                   close();
                 }}
               >
-                <Icon width={22} height={22} />
-                <span>{label}</span>
-                {active && <IconCheck width={16} height={16} className="ctx-type-check" />}
+                <Icon width={24} height={24} />
               </button>
             );
           })}

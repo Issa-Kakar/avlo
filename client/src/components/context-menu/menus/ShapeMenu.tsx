@@ -43,30 +43,28 @@ export const ShapeMenu = memo(function ShapeMenu() {
   const effectiveLabelColor = labelColor ?? deviceTextColor;
   const effectiveFontSize = fontSize ?? deviceTextSize;
   return (
-    <>
-      <ShapeTypeDropdown mode="shapes" />
+    <ButtonGroup>
+      <TypefaceButton />
       <div className="ctx-divider" />
-      <ButtonGroup>
-        <TypefaceButton />
-        <div className="ctx-divider" />
-        <FontSizeStepper
-          value={effectiveFontSize}
-          onDecrement={decrementFontSize}
-          onIncrement={incrementFontSize}
-          onSelectSize={setSelectedFontSize}
-        />
-        <div className="ctx-divider" />
-        <BoldButton />
-        <ItalicButton />
-        <NoteAlignDropdown />
-        <TextColorPopover color={effectiveLabelColor} onSelect={setSelectedTextColor} />
-        <HighlightPickerPopover onSelect={setSelectedHighlight} />
-        <div className="ctx-divider" />
-        <FillColorControl fillColor={fillColor} mixed={fillColorMixed} onSelect={setSelectedFillColor} />
-        <BorderColorControl color={color} mixed={colorMixed} onSelect={setSelectedColor} />
-        <div className="ctx-divider" />
-        <StrokeWidthControl widths={OUTLINE_WIDTHS} value={width} onSelect={setSelectedWidth} disabled={color === null && !colorMixed} />
-      </ButtonGroup>
-    </>
+      <FontSizeStepper
+        value={effectiveFontSize}
+        onDecrement={decrementFontSize}
+        onIncrement={incrementFontSize}
+        onSelectSize={setSelectedFontSize}
+      />
+      <div className="ctx-divider" />
+      <BoldButton />
+      <ItalicButton />
+      <NoteAlignDropdown />
+      <TextColorPopover color={effectiveLabelColor} onSelect={setSelectedTextColor} />
+      <HighlightPickerPopover onSelect={setSelectedHighlight} />
+      <div className="ctx-divider" />
+      <FillColorControl fillColor={fillColor} mixed={fillColorMixed} onSelect={setSelectedFillColor} />
+      <BorderColorControl color={color} mixed={colorMixed} onSelect={setSelectedColor} />
+      <div className="ctx-divider" />
+      <StrokeWidthControl widths={OUTLINE_WIDTHS} value={width} onSelect={setSelectedWidth} disabled={color === null && !colorMixed} />
+      <div className="ctx-divider" />
+      <ShapeTypeDropdown mode="shapes" />
+    </ButtonGroup>
   );
 });

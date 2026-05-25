@@ -31,29 +31,27 @@ export const TextMenu = memo(function TextMenu() {
   const { fontSize, labelColor, fillColor, fillColorMixed } = useSelectionStore(useShallow(selectTextStyles));
   const effectiveColor = labelColor ?? '#262626';
   return (
-    <>
-      <ShapeTypeDropdown mode="text" />
+    <ButtonGroup>
+      <TypefaceButton />
       <div className="ctx-divider" />
-      <ButtonGroup>
-        <TypefaceButton />
-        <div className="ctx-divider" />
-        {fontSize !== null && (
-          <FontSizeStepper
-            value={fontSize}
-            onDecrement={decrementFontSize}
-            onIncrement={incrementFontSize}
-            onSelectSize={setSelectedFontSize}
-          />
-        )}
-        <div className="ctx-divider" />
-        <BoldButton />
-        <ItalicButton />
-        <AlignDropdown />
-        <TextColorPopover color={effectiveColor} onSelect={setSelectedTextColor} />
-        <HighlightPickerPopover onSelect={setSelectedHighlight} />
-        <div className="ctx-divider" />
-        <FillColorControl fillColor={fillColor} mixed={fillColorMixed} onSelect={setSelectedFillColor} />
-      </ButtonGroup>
-    </>
+      {fontSize !== null && (
+        <FontSizeStepper
+          value={fontSize}
+          onDecrement={decrementFontSize}
+          onIncrement={incrementFontSize}
+          onSelectSize={setSelectedFontSize}
+        />
+      )}
+      <div className="ctx-divider" />
+      <BoldButton />
+      <ItalicButton />
+      <AlignDropdown />
+      <TextColorPopover color={effectiveColor} onSelect={setSelectedTextColor} />
+      <HighlightPickerPopover onSelect={setSelectedHighlight} />
+      <div className="ctx-divider" />
+      <FillColorControl fillColor={fillColor} mixed={fillColorMixed} onSelect={setSelectedFillColor} />
+      <div className="ctx-divider" />
+      <ShapeTypeDropdown mode="text" />
+    </ButtonGroup>
   );
 });
