@@ -22,7 +22,7 @@
  * @module renderer/layers/connector-flow
  */
 
-import { getHandleShapeType, getNoteProps, getShapeProps } from '@/core/accessors';
+import { getNoteProps, getShapeProps } from '@/core/accessors';
 import { computeConnectorBBoxFromPointsInto } from '@/core/geometry/bbox';
 import { expandBBox } from '@/core/geometry/bounds';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
@@ -95,7 +95,7 @@ export function drawConnectorFlow(ctx: CanvasRenderingContext2D): void {
     const st = useDeviceUIStore.getState();
     drawFlowPreview(ctx, gate.handle, render.preview, st.drawingSettings.color, st.connectorSize);
   }
-  drawFlowButtons(ctx, gate.bbox, getHandleShapeType(gate.handle), render.preview, scale);
+  drawFlowButtons(ctx, gate.bbox, render.preview, scale);
 }
 
 // =============================================================================
@@ -135,14 +135,8 @@ function drawFlowPreview(ctx: CanvasRenderingContext2D, source: ObjectHandle, pr
 // BUTTONS
 // =============================================================================
 
-function drawFlowButtons(
-  ctx: CanvasRenderingContext2D,
-  bbox: Readonly<BBoxTuple>,
-  shapeType: string,
-  preview: FlowPreview | null,
-  scale: number,
-): void {
-  const centers = flowButtonCenters(bbox, shapeType, scale);
+function drawFlowButtons(ctx: CanvasRenderingContext2D, bbox: Readonly<BBoxTuple>, preview: FlowPreview | null, scale: number): void {
+  const centers = flowButtonCenters(bbox, scale);
   const hoveredSide = preview ? preview.side : null;
   // Candidate / duplicate → directional arrow; dragOnly → plain enlarged circle.
   const hoverMode: ButtonMode = preview && preview.kind === 'dragOnly' ? 'drag' : 'arrow';

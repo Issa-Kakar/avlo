@@ -343,6 +343,7 @@ Derived: `computeArrowLength(strokeWidth)`, `computeArrowWidth(strokeWidth)`, `c
 | Find snap target | `findBestSnapTarget(ctx)` |
 | Connectors anchored to a shape | `getAttachedConnectors(shapeId)` |
 | Detach on shape delete | `detachConnectorFromShape(cId, sId)` (inside `transact()`) |
+| Side midpoint → normalized anchor | `midpointAnchorFor(shapeType, dir, out)` |
 | Anchor → frame point | `anchorFramePoint(anchor, frame)` |
 | Elbow routing point (with cardinal offset) | `elbowAnchorPoint(anchor, frame, dir)` |
 | Write-into elbow point | `fillElbowAnchorPointInto(out, anchor, frame, dir)` |
