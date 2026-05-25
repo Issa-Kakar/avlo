@@ -8,7 +8,7 @@ import type { Slot } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
-import type { ObjectKind } from '@/core/types/objects';
+import type { ConnectorType, ObjectKind } from '@/core/types/objects';
 
 // ============================================================================
 // Selection Composition
@@ -74,6 +74,9 @@ export interface SelectedStyles {
   codeHeaderVisible: boolean | null;
   /** Code block output visibility. Used by codeOnly. */
   codeOutputVisible: boolean | null;
+  /** First connector's routing type. Used by connector-only. No mixed flag — the
+   *  trigger reflects the first connector and routing types don't blend in UI. */
+  connectorType: ConnectorType | null;
 }
 
 export const EMPTY_STYLES: SelectedStyles = {
@@ -91,6 +94,7 @@ export const EMPTY_STYLES: SelectedStyles = {
   codeLanguage: null,
   codeHeaderVisible: null,
   codeOutputVisible: null,
+  connectorType: null,
 };
 
 export interface InlineStyles {

@@ -1,0 +1,51 @@
+/* ===== Context Menu — Connector Type Control =====
+   Trigger + tier menu mirror StrokeWidthControl: 32×32 button with 20×20 icon
+   at --ctx-engaged ink, engaged-dark fill on open. Submenu reuses the tier
+   row pattern (icon · word · inline check, --ctx-engaged-tier on active). */
+
+.ctx-btn-conntype {
+  width: 32px;
+  padding: 0;
+  color: var(--ctx-engaged);
+}
+
+.ctx-btn-conntype svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ctx-btn-conntype[aria-expanded="true"],
+.ctx-btn-conntype[aria-expanded="true"]:hover,
+.ctx-btn-conntype[aria-expanded="true"]:active {
+  background: var(--ctx-engaged);
+  color: #fff;
+}
+
+.ctx-submenu-conntype {
+  min-width: 160px;
+  border-radius: 12px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ctx-conntype-item {
+  height: 36px;
+  gap: 10px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ctx-text-secondary);
+  white-space: nowrap;
+}
+
+.ctx-conntype-item svg {
+  flex-shrink: 0;
+}
+
+.ctx-conntype-item-active,
+.ctx-conntype-item-active:hover {
+  background: var(--ctx-engaged-tier);
+  color: #fff;
+}

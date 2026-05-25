@@ -7,6 +7,7 @@ import {
   CODE_FONT_SIZE,
   CODE_LANGUAGE,
   COLOR,
+  CONNECTOR_TYPE,
   collectHandles,
   FILL_COLOR,
   FONT_FAMILY,
@@ -103,6 +104,7 @@ export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyle
   const lang = foldField(handles, CODE_LANGUAGE);
   const header = foldField(handles, HEADER_VISIBLE);
   const output = foldField(handles, OUTPUT_VISIBLE);
+  const connType = foldField(handles, CONNECTOR_TYPE);
 
   return {
     color: color.value,
@@ -119,6 +121,10 @@ export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyle
     codeLanguage: kind === 'code' ? (lang.mixed ? null : lang.value) : null,
     codeHeaderVisible: kind === 'code' ? (header.mixed ? null : header.value) : null,
     codeOutputVisible: kind === 'code' ? (output.mixed ? null : output.value) : null,
+    // Mixed connector selections collapse to the first connector's type — no
+    // "mixed" UI affordance (routing types don't blend), so the trigger reflects
+    // whatever fell out of the fold's first-applicable read.
+    connectorType: kind === 'connector' ? connType.value : null,
   };
 }
 
@@ -137,7 +143,8 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.labelColor === b.labelColor &&
     a.codeLanguage === b.codeLanguage &&
     a.codeHeaderVisible === b.codeHeaderVisible &&
-    a.codeOutputVisible === b.codeOutputVisible
+    a.codeOutputVisible === b.codeOutputVisible &&
+    a.connectorType === b.connectorType
   );
 }
 

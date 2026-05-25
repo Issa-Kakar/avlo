@@ -103,6 +103,14 @@
   color: var(--ctx-engaged);
 }
 
+/* ===== Label Button (connector menu, rightmost) =====
+   No-op placeholder for the "add connector label" entry-point. Same ink as
+   the lock — both are primary visual elements on their bar. */
+
+.ctx-btn-label {
+  color: var(--ctx-engaged);
+}
+
 /* ===== Filter Button (FilterObjectsDropdown trigger) ===== */
 
 .ctx-btn-filter {

@@ -20,9 +20,9 @@ export const StrokeMenu = memo(function StrokeMenu() {
   const { color, colorMixed, width } = useSelectionStore(useShallow(selectStrokeStyles));
   return (
     <ButtonGroup>
-      <StrokeWidthControl widths={STROKE_WIDTHS} value={width} onSelect={setSelectedWidth} />
-      <div className="ctx-divider" />
       <StrokeColorControl color={color} mixed={colorMixed} onSelect={setSelectedColor} />
+      <div className="ctx-divider" />
+      <StrokeWidthControl widths={STROKE_WIDTHS} value={width} onSelect={setSelectedWidth} />
     </ButtonGroup>
   );
 });

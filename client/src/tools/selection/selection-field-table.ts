@@ -18,6 +18,7 @@ import {
   getAlignV,
   getColor,
   getColorOrNull,
+  getConnectorType,
   getContent,
   getFillColor,
   getFontFamily,
@@ -33,7 +34,7 @@ import {
   hasLabel,
 } from '@/core/accessors';
 import { anchorFactor, getInlineStyles, getTextFrame } from '@/core/text/text-system';
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import type { ConnectorType, ObjectHandle, ObjectKind } from '@/core/types/objects';
 import { getHandle, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -520,4 +521,13 @@ export const HEADER_VISIBLE: FieldDescriptor<boolean> = {
 export const OUTPUT_VISIBLE: FieldDescriptor<boolean> = {
   read: { code: (h) => getOutputVisible(h.y) },
   write: { code: (h, v) => h.y.set('outputVisible', v) },
+};
+
+// Read-only descriptor — surfaces the first connector's routing type for the
+// context-menu trigger. No writer yet: switching `connectorType` requires
+// route + endpoint geometry adjustments that live in the connector subsystem;
+// the action wiring lands separately.
+export const CONNECTOR_TYPE: FieldDescriptor<ConnectorType> = {
+  read: { connector: (h) => getConnectorType(h.y) },
+  write: {},
 };
