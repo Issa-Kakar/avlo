@@ -36,36 +36,19 @@
   gap: 0;
 }
 
-/* Sidebar toggle button */
-.top-bar-sidebar {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  color: #1a1a1a;
-  transition: background 150ms ease;
-}
-
-.top-bar-sidebar:hover {
-  background: rgba(42, 82, 121, 0.08);
-}
-
-.top-bar-sidebar-icon {
-  width: 24px;
-  height: 24px;
-}
-
-/* Logo (decorative) */
+/* Logo (decorative) — display:block kills the inline-element phantom descender
+   space SVGs inherit by default. The +1px optical nudge compensates for
+   MuseoModerno's high x-height: pure flex centering lands the wordmark's
+   x-height center ~1.5px above where neighboring text (Untitled) naturally
+   sits, so the logo reads visibly high. Down 1px brings it within the
+   sub-px perceptibility threshold of the row's text baseline. */
 .top-bar-logo {
-  color: #1a1a1a;
+  display: block;
+  color: #282e34;
   flex-shrink: 0;
-  margin-left: 9px;
+  margin-left: 6px;
   position: relative;
-  top: -1px;
+  top: 1px;
 }
 
 /* Vertical divider — blue-tinted, shared with the context menu, main menu,
@@ -78,29 +61,41 @@
   flex-shrink: 0;
 }
 
-/* Right-side divider — symmetric margins so the line reads centered between the
-   kebab and undo buttons (both sides are empty button space, no text-form mass
-   to compensate for asymmetry like the first divider has). */
+/* History divider — symmetric, tighter margins so the chevron-divider-undo
+   trio reads as a single grouped affordance rather than three loosely-spaced
+   elements. Symmetric because both sides are empty button space. */
 .top-bar-divider-history {
-  margin: 0 9px;
+  margin: 0 6px;
 }
 
-/* Board name */
+/* Board name — `<span>` today (placeholder); becomes a text input on
+   rename. Cursor stays `text` to advertise direct editability. Height
+   math: `line-height: 28px` + 2px transparent border each side = 32px
+   visible footprint, matching the icon-button siblings (chevron / undo
+   / redo). Hover paints the same border in #818f9c — text color stays
+   put, no layout shift. `margin-left: 6px` compensates for the tighter
+   inner padding (6px each side, halved from 12) so the visible
+   logo↔title gap doesn't close. Inherits `font-family: var(--font-ui)`
+   from `.top-bar`. */
 .top-bar-name {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
+  line-height: 28px;
   color: #282e34;
+  border: 2px solid transparent;
+  border-radius: 8px;
   padding: 0 6px;
+  margin-left: 6px;
   cursor: text;
   white-space: nowrap;
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: color 150ms ease;
+  transition: border-color 150ms ease;
 }
 
 .top-bar-name:hover {
-  color: #000000;
+  border-color: #818f9c;
 }
 
 /* ===== Main menu trigger — chevron-down button (was the kebab) =====

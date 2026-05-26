@@ -11,9 +11,12 @@
 Two floating chrome pills along the top edge of the canvas, plus a
 dropdown menu that hangs off the left bar.
 
-- **`TopBar`** (left, `top-bar-left`) — sidebar toggle · Avlo logo ·
-  divider · board name ("Untitled" hardcoded) · main-menu trigger ·
-  divider · undo/redo.
+- **`TopBar`** (left, `top-bar-left`) — Avlo logo · board name
+  ("Untitled" hardcoded) · main-menu trigger · divider · undo/redo. The
+  hamburger sidebar toggle used to be the first item here but was
+  removed in favor of making the logo itself clickable to a future
+  dashboard / room-list page; `SidebarIcon.tsx` is preserved in case
+  the decision reverses.
 - **`TopBarRight`** (right, `top-bar-right`) — collaborator avatars ·
   divider · Share button.
 - **`MainMenu`** (popover) — drops out from the trigger to the right of
@@ -29,7 +32,7 @@ The dropdown sits at `z-index: 401` so it paints over its own host pill.
 
 | File | Responsibility |
 |---|---|
-| `TopBar.tsx` | Left-bar shell — orders sidebar / logo / divider / name / `MainMenuTrigger` / divider / `HistoryButtons`. |
+| `TopBar.tsx` | Left-bar shell — orders logo / name / `MainMenuTrigger` / divider / `HistoryButtons`. |
 | `TopBarRight.tsx` | Right-bar shell — `UserAvatarCluster` / divider / Share button. Share copies `window.location.href` to clipboard (placeholder for a real share modal). |
 | `TopBar.css` | The only stylesheet for this folder. Holds the shared `.top-bar` pill, every button variant, the main-menu container + items + divider + open animation, and the Share button. |
 | `HistoryButtons.tsx` | `memo`'d. Undo/Redo buttons, subscribed to `history-store` (`selectCanUndo` / `selectCanRedo`). Clicks call `undo()` / `redo()` from `room-runtime`. |
@@ -54,10 +57,10 @@ share it across any new top-bar surface.
 | Token | Hex | Where it appears today |
 |---|---|---|
 | Engaged dark | `#1b1f22` | `MainMenuTrigger` ink at rest; `MainMenuTrigger[aria-expanded="true"]` background; `HistoryButtons` ink at rest. Matches context-menu `--ctx-engaged`. |
-| Tier dark | `#282e34` | Board name (`.top-bar-name`). Matches context-menu `--ctx-engaged-tier`. |
+| Tier dark | `#282e34` | Avlo logo (`.top-bar-logo`) + board name (`.top-bar-name`). Matches context-menu `--ctx-engaged-tier`. |
 | Body text | `#48525b` | `MainMenuItem` label + icon + chevron (all via `currentColor`). Matches context-menu `--ctx-text`. |
 | Disabled ink | `#0b294652` | `HistoryButtons:disabled` (32% navy — fades cleanly inside the `#1b1f22` family instead of switching to a foreign warm/cool grey). |
-| Legacy ink | `#1a1a1a` | `.top-bar-sidebar`, `.top-bar-logo`. Pre-engaged-dark; not aligned yet. |
+| Hover border | `#818f9c` | `.top-bar-name:hover` outline (2px). The chrome's only non-divider hairline color today — distinct from the divider tint to signal "interactive surface" rather than "structural rule". |
 | Share fill | `#ef4e3a` (hover `#d74634`, active `#bf3e2e`) | Single primary CTA — the warm pole in an otherwise cool chrome palette. White text via `currentColor`. |
 
 ### Washes & hairlines
@@ -88,7 +91,6 @@ without a reason — recolor the surface to the existing token instead.
 ### Buttons
 | Class | Size | Radius | Inner SVG |
 |---|---|---|---|
-| `.top-bar-sidebar` | 32×32 | 8px | 24×24 |
 | `.top-bar-menu-trigger` | 32×32 | 8px | 20×20 |
 | `.top-bar-history-btn` | 32×32 | 8px | 20×20 |
 | `.top-bar-share` | auto×32, `padding: 0 14px 0 9px`, `gap: 6px` | 8px | 20×20 |
@@ -100,10 +102,31 @@ active scale-down, since it's the one primary action and reads as
 clickable chrome rather than a tool button.
 
 ### Dividers
-`.top-bar-divider` — 2×24, vertical, `flex-shrink: 0`. Default margin is
-`0 4px 0 9px` (asymmetric to balance the text mass of the board name to
-its right); `.top-bar-divider-history` overrides to symmetric `0 9px`,
-and the right-bar override is `0 8px`.
+`.top-bar-divider` — 2×24, vertical, `flex-shrink: 0`. Today only used
+by the history divider (composed with `.top-bar-divider-history`),
+which overrides margin to symmetric `0 6px` — tight enough that the
+chevron · divider · undo trio reads as one grouped affordance. The
+right-bar variant overrides to `0 8px`. (The base rule's
+`0 4px 0 9px` margin was tuned for a now-removed first divider that
+balanced text mass on its right; left intact for the day a non-history
+divider returns, but currently dead code.)
+
+### Board name (`.top-bar-name`)
+A `<span>` today (placeholder); will become a text input wired to
+rename. Cursor is `text` to advertise editability.
+- Visible height **32px**, matching the icon-button siblings (chevron,
+  undo, redo). Built from `line-height: 28px` + `2px` transparent
+  border each side — no explicit `height`.
+- Padding `0 6px` (symmetric).
+- `margin-left: 6px` is a compensation knob, not a chrome margin: when
+  the inner padding was tightened (12 → 6), this margin restored the
+  visible logo↔title gap so the pill chrome didn't shift.
+- Hover paints the border in `#818f9c` at the same `2px` width (no
+  layout shift). Text color does **not** change on hover — the border
+  alone is the affordance.
+- No `min-width` — the slot hugs `content + padding`. `max-width: 160px`
+  with `text-overflow: ellipsis` caps long names. The pill will grow
+  rightward as the name does.
 
 ### Main menu popover
 - `min-width: 210px`, padding `6px`, radius `12px`, gap `2px` between items.
@@ -222,8 +245,8 @@ churn.
 
 | File | viewBox | Native size | Notes |
 |---|---|---|---|
-| `AvloLogo.tsx` | `0 4 58 34` | 34h | Righteous typeface "avlo", 0.85 opacity to soften visual weight. The `top: -1px` adjustment in `.top-bar-logo` is optical alignment with the wordmark's x-height. |
-| `SidebarIcon.tsx` | `0 0 24 24` | 24×24 | Three filled pill rows, deliberately tighter spacing than a standard hamburger so it reads "sidebar" rather than "menu". |
+| `AvloLogo.tsx` | `0 4 64 34` | 34h | MuseoModerno 600 wordmark "avlo" at `fontSize 30`, baseline `y=29`. ViewBox tuned so the 'l' ascender clears the top by ~3u and the bowls have right-side room. Font is currently loaded from Google Fonts (see `index.html`) — self-host before ship to drop the third-party dependency. The `top: 1px` nudge in `.top-bar-logo` compensates for MuseoModerno's relatively high x-height: pure flex centering lands the wordmark ~1.5px above the row's text optical center, so +1px brings it within sub-px of the board name's. |
+| `SidebarIcon.tsx` | `0 0 24 24` | 24×24 | Three filled pill rows, deliberately tighter spacing than a standard hamburger so it reads "sidebar" rather than "menu". **Unmounted today** — the sidebar button was removed in favor of a future logo-as-dashboard-link approach; the icon file is preserved in case the sidebar returns. |
 | `ChevronDownIcon.tsx` | `0 0 24 24` | 20×20 (CSS) | Mural solid chevron. Glyph for the main-menu trigger. |
 | `ChevronRightIcon.tsx` | `0 0 24 24` | 16×16 (CSS) | Same Mural geometry rotated 90°. Popout affordance on main-menu rows. |
 | `ExportIcon.tsx` | `0 0 24 24` | 20×20 (CSS) | Mural download SVG with the arrow path **vertically mirrored** around y=6.942 (y_abs → 13.884 − y_abs; dy_rel → −dy_rel; arc sweep flag flipped 0↔1). Tail now sits at the bottom (overlapping the tray top by 0.384 — same visual continuity the original had between tip and tray), so it reads as "upload out of the tray" instead of "download into it". Tray path is untouched. |
@@ -246,10 +269,8 @@ comes from CSS, never the SVG itself — pass `width` / `height` through
 ```
 RoomPage.tsx
 ├── <TopBar />
-│   ├── .top-bar-sidebar     (no-op placeholder)
-│   ├── AvloLogo
-│   ├── .top-bar-divider
-│   ├── .top-bar-name        ("Untitled" — hardcoded)
+│   ├── AvloLogo             ← future: clickable → dashboard
+│   ├── .top-bar-name        ("Untitled" — hardcoded; future text input)
 │   ├── MainMenuTrigger      ← owns the dropdown
 │   │   └── MainMenu (open ? rendered : null)
 │   │       ├── MainMenuItem × 5
@@ -263,6 +284,7 @@ RoomPage.tsx
     └── .top-bar-share       (clipboard placeholder)
 ```
 
-The sidebar button and the board name are **placeholders** — present in
-the markup, no behavior yet. The Share button works (copies URL) but is
-also a placeholder for a real share flow.
+The board name and AvloLogo are **placeholders** — board name will be
+wired to text-input on rename; logo will become clickable → dashboard
+(a room-list page yet to be designed). The Share button works (copies
+URL) but is also a placeholder for a real share flow.
