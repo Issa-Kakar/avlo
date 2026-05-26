@@ -23,7 +23,7 @@
 
 ### Why DOM Cursors
 
-The overlay canvas (`z-index: 2`) sits below the editor overlay (`editorHost` `z-index: 3`). Rendering peer cursors on the overlay canvas left them occluded by any in-flight text/code editor surface. The renderer mounts cursors as `<img>` children of a third div (`cursorHost`, `z-index: 4`, `pointerEvents: 'none'`, `contain: 'layout style'`) sibling to the canvases and the editor overlay. Cursors stack above the editor and BELOW the page chrome (TopBar 400, ToolPanel 380/500, context-menu 1000) — matching the whiteboard model (Figma, Miro, Excalidraw) where cursors live on the canvas, not over the toolbar. The container's `overflow: hidden` clips cursors that translate beyond the canvas region.
+The overlay canvas (`z-index: 2`) sits below the editor overlay (`editorHost` `z-index: 3`). Rendering peer cursors on the overlay canvas left them occluded by any in-flight text/code editor surface. The renderer mounts cursors as `<img>` children of a third div (`cursorHost`, `z-index: 4`, `pointerEvents: 'none'`, `contain: 'layout style'`) sibling to the canvases and the editor overlay. Cursors stack above the editor and BELOW the floating UI (context-menu 300, Toolbar/ZoomControls 380, TopBar 400) — matching the whiteboard model (Figma, Miro, Excalidraw) where cursors live on the canvas, not over the toolbar. The container's `overflow: hidden` clips cursors that translate beyond the canvas region.
 
 ### DOM Host Plumbing
 

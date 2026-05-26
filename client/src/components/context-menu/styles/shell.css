@@ -16,12 +16,17 @@
   font-family: var(--font-ui);
 }
 
+/* Sits ABOVE the canvas layers (base 1, overlay 2, editor 3, cursors 4)
+   and BELOW page chrome (toolbar/zoom 380, top bar 400) so the chrome
+   and its dropdowns (zoom-menu, top-bar menus, toolbar inspectors)
+   always win when geometry can't keep them clear. Don't re-elevate.
+   Submenus inside ride in this stacking context via .ctx-submenu z:10. */
 .context-menu-floating {
   position: fixed;
   width: max-content;
   top: 0;
   left: 0;
-  z-index: 1000;
+  z-index: 300;
   pointer-events: none;
 }
 

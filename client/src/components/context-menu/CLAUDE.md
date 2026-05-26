@@ -162,7 +162,7 @@ Canvas.tsx unmount -> controller.destroy()
 
 **Middleware chain:** `offset(40)` -> `flip` (top-biased, bottom fallback) -> `shift` (horizontal clamping, cross-axis) -> `hide` (referenceHidden detection — hides when selection scrolls fully offscreen).
 
-**Exclusion zones:** `FLIP_PADDING: { top: 72, bottom: 76, left: 12, right: 12 }`, `SHIFT_PADDING: { top: 72, bottom: 12, left: 12, right: 12 }`. Top 72px = ToolPanel (48px) + padding. Bottom 76px for flip = ZoomControls area.
+**Exclusion zones:** `FLIP_PADDING: { top: 64, bottom: 76, left: 12, right: 12 }`, `SHIFT_PADDING: { top: 64, bottom: 12, left: 64, right: 12 }`. Top 64px clears the TopBar pill (top:7 + h:48 = 55, +9 buffer). Left 64px on shift clears the vertical Toolbar pill (left:9 + w:48 = 57, +7 buffer) — flip's left isn't bumped because there are no left/right fallback placements for it to switch to. Bottom 76 (flip-only) keeps the menu out of the ZoomControls' band (bottom:16 + h:48 = 64, +12 buffer); bottom shift stays at 12 because the zoom bar is right-cornered, so a downward shift on the left/center is unblocked.
 
 **Bounds source:** `computeSelectionBounds()` — zero-arg, reads `selectedIds`/`textEditingId` from store internally. Text objects use derived frame from `getTextFrame(id)` (text layout cache). Other objects use `handle.bbox`.
 
@@ -178,6 +178,8 @@ Animation is on the **inner `.ctx-menu` div** (the React bar):
 - `.ctx-hidden .ctx-menu`: `visibility: hidden; opacity: 0; transform: scale(0.96); transition: none`
 
 Adding `ctx-hidden` = instant hide (no transition). Removing it = spring reveal via base `.ctx-menu` transition.
+
+**Z-index:** the portal sits at `z-index: 300` — above the canvas / editor / cursor stack (1-4) but BELOW the page chrome (Toolbar / ZoomControls 380, TopBar 400). The exclusion zones in `ContextMenuController` keep most overlaps from happening, but for the irreducible cases (an open zoom-menu, a future top-bar dropdown, a toolbar inspector opening over a selected object near it) the chrome wins. Submenus inside the bar (`.ctx-submenu` `z-index: 10`) live in the portal's stacking context, so they ride along — don't try to re-elevate them to escape the portal.
 
 ---
 
