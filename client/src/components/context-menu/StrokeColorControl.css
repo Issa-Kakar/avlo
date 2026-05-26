@@ -7,14 +7,8 @@
 }
 
 .ctx-btn-teardrop svg {
-  width: 22px;
-  height: 22px;
-}
-
-.ctx-btn-teardrop[aria-expanded="true"],
-.ctx-btn-teardrop[aria-expanded="true"]:hover,
-.ctx-btn-teardrop[aria-expanded="true"]:active {
-  background: var(--ctx-engaged);
+  width: 20px;
+  height: 20px;
 }
 
 /* Context color picker — toolbar picker mimicked on a light surface. */

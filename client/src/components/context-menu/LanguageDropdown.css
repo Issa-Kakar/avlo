@@ -6,7 +6,7 @@
    run 700 (not FILTER's 600/700 split) and the value uses the typeface-picker
    ink rather than the focal near-black. */
 .ctx-lang-trigger-label {
-  fill: var(--ctx-text-secondary);
+  fill: var(--ctx-text);
   font-family: var(--font-ui);
   font-size: 10px;
   font-weight: 700;

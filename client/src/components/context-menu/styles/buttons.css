@@ -1,7 +1,8 @@
 /* ===== Context Menu — Buttons =====
-   Base .ctx-btn family first, then every variant in source order — same-
-   specificity :hover vs .active / [aria-expanded] collisions resolve by
-   declaration order, so the whole .ctx-btn family stays in this one file. */
+   Base .ctx-btn family first, then the shared engaged-trigger marker, then
+   every variant in source order. Same-specificity :hover vs .active /
+   [aria-expanded] collisions resolve by declaration order, so the whole
+   .ctx-btn family stays in this one file. */
 
 .ctx-btn {
   height: 32px;
@@ -13,7 +14,10 @@
   background: transparent;
   border: none;
   border-radius: 8px;
-  color: var(--ctx-text);
+  /* Icon buttons dominate the bar; default ink is the engaged dark. Text-
+     bearing triggers (filter, language) paint via explicit SVG `fill`, so
+     they ignore this. */
+  color: var(--ctx-engaged);
   cursor: pointer;
   font-family: var(--font-ui);
   font-size: 13px;
@@ -39,6 +43,22 @@
   outline-offset: -1px;
 }
 
+/* ===== Engaged Trigger Marker =====
+   Composes with any .ctx-btn variant whose [aria-expanded="true"] state
+   should fill var(--ctx-engaged) and flip currentColor to white. Icons
+   drawn with `currentColor` flip white; icons with explicit `fill` props
+   (ColorTeardrop, IconColorFill, IconColorBorder) ignore the color flip
+   and stay drawn by their own props. Triggers that intentionally don't
+   flip on open (.ctx-btn-font typeface, .ctx-btn-lang language) don't
+   carry this class. */
+
+.ctx-btn-engaged[aria-expanded="true"],
+.ctx-btn-engaged[aria-expanded="true"]:hover,
+.ctx-btn-engaged[aria-expanded="true"]:active {
+  background: var(--ctx-engaged);
+  color: #fff;
+}
+
 /* ===== Button Variants ===== */
 
 .ctx-btn-sq {
@@ -54,7 +74,6 @@
 .ctx-btn-color {
   width: 32px;
   padding: 0;
-  color: var(--ctx-engaged);
 }
 
 .ctx-btn-color svg {
@@ -62,24 +81,11 @@
   height: 20px;
 }
 
-/* Engaged (open dropdown) — bg flips to --ctx-engaged, glyph (currentColor)
-   flips to white. The colored bar inside the icon uses an explicit `fill`
-   prop, not currentColor, so it stays its own color. */
-.ctx-btn-color[aria-expanded="true"],
-.ctx-btn-color[aria-expanded="true"]:hover,
-.ctx-btn-color[aria-expanded="true"]:active {
-  background: var(--ctx-engaged);
-  color: #fff;
-}
-
-/* ===== Format buttons (.ctx-btn-fmt) — bold / italic + code header/output toggles, align triggers =====
-   Resting icon ink is --ctx-engaged, the menu's darkest tone (shared with the
-   engaged fill). Engaged (active toggle or open dropdown) fills --ctx-engaged
-   and the icon flips white. */
-
-.ctx-btn-fmt {
-  color: var(--ctx-engaged);
-}
+/* ===== Format buttons (.ctx-btn-fmt) — bold / italic / code header / code
+   output toggles + align dropdown triggers =====
+   The `.active` toggle state fills engaged dark with white ink. Dropdown
+   triggers using this class (align dropdowns) get their open-state flip
+   from .ctx-btn-engaged instead. */
 
 .ctx-btn-fmt svg {
   width: 20px;
@@ -87,28 +93,9 @@
 }
 
 .ctx-btn-fmt.active,
-.ctx-btn-fmt.active:hover,
-.ctx-btn-fmt[aria-expanded="true"],
-.ctx-btn-fmt[aria-expanded="true"]:hover,
-.ctx-btn-fmt[aria-expanded="true"]:active {
+.ctx-btn-fmt.active:hover {
   background: var(--ctx-engaged);
   color: #fff;
-}
-
-/* ===== Lock Button (leftmost shell button on every menu) =====
-   No-op placeholder for the locking feature. Icon at the menu's canonical
-   --ctx-engaged ink — a primary visual element, not a secondary action. */
-
-.ctx-btn-lock {
-  color: var(--ctx-engaged);
-}
-
-/* ===== Label Button (connector menu, rightmost) =====
-   No-op placeholder for the "add connector label" entry-point. Same ink as
-   the lock — both are primary visual elements on their bar. */
-
-.ctx-btn-label {
-  color: var(--ctx-engaged);
 }
 
 /* ===== Filter Button (FilterObjectsDropdown trigger) ===== */
@@ -116,13 +103,6 @@
 .ctx-btn-filter {
   padding: 0 8px;
   gap: 6px;
-}
-
-.ctx-btn-filter[aria-expanded="true"],
-.ctx-btn-filter[aria-expanded="true"]:hover,
-.ctx-btn-filter[aria-expanded="true"]:active {
-  background: var(--ctx-engaged);
-  color: #ffffff;
 }
 
 /* ===== Language Button (LanguageDropdown trigger) =====

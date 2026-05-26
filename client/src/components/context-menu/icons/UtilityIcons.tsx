@@ -8,18 +8,6 @@ export const IconChevronDown = (props: SvgProps) => (
   </svg>
 );
 
-export const IconMinus = (props: SvgProps) => (
-  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true" {...props}>
-    <path d="M2.5 6H9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-  </svg>
-);
-
-export const IconPlus = (props: SvgProps) => (
-  <svg viewBox="0 0 12 12" fill="none" aria-hidden="true" {...props}>
-    <path d="M6 2.5V9.5M2.5 6H9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-  </svg>
-);
-
 export const IconCheck = (props: SvgProps) => (
   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
     <path d="M18.842 5.41a1.5 1.5 0 0 1 .479 2.067l-6.632 10.63a2 2 0 0 1-3.176.288L5.061 13.5a1.5 1.5 0 0 1 .1-2.119l.37-.336a1.5 1.5 0 0 1 2.119.1l2.896 3.184a.25.25 0 0 0 .397-.036l5.408-8.669a1.5 1.5 0 0 1 2.067-.478l.424.264Z" />

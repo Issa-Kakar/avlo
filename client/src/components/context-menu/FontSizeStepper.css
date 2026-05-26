@@ -90,12 +90,6 @@
   padding: 0;
 }
 
-/* Non-active number rows take the secondary-text ink (matches the typeface
-   dropdown); the :not() leaves the active row to .ctx-submenu-item-active. */
-.ctx-submenu-fontsize .ctx-submenu-item:not(.ctx-submenu-item-active) {
-  color: var(--ctx-text-secondary);
-}
-
 .ctx-size-item-label {
   font-weight: 550;
   font-size: 15px;

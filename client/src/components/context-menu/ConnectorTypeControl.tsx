@@ -29,7 +29,7 @@ export function ConnectorTypeControl({ value, onSelect }: ConnectorTypeControlPr
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-conntype" onMouseDown={toggle} aria-expanded={open} aria-label="Connector type">
+      <MenuButton className="ctx-btn-conntype ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} aria-label="Connector type">
         <TriggerIcon />
       </MenuButton>
       {open && (

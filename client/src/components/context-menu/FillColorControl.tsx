@@ -21,7 +21,7 @@ export function FillColorControl({ fillColor, mixed, onSelect }: FillColorContro
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-teardrop" onMouseDown={toggle} aria-expanded={open}>
+      <MenuButton className="ctx-btn-teardrop ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <IconColorFill fill={fillColor} mixed={mixed} engaged={open} />
       </MenuButton>
       {open && (

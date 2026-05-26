@@ -10,9 +10,9 @@
   /* Stroke-width active tier — the lone slightly-lighter dark. */
   --ctx-engaged-tier: #282e34;
 
-  /* Text */
-  --ctx-text: #374151;
-  --ctx-text-secondary: #48525b;
+  /* Text — body / row labels / row counts / non-engaged trigger text. */
+  --ctx-text: #48525b;
+  /* Focal — closed FILTER trigger `{N} objects` total. Used once. */
   --ctx-text-focal: #1f2937;
 
   /* Accent (focus rings + selected swatch) + warm sand (open-trigger subtitle) */

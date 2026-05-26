@@ -33,7 +33,12 @@ export function ConnectorCapControl({ slot, value, onSelect }: ConnectorCapContr
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-cap" onMouseDown={toggle} aria-expanded={open} aria-label={slot === 'start' ? 'Start cap' : 'End cap'}>
+      <MenuButton
+        className="ctx-btn-cap ctx-btn-engaged"
+        onMouseDown={toggle}
+        aria-expanded={open}
+        aria-label={slot === 'start' ? 'Start cap' : 'End cap'}
+      >
         {TriggerIcon}
       </MenuButton>
       {open && (

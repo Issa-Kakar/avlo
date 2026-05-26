@@ -14,7 +14,7 @@ export function HighlightPickerPopover({ onSelect }: HighlightPickerPopoverProps
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-color" onMouseDown={toggle} aria-expanded={open}>
+      <MenuButton className="ctx-btn-color ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <HighlightIcon barColor={highlightColor} width={20} height={20} />
       </MenuButton>
       {open && (

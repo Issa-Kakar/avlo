@@ -19,9 +19,3 @@
   font-size: 15px;
   line-height: 1.4;
 }
-
-/* Dropdown font rows take the secondary-text ink. The :not() leaves the
-   active row to .ctx-submenu-item-active (white on the engaged fill). */
-.ctx-submenu-font .ctx-submenu-item:not(.ctx-submenu-item-active) {
-  color: var(--ctx-text-secondary);
-}

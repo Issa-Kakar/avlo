@@ -2,14 +2,14 @@
 
 .ctx-filter-num {
   margin-left: auto;
-  color: var(--ctx-text-secondary);
+  color: var(--ctx-text);
   font-size: 11px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
 .ctx-filter-trigger-label {
-  fill: var(--ctx-text-secondary);
+  fill: var(--ctx-text);
   font-family: var(--font-ui);
   font-size: 10px;
   font-weight: 600;
@@ -48,6 +48,6 @@
   gap: 10px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--ctx-text-secondary);
+  color: var(--ctx-text);
   white-space: nowrap;
 }

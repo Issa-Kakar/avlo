@@ -4,7 +4,6 @@
 .ctx-btn-weight {
   width: 32px;
   padding: 0;
-  color: var(--ctx-engaged);
 }
 
 .ctx-btn-weight svg {
@@ -12,18 +11,11 @@
   height: 20px;
 }
 
-.ctx-btn-weight[aria-expanded="true"],
-.ctx-btn-weight[aria-expanded="true"]:hover,
-.ctx-btn-weight[aria-expanded="true"]:active {
-  background: var(--ctx-engaged);
-  color: #fff;
-}
-
 /* No-stroke shape: width is inert. Base .ctx-btn:disabled supplies
    opacity + pointer-events:none (blocking the dropdown); recolor the icon to
    the secondary grey so it reads as disabled, not just a dimmed dark. */
 .ctx-btn-weight:disabled {
-  color: var(--ctx-text-secondary);
+  color: var(--ctx-text);
 }
 
 /* Tier menu (Thinnest…Thickest). */
@@ -44,7 +36,7 @@
   padding: 0 10px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--ctx-text-secondary);
+  color: var(--ctx-text);
   white-space: nowrap;
 }
 

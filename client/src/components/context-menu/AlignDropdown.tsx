@@ -22,7 +22,7 @@ export function AlignDropdown() {
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-sq ctx-btn-fmt" onMouseDown={toggle} aria-expanded={open}>
+      <MenuButton className="ctx-btn-sq ctx-btn-fmt ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <ActiveIcon />
       </MenuButton>
       {open && (

@@ -25,7 +25,7 @@ export function StrokeWidthControl({ widths, value, onSelect, disabled }: Stroke
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-weight" onMouseDown={toggle} aria-expanded={open} disabled={disabled}>
+      <MenuButton className="ctx-btn-weight ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} disabled={disabled}>
         <IconWeightBars />
       </MenuButton>
       {open && !disabled && (

@@ -1,25 +1,16 @@
 /* ===== Context Menu — Switch Type Dropdown =====
    Rightmost trigger on shape/text/note bars + icon-only 4×2 grid popout.
-   Trigger reuses the engaged-dark flip pattern from .ctx-btn-color /
-   .ctx-btn-fmt / .ctx-btn-conntype (32×32 with a 20×20 SVG, --ctx-engaged
-   ink at rest, bg flips on open and the glyph goes white). */
+   Trigger uses the shared .ctx-btn-engaged marker for its open-state
+   flip, so this file owns only shape + the submenu grid. */
 
 .ctx-btn-switchtype {
   width: 32px;
   padding: 0;
-  color: var(--ctx-engaged);
 }
 
 .ctx-btn-switchtype svg {
   width: 20px;
   height: 20px;
-}
-
-.ctx-btn-switchtype[aria-expanded="true"],
-.ctx-btn-switchtype[aria-expanded="true"]:hover,
-.ctx-btn-switchtype[aria-expanded="true"]:active {
-  background: var(--ctx-engaged);
-  color: #fff;
 }
 
 /* Submenu — right-anchored to the trigger because the trigger sits on the

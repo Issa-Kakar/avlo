@@ -6,19 +6,11 @@
 .ctx-btn-conntype {
   width: 32px;
   padding: 0;
-  color: var(--ctx-engaged);
 }
 
 .ctx-btn-conntype svg {
   width: 20px;
   height: 20px;
-}
-
-.ctx-btn-conntype[aria-expanded="true"],
-.ctx-btn-conntype[aria-expanded="true"]:hover,
-.ctx-btn-conntype[aria-expanded="true"]:active {
-  background: var(--ctx-engaged);
-  color: #fff;
 }
 
 .ctx-submenu-conntype {
@@ -36,7 +28,7 @@
   padding: 0 10px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--ctx-text-secondary);
+  color: var(--ctx-text);
   white-space: nowrap;
 }
 

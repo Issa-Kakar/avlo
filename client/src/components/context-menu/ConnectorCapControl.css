@@ -7,19 +7,11 @@
 .ctx-btn-cap {
   width: 32px;
   padding: 0;
-  color: var(--ctx-engaged);
 }
 
 .ctx-btn-cap svg {
   width: 20px;
   height: 20px;
-}
-
-.ctx-btn-cap[aria-expanded="true"],
-.ctx-btn-cap[aria-expanded="true"]:hover,
-.ctx-btn-cap[aria-expanded="true"]:active {
-  background: var(--ctx-engaged);
-  color: #fff;
 }
 
 /* Submenu — two cells side-by-side, content-driven width. */

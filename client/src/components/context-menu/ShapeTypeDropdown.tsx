@@ -62,7 +62,7 @@ export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-switchtype" onMouseDown={toggle} aria-expanded={open} aria-label="Switch type">
+      <MenuButton className="ctx-btn-switchtype ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} aria-label="Switch type">
         <IconSwitchType />
       </MenuButton>
 
