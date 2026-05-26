@@ -51,7 +51,7 @@
 }
 
 .top-bar-sidebar:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(42, 82, 121, 0.08);
 }
 
 .top-bar-sidebar-icon {
@@ -68,11 +68,12 @@
   top: -1px;
 }
 
-/* Vertical divider */
+/* Vertical divider — blue-tinted, shared with the context menu, main menu,
+   and zoom bar so every chrome surface speaks one divider language. */
 .top-bar-divider {
   width: 2px;
   height: 24px;
-  background: rgba(0, 0, 0, 0.16);
+  background: rgba(42, 82, 121, 0.12);
   margin: 0 4px 0 9px;
   flex-shrink: 0;
 }
@@ -88,7 +89,7 @@
 .top-bar-name {
   font-size: 14px;
   font-weight: 700;
-  color: #3d3d3d;
+  color: #282e34;
   padding: 0 6px;
   cursor: text;
   white-space: nowrap;
@@ -102,10 +103,19 @@
   color: #000000;
 }
 
-/* Board settings kebab */
-.top-bar-settings {
-  width: 32px;
+/* ===== Main menu trigger — chevron-down button (was the kebab) =====
+   Anchor wrapper keeps the dropdown absolutely-positioned relative to the
+   trigger; the trigger itself is the engaged-dark dropdown affordance: ink
+   at rest, fully filled + white glyph on `[aria-expanded="true"]`. */
+
+.main-menu-anchor {
+  position: relative;
+  display: inline-flex;
   margin-left: 4px;
+}
+
+.top-bar-menu-trigger {
+  width: 32px;
   height: 32px;
   display: grid;
   place-items: center;
@@ -113,12 +123,142 @@
   border: none;
   border-radius: 8px;
   cursor: pointer;
-  color: #1a1a1a;
-  transition: background 150ms ease;
+  color: #1b1f22;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
-.top-bar-settings:hover {
-  background: rgba(0, 0, 0, 0.05);
+.top-bar-menu-trigger:hover {
+  background: rgba(42, 82, 121, 0.08);
+}
+
+.top-bar-menu-trigger[aria-expanded="true"],
+.top-bar-menu-trigger[aria-expanded="true"]:hover,
+.top-bar-menu-trigger[aria-expanded="true"]:active {
+  background: #1b1f22;
+  color: #ffffff;
+}
+
+.top-bar-menu-trigger-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* ===== Main menu — dropdown popover anchored under the trigger =====
+   Sits above the top-bar pill (z:400) so its corners aren't clipped by the
+   pill's overflow boundary; positioned by the .main-menu-anchor wrapper. */
+
+.main-menu {
+  position: absolute;
+  /* Clear the pill (~8px of pill below trigger bottom) + a 4px breathing
+     gap. Tight enough that the menu still feels tethered to the trigger
+     it dropped from, loose enough not to read as glued to the bar. */
+  top: calc(100% + 12px);
+  left: 0;
+  z-index: 401;
+  min-width: 210px;
+  padding: 6px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.1),
+    0 1px 4px rgba(0, 0, 0, 0.06);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Snappy drop-in. transform-origin top-left anchors the scale to the
+     trigger so the menu reads as popping out from where it was summoned,
+     not inflating from its own center. ease-out-expo curve decelerates
+     hard at the end — feels instant on the leading edge, soft on the
+     landing, which is the right tradeoff for a frequently-accessed menu. */
+  transform-origin: top left;
+  animation: main-menu-enter 130ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes main-menu-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Section break — 2px blue-tinted bar, matches the context-menu divider
+   tone (and the topbar's own vertical divider thickness) so the surfaces
+   read as one design language. */
+.main-menu-divider {
+  height: 2px;
+  background: rgba(42, 82, 121, 0.12);
+  margin: 4px 6px;
+  flex-shrink: 0;
+}
+
+/* ===== Menu item — leading icon · label · optional trailing chevron =====
+   Single ink token (#48525b) drives icon + label + chevron via currentColor,
+   so the row recolors as a unit on hover. Geometry: 32 tall, 12 horiz pad,
+   10 icon→label gap, label flex-grows so the chevron pins right. */
+
+.main-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #48525b;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.main-menu-item:hover {
+  background: rgba(42, 82, 121, 0.08);
+}
+
+.main-menu-item-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.main-menu-item-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.main-menu-item-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Chevron-right rides slightly smaller than the leading icon so the popout
+   affordance stays subordinate to the row's main glyph + label. */
+.main-menu-item-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.main-menu-item-chevron svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* History buttons (undo / redo) */
@@ -131,20 +271,20 @@
   border: none;
   border-radius: 8px;
   cursor: pointer;
-  color: #1a1a1a;
+  color: #1b1f22;
   transition: background 150ms ease;
 }
 
 .top-bar-history-btn:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(42, 82, 121, 0.08);
 }
 
 /* Disabled state — cascade-ordered AFTER :hover so the disabled hover override
-   wins without !important. Cool-grey (slight blue cast) reads as disabled
-   without disappearing into the white pill — neutral grey at this lightness
-   washes out against the warm-dark text on either side. */
+   wins without !important. Deep-navy 32% alpha sits in the same family as
+   the active ink (#1b1f22) — fades cleanly without slipping into a foreign
+   warm/cool grey on the white pill. */
 .top-bar-history-btn:disabled {
-  color: #9ba3ad;
+  color: #0b294652;
   cursor: default;
 }
 

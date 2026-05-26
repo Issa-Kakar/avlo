@@ -1,7 +1,7 @@
 import { HistoryButtons } from './HistoryButtons';
 import { AvloLogo } from './icons/AvloLogo';
-import { KebabIcon } from './icons/KebabIcon';
 import { SidebarIcon } from './icons/SidebarIcon';
+import { MainMenuTrigger } from './MainMenuTrigger';
 import './TopBar.css';
 
 export function TopBar() {
@@ -13,9 +13,7 @@ export function TopBar() {
       <AvloLogo className="top-bar-logo" height={34} />
       <div className="top-bar-divider" />
       <span className="top-bar-name">Untitled</span>
-      <button className="top-bar-settings" aria-label="Board settings" tabIndex={-1}>
-        <KebabIcon />
-      </button>
+      <MainMenuTrigger />
       <div className="top-bar-divider top-bar-divider-history" />
       <HistoryButtons />
     </div>
