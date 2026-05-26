@@ -46,7 +46,7 @@ export interface NoteColor {
 // is light enough for black body text except 'Black' (white text); all are
 // saturated enough to hold up against the panel's black background.
 export const NOTE_COLOR_PALETTE: readonly NoteColor[] = [
-  { name: 'Yellow', fill: '#FFD95E' },
+  { name: 'Yellow', fill: '#FCF281' },
   { name: 'Orange', fill: '#FFAD5C' },
   { name: 'Red', fill: '#FF6E6E' },
   { name: 'Pink', fill: '#FF8FB3' },
@@ -227,7 +227,7 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           align: 'center',
           alignV: 'middle',
           fontFamily: 'Grandstander',
-          fillColor: '#FFD95E',
+          fillColor: NOTE_COLOR_PALETTE[0].fill,
         },
 
         code: { lineNumbers: true, headerVisible: true },

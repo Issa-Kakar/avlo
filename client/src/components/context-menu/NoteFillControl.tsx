@@ -26,7 +26,7 @@ export function NoteFillControl({ fillColor, mixed, onSelect }: NoteFillControlP
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton className="ctx-btn-teardrop" onMouseDown={toggle} aria-expanded={open}>
-        <IconColorFill fill={fillColor ?? '#FFD95E'} mixed={mixed} engaged={open} />
+        <IconColorFill fill={fillColor ?? NOTE_COLOR_PALETTE[0].fill} mixed={mixed} engaged={open} />
       </MenuButton>
       {open && (
         <div className="ctx-submenu ctx-submenu-cp">

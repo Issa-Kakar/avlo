@@ -34,7 +34,6 @@ import {
 // =============================================================================
 
 export const NOTE_WIDTH = 145;
-export const NOTE_FILL_COLOR = '#FEF3AC';
 
 const NOTE_PADDING_RATIO = 20 / 280;
 const NOTE_CORNER_RADIUS_RATIO = 0.06;
@@ -83,6 +82,39 @@ function getNoteShadowPadSide(scale: number): number {
 }
 function getNoteShadowPadBottom(scale: number): number {
   return NOTE_WIDTH * scale * NOTE_SHADOW_BOTTOM_RATIO;
+}
+
+// =============================================================================
+// TEXT COLOR — contrast pick from fill
+// =============================================================================
+//
+// Called per visible note per frame from `drawStickyNote` (canvas) and from
+// `TextTool` (Tiptap `--text-color` CSS var, and on every fillColor undo/redo
+// fire). Hot path must be one Map.get with no allocation. The palette has 12
+// entries; the cache settles at ≤12 in practice (more only if the context-menu
+// hex input feeds custom colors). No eviction needed.
+
+const _stickyTextColorCache = new Map<string, string>();
+
+export function getStickyNoteTextColor(fill: string): string {
+  let c = _stickyTextColorCache.get(fill);
+  if (c !== undefined) return c;
+  c = computeStickyTextColor(fill);
+  _stickyTextColorCache.set(fill, c);
+  return c;
+}
+
+function computeStickyTextColor(hex: string): string {
+  const h = hex.charCodeAt(0) === 35 ? hex.slice(1) : hex;
+  if (h.length !== 6) return '#1a1a1a';
+  const r = parseInt(h.slice(0, 2), 16) / 255;
+  const g = parseInt(h.slice(2, 4), 16) / 255;
+  const b = parseInt(h.slice(4, 6), 16) / 255;
+  // Rec. 709 luminance (no sRGB gamma) — same approximation as `presence-renderer.ts`.
+  // Threshold 0.5 sits between the palette's near-black (#28282C, L≈0.16) and its
+  // darkest light fill (#FF6E6E, L≈0.55).
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return L > 0.5 ? '#1a1a1a' : '#ffffff';
 }
 
 // =============================================================================
@@ -548,6 +580,7 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
   }
 
   ctx.textBaseline = 'alphabetic';
+  const textColor = getStickyNoteTextColor(r.fillColor);
 
   let lastFont = '';
   for (let li = 0; li < lineCount; li++) {
@@ -579,7 +612,7 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
     }
 
     // Pass 2: text
-    ctx.fillStyle = '#1a1a1a';
+    ctx.fillStyle = textColor;
     for (let r = startRun; r < endRun; r++) {
       const f = layout.runFont[r];
       if (f !== lastFont) {

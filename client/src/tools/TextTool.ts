@@ -44,7 +44,7 @@ import {
   getNoteDerivedFontSize,
   getNoteLayout,
   getNotePadding,
-  NOTE_FILL_COLOR,
+  getStickyNoteTextColor,
   NOTE_WIDTH,
 } from '@/core/text/sticky-note';
 import { getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-measure';
@@ -243,7 +243,7 @@ export class TextTool implements PointerTool {
         yObj.set('fontFamily', ui.note.fontFamily);
         yObj.set('align', ui.note.align);
         yObj.set('alignV', ui.note.alignV);
-        yObj.set('fillColor', NOTE_FILL_COLOR);
+        yObj.set('fillColor', ui.note.fillColor);
       } else {
         yObj.set('kind', 'text');
         yObj.set('fontSize', ui.text.size);
@@ -382,7 +382,7 @@ export class TextTool implements PointerTool {
       container.style.maxWidth = `${contentWidth * scale}px`;
       container.style.maxHeight = `${maxContentH * scale}px`;
       container.dataset.widthMode = 'note';
-      container.style.setProperty('--text-color', '#1a1a1a');
+      container.style.setProperty('--text-color', getStickyNoteTextColor(props.fillColor));
     } else {
       // Text object: origin-based positioning
       const props = getTextProps(handle.y)!;
@@ -716,9 +716,14 @@ export class TextTool implements PointerTool {
         this.positionEditor();
     } else {
       if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
-      if (keys.has('fillColor') && handle.kind !== 'note') this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
 
       if (handle.kind === 'note') {
+        // Notes paint their body on canvas, so fillColor drives the contrast
+        // text-color CSS var rather than a DOM background.
+        if (keys.has('fillColor')) {
+          const fill = getFillColor(handle.y) ?? '#FEF3AC';
+          this.container.style.setProperty('--text-color', getStickyNoteTextColor(fill));
+        }
         // fontFamily change: repopulate cache before positionEditor reads it
         // (this observer fires before the deep observer's computeNoteBBox)
         if (keys.has('fontFamily')) {
@@ -729,6 +734,7 @@ export class TextTool implements PointerTool {
         if (keys.has('align') || keys.has('alignV') || keys.has('origin') || keys.has('scale') || keys.has('fontFamily'))
           this.positionEditor();
       } else {
+        if (keys.has('fillColor')) this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
         if (keys.has('align')) applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
         if (keys.has('origin') || keys.has('fontSize') || keys.has('fontFamily') || keys.has('width')) this.positionEditor();
       }

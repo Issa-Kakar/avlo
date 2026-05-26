@@ -668,7 +668,7 @@ Frame = body (square, no shadow). BBox = body + shadow. Alignment doesn't affect
 
 ### TextTool — Note-Specific
 
-**Creation:** `kind: 'note', scale: 1, fontFamily: store.noteFontFamily, align: store.noteAlign, alignV: store.noteAlignV, fillColor: NOTE_FILL_COLOR`.
+**Creation:** `kind: 'note', scale: 1, fontFamily: store.noteFontFamily, align: store.noteAlign, alignV: store.noteAlignV, fillColor: store.note.fillColor`. Text color is **not stored** — derived per-render from `fillColor` via `getStickyNoteTextColor()` (Map-cached luminance pick: `#1a1a1a` for light fills, `#ffffff` for the near-black sticky). Both the canvas draw and Tiptap's `--text-color` CSS var read through it.
 
 **mountEditor:** Populates cache via `getNoteLayout()`, sets `fontSize = derivedFontSize * noteScale`. Generic CSS block computes `scaledFontSize = fontSize * cameraScale` -> correct screen-space size.
 

@@ -453,8 +453,10 @@ pure CSS — see the `StickyNotePanel.css` header comment.
 
 **Store surface** (`device-ui-store.ts`):
 
-- `note.fillColor` — chosen fill, default `#FFD95E`, persisted in the
-  `note` cluster; setter `setNoteFillColor`.
+- `note.fillColor` — chosen fill, default `NOTE_COLOR_PALETTE[0].fill`
+  (`#FCF281`, the first warm-yellow swatch), persisted in the `note`
+  cluster; setter `setNoteFillColor`. Default expression references the
+  palette so reordering / re-tuning Yellow updates the default in one place.
 - `stickyPanelOpen` — popout visibility. **Ephemeral — excluded from
   `partialize`.** `openStickyPanel` / `closeStickyPanel` (idempotent) /
   `toggleStickyPanel`; selector `selectStickyPanelOpen`.
@@ -466,20 +468,18 @@ pure CSS — see the `StickyNotePanel.css` header comment.
 panel when `note` is already active, else activates `note` + opens it.
 Also closes on Escape, on a tool switch, and on a note-create press.
 
-**Next steps — the picked color is not consumed downstream yet:**
+**Downstream consumers (already wired):**
 
-1. **Text-tool integration.** `TextTool.createTextObject` (`TextTool.ts:226`)
-   hardcodes the note fill — `TextTool.ts:246` writes the `NOTE_FILL_COLOR`
-   constant (`#FEF3AC`, `core/text/sticky-note.ts:37`). Wire it to read
-   `note.fillColor` so new notes use the picked color.
-2. **Color-aware rendering.** Sticky-note text is hardcoded `#1a1a1a` in
-   the canvas render (`core/text/sticky-note.ts:582`) and the Tiptap
-   editor overlay (`TextTool.ts:385`). It must derive from the fill for
-   contrast — dark text on light fills, light on the near-black 'Black'
-   sticky. Prior art: `color/palette.ts` `luminance`/`isDark`,
-   `presence-renderer.ts:90`.
+- `TextTool.createTextObject` writes `note.fillColor` into the new note's
+  Y.Map, so the picked color is what the next sticky inherits.
+- Canvas and Tiptap text colors are derived from the fill via
+  `getStickyNoteTextColor()` in `core/text/sticky-note.ts` — a Map-cached
+  luminance check (`#1a1a1a` for light fills, `#ffffff` for the near-black
+  sticky). Both the canvas draw path (`drawStickyNote`) and the editor
+  overlay (`TextTool` mountEditor / syncProps) read through it.
 
-Full roadmap: `sticky-note-handoff.md` (repo root).
+Outstanding: drag-to-create from the toolbar (separate scope).
+Background: `sticky-note-handoff.md` (repo root).
 
 ---
 
