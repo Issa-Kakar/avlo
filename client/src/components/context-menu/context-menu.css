@@ -1,26 +1,12 @@
 /* ===== Context Menu — CSS Manifest =====
    The single stylesheet ContextMenu.tsx imports. @import order is load-bearing
    — the foundation (tokens → shell → buttons → dropdowns) lands before the
-   per-control stylesheets so shared bases precede their modifiers. ColorGrid
-   follows StrokeColorControl since it modifies that file's swatch base.
-   Component .tsx files import no CSS; each control's rules are co-located in
-   its own stylesheet, reached through this manifest. */
+   shared color-grid + svg-trigger rules. Per-control variations are inlined
+   as Tailwind utilities directly in TSX; no per-component CSS files. */
 
 @import "./styles/tokens.css";
 @import "./styles/shell.css";
 @import "./styles/buttons.css";
 @import "./styles/dropdowns.css";
-
-@import "./FontSizeStepper.css";
-@import "./FilterObjectsDropdown.css";
-@import "./HighlightPickerPopover.css";
-@import "./ShapeTypeDropdown.css";
-@import "./TypefaceButton.css";
-@import "./AlignDropdown.css";
-@import "./NoteAlignDropdown.css";
-@import "./LanguageDropdown.css";
-@import "./StrokeColorControl.css";
-@import "./ColorGrid.css";
-@import "./StrokeWidthControl.css";
-@import "./ConnectorTypeControl.css";
-@import "./ConnectorCapControl.css";
+@import "./styles/color-grid.css";
+@import "./styles/svg-triggers.css";

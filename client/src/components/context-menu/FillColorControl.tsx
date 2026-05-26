@@ -20,12 +20,12 @@ export function FillColorControl({ fillColor, mixed, onSelect }: FillColorContro
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-teardrop ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <IconColorFill fill={fillColor} mixed={mixed} engaged={open} />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-cp">
+        <div className="ctx-submenu min-w-0 p-0">
           <ColorGrid
             palette={FILL_PALETTE}
             cols={6}

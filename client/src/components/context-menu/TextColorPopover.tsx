@@ -17,12 +17,12 @@ export function TextColorPopover({ color, onSelect }: TextColorPopoverProps) {
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-color ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <TextColorIcon barColor={color} width={20} height={20} />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-cp">
+        <div className="ctx-submenu min-w-0 p-0">
           <div className="ctx-cp-grid" style={{ gridTemplateColumns: `repeat(${PALETTE_COLS}, 1fr)` }}>
             {PALETTE.map((c) => {
               const active = colorsEqual(c, color);

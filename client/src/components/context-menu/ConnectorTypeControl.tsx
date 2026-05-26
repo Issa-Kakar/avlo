@@ -28,19 +28,19 @@ export function ConnectorTypeControl({ value, onSelect }: ConnectorTypeControlPr
   const TriggerIcon = (ROWS.find((r) => r.type === value) ?? ROWS[1]).Icon;
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-conntype ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} aria-label="Connector type">
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} aria-label="Connector type">
         <TriggerIcon />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-conntype">
+        <div className="ctx-submenu min-w-[160px] rounded-xl p-2 flex flex-col gap-[3px]">
           {ROWS.map(({ type, label, Icon }) => {
             const active = type === value;
             return (
               <button
                 key={type}
                 type="button"
-                className={`ctx-submenu-item ctx-conntype-item${active ? ' ctx-conntype-item-active' : ''}`}
+                className={`ctx-submenu-item h-9 gap-2.5 px-2.5 text-xs font-bold text-[var(--ctx-text)] whitespace-nowrap [&_svg]:shrink-0${active ? ' ctx-submenu-item-active bg-[var(--ctx-engaged-tier)] !text-white hover:bg-[var(--ctx-engaged-tier)]' : ''}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onSelect(type);

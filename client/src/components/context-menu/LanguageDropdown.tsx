@@ -26,9 +26,9 @@ export function LanguageDropdown() {
   const current = language ?? 'javascript';
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
+    <div ref={containerRef} className="relative">
       <MenuButton className="ctx-btn-lang" onMouseDown={toggle} aria-expanded={open}>
-        <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+        <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" className="shrink-0">
           <text className="ctx-lang-trigger-label" x="0" y="9">
             LANGUAGE
           </text>
@@ -40,11 +40,11 @@ export function LanguageDropdown() {
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu ctx-submenu-lang">
+        <div className="ctx-submenu left-0 translate-x-0 min-w-[150px]">
           {LANGUAGES.map(({ key, label }) => (
             <button
               key={key}
-              className={`ctx-submenu-item ctx-type-item${key === current ? ' ctx-submenu-item-active' : ''}`}
+              className={`ctx-submenu-item ctx-type-item font-bold${key === current ? ' ctx-submenu-item-active' : ''}`}
               onMouseDown={(e) => {
                 e.preventDefault();
                 setSelectedCodeLanguage(key);

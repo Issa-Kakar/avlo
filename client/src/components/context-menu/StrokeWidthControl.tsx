@@ -24,19 +24,24 @@ export function StrokeWidthControl({ widths, value, onSelect, disabled }: Stroke
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-weight ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} disabled={disabled}>
+    <div ref={containerRef} className="relative">
+      <MenuButton
+        className="ctx-btn-sq ctx-btn-engaged disabled:text-[var(--ctx-text)]"
+        onMouseDown={toggle}
+        aria-expanded={open}
+        disabled={disabled}
+      >
         <IconWeightBars />
       </MenuButton>
       {open && !disabled && (
-        <div className="ctx-submenu ctx-submenu-weight">
+        <div className="ctx-submenu min-w-[140px] rounded-xl p-2 flex flex-col gap-[3px]">
           {widths.map((w, i) => {
             const Icon = TIER_ICONS[i];
             const active = w === value;
             return (
               <button
                 key={w}
-                className={`ctx-submenu-item ctx-weight-item${active ? ' ctx-weight-item-active' : ''}`}
+                className={`ctx-submenu-item h-9 gap-2.5 px-2.5 text-xs font-bold text-[var(--ctx-text)] whitespace-nowrap [&_svg]:shrink-0${active ? ' ctx-submenu-item-active bg-[var(--ctx-engaged-tier)] !text-white hover:bg-[var(--ctx-engaged-tier)]' : ''}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onSelect(w);

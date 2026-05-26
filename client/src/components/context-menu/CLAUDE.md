@@ -15,11 +15,11 @@
 > - **Body text:** `#48525b` (`--ctx-text`) — the menu-wide default for label / body text. Trigger FILTER label (w600, 10px, caps + 0.03em tracking), filter row labels (w700, 12px), filter row counts (w500, 11px, tabular-nums), the typeface + font-size dropdown rows. The menu's "everything else" color.
 > - **Primary focal text:** `#1F2937` w700, 13px. Closed-trigger `{N} objects` only.
 > - **Engaged dark `#1b1f22`** (`--ctx-engaged`) — the menu's darkest tone, two roles. As a *fill* (white text/icons on it): every dropdown trigger that composes the shared `.ctx-btn-engaged` marker (engaged on `[aria-expanded="true"]`), active toggles via `.ctx-btn-fmt.active` (bold / italic, code header / output), every dropdown's active selected row (`.ctx-submenu-item-active`). As *ink*: the `.ctx-btn` base color — every icon button in the bar inherits it; text-bearing triggers (filter, language) paint via explicit SVG `fill` and ignore it.
-> - **Tier dark `#282e34`** — a deliberate notch lighter than `#1b1f22`; kept, not debt. It reads better than the near-black on a few surfaces: the `.ctx-weight-item-active` stroke-width tier row, the `TypefaceButton` / `LanguageDropdown` trigger ink — reach for it where full `#1b1f22` sits too heavy.
+> - **Tier dark `#282e34`** — a deliberate notch lighter than `#1b1f22`; kept, not debt. It reads better than the near-black on a few surfaces: the stroke-width + connector-type tier-menu active row (`bg-[var(--ctx-engaged-tier)]` utility on the row), the `TypefaceButton` / `LanguageDropdown` trigger ink — reach for it where full `#1b1f22` sits too heavy.
 > - **Open-trigger primary text:** pure white.
 > - **Open-trigger FILTER subtitle:** `#D4B89B` (warm sand). Intentional warm third pole in the otherwise cool slate palette; deliberately stays subordinate to white (~2× contrast hierarchy). `fill 150ms ease` transition.
 > - **Icons:** 20×20, sourced from `components/toolbar/icons/*`. `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
-> - **Row protection:** `white-space: nowrap` on `.ctx-filter-item` — prevents subpixel wrap on borderline-fit labels (e.g. "Sticky Note" against `min-width: 140px`).
+> - **Row protection:** `whitespace-nowrap` utility on filter dropdown rows — prevents subpixel wrap on borderline-fit labels (e.g. "Sticky Note" against `min-w-[140px]`).
 > - **Labels singular:** `Stroke` / `Shape` / `Connector` / `Image`. Two-word singulars (`Code Block`, `Sticky Note`) untouched.
 > - **Lock button:** `.ctx-btn-sq .ctx-btn-lock`. `.ctx-btn-lock` is a TSX-only semantic marker (no CSS rules); icon ink `var(--ctx-engaged)` is inherited from the `.ctx-btn` base. Mural 24-viewBox glyph in `icons/LockIcon.tsx`, 20×20. Rendered by the shell as the leftmost button on every bar — including `image` / `bookmark`, where it's the *entire* bar. No-op placeholder; locking is not implemented yet. Trash + overflow `…` were lifted into the upcoming right-click menu; the `IconTrash` source survives at `icons/TrashIcon.tsx` for reuse elsewhere in the app, but nothing in the context menu imports it.
 > - **Defaults, not laws.** Icon `#1b1f22` / text `#48525b` are menu-wide starting points; surfaces mix tones case-by-case, per the action / icon / text they carry.
@@ -29,11 +29,12 @@
 > text-formatting slice — bold / italic, `AlignDropdown`, `NoteAlignDropdown`,
 > `TypefaceButton` — reskinned to Mural glyphs with `.ctx-btn-fmt` engaged
 > states; `FontSizeStepper` (value + arrows at `#1b1f22`, dropdown active
-> row + rows reconciled); `FillColorControl` + `BorderColorControl` on the
-> shared `ColorGrid` (6-col light-surface palette, `NoFillIcon` driving the
-> no-fill / no-stroke swatch); and `TextColorPopover` + `HighlightPickerPopover`
-> on the `.ctx-btn-color` engaged-dark trigger pattern (icon `#1b1f22` at rest,
-> bg + glyph flip on open, the colored bar stays its own color). Stroke +
+> row + rows reconciled); `FillColorControl` + `BorderColorControl` +
+> `TextColorPopover` + `HighlightPickerPopover` all share `ColorGrid` (the
+> presentational swatch surface — `NoFillIcon` at slot 0 for the
+> no-fill / no-stroke / no-highlight cases) sitting under a uniform
+> `.ctx-btn-sq` + `.ctx-btn-engaged` trigger (icon `#1b1f22` at rest, bg +
+> glyph flip on open, the colored bar stays its own color). Stroke +
 > connector selections are fully off the legacy color/size widgets — connector
 > bars are now `[Color] | [Width] | [StartCap] [EndCap] | [ConnectorType] | [Label?]`
 > (stroke bars are the same minus the trailing four). `ConnectorTypeControl`
@@ -48,11 +49,26 @@
 > `setSelectedStartCap` / `setSelectedEndCap` and persist to the device-ui
 > `connector.startCap` / `connector.endCap` defaults. `ShapeTypeDropdown`
 > is the rightmost slot on shape/text/note bars — Mural `switchType` glyph
-> trigger (`.ctx-btn-switchtype`, engaged-dark on open) + a 4×2 icon-only
-> grid (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, one
-> trailing empty cell); shape-variant clicks call `setSelectedShapeType`,
-> Sticky/Text rows are no-op until TextTool-side conversion lands. (The
-> text slice still has tweaks pending — values are current, not final.)
+> trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, engaged-dark on open) + a 4×2
+> icon-only grid (Sticky · Text · Rect · Circle · Diamond · Triangle ·
+> Rounded, one trailing empty cell); shape-variant clicks call
+> `setSelectedShapeType`, Sticky/Text rows are no-op until TextTool-side
+> conversion lands. (The text slice still has tweaks pending — values are
+> current, not final.)
+>
+> **Tailwind v4 migration (landed):** every per-control CSS file has been
+> deleted; per-control variations (submenu sizing, row geometry, cell layout,
+> active-state fills) are now inline Tailwind utilities on the relevant TSX
+> element. The CSS foundation is six files under `styles/` (`tokens`, `shell`,
+> `buttons`, `dropdowns`, `color-grid`, `svg-triggers`), all wrapped in
+> `@layer components` so utilities cleanly override. Every picker trigger
+> collapses to `.ctx-btn-sq` (only `TypefaceButton` uses `.ctx-btn min-w-14`
+> instead). When inlining a state-conditional bg/text, **don't compose
+> conflicting utilities on the same element** — Tailwind v4 sorts utilities
+> by its own algorithm, not className order, so `bg-transparent` + active
+> `bg-[var(--ctx-engaged)]` won't reliably swap. Pick one set per state via
+> a ternary (see `ShapeTypeDropdown` / `ConnectorCapControl` for the
+> pattern).
 >
 > **Bar shell + button geometry** (descriptors, not flux): `.ctx-menu` carries
 > the 10px-radius white shell with a 1px hairline + soft drop shadow; the
@@ -225,15 +241,15 @@ Every bar starts with `[Lock]` (shell-rendered — always present, leftmost, eve
 Shapes include the full text formatting suite for shape labels:
 
 - **Typeface** — self-subscribing. Trigger: current font in its own typeface, ink `#282e34`; the trigger stays light when open (no chevron — the font name is the entire affordance). Dropdown: 4 items (Draw/Inter/Lora/Mono), the active row filled `#1b1f22` with a checkmark. Calls `setSelectedFontFamily(family)`. Persists to `device-ui-store.textFontFamily`.
-- **FontSize** — stepper with dropdown. `IconStepUp`/`IconStepDown` chevron arrows (not +/-). Display range: 1-999. Stepper steps through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. Dropdown lists all presets with checkmark. Dropdown items center-aligned (`ctx-submenu-fontsize` with `justify-content: center`).
+- **FontSize** — stepper with dropdown. `IconStepUp`/`IconStepDown` chevron arrows (not +/-). Display range: 1-999. Stepper steps through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. Dropdown lists all presets with checkmark, center-aligned via a `[&_.ctx-submenu-item]:w-8 [&_.ctx-submenu-item]:justify-center [&_.ctx-submenu-item]:px-0` descendant variant on the submenu container.
 - **Bold** / **Italic** — self-subscribing `memo` components. `.ctx-btn-fmt` square buttons; active state fills `#1b1f22` (white icon) when the entire selection has the style uniformly. Same TipTap/`formatFragment()` dual path as text objects.
 - **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Chevron-less `.ctx-btn-fmt` trigger (`#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Persists to `device-ui-store.shapeAlign`/`shapeAlignV`.
-- **TextColor** — `.ctx-btn-color` "A" icon with colored bar. Glyph rests `#1b1f22`, engaged-dark on open (bg flips, glyph flips white, bar keeps its color). When no label exists on the shape, falls back to `device-ui-store.textColor`. Calls `setSelectedTextColor`.
-- **Highlight** — `.ctx-btn-color` highlighter-marker glyph (24-viewBox Mural-style) with colored bar; self-subscribes to `selectInlineHighlightColor`. Same engaged-dark trigger pattern as TextColor.
+- **TextColor** — `.ctx-btn-sq` + `.ctx-btn-engaged` trigger with "A" icon + colored bar. Glyph rests `#1b1f22`, engaged-dark on open (bg flips, glyph flips white, bar keeps its color). When no label exists on the shape, falls back to `device-ui-store.textColor`. Calls `setSelectedTextColor`.
+- **Highlight** — same `.ctx-btn-sq` + `.ctx-btn-engaged` trigger pattern, highlighter-marker glyph (24-viewBox Mural-style) with colored bar; self-subscribes to `selectInlineHighlightColor`. Popout reuses `ColorGrid` (`cols=4`, `NoFillIcon` at slot 0 for "no highlight") — pixel-for-pixel match with the fill / border pickers, just a different palette.
 - **Fill** — `FillColorControl`: filled square-glyph trigger (`IconColorFill`, reflects the current fill / mixed split / engaged-dark on open). Same shared `ColorGrid` with a no-fill slot. `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
 - **Border** — `BorderColorControl`: hollow frame-glyph trigger (`IconColorBorder`, reflects the current border color / mixed state) → shared `ColorGrid` 6-col palette with a no-stroke slot (the `NoFillIcon` swatch). Calls `setSelectedColor` (with `null` for no stroke).
 - **Width** — border width. `StrokeWidthControl` on the outline scale `2 / 4 / 6 / 8` — shapes and connectors share this scale (not the pen `4 / 7 / 10 / 13`).
-- **SwitchType** — rightmost. `IconSwitchType` (Mural `switchType` glyph) inside `.ctx-btn-switchtype` (32×32 button, 20×20 SVG, engaged-dark fill flip on open). Popout: icon-only 4×2 grid — Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell. 36×36 cells, 24×24 icons, right-anchored. Active cell = live `shapeType` filled `--ctx-engaged` with a white icon, no checkmark (the active state IS the cell). Shape-variant clicks call `setSelectedShapeType(key)`; Sticky/Text rows are non-destructive no-ops pending TextTool-side cross-type conversion (origin remap on alignment + `color`↔`labelColor` key remap).
+- **SwitchType** — rightmost. `IconSwitchType` (Mural `switchType` glyph) inside `.ctx-btn-sq` + `.ctx-btn-engaged` (32×32 button, 20×20 SVG, engaged-dark fill flip on open). Popout: icon-only 4×2 grid — Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell. 36×36 cells, 24×24 icons, right-anchored (Tailwind `left-auto right-0 translate-x-0`). Active cell = live `shapeType` filled `--ctx-engaged` with a white icon, no checkmark (the active state IS the cell). Shape-variant clicks call `setSelectedShapeType(key)`; Sticky/Text rows are non-destructive no-ops pending TextTool-side cross-type conversion (origin remap on alignment + `color`↔`labelColor` key remap).
 
 **Device-UI-store fallback for unlabeled shapes:** When a shape has no label, `computeStyles` returns `null` for `fontSize`/`labelColor`. `ShapeStyleGroup` reads `deviceTextSize` and `deviceTextColor` from `device-ui-store` as fallback values. This ensures the menu shows the values that would be used if the user starts typing to create a label — matching the "what you see is what you'd get" principle.
 
@@ -277,7 +293,7 @@ Sticky notes have a dedicated bar with no text color control (note text is hardc
 
 - **Color** — `StrokeColorControl`, same as strokes.
 - **Width** — `StrokeWidthControl`. Outline scale `2 / 4 / 6 / 8` (shared with shapes).
-- **StartCap / EndCap** — `ConnectorCapControl`, one instance per endpoint (`slot='start'` / `'end'`). 32×32 trigger (`.ctx-btn-cap`, `--ctx-engaged` ink at rest, engaged-dark fill on open) showing the current cap glyph; popout is a side-by-side two-cell picker (`.ctx-submenu-cap`) — no-arrow + arrow — with 36×36 cells and a 28×28 SVG so the cap glyphs read larger in the picker than at the trigger. Arrow direction mirrors `slot`: start ⇒ left-pointing, end ⇒ right-pointing, both in the trigger and the picker. Active cell fills `--ctx-engaged` with a white icon (no checkmark — the active state IS the cell). Mixed selections collapse to the first connector's cap (no "mixed" affordance — same first-applicable rule as `ConnectorTypeControl`). Wires to `setSelectedStartCap` / `setSelectedEndCap` and persists via `setConnectorStartCap` / `setConnectorEndCap` so a fresh connector picks up the user's most recent choice.
+- **StartCap / EndCap** — `ConnectorCapControl`, one instance per endpoint (`slot='start'` / `'end'`). 32×32 trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, `--ctx-engaged` ink at rest, engaged-dark fill on open) showing the current cap glyph; popout is a side-by-side two-cell picker (`.ctx-submenu` + inline `flex flex-row gap-1 p-1.5` utilities) — no-arrow + arrow — with 36×36 cells and a 28×28 SVG so the cap glyphs read larger in the picker than at the trigger. Arrow direction mirrors `slot`: start ⇒ left-pointing, end ⇒ right-pointing, both in the trigger and the picker. Active cell fills `--ctx-engaged` with a white icon (no checkmark — the active state IS the cell). Mixed selections collapse to the first connector's cap (no "mixed" affordance — same first-applicable rule as `ConnectorTypeControl`). Wires to `setSelectedStartCap` / `setSelectedEndCap` and persists via `setConnectorStartCap` / `setConnectorEndCap` so a fresh connector picks up the user's most recent choice.
 - **ConnectorType** — `ConnectorTypeControl`. Bars-style trigger with the current type glyph (`#1b1f22` ink at rest, engaged-dark fill on open), opening the tier-menu pattern: two rows (Straight, Orthogonal) with icon · label · inline check, the active row filled `#282e34`. Reads `selectedStyles.connectorType` (first connector's type — routing types don't blend, so no mixed UI affordance). **No-op today** — switching `connectorType` needs route + endpoint geometry adjustments inside the connector subsystem; the action wiring lands separately. `CONNECTOR_TYPE` lives in the field table as a read-only descriptor (empty `write: {}`).
 - **Label** — `LabelButton`. No-op rightmost shell button (`.ctx-btn-sq .ctx-btn-label`, icon ink `--ctx-engaged`). Placeholder for the future "add connector label" entry-point; same role/shape as `LockButton`. **Single-connector only:** the button + its preceding divider render only when `kindCounts.total === 1` — labels attach to a single connector, so the slot stays hidden on a multi-select where there's no meaningful target.
 
@@ -324,17 +340,17 @@ ContextMenu                  <- gate on menuOpen, renders null when closed
 | `FillColorControl` | `fillColor, mixed, onSelect` | Shape / text / note fill — square fill-glyph trigger → shared `ColorGrid` 6×4 with `noFill` slot. |
 | `BorderColorControl` | `color, mixed, onSelect` | Shape border — hollow frame-glyph trigger → shared `ColorGrid` 6×4 with `noFill` (no-stroke) slot. |
 | `ColorGrid` | `palette, cols, value, mixed, noFill?, onSelect` | Presentational swatch grid shared by fill + border. `noFill` renders index 0 as a `NoFillIcon` swatch emitting `onSelect(null)`. |
-| `TextColorPopover` | `color, onSelect?` | "A"-glyph trigger with color bar → light-surface palette grid. `.ctx-btn-color` engaged-dark trigger. |
-| `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. Highlighter-marker trigger → 4x2 rounded-square highlight grid + none. `.ctx-btn-color` engaged-dark trigger. |
+| `TextColorPopover` | `color, onSelect?` | "A"-glyph trigger with color bar → light-surface palette grid. `.ctx-btn-sq` + `.ctx-btn-engaged` trigger. |
+| `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. Highlighter-marker trigger → `ColorGrid` (`cols=4`, `NoFillIcon` at slot 0 for "no highlight"). `.ctx-btn-sq` + `.ctx-btn-engaged` trigger. |
 | `StrokeColorControl` | `color, mixed, onSelect` | Stroke/connector color. Teardrop trigger (current color, or a three-swatch drop when `mixed`) → 6-col palette grid. Toolbar picker mimicked on a light surface. Open-trigger bg `#1b1f22`. |
 | `StrokeWidthControl` | `widths, value, onSelect` | Stroke/shape/connector width. Bars-icon trigger (icon `#1b1f22`) → four-tier menu (Thinnest…Thickest), left-aligned rows. Active tier row `#282e34`. `widths` is the per-kind 4-preset list. |
 | `ConnectorTypeControl` | `value, onSelect` | Connector routing type. Current-type glyph trigger (`#1b1f22` ink, engaged-dark fill when open) → two-row tier menu (Straight, Orthogonal) with icon · label · inline check. Active row `#282e34`. **No-op `onSelect` today**; routing-switch wiring lands separately. |
-| `ConnectorCapControl` | `slot, value, onSelect` | Per-endpoint cap picker. 32×32 glyph trigger (`.ctx-btn-cap`, engaged-dark on open) → side-by-side two-cell picker (no-arrow + arrow) with 36×36 cells / 28×28 SVGs. Arrow direction mirrors `slot` (start ⇒ left, end ⇒ right). Active cell `--ctx-engaged` / white icon. Mixed selections surface the first connector's value (no "mixed" affordance). |
+| `ConnectorCapControl` | `slot, value, onSelect` | Per-endpoint cap picker. 32×32 glyph trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, engaged-dark on open) → side-by-side two-cell picker (no-arrow + arrow) with 36×36 cells / 28×28 SVGs. Arrow direction mirrors `slot` (start ⇒ left, end ⇒ right). Active cell `--ctx-engaged` / white icon — applied via a state-ternary on the cell `className` so the active bg utility doesn't collide with the base `bg-transparent`. Mixed selections surface the first connector's value (no "mixed" affordance). |
 | `FontSizeStepper` | `value, onDecrement?, onIncrement?, onSelectSize?` | Chevron up/down arrows + SVG text center value + dropdown of presets. |
 | `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Chevron-less `.ctx-btn-fmt` trigger → horizontal 3-icon submenu. |
 | `NoteAlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign` + `textAlignV`. Chevron-less `.ctx-btn-fmt` trigger → one flat submenu row: H-align · vertical divider · V-align. |
 | `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. Trigger = font name (no chevron); 4-item dropdown, active row `#1b1f22`. |
-| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. Rightmost slot on shape/text/note bars — `IconSwitchType` trigger (`.ctx-btn-switchtype`, engaged-dark on open) → icon-only 4×2 grid (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell). Active cell = current `shapeType` (shape mode) or fixed `text`/`note` row (text/note modes), filled `--ctx-engaged` with white icon. Shape-variant clicks call `setSelectedShapeType`; Sticky/Text rows no-op pending TextTool-side cross-type conversion. |
+| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. Rightmost slot on shape/text/note bars — `IconSwitchType` trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, engaged-dark on open) → icon-only 4×2 grid (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell), right-anchored via `left-auto right-0 translate-x-0`. Active cell = current `shapeType` (shape mode) or fixed `text`/`note` row (text/note modes), filled `--ctx-engaged` with white icon — same state-ternary `className` pattern as `ConnectorCapControl` so the active bg doesn't collide with the base. Shape-variant clicks call `setSelectedShapeType`; Sticky/Text rows no-op pending TextTool-side cross-type conversion. |
 | `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block, Sticky Note). |
 | `LanguageDropdown` | (no props) | Self-subscribes to `selectedStyles.codeLanguage`. 3-item language picker. |
 | `BoldButton` | `FormatButtons.tsx` | Self-subscribes to `selectInlineBold`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
@@ -348,7 +364,7 @@ All dropdowns use the `useDropdown()` hook which encapsulates:
 - `close()` — close dropdown (for item callbacks)
 
 Items use `onMouseDown` with `e.preventDefault()` + action callback + `close()`.
-Dropdown positioned via CSS absolute (`ctx-submenu` class, centered or left-aligned).
+Dropdown positioned via CSS absolute (`ctx-submenu` class, default centered; per-control alignment overrides — left or right — composed inline via Tailwind `left-0 translate-x-0` or `left-auto right-0 translate-x-0`).
 
 ### Self-Subscribing Components
 
@@ -518,7 +534,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 |------|----------------|
 | `ContextMenu.tsx` | Slim dispatcher: gate (`menuOpen`) → `ContextMenuBar` → `effectiveKind` → `MENU_BY_KIND` lookup → shell (`<LockButton/>` + optional divider + `<Menu/>`). The only file that imports `context-menu.css`. |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide/active lifecycle |
-| `context-menu.css` | Root CSS manifest — `@import`s the `styles/` foundation then every co-located component stylesheet, in cascade order. |
+| `context-menu.css` | Root CSS manifest — `@import`s six foundation files under `styles/` in cascade order (`tokens` → `shell` → `buttons` → `dropdowns` → `color-grid` → `svg-triggers`). No per-component stylesheets. |
 | `menu-widths.ts` | `STROKE_WIDTHS` (pen `4/7/10/13`) + `OUTLINE_WIDTHS` (shape/connector `2/4/6/8`), derived from `toolbar/weights`. |
 | `menus/*.tsx` | One self-subscribing menu bar per `SelectionKind` — `StrokeMenu`, `ConnectorMenu`, `ShapeMenu`, `TextMenu`, `NoteMenu`, `CodeMenu`, `MixedMenu`. Each owns its store selector(s) + the JSX for its kind. |
 | `FormatButtons.tsx` | `BoldButton` + `ItalicButton` — shared by `ShapeMenu`/`TextMenu`/`NoteMenu`. |
@@ -531,8 +547,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `BorderColorControl.tsx` | Hollow frame-glyph trigger → shared `ColorGrid` 6×4 with `noFill` (no-stroke) slot. |
 | `NoteFillControl.tsx` | Sticky-note fill — light-surface palette, no no-fill slot (notes always have a fill). |
 | `ColorGrid.tsx` | Presentational swatch grid — `palette` + `cols` + `value` + `mixed` + optional `noFill` (renders index 0 as a `NoFillIcon` swatch). Shared body of every fill/border control. |
-| `TextColorPopover.tsx` | "A"-glyph + bar trigger (`.ctx-btn-color`, engaged-dark) → light-surface palette grid. |
-| `HighlightPickerPopover.tsx` | Self-subscribing. Highlighter trigger (`.ctx-btn-color`, engaged-dark) → 4x2 rounded-square highlight grid + none swatch. |
+| `TextColorPopover.tsx` | "A"-glyph + bar trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`) → light-surface palette grid. |
+| `HighlightPickerPopover.tsx` | Self-subscribing. Highlighter trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`) → shared `ColorGrid` (`cols=4`, slot 0 = `NoFillIcon` for "no highlight"). |
 | `StrokeColorControl.tsx` | Stroke/connector color — teardrop trigger + light-surface palette grid (toolbar picker mimic). |
 | `StrokeWidthControl.tsx` | Stroke/shape/connector width — bars trigger + Thinnest…Thickest tier menu. |
 | `ConnectorTypeControl.tsx` | Connector routing type — current-glyph trigger + two-row tier menu (Straight, Orthogonal). No-op `onSelect` until route/endpoint adjustments are wired. |
@@ -540,13 +556,12 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `AlignDropdown.tsx` | Self-subscribing alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; 3 H-align icons in a horizontal submenu. |
 | `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; one flat submenu row: H-align · vertical divider · V-align. |
 | `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families). Trigger = font name only (no chevron); active dropdown row `#1b1f22`. |
-| `ShapeTypeDropdown.tsx` | Rightmost trigger (`.ctx-btn-switchtype`, `IconSwitchType`) + 4×2 icon-only grid popout (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded). Modes: `'shapes'` / `'text'` / `'note'`. Shape-variant clicks mutate via `setSelectedShapeType`; Sticky/Text rows no-op until TextTool-side conversion lands. |
+| `ShapeTypeDropdown.tsx` | Rightmost trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, `IconSwitchType`) + 4×2 icon-only grid popout (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded). Modes: `'shapes'` / `'text'` / `'note'`. Shape-variant clicks mutate via `setSelectedShapeType`; Sticky/Text rows no-op until TextTool-side conversion lands. |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts. Eight kinds: Stroke, Shape, Text, Connector, Code Block, Sticky Note, Image, Link. Link = bookmark; icon sourced from `toolbar/icons/IconLink`. |
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
 | `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
-| `styles/*.css` | CSS foundation imported first by the manifest: `tokens.css` (`--ctx-*` custom properties), `shell.css`, `buttons.css`, `dropdowns.css`, `color-grid.css`. |
-| `<Control>.css` | Per-control rules co-located beside the `.tsx` (`FontSizeStepper.css`, `StrokeWidthControl.css`, …). Reached through the `context-menu.css` manifest — control `.tsx` files import no CSS. |
+| `styles/*.css` | The entire CSS foundation, six files: `tokens.css` (`--ctx-*` custom properties scoped to `.context-menu-floating`), `shell.css` (`.ctx-menu` / `.ctx-hidden` / `.ctx-divider` / `.ctx-group`), `buttons.css` (`.ctx-btn` family — base, engaged marker, square, format, filter, lang), `dropdowns.css` (`.ctx-submenu` base + `.ctx-submenu-item` / `.ctx-type-item` / `.ctx-align-item` row primitives), `color-grid.css` (`.ctx-cp-grid` / `.ctx-cp-swatch` / `.ctx-cp-swatch-nofill` — shared by every color picker), `svg-triggers.css` (the FILTER + LANGUAGE trigger's nested `<text>` rules + on-open fill swaps). All wrapped in `@layer components`. |
 | `icons/` | Custom SVGs: fill-based paths for pixel-crisp rendering at small sizes |
 
 ### Icons
@@ -559,7 +574,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `CodeIcons.tsx` | `IconCodeLines` (22x16 viewBox, filled digits + stroke code bars) |
 | `AlignIcons.tsx` | `IconAlignTextLeft/Center/Right` + `IconAlignVTop/Middle/Bottom` — all Mural `textAlign*` glyphs, 24-viewBox |
 | `FormatIcons.tsx` | `IconBold`, `IconItalic` — Mural `textStyleBold`/`textStyleItalic` glyphs, 24-viewBox |
-| `SwitchTypeIcons.tsx` | `IconSwitchType` — Mural `switchType` glyph (24-viewBox, two stacked arrows wrapping a target ring) consumed by `.ctx-btn-switchtype`; `IconSwitchTypeRect` / `IconSwitchTypeCircle` / `IconSwitchTypeDiamond` / `IconSwitchTypeTriangle` / `IconSwitchTypeRoundedRect` — outlined 20-viewBox shape glyphs (`fill="none"`, `stroke="currentColor"`, `strokeWidth=2`, `strokeLinejoin=round`) for the grid items. Stroke=2 in 20-viewBox matches the toolbar `IconShapes` line weight at the dropdown's 24×24 CSS render. |
+| `SwitchTypeIcons.tsx` | `IconSwitchType` — Mural `switchType` glyph (24-viewBox, two stacked arrows wrapping a target ring) consumed by `ShapeTypeDropdown` (rendered inside `.ctx-btn-sq`); `IconSwitchTypeRect` / `IconSwitchTypeCircle` / `IconSwitchTypeDiamond` / `IconSwitchTypeTriangle` / `IconSwitchTypeRoundedRect` — outlined 20-viewBox shape glyphs (`fill="none"`, `stroke="currentColor"`, `strokeWidth=2`, `strokeLinejoin=round`) for the grid items. Stroke=2 in 20-viewBox matches the toolbar `IconShapes` line weight at the dropdown's 24×24 CSS render. |
 | `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) — "A" glyph + bar (`fill="currentColor"` glyph, explicit `fill={barColor}` bar, so the bar survives the engaged-dark color flip). |
 | `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) — Mural-style highlighter at 24-viewBox; body + tip on `currentColor`, bar takes `barColor` (with a gray-bar + separators fallback when `barColor` is `null`). |
 | `NoFillIcon.tsx` | `NoFillIcon` (props: `selected?`) — Mural `colorTransparent` paths verbatim (white bg + grey ring at `#9ca3af` + "/" slash at `#6b7280`, inset from corners). `selected` lays the `checkboxCustom` check + white halo on top so the check stays readable where it crosses the slash — slash stays drawn in both states. |
@@ -577,21 +592,26 @@ All property mutations (including style-only changes like color, fill, opacity) 
 ## CSS Notable Details
 
 **File layout.** `ContextMenu.tsx` imports one stylesheet — `context-menu.css`,
-a manifest that `@import`s the foundation (`styles/tokens.css` → `shell` →
-`buttons` → `dropdowns`) then every co-located component stylesheet
-(`FontSizeStepper.css`, `StrokeWidthControl.css`, …, `ColorGrid.css`). Cascade
-order is the `@import` order — foundation bases land before per-control
-modifiers; control `.tsx` files import no CSS (mirrors
-`toolbar/inspectors/Inspector.css`).
+a thin manifest that `@import`s six foundation files under `styles/` in cascade
+order: `tokens.css` → `shell.css` → `buttons.css` → `dropdowns.css` →
+`color-grid.css` → `svg-triggers.css`. Per-control variations (submenu sizing,
+row geometry, cell layout, active-state fills) live as inline Tailwind v4
+utilities directly in TSX — no co-located component stylesheets. Every
+foundation file is wrapped in `@layer components { … }`. Tailwind v4 emits
+utilities into a later layer than `components`, so inline utilities on a
+`.ctx-*` element cleanly override the foundation rule they compose with.
 
 **Tokens** (`styles/tokens.css`, scoped to `.context-menu-floating` — every
 surface, incl. the absolutely-positioned submenus, inherits them):
 
 - `--ctx-engaged` (#1b1f22) — `.ctx-btn` base ink + engaged-flip fill +
-  active-toggle fill + `.ctx-submenu-item-active` row fill.
-- `--ctx-engaged-tier` (#282e34) — tier-row active fill
-  (`.ctx-weight-item-active`, `.ctx-conntype-item-active`); typeface / language
-  trigger ink (SVG `<text fill>` reads this directly, not via `color`).
+  `.ctx-btn-fmt.active` toggle fill + `.ctx-submenu-item-active` row fill +
+  active-cell fill in the cap + switch-type pickers (applied via Tailwind
+  utility on the cell).
+- `--ctx-engaged-tier` (#282e34) — tier-row active fill on stroke-width +
+  connector-type submenus (applied via `bg-[var(--ctx-engaged-tier)] !text-white`
+  Tailwind utilities on the active row); typeface / language trigger ink
+  (SVG `<text fill>` reads this directly, not via `color`).
 - `--ctx-text` (#48525b) — body text default. `.ctx-submenu-item` row color +
   every tier/filter row label.
 - `--ctx-text-focal` (#1F2937) — closed-FILTER `{N} objects` total only.
@@ -609,54 +629,116 @@ Tokens are pure indirection — identical pixels.
   `var(--ctx-hover)`; pressed `var(--ctx-black-a08)`; focus ring
   `var(--ctx-accent)`. Text-bearing triggers (`.ctx-btn-filter` /
   `.ctx-btn-lang`) paint via explicit SVG `fill` and ignore the inherited
-  color.
-- `.ctx-btn-engaged` (shared marker): composes with any variant whose
-  `[aria-expanded="true"]` should fill `var(--ctx-engaged)` and flip
+  color. `TypefaceButton` uses `.ctx-btn` directly with a `min-w-14`
+  Tailwind override (the 56px min that used to live in `.ctx-btn-font`).
+- `.ctx-btn-engaged` (shared marker): composes with any `.ctx-btn` variant
+  whose `[aria-expanded="true"]` should fill `var(--ctx-engaged)` and flip
   `currentColor` to white. Single source of truth for the dropdown-trigger
   flip, with `:hover` / `:active` mirrors so the engaged state survives
-  hover + press on an open trigger. Carried by all 13 dropdown trigger sites
-  — text-color, highlight, stroke-color teardrop, fill, border, note-fill,
-  width, cap, connector-type, switch-type, filter, align, note-align.
-  `.ctx-btn-font` (typeface, stays light) and `.ctx-btn-lang` (always has
-  a value — no engaged state) deliberately don't carry it.
-  Icons with explicit `fill` props (`ColorTeardrop`, `IconColorFill`,
-  `IconColorBorder`) ignore the color portion and stay drawn by their own
-  props.
+  hover + press on an open trigger. Carried by every dropdown trigger that
+  inverts on open — `StrokeColorControl`, `FillColorControl`,
+  `BorderColorControl`, `NoteFillControl`, `TextColorPopover`,
+  `HighlightPickerPopover`, `StrokeWidthControl`, `ConnectorCapControl`,
+  `ConnectorTypeControl`, `ShapeTypeDropdown`, `FilterObjectsDropdown`,
+  `AlignDropdown`, `NoteAlignDropdown`. `TypefaceButton` and
+  `LanguageDropdown` deliberately don't carry it (the typeface trigger
+  stays light when open; a code block always has a selected language so the
+  trigger never reads "unset"). Icons with explicit `fill` props
+  (`ColorTeardrop`, `IconColorFill`, `IconColorBorder`) ignore the color
+  portion and stay drawn by their own props.
 - `.ctx-btn-sq`: 32×32 (width override), 0 padding. Inner SVG 20×20 — the
   menu-wide icon size; `.ctx-btn-fmt` shares this rule. Code-row buttons
-  override inline for non-square viewBoxes.
+  override the SVG size via Tailwind (`size-4` / `w-[22px] h-4`) for
+  non-square viewBoxes. **Every picker trigger uses this one variant** —
+  the historical `.ctx-btn-color` / `.ctx-btn-teardrop` / `.ctx-btn-weight` /
+  `.ctx-btn-conntype` / `.ctx-btn-cap` / `.ctx-btn-switchtype` aliases were
+  redundant (32×32 + 20×20 SVG, no unique rules) and have been collapsed.
 - `.ctx-btn-lock` / `.ctx-btn-label`: TSX-only semantic markers on the lock
   and connector-label shell buttons. No CSS rules — both inherit 32×32 from
   `.ctx-btn-sq` and `var(--ctx-engaged)` ink from the `.ctx-btn` base.
 - `.ctx-btn-fmt`: bold / italic / code header / code output toggles + align
   dropdown triggers. Inner SVG 20×20 (code header/output keep a 16px inline
-  size). `.active` (toggle on) → bg `var(--ctx-engaged)`, white icon. Align
-  dropdown triggers compose `.ctx-btn-engaged` for their open-state flip
-  instead.
-- `.ctx-btn-color` / `.ctx-btn-teardrop` / `.ctx-btn-weight` /
-  `.ctx-btn-conntype` / `.ctx-btn-cap` / `.ctx-btn-switchtype`: 32×32 picker
-  triggers (text-color & highlight / stroke-color teardrop / width / cap /
-  connector-type / switch-type). Per-variant CSS owns only the shape (32×32,
-  0 padding) and inner SVG size (20×20 across all of them). At-rest ink
-  comes from the `.ctx-btn` base; the engaged-flip from the shared marker.
-  `TextColorIcon` + `HighlightIcon` draw their colored bar via explicit
-  `fill={barColor}`, so the bar survives the engaged-dark flip.
-- `.ctx-btn-filter`: 0 8px padding + 6px gap (no engaged-flip rule in this
-  file — that's the marker's job). The filter trigger has additional
-  descendant rules in `FilterObjectsDropdown.css` that swap the inner SVG
-  text fills on open (label → `--ctx-sand`, total → white).
-- `.ctx-btn-lang`: filter chrome minus the engaged state — a code block
-  always has a language, so the trigger never reads "unset" and never
-  inverts.
-- `.ctx-cp-grid` / `.ctx-cp-swatch`: light-surface color picker — 6-col grid, 22x22 swatches. `[data-near-white]` adds a darker edge; the active swatch shows a centered check, no ring (the white surface needs no halo).
-- `.ctx-cp-swatch-nofill`: the no-fill / no-stroke slot — strips `.ctx-cp-swatch`'s border + bg so the SVG (`NoFillIcon`) owns the surface. Same 22×22 footprint and hover-scale as the colored swatches; the icon's grey ring + slash are inside that footprint, never inflating it.
-- `.ctx-submenu-weight` / `.ctx-weight-item`: stroke-width tier menu — `padding: 8px`, `border-radius: 12px`, 3px row gap. Rows left-aligned (icon · word · inline checkmark). `.ctx-weight-item-active` fills the tier row `#282e34`, white icon/label/check.
-- `.ctx-submenu-conntype` / `.ctx-conntype-item`: connector-type tier menu — same shell as the stroke-width tier menu (`min-width: 160px` to fit "Orthogonal"), `.ctx-conntype-item-active` fills `#282e34`.
-- `.ctx-submenu-switchtype` / `.ctx-switchtype-item`: switch-type icon-only grid popout — right-anchored (`left: auto; right: 0`) `repeat(4, 36px)` grid, 4px gap, 8px padding (~172×80 total). Each 36×36 cell hosts a 24×24 SVG, ink `--ctx-engaged`; `.ctx-switchtype-item-active` fills `--ctx-engaged` and the icon flips white (no checkmark — the active state IS the cell).
-- `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x12, SVG 11x6.5.
-- `.ctx-fontsize-value`: 32x32, padding 0, SVG 30x16 viewBox.
-- `.ctx-submenu-fontsize`: `min-width: 0` + 10px padding (content-driven width); 32x32 items, center-aligned (`justify-content: center`), active row inherits the base `.ctx-submenu-item-active` (`#1b1f22` / white).
-- `.ctx-submenu-note-align`: flex **row**, centered. `.ctx-align-row` (H group, then V group) split by `.ctx-align-divider` — a vertical 2×24 separator.
-- `.ctx-divider`: 2px wide, 24px tall, `--ctx-divider` (#2a52791f).
+  size via Tailwind). `.active` (toggle on) → bg `var(--ctx-engaged)`,
+  white icon. Align dropdown triggers compose `.ctx-btn-engaged` for their
+  open-state flip instead.
+- `.ctx-btn-filter`: 0 8px padding + 6px gap. SVG-text styling for the
+  inner FILTER eyebrow + count + the on-open fill swap (label →
+  `--ctx-sand`, total → white) lives in `svg-triggers.css` and keys off
+  this class.
+- `.ctx-btn-lang`: filter chrome minus the engaged state. SVG-text styling
+  for the LANGUAGE eyebrow + value lives in `svg-triggers.css`.
+
+**Submenus** (`styles/dropdowns.css`):
+
+- `.ctx-submenu` (base): absolute, `top: calc(100% + 8px)`, `left: 50%`,
+  `translate: -50% 0`, `min-width: 160px`, white surface with hairline +
+  drop shadow, padding 4, z-index 10. **Default-centered via the CSS
+  `translate` property** (not `transform`) — Tailwind v4's `translate-x-*`
+  utilities also use `translate`, so per-control alignment overrides cleanly
+  cancel the default centering: `left-0 translate-x-0` for left-anchored
+  popouts (typeface, filter, language); `left-auto right-0 translate-x-0`
+  for the right-anchored switch-type grid.
+- `.ctx-submenu-item` (base row): 32 tall, full-width, padding 0 8, ink
+  `--ctx-text`. Hover wash `--ctx-hover`. `.ctx-submenu-item-active` fills
+  `--ctx-engaged` + white text.
+- `.ctx-type-item`: shared by `TypefaceButton`, `LanguageDropdown` (and the
+  shape-type rows when the dropdown used a list; the current 4×2 icon-only
+  grid bypasses these row classes). 36 tall, 10px gap, weight 500.
+  `.ctx-type-check` pins the trailing checkmark to the right.
+- `.ctx-align-item`: shared by `AlignDropdown` + `NoteAlignDropdown` —
+  32×32 cell, ink `--ctx-engaged`, hover wash. `.ctx-align-item-active`
+  fills engaged + white. Inner SVG 20×20.
+
+Per-control submenu modifiers (min-width, padding, layout, alignment) are
+**inlined as Tailwind utilities** on the `<div className="ctx-submenu …">`
+in TSX. The tier rows in `StrokeWidthControl` / `ConnectorTypeControl`
+compose `ctx-submenu-item ctx-submenu-item-active` with utility overrides
+(`bg-[var(--ctx-engaged-tier)] !text-white`) — the `!` is needed because
+both the base utility `text-[var(--ctx-text)]` and the override sit in the
+same `utilities` layer, so without `!important` the cascade order isn't
+guaranteed.
+
+**Color picker grid** (`styles/color-grid.css`): shared by every fill /
+border / text-color / highlight picker via the `ColorGrid` component (5
+callsites: `FillColorControl`, `BorderColorControl`, `NoteFillControl`,
+`StrokeColorControl`, `TextColorPopover`, `HighlightPickerPopover`).
+
+- `.ctx-cp-grid`: grid container, gap 10, padding 10. Column count is set
+  inline via `gridTemplateColumns: repeat(${cols}, 1fr)` — **not** Tailwind's
+  `grid-cols-N` (which emits `repeat(N, minmax(0, 1fr))`); the `minmax(0,…)`
+  variant lets columns collapse to 0 in a shrink-to-fit absolute container,
+  which was the cause of the original highlight-picker malformation.
+- `.ctx-cp-swatch`: 22×22, 6px radius, 1px hairline (`--ctx-black-a08`),
+  hover scale 1.1. `[data-near-white]` adds a darker edge so light swatches
+  don't blend into the white surface. The active swatch shows a centered
+  check, no ring (the white surface needs no halo).
+- `.ctx-cp-swatch-nofill`: the no-fill / no-stroke / no-highlight slot —
+  strips border + bg so the SVG (`NoFillIcon`) owns the surface. Same 22×22
+  footprint and hover-scale as the colored swatches.
+
+**SVG-text triggers** (`styles/svg-triggers.css`): the two triggers that
+render their primary text inside an `<svg>` so the ink can flip via parent
+`[aria-expanded="true"]`. Nested descendant selectors under attribute
+selectors don't translate well to inline Tailwind variants — they belong
+in CSS.
+
+- `.ctx-filter-trigger-label` / `.ctx-filter-trigger-total`: FILTER eyebrow
+  (10px w600 caps, `--ctx-text` → `--ctx-sand` on open) + `{N} objects`
+  count (13px w700 `--ctx-text-focal` → white on open). `fill 150ms ease`
+  transitions both.
+- `.ctx-lang-trigger-label` / `.ctx-lang-trigger-value`: LANGUAGE eyebrow
+  (10px w700 caps `--ctx-text`) + current language (13px w700
+  `--ctx-engaged-tier`). No on-open swap — `.ctx-btn-lang` doesn't carry
+  `.ctx-btn-engaged`.
+
+**Shell** (`styles/shell.css`):
+
+- `.ctx-menu` / `.ctx-hidden .ctx-menu` / `.ctx-group` /
+  `.context-menu-floating` — bar shell, portal contract, visibility toggle.
+  See "Show/Hide CSS" above.
+- `.ctx-divider`: 2px wide, 24px tall, `--ctx-divider`, flex-shrink 0.
+  Used between bar groups AND inside `NoteAlignDropdown`'s submenu to
+  separate the H-align + V-align groups (replaces the old `.ctx-align-divider`
+  which was byte-identical apart from `flex-shrink`).
 
 ---

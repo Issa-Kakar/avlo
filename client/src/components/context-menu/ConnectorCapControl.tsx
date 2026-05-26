@@ -32,9 +32,9 @@ export function ConnectorCapControl({ slot, value, onSelect }: ConnectorCapContr
   const TriggerIcon = current === 'arrow' ? <IconTipArrow direction={direction} /> : <IconTipNone />;
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
+    <div ref={containerRef} className="relative">
       <MenuButton
-        className="ctx-btn-cap ctx-btn-engaged"
+        className="ctx-btn-sq ctx-btn-engaged"
         onMouseDown={toggle}
         aria-expanded={open}
         aria-label={slot === 'start' ? 'Start cap' : 'End cap'}
@@ -42,14 +42,18 @@ export function ConnectorCapControl({ slot, value, onSelect }: ConnectorCapContr
         {TriggerIcon}
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-cap">
+        <div className="ctx-submenu min-w-0 p-1.5 flex flex-row gap-1">
           {CAPS.map(({ cap, label }) => {
             const active = cap === current;
             return (
               <button
                 key={cap}
                 type="button"
-                className={`ctx-cap-item${active ? ' ctx-cap-item-active' : ''}`}
+                className={`size-9 inline-flex items-center justify-center border-0 rounded-md cursor-pointer p-0 outline-none [&_svg]:size-7 ${
+                  active
+                    ? 'bg-[var(--ctx-engaged)] text-white hover:bg-[var(--ctx-engaged)]'
+                    : 'bg-transparent text-[var(--ctx-engaged)] hover:bg-[var(--ctx-hover)]'
+                }`}
                 aria-label={label}
                 onMouseDown={(e) => {
                   e.preventDefault();

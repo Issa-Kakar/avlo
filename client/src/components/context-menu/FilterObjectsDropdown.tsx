@@ -38,9 +38,9 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
+    <div ref={containerRef} className="relative">
       <MenuButton className="ctx-btn-filter ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
-        <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+        <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" className="shrink-0">
           <text className="ctx-filter-trigger-label" x="0" y="9">
             FILTER
           </text>
@@ -52,14 +52,14 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu ctx-submenu-filter">
+        <div className="ctx-submenu left-0 translate-x-0 min-w-[140px]">
           {KIND_CONFIG.map(({ key, label, Icon }) => {
             const count = kindCounts[key];
             if (count === 0) return null;
             return (
               <button
                 key={key}
-                className="ctx-submenu-item ctx-filter-item"
+                className="ctx-submenu-item h-9 gap-2.5 text-xs font-bold whitespace-nowrap"
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onFilterByKind(key);
@@ -68,7 +68,7 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
               >
                 <Icon width={20} height={20} />
                 <span>{label}</span>
-                <span className="ctx-filter-num">{count}</span>
+                <span className="ml-auto text-[var(--ctx-text)] text-[11px] font-medium tabular-nums">{count}</span>
               </button>
             );
           })}

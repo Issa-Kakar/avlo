@@ -21,12 +21,12 @@ export function StrokeColorControl({ color, mixed, onSelect }: StrokeColorContro
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-teardrop ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <ColorTeardrop color={color} mixed={mixed} engaged={open} />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-cp">
+        <div className="ctx-submenu min-w-0 p-0">
           <ColorGrid
             palette={PALETTE}
             cols={PALETTE_COLS}

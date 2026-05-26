@@ -37,13 +37,13 @@ export const CodeMenu = memo(function CodeMenu() {
       />
       <div className="ctx-divider" />
       <MenuButton className="ctx-btn-sq" onMouseDown={toggleCodeLineNumbers}>
-        <IconCodeLines style={{ width: 22, height: 16 }} />
+        <IconCodeLines className="w-[22px] h-4" />
       </MenuButton>
       <MenuButton className="ctx-btn-sq ctx-btn-fmt" active={headerVisible === true} onMouseDown={toggleCodeHeader}>
-        <IconCodeHeader style={{ width: 16, height: 16 }} />
+        <IconCodeHeader className="size-4" />
       </MenuButton>
       <MenuButton className="ctx-btn-sq ctx-btn-fmt" active={outputVisible === true} onMouseDown={toggleCodeOutput}>
-        <IconCodeOutput style={{ width: 16, height: 16 }} />
+        <IconCodeOutput className="size-4" />
       </MenuButton>
     </ButtonGroup>
   );

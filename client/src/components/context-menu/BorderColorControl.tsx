@@ -20,12 +20,12 @@ export function BorderColorControl({ color, mixed, onSelect }: BorderColorContro
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-teardrop ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <IconColorBorder color={color} mixed={mixed} />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-cp">
+        <div className="ctx-submenu min-w-0 p-0">
           <ColorGrid
             palette={FILL_PALETTE}
             cols={6}

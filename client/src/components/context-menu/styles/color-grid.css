@@ -1,0 +1,57 @@
+/* ===== Context Menu — Color Grid (shared swatch surface) =====
+   The palette grid + swatches used by every fill/border/text picker:
+   FillColorControl, BorderColorControl, NoteFillControl, StrokeColorControl,
+   TextColorPopover. Consolidated here from the per-control stylesheets so
+   the 5 callsites share one source. The no-fill swatch slot
+   (.ctx-cp-swatch-nofill) is the FILL_PALETTE[0] cell in fill + border
+   pickers — its SVG (NoFillIcon) carries the full visual; the button is a
+   transparent positioning container at the standard 22×22 footprint. */
+
+@layer components {
+  .ctx-cp-grid {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .ctx-cp-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: 1px solid var(--ctx-black-a08);
+    padding: 0;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    transition: transform 100ms ease;
+  }
+
+  .ctx-cp-swatch:hover {
+    transform: scale(1.1);
+  }
+
+  /* Near-white swatches blend into the white picker — a darker edge restores
+     contrast (mirror of the toolbar picker's white edge on near-black). */
+  .ctx-cp-swatch[data-near-white] {
+    border-color: var(--ctx-black-a20);
+  }
+
+  /* No-fill / no-stroke slot — strips the swatch's border + bg so the SVG
+     (NoFillIcon) owns the surface. Same 22×22 footprint as every other swatch
+     in the grid — no border, no background, no padding can inflate it. */
+  .ctx-cp-swatch-nofill {
+    border: none;
+    background: transparent;
+    padding: 0;
+    /* Hairline at the swatch's outer edge would clip the icon's rounded
+       corners; the SVG owns its own corner radius (rx=4 in viewBox space). */
+    border-radius: 6px;
+    overflow: visible;
+  }
+
+  .ctx-cp-swatch-nofill > svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+}

@@ -1,0 +1,59 @@
+/* ===== Context Menu — SVG-Text Trigger Styling =====
+   The FilterObjectsDropdown + LanguageDropdown triggers render their text
+   inside an SVG (so the ink can flip via parent `[aria-expanded="true"]`).
+   These rules style the nested <text> elements and the on-open fill swaps.
+   Nested descendant selectors under attribute selectors don't translate
+   well to inline Tailwind variants — they belong in CSS. */
+
+@layer components {
+  /* ===== Filter trigger eyebrow + total ===== */
+
+  .ctx-filter-trigger-label {
+    fill: var(--ctx-text);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-rendering: geometricPrecision;
+    transition: fill 150ms ease;
+  }
+
+  .ctx-filter-trigger-total {
+    fill: var(--ctx-text-focal);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 700;
+    text-rendering: geometricPrecision;
+    transition: fill 150ms ease;
+  }
+
+  .ctx-btn-filter[aria-expanded="true"] .ctx-filter-trigger-label {
+    fill: var(--ctx-sand);
+  }
+
+  .ctx-btn-filter[aria-expanded="true"] .ctx-filter-trigger-total {
+    fill: #ffffff;
+  }
+
+  /* ===== Language trigger eyebrow + value =====
+     Both lines run 700 (FILTER's 600/700 split → all 700 here) and the
+     value uses the typeface-picker ink rather than the focal near-black.
+     No engaged open-state — a code block always has a selected language. */
+
+  .ctx-lang-trigger-label {
+    fill: var(--ctx-text);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-rendering: geometricPrecision;
+  }
+
+  .ctx-lang-trigger-value {
+    fill: var(--ctx-engaged-tier);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 700;
+    text-rendering: geometricPrecision;
+  }
+}

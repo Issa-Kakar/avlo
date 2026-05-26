@@ -24,12 +24,12 @@ export function NoteFillControl({ fillColor, mixed, onSelect }: NoteFillControlP
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-teardrop ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <IconColorFill fill={fillColor ?? NOTE_COLOR_PALETTE[0].fill} mixed={mixed} engaged={open} />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-cp">
+        <div className="ctx-submenu min-w-0 p-0">
           <ColorGrid
             palette={NOTE_FILLS}
             cols={6}

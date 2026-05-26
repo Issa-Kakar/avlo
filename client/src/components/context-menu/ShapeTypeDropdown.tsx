@@ -61,20 +61,24 @@ export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
   const activeKey = mode === 'shapes' ? shapeType : mode === 'text' ? 'text' : 'note';
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-switchtype ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} aria-label="Switch type">
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open} aria-label="Switch type">
         <IconSwitchType />
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu ctx-submenu-switchtype">
+        <div className="ctx-submenu left-auto right-0 translate-x-0 min-w-0 p-2 grid grid-cols-[repeat(4,36px)] auto-rows-[36px] gap-1">
           {ITEMS.map(({ key, label, Icon }) => {
             const active = activeKey === key;
             return (
               <button
                 key={key}
                 type="button"
-                className={`ctx-switchtype-item${active ? ' ctx-switchtype-item-active' : ''}`}
+                className={`size-9 inline-flex items-center justify-center border-0 rounded-md cursor-pointer p-0 outline-none ${
+                  active
+                    ? 'bg-[var(--ctx-engaged)] text-white hover:bg-[var(--ctx-engaged)]'
+                    : 'bg-transparent text-[var(--ctx-engaged)] hover:bg-[var(--ctx-hover)]'
+                }`}
                 aria-label={label}
                 onMouseDown={(e) => {
                   e.preventDefault();

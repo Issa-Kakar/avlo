@@ -27,9 +27,9 @@ export function TypefaceButton() {
   const cssFallback = FONT_FAMILIES[current.family].fallback;
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-font" onMouseDown={toggle} aria-expanded={open}>
-        <svg width={40} height={16} viewBox="0 0 40 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn min-w-14" onMouseDown={toggle} aria-expanded={open}>
+        <svg width={40} height={16} viewBox="0 0 40 16" fill="none" aria-hidden="true" className="shrink-0">
           <text x="0" y="13" fill="#282e34" fontSize="15" fontWeight="500" fontFamily={cssFallback} textRendering="geometricPrecision">
             {current.display}
           </text>
@@ -37,13 +37,13 @@ export function TypefaceButton() {
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu ctx-submenu-font">
+        <div className="ctx-submenu left-0 translate-x-0 min-w-[150px] rounded-xl p-2">
           {FONT_ITEMS.map(({ family, display }) => {
             const active = effective === family;
             return (
               <button
                 key={family}
-                className={`ctx-submenu-item ctx-type-item${active ? ' ctx-submenu-item-active' : ''}`}
+                className={`ctx-submenu-item ctx-type-item h-auto px-2 py-1.5 text-[15px] leading-[1.4]${active ? ' ctx-submenu-item-active' : ''}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   setSelectedFontFamily(family);

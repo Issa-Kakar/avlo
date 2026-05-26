@@ -1,96 +1,101 @@
 /* ===== Context Menu — Submenu Dropdowns =====
    Shared bar + row primitives consumed by every dropdown control. Per-control
-   submenu modifiers (.ctx-submenu-cp, -weight, -type, …) live in each
-   control's co-located stylesheet. */
+   submenu modifiers (min-width, padding, layout, positioning override) are
+   inlined as Tailwind utilities on each control's submenu element. */
 
-.ctx-submenu {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  min-width: 160px;
-  background: #fff;
-  border: 1px solid var(--ctx-black-a06);
-  border-radius: 10px;
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.1),
-    0 1px 4px var(--ctx-black-a06);
-  padding: 4px;
-  z-index: 10;
-}
+@layer components {
+  /* Default-centered via the CSS `translate` property (not `transform`) so
+     Tailwind v4 utilities (`translate-x-0`, `-translate-x-1/2`, …) — which
+     also use `translate` — cleanly override per-control submenu alignment. */
+  .ctx-submenu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    translate: -50% 0;
+    min-width: 160px;
+    background: #fff;
+    border: 1px solid var(--ctx-black-a06);
+    border-radius: 10px;
+    box-shadow:
+      0 4px 16px rgba(0, 0, 0, 0.1),
+      0 1px 4px var(--ctx-black-a06);
+    padding: 4px;
+    z-index: 10;
+  }
 
-.ctx-submenu-item {
-  height: 32px;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  color: var(--ctx-text);
-  font-family: var(--font-ui);
-  font-size: 13px;
-  cursor: pointer;
-  outline: none;
-}
+  .ctx-submenu-item {
+    height: 32px;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--ctx-text);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+  }
 
-.ctx-submenu-item:hover {
-  background: var(--ctx-hover);
-}
+  .ctx-submenu-item:hover {
+    background: var(--ctx-hover);
+  }
 
-/* Active / selected row — engaged dark fill, white text/icons.
-   FontSizeStepper overrides to the tier color for the size grid. */
-.ctx-submenu-item-active,
-.ctx-submenu-item-active:hover {
-  background: var(--ctx-engaged);
-  color: #fff;
-}
+  /* Active / selected row — engaged dark fill, white text/icons.
+     FontSizeStepper overrides to the tier color for the size grid. */
+  .ctx-submenu-item-active,
+  .ctx-submenu-item-active:hover {
+    background: var(--ctx-engaged);
+    color: #fff;
+  }
 
-/* ===== Type Rows (shared by ShapeTypeDropdown, TypefaceButton, LanguageDropdown) ===== */
+  /* ===== Type Rows (shared by ShapeTypeDropdown, TypefaceButton, LanguageDropdown) ===== */
 
-.ctx-type-item {
-  height: 36px;
-  gap: 10px;
-  font-size: 13px;
-  font-weight: 500;
-}
+  .ctx-type-item {
+    height: 36px;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 500;
+  }
 
-.ctx-type-item svg {
-  flex-shrink: 0;
-}
+  .ctx-type-item svg {
+    flex-shrink: 0;
+  }
 
-.ctx-type-check {
-  margin-left: auto;
-}
+  .ctx-type-check {
+    margin-left: auto;
+  }
 
-/* ===== Align Rows (shared by AlignDropdown + NoteAlignDropdown) ===== */
+  /* ===== Align Rows (shared by AlignDropdown + NoteAlignDropdown) ===== */
 
-.ctx-align-item {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--ctx-engaged);
-}
+  .ctx-align-item {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--ctx-engaged);
+  }
 
-.ctx-align-item:hover {
-  background: var(--ctx-hover);
-}
+  .ctx-align-item:hover {
+    background: var(--ctx-hover);
+  }
 
-.ctx-align-item-active,
-.ctx-align-item-active:hover {
-  background: var(--ctx-engaged);
-  color: #fff;
-}
+  .ctx-align-item-active,
+  .ctx-align-item-active:hover {
+    background: var(--ctx-engaged);
+    color: #fff;
+  }
 
-.ctx-align-item svg {
-  width: 20px;
-  height: 20px;
+  .ctx-align-item svg {
+    width: 20px;
+    height: 20px;
+  }
 }
