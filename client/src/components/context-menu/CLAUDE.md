@@ -71,7 +71,7 @@
 > pattern).
 >
 > **Bar shell + button geometry** (descriptors, not flux): `.ctx-menu` carries
-> the 10px-radius white shell with a 1px hairline + soft drop shadow; the
+> the 12px-radius white shell with a 1px hairline + soft drop shadow; the
 > `.ctx-btn` family is 32×32 with an 8px radius and `var(--ctx-engaged)` base
 > ink. These are current shape, not legacy.
 >

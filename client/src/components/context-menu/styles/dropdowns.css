@@ -15,7 +15,7 @@
     min-width: 160px;
     background: #fff;
     border: 1px solid var(--ctx-black-a06);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow:
       0 4px 16px rgba(0, 0, 0, 0.1),
       0 1px 4px var(--ctx-black-a06);
@@ -32,7 +32,7 @@
     padding: 0 8px;
     background: transparent;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     color: var(--ctx-text);
     font-family: var(--font-ui);
     font-size: 13px;
@@ -79,7 +79,7 @@
     justify-content: center;
     border: none;
     background: transparent;
-    border-radius: 4px;
+    border-radius: 8px;
     cursor: pointer;
     color: var(--ctx-engaged);
   }

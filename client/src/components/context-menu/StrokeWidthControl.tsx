@@ -34,7 +34,7 @@ export function StrokeWidthControl({ widths, value, onSelect, disabled }: Stroke
         <IconWeightBars />
       </MenuButton>
       {open && !disabled && (
-        <div className="ctx-submenu min-w-[140px] rounded-xl p-2 flex flex-col gap-[3px]">
+        <div className="ctx-submenu min-w-[140px] p-2 flex flex-col gap-[3px]">
           {widths.map((w, i) => {
             const Icon = TIER_ICONS[i];
             const active = w === value;

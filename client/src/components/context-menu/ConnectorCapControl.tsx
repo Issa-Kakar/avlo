@@ -49,7 +49,7 @@ export function ConnectorCapControl({ slot, value, onSelect }: ConnectorCapContr
               <button
                 key={cap}
                 type="button"
-                className={`size-9 inline-flex items-center justify-center border-0 rounded-md cursor-pointer p-0 outline-none [&_svg]:size-7 ${
+                className={`size-9 inline-flex items-center justify-center border-0 rounded-lg cursor-pointer p-0 outline-none [&_svg]:size-7 ${
                   active
                     ? 'bg-[var(--ctx-engaged)] text-white hover:bg-[var(--ctx-engaged)]'
                     : 'bg-transparent text-[var(--ctx-engaged)] hover:bg-[var(--ctx-hover)]'

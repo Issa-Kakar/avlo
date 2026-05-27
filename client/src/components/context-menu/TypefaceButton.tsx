@@ -37,7 +37,7 @@ export function TypefaceButton() {
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu left-0 translate-x-0 min-w-[150px] rounded-xl p-2">
+        <div className="ctx-submenu left-0 translate-x-0 min-w-[150px] p-2">
           {FONT_ITEMS.map(({ family, display }) => {
             const active = effective === family;
             return (

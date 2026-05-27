@@ -4,11 +4,11 @@
   .ctx-menu {
     display: inline-flex;
     align-items: center;
-    height: 42px;
+    height: 40px;
     padding: 4px 6px;
     background: #fff;
     border: 1px solid var(--ctx-black-a06);
-    border-radius: 10px;
+    border-radius: 12px;
     box-shadow:
       0 2px 12px var(--ctx-black-a08),
       0 1px 3px var(--ctx-black-a06);

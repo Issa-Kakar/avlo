@@ -33,7 +33,7 @@ export function ConnectorTypeControl({ value, onSelect }: ConnectorTypeControlPr
         <TriggerIcon />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu min-w-[160px] rounded-xl p-2 flex flex-col gap-[3px]">
+        <div className="ctx-submenu min-w-[160px] p-2 flex flex-col gap-[3px]">
           {ROWS.map(({ type, label, Icon }) => {
             const active = type === value;
             return (
