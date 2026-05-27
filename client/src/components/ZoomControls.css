@@ -10,12 +10,12 @@
   align-items: center;
   padding: 6px;
   gap: 2px;
-  background: #fff;
+  background: var(--color-chrome-surface);
+  /* 14px (not --radius-chrome-pill 12px) is intentional — tunes inner-pct
+     radius cascade for the zoom bar's tighter geometry. */
   border-radius: 14px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.1),
-    0 0 1px rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--color-chrome-border);
+  box-shadow: var(--shadow-chrome-bar);
 }
 
 /* --- Buttons --- */
@@ -24,7 +24,7 @@
   height: 34px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  border-radius: var(--radius-chrome-btn);
   color: #2a2a2a;
   background: transparent;
   border: none;
@@ -35,7 +35,7 @@
 }
 
 .zoom-bar-btn:hover {
-  background: rgba(42, 82, 121, 0.08);
+  background: var(--color-chrome-hover);
   color: #1a1a1a;
 }
 
@@ -67,12 +67,12 @@
 }
 
 .zoom-bar-pct:hover {
-  background: rgba(42, 82, 121, 0.08);
+  background: var(--color-chrome-hover);
 }
 
 .zoom-bar-pct.active {
   background: #1a1a1a;
-  color: #fff;
+  color: var(--color-chrome-surface);
 }
 
 /* --- Dividers ---
@@ -81,7 +81,7 @@
 .zoom-bar-divider {
   width: 2px;
   height: 22px;
-  background: rgba(42, 82, 121, 0.12);
+  background: var(--color-chrome-divider);
   margin: 0 3px;
 }
 
@@ -93,8 +93,10 @@
   transform: translateX(-50%);
   min-width: 200px;
   padding: 6px;
-  border-radius: 12px;
-  background: #fff;
+  border-radius: var(--radius-chrome-pill);
+  background: var(--color-chrome-surface);
+  /* Slightly stronger than --shadow-chrome-popover (a12 vs a10 + no 1px 4px
+     inner) — corner-anchored upward popout earns the heavier center weight. */
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.12),
     0 0 1px rgba(0, 0, 0, 0.06);
@@ -117,11 +119,11 @@
   width: 100%;
   height: 36px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-chrome-btn);
   font-size: 12px;
   font-weight: 700;
   font-family: var(--font-ui);
-  color: #48525b;
+  color: var(--color-chrome-ink-body);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -132,7 +134,7 @@
 }
 
 .zoom-menu-item:hover {
-  background: rgba(42, 82, 121, 0.08);
+  background: var(--color-chrome-hover);
 }
 
 .zoom-menu-item svg {
@@ -143,7 +145,7 @@
 /* --- Menu Divider --- */
 .zoom-menu-divider {
   height: 2px;
-  background: rgba(42, 82, 121, 0.12);
+  background: var(--color-chrome-divider);
   margin: 4px 8px;
 }
 

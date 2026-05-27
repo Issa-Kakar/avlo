@@ -561,7 +561,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
 | `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
-| `styles/*.css` | The entire CSS foundation, six files: `tokens.css` (`--ctx-*` custom properties scoped to `.context-menu-floating`), `shell.css` (`.ctx-menu` / `.ctx-hidden` / `.ctx-divider` / `.ctx-group`), `buttons.css` (`.ctx-btn` family — base, engaged marker, square, format, filter, lang), `dropdowns.css` (`.ctx-submenu` base + `.ctx-submenu-item` / `.ctx-type-item` / `.ctx-align-item` row primitives), `color-grid.css` (`.ctx-cp-grid` / `.ctx-cp-swatch` / `.ctx-cp-swatch-nofill` — shared by every color picker), `svg-triggers.css` (the FILTER + LANGUAGE trigger's nested `<text>` rules + on-open fill swaps). All wrapped in `@layer components`. |
+| `styles/*.css` | The entire CSS foundation, six files: `tokens.css` (`--ctx-*` custom properties scoped to `.context-menu-floating`, mostly aliasing the chrome-wide `--color-chrome-*` scale in `client/src/index.css`), `shell.css` (`.ctx-menu` / `.ctx-hidden` / `.ctx-divider` / `.ctx-group`), `buttons.css` (`.ctx-btn` family — base, engaged marker, square, format, filter, lang), `dropdowns.css` (`.ctx-submenu` base + `.ctx-submenu-item` / `.ctx-type-item` / `.ctx-align-item` row primitives), `color-grid.css` (`.ctx-cp-grid` / `.ctx-cp-swatch` / `.ctx-cp-swatch-nofill` — shared by every color picker), `svg-triggers.css` (the FILTER + LANGUAGE trigger's nested `<text>` rules + on-open fill swaps). All wrapped in `@layer components`. |
 | `icons/` | Custom SVGs: fill-based paths for pixel-crisp rendering at small sizes |
 
 ### Icons
@@ -602,25 +602,46 @@ utilities into a later layer than `components`, so inline utilities on a
 `.ctx-*` element cleanly override the foundation rule they compose with.
 
 **Tokens** (`styles/tokens.css`, scoped to `.context-menu-floating` — every
-surface, incl. the absolutely-positioned submenus, inherits them):
+surface, incl. the absolutely-positioned submenus, inherits them). Eleven
+of the thirteen `--ctx-*` names alias the chrome-wide `--color-chrome-*`
+scale in `client/src/index.css`'s `@theme` block (shared with the TopBar,
+MainMenu, and ZoomControls); the two odd-byte single-use values
+(`--ctx-black-a13`, `--ctx-black-a20`) stay literal. The `--ctx-*` names
+are kept so the five sibling foundation files keep working without edit:
 
-- `--ctx-engaged` (#1b1f22) — `.ctx-btn` base ink + engaged-flip fill +
-  `.ctx-btn-fmt.active` toggle fill + `.ctx-submenu-item-active` row fill +
-  active-cell fill in the cap + switch-type pickers (applied via Tailwind
-  utility on the cell).
-- `--ctx-engaged-tier` (#282e34) — tier-row active fill on stroke-width +
-  connector-type submenus (applied via `bg-[var(--ctx-engaged-tier)] !text-white`
-  Tailwind utilities on the active row); typeface / language trigger ink
-  (SVG `<text fill>` reads this directly, not via `color`).
-- `--ctx-text` (#48525b) — body text default. `.ctx-submenu-item` row color +
-  every tier/filter row label.
-- `--ctx-text-focal` (#1F2937) — closed-FILTER `{N} objects` total only.
-- `--ctx-accent` (#3b82f6) — focus rings + selected highlight swatch ring.
-- `--ctx-sand` (#d4b89b) — open-FILTER subtitle (warm third pole).
-- `--ctx-divider` (#2a52791f), `--ctx-hover` (blue-tinted hover wash),
-  `--ctx-black-a06` … `--ctx-black-a20` (overlay scale).
+- `--ctx-engaged` → `var(--color-chrome-ink-engaged)` (#1b1f22) — `.ctx-btn`
+  base ink + engaged-flip fill + `.ctx-btn-fmt.active` toggle fill +
+  `.ctx-submenu-item-active` row fill + active-cell fill in the cap +
+  switch-type pickers (applied via Tailwind utility on the cell).
+- `--ctx-engaged-tier` → `var(--color-chrome-ink-tier)` (#282e34) — tier-row
+  active fill on stroke-width + connector-type submenus (applied via
+  `bg-[var(--ctx-engaged-tier)] !text-white` Tailwind utilities on the
+  active row); typeface / language trigger ink (SVG `<text fill>` reads
+  this directly, not via `color`).
+- `--ctx-text` → `var(--color-chrome-ink-body)` (#48525b) — body text
+  default. `.ctx-submenu-item` row color + every tier/filter row label.
+- `--ctx-text-focal` → `var(--color-chrome-ink-focal)` (#1F2937) —
+  closed-FILTER `{N} objects` total only.
+- `--ctx-accent` → `var(--color-chrome-accent)` (#3b82f6) — focus rings +
+  selected highlight swatch ring.
+- `--ctx-sand` → `var(--color-chrome-sand)` (#d4b89b) — open-FILTER
+  subtitle (warm third pole).
+- `--ctx-divider` → `var(--color-chrome-divider)` (`rgba(42,82,121,0.12)`)
+  and `--ctx-hover` → `var(--color-chrome-hover)` (`rgba(42,82,121,0.08)`)
+  — blue-tinted divider hairline + button hover wash, shared with the
+  topbar/zoom chrome. **Sub-byte alpha shift on consolidation**
+  (`#2a52791f` → `0.12` = `0x1f→0x1e`, `#2a527914` → `0.08` = `0x14→0x14`)
+  — sub-perceptual at low alpha and brings the menu into byte-for-byte
+  parity with the divider/hover the topbar + zoom bar already used.
+- `--ctx-black-a06` / `--ctx-black-a08` / `--ctx-black-a12` →
+  `var(--color-chrome-shadow-a0{6,8,12})` (overlay scale).
+- `--ctx-black-a13` (`rgba(0,0,0,0.13)`), `--ctx-black-a20`
+  (`rgba(0,0,0,0.20)`) — kept literal: odd-byte, used once each, not in
+  the global scale.
 
-Tokens are pure indirection — identical pixels.
+Inside the menu, the values are still pure indirection (identical pixels
+across the divider/hover alpha-byte rounding noted above); the upstream
+hop just lifts the shared values into one chrome-wide source.
 
 **Buttons** (`styles/buttons.css`, the single home for the `.ctx-btn` family):
 

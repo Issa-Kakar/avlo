@@ -2,34 +2,42 @@
    One custom property per recurring literal. Scoped to the portal class
    (.context-menu-floating) so every context-menu surface — including the
    absolutely-positioned submenu popovers — inherits them. Pure indirection:
-   each token's value is copied verbatim from the literal it replaces. */
+   each token aliases the chrome-wide global token in `client/src/index.css`,
+   keeping the `--ctx-*` names so the five sibling foundation files
+   (shell/buttons/dropdowns/color-grid/svg-triggers) need no edits. */
 
 @layer components {
   .context-menu-floating {
     /* Engaged dark fill — open-state triggers + active toggles + active rows. */
-    --ctx-engaged: #1b1f22;
+    --ctx-engaged: var(--color-chrome-ink-engaged);
     /* Stroke-width active tier — the lone slightly-lighter dark. */
-    --ctx-engaged-tier: #282e34;
+    --ctx-engaged-tier: var(--color-chrome-ink-tier);
 
     /* Text — body / row labels / row counts / non-engaged trigger text. */
-    --ctx-text: #48525b;
+    --ctx-text: var(--color-chrome-ink-body);
     /* Focal — closed FILTER trigger `{N} objects` total. Used once. */
-    --ctx-text-focal: #1f2937;
+    --ctx-text-focal: var(--color-chrome-ink-focal);
 
     /* Accent (focus rings + selected swatch) + warm sand (open-trigger subtitle) */
-    --ctx-accent: #3b82f6;
-    --ctx-sand: #d4b89b;
+    --ctx-accent: var(--color-chrome-accent);
+    --ctx-sand: var(--color-chrome-sand);
 
-    /* Divider — blue-tinted hairline between menu groups. */
-    --ctx-divider: #2a52791f;
-    /* Hover wash — the divider's blue at a lighter alpha. A grey with a faint
-       blue cast; backs every non-engaged :hover across the menu. */
-    --ctx-hover: #2a527914;
+    /* Divider + hover wash — blue-tinted, shared with topbar/zoom chrome.
+       Sub-byte alpha shift from the previous local literals (#2a52791f →
+       rgba(…,0.12) = 0x1f→0x1e; #2a527914 → rgba(…,0.08) = 0x14→0x14):
+       sub-perceptual at low alpha and actively brings the menu into
+       byte-for-byte parity with the topbar/zoom dividers and washes it was
+       already notionally mirroring. */
+    --ctx-divider: var(--color-chrome-divider);
+    --ctx-hover: var(--color-chrome-hover);
 
-    /* Black-alpha overlay scale — borders, shadows, press states. */
-    --ctx-black-a06: rgba(0, 0, 0, 0.06);
-    --ctx-black-a08: rgba(0, 0, 0, 0.08);
-    --ctx-black-a12: rgba(0, 0, 0, 0.12);
+    /* Black-alpha overlay scale — borders, shadows, press states.
+       a06/a08/a12 alias the global scale; a13/a20 stay literal (odd-byte
+       a13 used once for a submenu shadow; a20 used once, not in the
+       global scale). */
+    --ctx-black-a06: var(--color-chrome-shadow-a06);
+    --ctx-black-a08: var(--color-chrome-shadow-a08);
+    --ctx-black-a12: var(--color-chrome-shadow-a12);
     --ctx-black-a13: rgba(0, 0, 0, 0.13);
     --ctx-black-a20: rgba(0, 0, 0, 0.2);
   }

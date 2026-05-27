@@ -11,12 +11,10 @@
   height: 48px;
   display: inline-flex;
   align-items: center;
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 12px;
-  box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.1),
-    0 0 1px rgba(0, 0, 0, 0.06);
+  background: var(--color-chrome-surface);
+  border: 1px solid var(--color-chrome-border);
+  border-radius: var(--radius-chrome-pill);
+  box-shadow: var(--shadow-chrome-bar);
   font-family: var(--font-ui);
   user-select: none;
 }
@@ -44,7 +42,7 @@
    sub-px perceptibility threshold of the row's text baseline. */
 .top-bar-logo {
   display: block;
-  color: #282e34;
+  color: var(--color-chrome-ink-tier);
   flex-shrink: 0;
   margin-left: 6px;
   position: relative;
@@ -56,7 +54,7 @@
 .top-bar-divider {
   width: 2px;
   height: 24px;
-  background: rgba(42, 82, 121, 0.12);
+  background: var(--color-chrome-divider);
   margin: 0 4px 0 9px;
   flex-shrink: 0;
 }
@@ -81,9 +79,9 @@
   font-size: 13px;
   font-weight: 700;
   line-height: 28px;
-  color: #282e34;
+  color: var(--color-chrome-ink-tier);
   border: 2px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-chrome-btn);
   padding: 0 6px;
   margin-left: 6px;
   cursor: text;
@@ -116,23 +114,23 @@
   place-items: center;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-chrome-btn);
   cursor: pointer;
-  color: #1b1f22;
+  color: var(--color-chrome-ink-engaged);
   transition:
     background 150ms ease,
     color 150ms ease;
 }
 
 .top-bar-menu-trigger:hover {
-  background: rgba(42, 82, 121, 0.08);
+  background: var(--color-chrome-hover);
 }
 
 .top-bar-menu-trigger[aria-expanded="true"],
 .top-bar-menu-trigger[aria-expanded="true"]:hover,
 .top-bar-menu-trigger[aria-expanded="true"]:active {
-  background: #1b1f22;
-  color: #ffffff;
+  background: var(--color-chrome-ink-engaged);
+  color: var(--color-chrome-surface);
 }
 
 .top-bar-menu-trigger-icon {
@@ -154,12 +152,10 @@
   z-index: 401;
   min-width: 210px;
   padding: 6px;
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 12px;
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.1),
-    0 1px 4px rgba(0, 0, 0, 0.06);
+  background: var(--color-chrome-surface);
+  border: 1px solid var(--color-chrome-border);
+  border-radius: var(--radius-chrome-pill);
+  box-shadow: var(--shadow-chrome-popover);
   font-family: var(--font-ui);
   display: flex;
   flex-direction: column;
@@ -189,7 +185,7 @@
    read as one design language. */
 .main-menu-divider {
   height: 2px;
-  background: rgba(42, 82, 121, 0.12);
+  background: var(--color-chrome-divider);
   margin: 4px 6px;
   flex-shrink: 0;
 }
@@ -208,9 +204,9 @@
   padding: 0 12px;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-chrome-btn);
   cursor: pointer;
-  color: #48525b;
+  color: var(--color-chrome-ink-body);
   font-family: var(--font-ui);
   font-size: 12px;
   font-weight: 700;
@@ -220,7 +216,7 @@
 }
 
 .main-menu-item:hover {
-  background: rgba(42, 82, 121, 0.08);
+  background: var(--color-chrome-hover);
 }
 
 .main-menu-item-icon {
@@ -264,14 +260,14 @@
   place-items: center;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-chrome-btn);
   cursor: pointer;
-  color: #1b1f22;
+  color: var(--color-chrome-ink-engaged);
   transition: background 150ms ease;
 }
 
 .top-bar-history-btn:hover {
-  background: rgba(42, 82, 121, 0.08);
+  background: var(--color-chrome-hover);
 }
 
 /* Disabled state — cascade-ordered AFTER :hover so the disabled hover override
@@ -279,7 +275,7 @@
    the active ink (#1b1f22) — fades cleanly without slipping into a foreign
    warm/cool grey on the white pill. */
 .top-bar-history-btn:disabled {
-  color: #0b294652;
+  color: var(--color-chrome-ink-disabled);
   cursor: default;
 }
 
@@ -317,9 +313,9 @@
   height: 32px;
   padding: 0 14px 0 9px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-chrome-btn);
   background: #ef4e3a;
-  color: #ffffff;
+  color: var(--color-chrome-surface);
   font-family: var(--font-ui);
   font-size: 12px;
   font-weight: 700;

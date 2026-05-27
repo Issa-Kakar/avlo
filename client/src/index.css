@@ -10,6 +10,47 @@
   --font-ui: "Schibsted Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Shared design tokens for the room-page chrome (TopBar, TopBarRight,
+   MainMenu, ZoomControls, ZoomMenu, ContextMenu + submenus). The Toolbar
+   is a separate visual language — keep its tokens scoped to .toolbar-wrap.
+   Tailwind v4 auto-emits utilities from these names (bg-chrome-*, etc.). */
+@theme {
+  /* Inks — ordered by weight, dark → light */
+  --color-chrome-ink-engaged: #1b1f22; /* engaged buttons, dark default ink */
+  --color-chrome-ink-tier: #282e34; /* tier-2 dark surface (logo, board name, tier rows, typeface trigger) */
+  --color-chrome-ink-body: #48525b; /* menu rows, dropdown labels */
+  --color-chrome-ink-focal: #1f2937; /* FILTER {N} objects count (single use today, lives here for chrome cohesion) */
+  --color-chrome-ink-disabled: #0b294652; /* :disabled history buttons — 32% navy, stays in the engaged-dark family */
+
+  /* Accents — used inside the context menu today; lifted for parity */
+  --color-chrome-accent: #3b82f6; /* focus ring */
+  --color-chrome-sand: #d4b89b; /* open-FILTER subtitle (warm third pole) */
+
+  /* Surface + chrome-wide hairlines/washes */
+  --color-chrome-surface: #ffffff;
+  --color-chrome-border: rgba(0, 0, 0, 0.08); /* pill hairline */
+  --color-chrome-divider: rgba(42, 82, 121, 0.12); /* blue-tinted structural divider */
+  --color-chrome-hover: rgba(42, 82, 121, 0.08); /* blue-tinted button hover wash */
+  --color-chrome-press: rgba(0, 0, 0, 0.08); /* button :active wash */
+
+  /* Black-alpha overlays — borders, drop shadows */
+  --color-chrome-shadow-a06: rgba(0, 0, 0, 0.06);
+  --color-chrome-shadow-a08: rgba(0, 0, 0, 0.08);
+  --color-chrome-shadow-a10: rgba(0, 0, 0, 0.1);
+  --color-chrome-shadow-a12: rgba(0, 0, 0, 0.12);
+
+  /* Radii */
+  --radius-chrome-btn: 8px;
+  --radius-chrome-pill: 12px;
+
+  /* Shadows — only the two patterns that are byte-identical across surfaces
+     are tokenized. The three single-use variants (ContextMenu shell shadow,
+     ZoomMenu shadow, etc.) stay inline at their callsites; they're
+     intentional differences, not duplication. */
+  --shadow-chrome-bar: 0 2px 8px rgba(0, 0, 0, 0.1), 0 0 1px rgba(0, 0, 0, 0.06);
+  --shadow-chrome-popover: 0 4px 16px rgba(0, 0, 0, 0.1), 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
 /* Mobile pinch-zoom + pull-to-refresh block — scoped to canvas rooms by the
    `canvas-room` class set in install-ui-zoom-block.ts. Landing / list pages
    keep native browser behavior. */
