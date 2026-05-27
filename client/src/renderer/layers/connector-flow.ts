@@ -31,7 +31,7 @@ import { selectTool } from '@/runtime/tool-registry';
 import { useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import {
-  FLOW_BTN_HOVER_RADIUS_PX,
+  FLOW_BTN_ARROW_RADIUS_PX,
   FLOW_DOT_RADIUS_PX,
   FLOW_PREVIEW_OPACITY,
   FLOW_SIDES,
@@ -47,25 +47,81 @@ import { paintShapeFrame } from './shape-preview';
 const FLOW_BLUE = 'rgba(29, 78, 216, 1)';
 const FLOW_WHITE = '#ffffff';
 
-/** Outward unit vector per side — arrow direction + ghost-side hint. */
+/** Outward unit vector per side — used at module init to bake the arrow paths. */
 const OUTWARD: Record<FlowSide, Point> = { n: [0, -1], e: [1, 0], s: [0, 1], w: [-1, 0] };
 
-// --- Appearance constants (screen px; divided by camera scale at use) ---
+// --- Appearance constants (screen px) ---
 
 /** White halo width beyond the rest blue dot. */
 const FLOW_DOT_RING_PX = 1.5;
-/** White ring width beyond the hovered blue circle. */
-const FLOW_HOVER_RING_PX = 2;
-/** Hover arrow glyph: center → tip (and → tail) along the outward axis. */
+/** White ring width beyond the drag-mode hovered circle (arrow mode has no ring — its
+ * disc absorbs the ring's extent, giving the arrow glyph the full radius to work in). */
+const FLOW_DRAG_RING_PX = 2;
+/** Drag-mode hovered blue disc radius (inside the white ring). */
+const FLOW_BTN_DRAG_RADIUS_PX = 7;
+// Geometry mirrors the reference SVG (viewBox 24×24, arrow centred at 12,12):
+//   shaft (5,12)→(19,12); wings (19,12)→(13,6) and (19,12)→(13,18); stroke 2.
+// Scaled to fit the 20 px hover disc by `10/12` so a sliver of padding sits
+// between the arrow's outer extent and the disc edge — preserving the SVG's
+// 45° wings and its back-of-head sitting one unit forward of centre.
+/** Hover arrow glyph: tail-to-tip half-length along the outward axis. */
 const FLOW_ARROW_REACH_PX = 6;
-/** Hover arrow glyph: arrowhead depth back from the tip. */
-const FLOW_ARROW_HEAD_PX = 4.5;
-/** Hover arrow glyph: arrowhead half-width across the axis. */
-const FLOW_ARROW_HEAD_HALF_PX = 3;
-/** Hover arrow glyph: stroke width. */
+/** Hover arrow glyph: arrowhead depth back from the tip. Wing length is
+ * `√(head² + halfWidth²)`, so this and `FLOW_ARROW_HEAD_HALF_PX` both contribute. */
+const FLOW_ARROW_HEAD_PX = 5;
+/** Hover arrow glyph: arrowhead half-width across the axis. 5×5 = 45° wings, same as the SVG. */
+const FLOW_ARROW_HEAD_HALF_PX = 5;
+/** Hover arrow glyph: stroke width — matches the reference SVG's `stroke-width="2"`. */
 const FLOW_ARROW_LINE_PX = 2;
 
 type ButtonMode = 'rest' | 'arrow' | 'drag';
+
+// =============================================================================
+// MODULE-LEVEL ARROW PATHS — built once per outward direction in screen-px units,
+// stroked at draw time via `ctx.translate(cx, cy) + ctx.scale(1/scale, 1/scale)`.
+// Zero per-frame Path2D allocation regardless of how many flow hovers fire.
+// =============================================================================
+
+const ARROW_PATHS: Record<FlowSide, Path2D> = {
+  n: buildArrowPath(OUTWARD.n),
+  e: buildArrowPath(OUTWARD.e),
+  s: buildArrowPath(OUTWARD.s),
+  w: buildArrowPath(OUTWARD.w),
+};
+
+/**
+ * Bake a unit-scale arrow path centred at (0, 0), matching the reference SVG's
+ * three-subpath structure: shaft, then each wing as its own `tip → root` segment.
+ * Every endpoint gets its own round cap — same as the SVG's
+ * `stroke-linecap="round"` — so the three caps fuse into a single soft point at
+ * the tip rather than a cap-on-join bulge.
+ */
+function buildArrowPath(outward: Point): Path2D {
+  const path = new Path2D();
+  const ox = outward[0];
+  const oy = outward[1];
+  const px = -oy;
+  const py = ox;
+  const tipX = ox * FLOW_ARROW_REACH_PX;
+  const tipY = oy * FLOW_ARROW_REACH_PX;
+  const backX = tipX - ox * FLOW_ARROW_HEAD_PX;
+  const backY = tipY - oy * FLOW_ARROW_HEAD_PX;
+  const wing1X = backX + px * FLOW_ARROW_HEAD_HALF_PX;
+  const wing1Y = backY + py * FLOW_ARROW_HEAD_HALF_PX;
+  const wing2X = backX - px * FLOW_ARROW_HEAD_HALF_PX;
+  const wing2Y = backY - py * FLOW_ARROW_HEAD_HALF_PX;
+
+  // Subpath 1 — shaft (tail → tip), mirrors SVG `M5 12H19`.
+  path.moveTo(-tipX, -tipY);
+  path.lineTo(tipX, tipY);
+  // Subpath 2 — first wing (tip → root), mirrors SVG `M19 12L13 6`.
+  path.moveTo(tipX, tipY);
+  path.lineTo(wing1X, wing1Y);
+  // Subpath 3 — second wing (tip → root), mirrors SVG `M19 12L13 18`.
+  path.moveTo(tipX, tipY);
+  path.lineTo(wing2X, wing2Y);
+  return path;
+}
 
 // =============================================================================
 // MAIN EXPORT
@@ -138,63 +194,54 @@ function drawFlowPreview(ctx: CanvasRenderingContext2D, source: ObjectHandle, pr
 function drawFlowButtons(ctx: CanvasRenderingContext2D, bbox: Readonly<BBoxTuple>, preview: FlowPreview | null, scale: number): void {
   const centers = flowButtonCenters(bbox, scale);
   const hoveredSide = preview ? preview.side : null;
-  // Candidate / duplicate → directional arrow; dragOnly → plain enlarged circle.
+  // Candidate / duplicate → directional arrow; dragOnly → plain blue dot.
   const hoverMode: ButtonMode = preview && preview.kind === 'dragOnly' ? 'drag' : 'arrow';
 
   for (let i = 0; i < 4; i++) {
     const side = FLOW_SIDES[i];
     const center = centers[i];
     const mode: ButtonMode = side === hoveredSide ? hoverMode : 'rest';
-    drawFlowButton(ctx, center[0], center[1], OUTWARD[side], mode, scale);
+    drawFlowButton(ctx, center[0], center[1], side, mode, scale);
   }
 }
 
-function drawFlowButton(ctx: CanvasRenderingContext2D, cx: number, cy: number, outward: Point, mode: ButtonMode, scale: number): void {
-  ctx.save();
+function drawFlowButton(ctx: CanvasRenderingContext2D, cx: number, cy: number, side: FlowSide, mode: ButtonMode, scale: number): void {
   if (mode === 'rest') {
     const dotR = FLOW_DOT_RADIUS_PX / scale;
     fillCircle(ctx, cx, cy, dotR + FLOW_DOT_RING_PX / scale, FLOW_WHITE);
     fillCircle(ctx, cx, cy, dotR, FLOW_BLUE);
-  } else {
-    const hoverR = FLOW_BTN_HOVER_RADIUS_PX / scale;
-    fillCircle(ctx, cx, cy, hoverR + FLOW_HOVER_RING_PX / scale, FLOW_WHITE); // white ring
-    fillCircle(ctx, cx, cy, hoverR, FLOW_BLUE);
-    if (mode === 'arrow') drawArrow(ctx, cx, cy, outward, scale);
+    return;
   }
-  ctx.restore();
+  if (mode === 'arrow') {
+    // Entirely blue — no white ring — so the arrow glyph has the full disc to
+    // occupy. Total visual radius matches the old (inner-blue + ring) extent.
+    fillCircle(ctx, cx, cy, FLOW_BTN_ARROW_RADIUS_PX / scale, FLOW_BLUE);
+    drawArrow(ctx, cx, cy, side, scale);
+    return;
+  }
+  // drag: smaller blue disc + white ring, no glyph.
+  const r = FLOW_BTN_DRAG_RADIUS_PX / scale;
+  fillCircle(ctx, cx, cy, r + FLOW_DRAG_RING_PX / scale, FLOW_WHITE);
+  fillCircle(ctx, cx, cy, r, FLOW_BLUE);
 }
 
 /**
- * White outward-pointing arrow — a shaft plus a two-winged head, like a standard
- * line arrow — centered in the hovered button. One path, one stroke: the shaft
- * is its own subpath, the head is `wing → tip → wing`; both meet at the tip.
+ * White outward-pointing arrow — strokes the pre-baked module path for `side`
+ * with the camera transform locally re-scaled so 1 path unit = 1 screen px.
+ * `lineWidth = FLOW_ARROW_LINE_PX` then renders crisp at the chosen device size
+ * regardless of zoom, and the path itself never re-allocates per frame.
  */
-function drawArrow(ctx: CanvasRenderingContext2D, cx: number, cy: number, outward: Point, scale: number): void {
-  const reach = FLOW_ARROW_REACH_PX / scale;
-  const head = FLOW_ARROW_HEAD_PX / scale;
-  const half = FLOW_ARROW_HEAD_HALF_PX / scale;
-  const ox = outward[0];
-  const oy = outward[1];
-  const px = -oy; // perpendicular
-  const py = ox;
-
-  const tipX = cx + ox * reach;
-  const tipY = cy + oy * reach;
-  // Wing roots — `head` back from the tip along the outward axis.
-  const backX = tipX - ox * head;
-  const backY = tipY - oy * head;
-
-  ctx.beginPath();
-  ctx.moveTo(cx - ox * reach, cy - oy * reach); // shaft: tail → tip
-  ctx.lineTo(tipX, tipY);
-  ctx.moveTo(backX + px * half, backY + py * half); // head: wing → tip → wing
-  ctx.lineTo(tipX, tipY);
-  ctx.lineTo(backX - px * half, backY - py * half);
+function drawArrow(ctx: CanvasRenderingContext2D, cx: number, cy: number, side: FlowSide, scale: number): void {
+  const inv = 1 / scale;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(inv, inv);
   ctx.strokeStyle = FLOW_WHITE;
-  ctx.lineWidth = FLOW_ARROW_LINE_PX / scale;
+  ctx.lineWidth = FLOW_ARROW_LINE_PX;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.stroke();
+  ctx.stroke(ARROW_PATHS[side]);
+  ctx.restore();
 }
 
 function fillCircle(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string): void {
