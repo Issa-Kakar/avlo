@@ -9,7 +9,7 @@
  */
 
 import { cleanupOnRoomTeardown } from '@/core/bookmark/bookmark-unfurl';
-import { createImageFromBlob } from '@/core/image/image-actions';
+import { createImageFromBlob, exceedsBatchLimit } from '@/core/image/image-actions';
 import { clear as clearImageManager } from '@/core/image/image-manager';
 import { overlayLoop } from '@/renderer/OverlayRenderLoop';
 import { renderLoop } from '@/renderer/RenderLoop';
@@ -207,6 +207,7 @@ export class CanvasRuntime {
 
     const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/') || f.name.endsWith('.svg'));
     if (files.length === 0) return;
+    if (exceedsBatchLimit(files.length, 'drop')) return;
 
     const world = screenToWorld(e.clientX, e.clientY);
     if (!world) return;
