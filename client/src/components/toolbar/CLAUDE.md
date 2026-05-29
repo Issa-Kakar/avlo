@@ -634,18 +634,6 @@ inspector's `top: 50%; transform: translateY(-50%)` centers against the
 
 ---
 
-## Stale References (need a cleanup sweep — not blocking)
-
-Carried over from the old horizontal top dock (`ToolPanel.tsx/css`,
-deleted). Update opportunistically when working in the relevant file:
-
-- `client/src/core/image/CLAUDE.md:184` — references `components/ToolPanel.tsx`.
-- `client/src/components/context-menu/CLAUDE.md:101` — "Top 72px = ToolPanel (48px) + padding". The dock is vertical-left now; the relevant exclusion math is `12px + 48px pill + padding ≈ 64-72px` on the left edge.
-
-These do not affect runtime; they just lie to a future reader.
-
----
-
 ## Reference Assets (untracked, repo root)
 
 Used during the port from Mural's reference UI. Kept around as design
