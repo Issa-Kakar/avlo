@@ -61,7 +61,8 @@ export type ShapePreview =
       color: string;
       width: number;
       opacity: number;
-      fill: boolean;
+      /** Raw fill color, or null for unfilled. */
+      fillColor: string | null;
     };
 
 /**

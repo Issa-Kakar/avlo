@@ -10,7 +10,6 @@ import {
   IconAlignVMiddle,
   IconAlignVTop,
 } from './icons/AlignIcons';
-import { IconChevronDown } from './icons/UtilityIcons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
@@ -38,14 +37,13 @@ export function NoteAlignDropdown() {
   const ActiveIcon = H_ALIGNS.find((a) => a.align === currentH)!.Icon;
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-type" onMouseDown={toggle} aria-expanded={open}>
-        <ActiveIcon width={16} height={16} />
-        <IconChevronDown className="ctx-dd-arrow" />
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-fmt ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+        <ActiveIcon />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-note-align">
-          <div className="ctx-align-row">
+        <div className="ctx-submenu left-1/2 -translate-x-1/2 min-w-0 p-1 flex flex-row items-center gap-0.5">
+          <div className="flex gap-0.5">
             {H_ALIGNS.map(({ align, Icon }) => (
               <button
                 key={align}
@@ -56,12 +54,12 @@ export function NoteAlignDropdown() {
                   close();
                 }}
               >
-                <Icon width={16} height={16} />
+                <Icon width={20} height={20} />
               </button>
             ))}
           </div>
-          <div className="ctx-align-divider" />
-          <div className="ctx-align-row">
+          <div className="ctx-divider" />
+          <div className="flex gap-0.5">
             {V_ALIGNS.map(({ align, Icon }) => (
               <button
                 key={align}
@@ -72,7 +70,7 @@ export function NoteAlignDropdown() {
                   close();
                 }}
               >
-                <Icon width={16} height={16} />
+                <Icon width={20} height={20} />
               </button>
             ))}
           </div>

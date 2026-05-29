@@ -1,6 +1,6 @@
 import type { FontFamily } from '@/core/accessors';
 import { FONT_FAMILIES } from '@/core/text/text-system';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { selectTextFontFamily, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedFontFamily } from '@/tools/selection/selection-actions';
@@ -9,7 +9,6 @@ import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 const selectFontFamily = (s: SelectionStore) => s.selectedStyles.fontFamily;
-const selectDeviceFontFamily = (s: { textFontFamily: FontFamily }) => s.textFontFamily;
 
 const FONT_ITEMS: { family: FontFamily; display: string }[] = [
   { family: 'Grandstander', display: 'Draw' },
@@ -21,30 +20,30 @@ const FONT_ITEMS: { family: FontFamily; display: string }[] = [
 export function TypefaceButton() {
   const { open, containerRef, toggle, close } = useDropdown();
   const fontFamily = useSelectionStore(selectFontFamily);
-  const fallbackFamily = useDeviceUIStore(selectDeviceFontFamily);
+  const fallbackFamily = useDeviceUIStore(selectTextFontFamily);
   const effective = fontFamily ?? fallbackFamily;
 
   const current = FONT_ITEMS.find((f) => f.family === effective) ?? FONT_ITEMS[0];
   const cssFallback = FONT_FAMILIES[current.family].fallback;
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-font" onMouseDown={toggle} aria-expanded={open}>
-        <svg width={40} height={16} viewBox="0 0 40 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
-          <text x="0" y="13" fill="#374151" fontSize="16" fontWeight="500" fontFamily={cssFallback} textRendering="geometricPrecision">
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn min-w-14" onMouseDown={toggle} aria-expanded={open}>
+        <svg width={40} height={16} viewBox="0 0 40 16" fill="none" aria-hidden="true" className="shrink-0">
+          <text x="0" y="13" fill="#282e34" fontSize="15" fontWeight="500" fontFamily={cssFallback} textRendering="geometricPrecision">
             {current.display}
           </text>
         </svg>
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu ctx-submenu-font">
+        <div className="ctx-submenu left-0 translate-x-0 min-w-[150px] p-2">
           {FONT_ITEMS.map(({ family, display }) => {
             const active = effective === family;
             return (
               <button
                 key={family}
-                className={`ctx-submenu-item ctx-type-item${active ? ' ctx-submenu-item-active' : ''}`}
+                className={`ctx-submenu-item ctx-type-item h-auto px-2 py-1.5 text-[15px] leading-[1.4]${active ? ' ctx-submenu-item-active' : ''}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   setSelectedFontFamily(family);

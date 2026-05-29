@@ -66,12 +66,12 @@ export class ConnectorTool implements PointerTool {
     this.phase = 'creating';
 
     // Freeze settings from store at gesture start
-    const state = useDeviceUIStore.getState();
-    this.frozenColor = state.drawingSettings.color;
-    this.frozenWidth = state.connectorSize;
-    this.frozenStartCap = state.connectorStartCap;
-    this.frozenEndCap = state.connectorEndCap;
-    this.frozenConnectorType = state.connectorType;
+    const c = useDeviceUIStore.getState().connector;
+    this.frozenColor = c.color;
+    this.frozenWidth = c.width;
+    this.frozenStartCap = c.startCap;
+    this.frozenEndCap = c.endCap;
+    this.frozenConnectorType = c.type;
 
     // Check if starting on a shape (Ctrl suppresses snapping)
     const snap = this.probeSnap(worldX, worldY, null);
@@ -176,7 +176,7 @@ export class ConnectorTool implements PointerTool {
     return findBestSnapTarget({
       cursorWorld: [worldX, worldY],
       prevAttach,
-      connectorType: this.frozenConnectorType ?? useDeviceUIStore.getState().connectorType,
+      connectorType: this.frozenConnectorType ?? useDeviceUIStore.getState().connector.type,
     });
   }
 

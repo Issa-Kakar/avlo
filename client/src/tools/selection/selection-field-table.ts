@@ -17,7 +17,10 @@ import {
   getAlign,
   getAlignV,
   getColor,
+  getColorOrNull,
+  getConnectorType,
   getContent,
+  getEndCap,
   getFillColor,
   getFontFamily,
   getFontSize,
@@ -28,14 +31,15 @@ import {
   getOrigin,
   getOutputVisible,
   getShapeType,
+  getStartCap,
   getWidth,
   hasLabel,
 } from '@/core/accessors';
 import { anchorFactor, getInlineStyles, getTextFrame } from '@/core/text/text-system';
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import type { ConnectorCap, ConnectorType, ObjectHandle, ObjectKind } from '@/core/types/objects';
 import { getHandle, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
-import { type ConnectorSizePreset, type SizePreset, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind } from './types';
 
@@ -59,8 +63,6 @@ export interface FieldDescriptor<V> {
 export interface Aggregate<V> {
   readonly value: V | null;
   readonly mixed: boolean;
-  /** Second distinct value, for two-color split UI. */
-  readonly second: V | null;
 }
 
 // One-cast-per-loop dispatch bridge — mirrors `tools/selection/transform.ts`'s
@@ -120,14 +122,14 @@ function setHighlightOnContent(h: ObjectHandle, v: string | null): void {
 
 /**
  * First-or-mixed read aggregation. First handle whose reader returns a non-undefined
- * value sets `value`; subsequent differing values set `mixed = true` + `second`.
- * Skips handles that fail `accepts` or have no reader for their kind.
+ * value sets `value`; the first subsequent differing value sets `mixed` and ends
+ * the fold (mixed is terminal). Skips handles that fail `accepts` or have no
+ * reader for their kind.
  */
 export function foldField<V>(handles: readonly ObjectHandle[], f: FieldDescriptor<V>): Aggregate<V> {
   const fAny = f as AnyDescriptor;
   const eq = f.equals ?? Object.is;
   let value: V | null = null;
-  let second: V | null = null;
   let mixed = false;
   let hasFirst = false;
 
@@ -141,13 +143,13 @@ export function foldField<V>(handles: readonly ObjectHandle[], f: FieldDescripto
     if (!hasFirst) {
       value = v;
       hasFirst = true;
-    } else if (!mixed && !eq(value as V, v)) {
+    } else if (!eq(value as V, v)) {
       mixed = true;
-      second = v;
+      break;
     }
   }
 
-  return { value, mixed, second };
+  return { value, mixed };
 }
 
 /**
@@ -250,15 +252,18 @@ export function withEditorOr(whenEditor: (e: Editor) => void, otherwise: () => v
 // PERSIST SINKS (thin wrappers over device-ui-store)
 // ============================================================================
 
-const setDrawingColor = (v: string) => useDeviceUIStore.getState().setDrawingColor(v);
-const setDrawingSizePersist = (v: number) => useDeviceUIStore.getState().setDrawingSize(v as SizePreset);
-const setConnectorSizePersist = (v: number) => useDeviceUIStore.getState().setConnectorSize(v as ConnectorSizePreset);
+const setShapeColorPersist = (v: string) => useDeviceUIStore.getState().setShapeColor(v);
+const setShapeFillColorPersist = (v: string) => useDeviceUIStore.getState().setShapeFillColor(v);
+const setShapeWidthPersist = (v: number) => useDeviceUIStore.getState().setShapeWidth(v);
+const setStrokeWidthPersist = (v: number) => useDeviceUIStore.getState().setStrokeWidth(v);
+const setConnectorColorPersist = (v: string) => useDeviceUIStore.getState().setConnectorColor(v);
+const setConnectorWidthPersist = (v: number) => useDeviceUIStore.getState().setConnectorWidth(v);
+const setConnectorStartCapPersist = (v: ConnectorCap) => useDeviceUIStore.getState().setConnectorStartCap(v);
+const setConnectorEndCapPersist = (v: ConnectorCap) => useDeviceUIStore.getState().setConnectorEndCap(v);
 const setTextSize = (v: number) => useDeviceUIStore.getState().setTextSize(v);
 const setTextColor = (v: string) => useDeviceUIStore.getState().setTextColor(v);
 const setTextFillColor = (v: string | null) => useDeviceUIStore.getState().setTextFillColor(v);
-const setFillColor = (v: string) => useDeviceUIStore.getState().setFillColor(v);
-const setFillEnabled = (v: boolean) => useDeviceUIStore.getState().setFillEnabled(v);
-const setTextFontFamily = (v: FontFamily) => useDeviceUIStore.getState().setFontFamily(v);
+const setTextFontFamily = (v: FontFamily) => useDeviceUIStore.getState().setTextFontFamily(v);
 const setNoteFontFamily = (v: FontFamily) => useDeviceUIStore.getState().setNoteFontFamily(v);
 const setTextAlign = (v: TextAlign) => useDeviceUIStore.getState().setTextAlign(v);
 const setNoteAlign = (v: TextAlign) => useDeviceUIStore.getState().setNoteAlign(v);
@@ -274,25 +279,36 @@ const setCodeHeaderVisible = (v: boolean) => useDeviceUIStore.getState().setCode
 
 // Stroke/shape border + connector + text 'color'. Code/note/image/bookmark
 // don't render a stroke color — omitted so code-only selections fall back to
-// the EMPTY_STYLES default '#262626' instead of getColor's '#000' fallback.
-export const COLOR: FieldDescriptor<string> = {
+// the EMPTY_STYLES default null instead of getColor's '#000' fallback.
+//
+// Shape stroke is optional: read returns null (never undefined — undefined
+// would make foldField *skip* a no-stroke shape, hiding it from a mixed
+// selection), write tombstones the key. Stroke/text/connector are never
+// null at runtime — their write/persist guard it for type symmetry only.
+export const COLOR: FieldDescriptor<string | null> = {
   read: {
     stroke: (h) => getColor(h.y),
-    shape: (h) => getColor(h.y),
+    shape: (h) => getColorOrNull(h.y),
     text: (h) => getColor(h.y),
     connector: (h) => getColor(h.y),
   },
   write: {
-    stroke: (h, v) => h.y.set('color', v),
-    shape: (h, v) => h.y.set('color', v),
-    text: (h, v) => h.y.set('color', v),
-    connector: (h, v) => h.y.set('color', v),
+    stroke: (h, v) => v !== null && h.y.set('color', v),
+    shape: (h, v) => (v === null ? h.y.delete('color') : h.y.set('color', v)),
+    text: (h, v) => v !== null && h.y.set('color', v),
+    connector: (h, v) => v !== null && h.y.set('color', v),
   },
   persist: {
-    stroke: setDrawingColor,
-    shape: setDrawingColor,
-    text: setDrawingColor,
-    connector: setDrawingColor,
+    // stroke: NO persist — pen/highlighter slots are independent of selected stroke color.
+    shape: (v) => {
+      if (v !== null) setShapeColorPersist(v);
+    },
+    text: (v) => {
+      if (v !== null) setTextColor(v);
+    },
+    connector: (v) => {
+      if (v !== null) setConnectorColorPersist(v);
+    },
   },
 };
 
@@ -308,9 +324,9 @@ export const WIDTH: FieldDescriptor<number> = {
     connector: (h, v) => h.y.set('width', v),
   },
   persist: {
-    stroke: setDrawingSizePersist,
-    shape: setDrawingSizePersist,
-    connector: setConnectorSizePersist,
+    stroke: setStrokeWidthPersist,
+    shape: setShapeWidthPersist,
+    connector: setConnectorWidthPersist,
   },
 };
 
@@ -331,13 +347,9 @@ export const FILL_COLOR: FieldDescriptor<string | null> = {
     note: (h, v) => (v === null ? h.y.delete('fillColor') : h.y.set('fillColor', v)),
   },
   persist: {
+    // null = unfill the OBJECT only, not the device default.
     shape: (v) => {
-      if (v === null) {
-        setFillEnabled(false);
-      } else {
-        setFillColor(v);
-        setFillEnabled(true);
-      }
+      if (v !== null) setShapeFillColorPersist(v);
     },
     text: setTextFillColor,
     // note: omitted — note fill is per-object, not a device default
@@ -513,4 +525,29 @@ export const HEADER_VISIBLE: FieldDescriptor<boolean> = {
 export const OUTPUT_VISIBLE: FieldDescriptor<boolean> = {
   read: { code: (h) => getOutputVisible(h.y) },
   write: { code: (h, v) => h.y.set('outputVisible', v) },
+};
+
+// Read-only descriptor — surfaces the first connector's routing type for the
+// context-menu trigger. No writer yet: switching `connectorType` requires
+// route + endpoint geometry adjustments that live in the connector subsystem;
+// the action wiring lands separately.
+export const CONNECTOR_TYPE: FieldDescriptor<ConnectorType> = {
+  read: { connector: (h) => getConnectorType(h.y) },
+  write: {},
+};
+
+// Per-endpoint cap. Mixed selections surface the first connector's value —
+// the trigger has no "mixed" affordance (caps don't blend in UI), matching
+// CONNECTOR_TYPE's first-applicable read. Persists to device-ui so a fresh
+// connector picks up the user's most recent choice.
+export const START_CAP: FieldDescriptor<ConnectorCap> = {
+  read: { connector: (h) => getStartCap(h.y) },
+  write: { connector: (h, v) => h.y.set('startCap', v) },
+  persist: { connector: setConnectorStartCapPersist },
+};
+
+export const END_CAP: FieldDescriptor<ConnectorCap> = {
+  read: { connector: (h) => getEndCap(h.y) },
+  write: { connector: (h, v) => h.y.set('endCap', v) },
+  persist: { connector: setConnectorEndCapPersist },
 };

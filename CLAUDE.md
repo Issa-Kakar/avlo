@@ -12,6 +12,8 @@ npm run typecheck    # typecheck client + all three workers (must run from repo 
 npm run dev          # Vite :3000 + workers :8787/:8788/:8789 — ask before starting
 npm run lint         # Biome — skip routine runs (noisy, sometimes wrong); pre-commit auto-formats
 ```
+> In the `avlo-parallel` worktree, run `npm run dev:p` instead of `npm run dev` — it shifts every wrangler port by `PORT_OFFSET` so the two checkouts can run side-by-side without colliding.
+
 - `@avlo/shared` → `packages/shared/src/*` (cross-runtime; client + server)
 - `@avlo/worker-shared` → `packages/worker-shared/src/*` (server-only — never imported client-side)
 - `@avlo/api-client` → `packages/api-client/src/*` (browser/SW typed `hc<AppType>` clients)
@@ -62,7 +64,7 @@ All paths relative to `client/src/` unless noted.
 | `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,All}` |
 | `OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
 | `types.ts` | `FRAME_CONFIG`, Perfect Freehand options, `getSvgPathFromStroke` |
-| `geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache; observer-driven eviction (bbox change, `shapeType` keychange) |
+| `geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache; observer-driven eviction (bbox change, `shapeType` / `startCap` / `endCap` keychange) |
 | `render-accessors.ts` | Per-kind `_map.get` readers (`readXxxRender(y)`) + per-kind module scratches. Two helpers split by Content subclass — `readPrim` (ContentAny via `arr[0]`) and `readY` (ContentType via `type`). Both check `!val.deleted` (tombstones survive `.delete(key)`). Zero alloc, monomorphic per subclass. Hot path only |
 | `object-cache.ts` | Unified eviction: `removeObjectCaches(id, kind)`, `clearAllObjectCaches()` |
 | `layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
@@ -153,7 +155,7 @@ Routes blocks land **commented out** today; deploy is gated on DNS transfer + ad
 
 ### Routes + UI
 `routes/__root.tsx`, `routes/index.tsx`, `routes/room.$roomId.tsx` (calls `connectRoom` in `beforeLoad`).
-`components/Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `TopBar.tsx`, `ToolPanel.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`, `Toast.tsx`, `ErrorBoundary.tsx`, `icons/`, `context-menu/` (own CLAUDE.md).
+`components/Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `TopBar.tsx`, `TopBarRight.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`, `icons/`, `toolbar/`, `context-menu/` (own CLAUDE.md).
 Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
 
 ---
@@ -372,6 +374,7 @@ observeDeep(events):                                // synchronous, non-reentran
     top-level delete      → deleted += id; router.onObjectDeleted(id)
     YMap edit on object   → touched += id
         connector & (start|end|connectorType keychange) → router.onConnectorEdited(id, y, …)
+        connector & (startCap|endCap keychange)         → evictGeometry(id)  // cap bakes into cached Path2D
         shape     & (shapeType keychange)               → router.onBindableChanged(id)
     nested 'content' edit → touched += id
         Y.Text         (code)            → codeSystem.handleContentChange(id, ev, lang)
@@ -436,7 +439,7 @@ computeBBoxForInto(id, kind, y, out) {
 **rbush items ARE handles.** `objectsById` and the spatial index reference the same `ObjectHandle` objects — one source of truth, two access paths. The handle's `minX/minY/maxX/maxY` mirror `bbox[0..3]` and are kept in sync by `applyHandleBBox` (the only legal post-creation mutator, wrapped by `spatialIndex.updateHandleBBox`). Spatial queries return handles directly — no `getHandle(e.id)` lookup post-query, no `IndexEntry` indirection.
 
 **Lazy exceptions** (populated on first read, not via observer):
-- `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common).
+- `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common). Connector cap toggles (`startCap` / `endCap` keychange) pre-evict in the observer because the arrowhead bakes into the cached Path2D and cap-only toggles don't always shift the bbox.
 - **Shape label layouts.** The `shape` branch of `computeBBoxForInto` reads frame only — the label layout populates on first `drawShapeLabel`.
 
 **Async exceptions** (cross a worker boundary; render coarser fallback meanwhile, self-publish dirty rects):
@@ -474,7 +477,7 @@ Per-frame hoisting in `drawObjects`: editing IDs (incl. `_textEditingId` threade
 ### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
 Two helpers, one per Content subclass. `readPrim` reads `val.content.arr[0]` (ContentAny — every primitive/array/object key); `readY` reads `val.content.type` (ContentType — the single `'content'` key on shape labels). Both check `!val.deleted` (Yjs tombstones an Item rather than removing it from `_map` on `.delete(key)` — fillColor=null in `selection-field-table.ts`, empty-label close in `TextTool.ts`). Both bypass `Content.getContent()` so there's no `[this.type]` allocation for ContentType to depend on EA for. ~10 ns/key (vs ~109 ns for `y.get()`). `Y.Map._map` items always have `length === 1` (merges blocked by deleted-state asymmetry — proven from Yjs source), so `arr[0]` is correct without a `length - 1` lookup. One `readXxxRender(y)` per leaf draw fn writes into a per-kind module-level scratch returned by reference. Each `draw*` consumes its scratch before the next reader fires — no cross-reader hazards.
 
-Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById`, `noteCachedLayout`, `codeSystem.getLayoutById`, `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, fontSize, ...)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantees; see Cache Architecture). Geometry-cache trusts entries — `shapeType` keychange pre-evicts via `evictGeometry(id)` in the observer rather than a per-draw re-check. Defensive guards stripped on the hot path: bbox-size (`scaleFrameNonUniform` clamps to `MIN_SHAPE_FRAME_DIM + 2·pad`), `n < 2` (already in `paintConnectorFromPoints`), null `assetId`/`frame` on image (observer contract).
+Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById`, `noteCachedLayout`, `codeSystem.getLayoutById`, `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, fontSize, ...)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantees; see Cache Architecture). Geometry-cache trusts entries — `shapeType` / `startCap` / `endCap` keychanges pre-evict via `evictGeometry(id)` in the observer rather than a per-draw re-check. Defensive guards stripped on the hot path: bbox-size (`scaleFrameNonUniform` clamps to `MIN_SHAPE_FRAME_DIM + 2·pad`), `n < 2` (already in `paintConnectorFromPoints`), null `assetId`/`frame` on image (observer contract).
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.

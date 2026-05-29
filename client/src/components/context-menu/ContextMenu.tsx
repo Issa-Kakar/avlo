@@ -1,45 +1,17 @@
-import { memo } from 'react';
-import { useShallow } from 'zustand/react/shallow';
+import type { ComponentType } from 'react';
 import './context-menu.css';
 import { getHandleKind } from '@/runtime/room-runtime';
-import { selectTextColor, selectTextSize, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { SelectionStore } from '@/stores/selection-store';
-import { filterSelectionByKind, selectInlineBold, selectInlineItalic, useSelectionStore } from '@/stores/selection-store';
-import {
-  decrementCodeFontSize,
-  decrementFontSize,
-  deleteSelected,
-  incrementCodeFontSize,
-  incrementFontSize,
-  setSelectedCodeFontSize,
-  setSelectedColor,
-  setSelectedFillColor,
-  setSelectedFontSize,
-  setSelectedHighlight,
-  setSelectedTextColor,
-  setSelectedWidth,
-  toggleCodeHeader,
-  toggleCodeLineNumbers,
-  toggleCodeOutput,
-  toggleSelectedBold,
-  toggleSelectedItalic,
-} from '@/tools/selection/selection-actions';
+import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind } from '@/tools/selection/types';
-import { AlignDropdown } from './AlignDropdown';
-import { ButtonGroup } from './ButtonGroup';
-import { ColorPickerPopover } from './ColorPickerPopover';
-import { NO_FILL } from './color-palette';
-import { FilterObjectsDropdown } from './FilterObjectsDropdown';
-import { FontSizeStepper } from './FontSizeStepper';
-import { HighlightPickerPopover } from './HighlightPickerPopover';
-import { IconBold, IconCodeHeader, IconCodeLines, IconCodeOutput, IconItalic, IconMoreDots, IconTrash } from './icons';
-import { LanguageDropdown } from './LanguageDropdown';
-import { MenuButton } from './MenuButton';
-import { NoteAlignDropdown } from './NoteAlignDropdown';
-import { ShapeTypeDropdown } from './ShapeTypeDropdown';
-import { SizeLabel } from './SizeLabel';
-import { TextColorPopover } from './TextColorPopover';
-import { TypefaceButton } from './TypefaceButton';
+import { LockButton } from './LockButton';
+import { CodeMenu } from './menus/CodeMenu';
+import { ConnectorMenu } from './menus/ConnectorMenu';
+import { MixedMenu } from './menus/MixedMenu';
+import { NoteMenu } from './menus/NoteMenu';
+import { ShapeMenu } from './menus/ShapeMenu';
+import { StrokeMenu } from './menus/StrokeMenu';
+import { TextMenu } from './menus/TextMenu';
 
 // === Selectors (stable module-level references) ===
 
@@ -47,252 +19,18 @@ const selectMenuOpen = (s: SelectionStore) => s.menuOpen;
 const selectKind = (s: SelectionStore) => s.selectionKind;
 const selectEditing = (s: SelectionStore) => s.textEditingId;
 const selectCodeEditing = (s: SelectionStore) => s.codeEditingId;
-const selectKindCounts = (s: SelectionStore) => s.kindCounts;
-const selectStrokeStyles = (s: SelectionStore) => ({
-  color: s.selectedStyles.color,
-  colorMixed: s.selectedStyles.colorMixed,
-  colorSecond: s.selectedStyles.colorSecond,
-  width: s.selectedStyles.width,
-});
-const selectShapeStyles = (s: SelectionStore) => ({
-  color: s.selectedStyles.color,
-  width: s.selectedStyles.width,
-  fillColor: s.selectedStyles.fillColor,
-  fillColorMixed: s.selectedStyles.fillColorMixed,
-  fillColorSecond: s.selectedStyles.fillColorSecond,
-  fontSize: s.selectedStyles.fontSize,
-  labelColor: s.selectedStyles.labelColor,
-});
-const selectTextStyles = (s: SelectionStore) => ({
-  fontSize: s.selectedStyles.fontSize,
-  labelColor: s.selectedStyles.labelColor,
-  fillColor: s.selectedStyles.fillColor,
-  fillColorMixed: s.selectedStyles.fillColorMixed,
-  fillColorSecond: s.selectedStyles.fillColorSecond,
-});
-const selectConnectorStyles = (s: SelectionStore) => ({
-  color: s.selectedStyles.color,
-  colorMixed: s.selectedStyles.colorMixed,
-  colorSecond: s.selectedStyles.colorSecond,
-  width: s.selectedStyles.width,
-});
-const selectNoteStyles = (s: SelectionStore) => ({
-  fillColor: s.selectedStyles.fillColor,
-});
 
-// === Group Components ===
-
-const MixedFilterGroup = memo(function MixedFilterGroup() {
-  const kindCounts = useSelectionStore(useShallow(selectKindCounts));
-  return <FilterObjectsDropdown kindCounts={kindCounts} onFilterByKind={filterSelectionByKind} />;
-});
-
-const StrokeStyleGroup = memo(function StrokeStyleGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectStrokeStyles));
-  return (
-    <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
-      <div className="ctx-divider" />
-      <ColorPickerPopover
-        color={color}
-        variant="filled"
-        secondColor={colorMixed ? colorSecond : undefined}
-        mode="stroke"
-        selectedColor={color}
-        onSelect={setSelectedColor}
-      />
-    </ButtonGroup>
-  );
-});
-
-const ShapeStyleGroup = memo(function ShapeStyleGroup() {
-  const { color, width, fillColor, fillColorMixed, fillColorSecond, fontSize, labelColor } = useSelectionStore(
-    useShallow(selectShapeStyles),
-  );
-  const deviceTextColor = useDeviceUIStore(selectTextColor);
-  const deviceTextSize = useDeviceUIStore(selectTextSize);
-  const effectiveLabelColor = labelColor ?? deviceTextColor;
-  const effectiveFontSize = fontSize ?? deviceTextSize;
-  return (
-    <ButtonGroup>
-      <TypefaceButton />
-      <div className="ctx-divider" />
-      <FontSizeStepper
-        value={effectiveFontSize}
-        onDecrement={decrementFontSize}
-        onIncrement={incrementFontSize}
-        onSelectSize={setSelectedFontSize}
-      />
-      <div className="ctx-divider" />
-      <BoldButton />
-      <ItalicButton />
-      <div className="ctx-divider" />
-      <NoteAlignDropdown />
-      <div className="ctx-divider" />
-      <TextColorPopover color={effectiveLabelColor} onSelect={setSelectedTextColor} />
-      <HighlightPickerPopover onSelect={setSelectedHighlight} />
-      <div className="ctx-divider" />
-      <ColorPickerPopover color={color} variant="hollow" mode="stroke" selectedColor={color} onSelect={setSelectedColor} />
-      <ColorPickerPopover
-        color={fillColor ?? '#fff'}
-        variant={fillColor === null && !fillColorMixed ? 'none' : 'filled'}
-        secondColor={fillColorMixed ? fillColorSecond : undefined}
-        mode="fill"
-        selectedColor={fillColor}
-        onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
-      />
-      <div className="ctx-divider" />
-      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
-    </ButtonGroup>
-  );
-});
-
-const BoldButton = memo(function BoldButton() {
-  const bold = useSelectionStore(selectInlineBold);
-  return (
-    <MenuButton className="ctx-btn-sq" active={bold} onClick={toggleSelectedBold}>
-      <IconBold style={{ width: 16, height: 16 }} />
-    </MenuButton>
-  );
-});
-
-const ItalicButton = memo(function ItalicButton() {
-  const italic = useSelectionStore(selectInlineItalic);
-  return (
-    <MenuButton className="ctx-btn-sq" active={italic} onClick={toggleSelectedItalic}>
-      <IconItalic style={{ width: 16, height: 16 }} />
-    </MenuButton>
-  );
-});
-
-const TextStyleGroup = memo(function TextStyleGroup() {
-  const { fontSize, labelColor, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(useShallow(selectTextStyles));
-  const effectiveColor = labelColor ?? '#262626';
-  return (
-    <ButtonGroup>
-      <TypefaceButton />
-      <div className="ctx-divider" />
-      {fontSize !== null && (
-        <FontSizeStepper
-          value={fontSize}
-          onDecrement={decrementFontSize}
-          onIncrement={incrementFontSize}
-          onSelectSize={setSelectedFontSize}
-        />
-      )}
-      <div className="ctx-divider" />
-      <BoldButton />
-      <ItalicButton />
-      <div className="ctx-divider" />
-      <AlignDropdown />
-      <div className="ctx-divider" />
-      <TextColorPopover color={effectiveColor} onSelect={setSelectedTextColor} />
-      <HighlightPickerPopover onSelect={setSelectedHighlight} />
-      <div className="ctx-divider" />
-      <ColorPickerPopover
-        color={fillColor ?? '#fff'}
-        variant={fillColor === null && !fillColorMixed ? 'none' : 'filled'}
-        secondColor={fillColorMixed ? fillColorSecond : undefined}
-        mode="fill"
-        selectedColor={fillColor}
-        onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
-      />
-    </ButtonGroup>
-  );
-});
-
-const selectCodeStyles = (s: SelectionStore) => ({
-  fontSize: s.selectedStyles.fontSize,
-  headerVisible: s.selectedStyles.codeHeaderVisible,
-  outputVisible: s.selectedStyles.codeOutputVisible,
-});
-
-const CodeStyleGroup = memo(function CodeStyleGroup() {
-  const { fontSize, headerVisible, outputVisible } = useSelectionStore(useShallow(selectCodeStyles));
-  const effectiveFontSize = fontSize ?? 14;
-  return (
-    <ButtonGroup>
-      <LanguageDropdown />
-      <div className="ctx-divider" />
-      <FontSizeStepper
-        value={effectiveFontSize}
-        onDecrement={decrementCodeFontSize}
-        onIncrement={incrementCodeFontSize}
-        onSelectSize={setSelectedCodeFontSize}
-      />
-      <div className="ctx-divider" />
-      <MenuButton className="ctx-btn-sq" onMouseDown={toggleCodeLineNumbers}>
-        <IconCodeLines style={{ width: 22, height: 16 }} />
-      </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={headerVisible === true} onMouseDown={toggleCodeHeader}>
-        <IconCodeHeader style={{ width: 16, height: 16 }} />
-      </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={outputVisible === true} onMouseDown={toggleCodeOutput}>
-        <IconCodeOutput style={{ width: 16, height: 16 }} />
-      </MenuButton>
-    </ButtonGroup>
-  );
-});
-
-const ConnectorGroup = memo(function ConnectorGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectConnectorStyles));
-  return (
-    <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
-      <div className="ctx-divider" />
-      <ColorPickerPopover
-        color={color}
-        variant="filled"
-        secondColor={colorMixed ? colorSecond : undefined}
-        mode="stroke"
-        selectedColor={color}
-        onSelect={setSelectedColor}
-      />
-    </ButtonGroup>
-  );
-});
-
-const NoteStyleGroup = memo(function NoteStyleGroup() {
-  const { fillColor } = useSelectionStore(useShallow(selectNoteStyles));
-  return (
-    <ButtonGroup>
-      <TypefaceButton />
-      <div className="ctx-divider" />
-      <BoldButton />
-      <ItalicButton />
-      <div className="ctx-divider" />
-      <NoteAlignDropdown />
-      <div className="ctx-divider" />
-      <HighlightPickerPopover onSelect={setSelectedHighlight} />
-      <div className="ctx-divider" />
-      <ColorPickerPopover
-        color={fillColor ?? '#FEF3AC'}
-        variant="filled"
-        mode="fill"
-        selectedColor={fillColor}
-        onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
-      />
-    </ButtonGroup>
-  );
-});
-
-const CommonActionsGroup = memo(function CommonActionsGroup() {
-  return (
-    <ButtonGroup>
-      <MenuButton className="ctx-btn-sq ctx-btn-danger" onClick={deleteSelected}>
-        <IconTrash />
-      </MenuButton>
-    </ButtonGroup>
-  );
-});
-
-const OverflowButton = memo(function OverflowButton() {
-  return (
-    <MenuButton className="ctx-btn-sq ctx-btn-more">
-      <IconMoreDots />
-    </MenuButton>
-  );
-});
+// Per-kind menu bar. `none` / `image` / `bookmark` intentionally have no menu
+// content — the lock button in the shell is the entire bar for those kinds.
+const MENU_BY_KIND: Partial<Record<SelectionKind, ComponentType>> = {
+  stroke: StrokeMenu,
+  connector: ConnectorMenu,
+  shape: ShapeMenu,
+  text: TextMenu,
+  note: NoteMenu,
+  code: CodeMenu,
+  mixed: MixedMenu,
+};
 
 // === Bar (shell) ===
 
@@ -309,62 +47,17 @@ function ContextMenuBar() {
         ? 'code'
         : kind;
 
+  const Menu = MENU_BY_KIND[effectiveKind];
+
   return (
     <div className="ctx-menu">
-      {effectiveKind === 'mixed' ? (
+      <LockButton />
+      {Menu && (
         <>
-          <MixedFilterGroup />
           <div className="ctx-divider" />
-        </>
-      ) : (
-        <>
-          {effectiveKind === 'stroke' && (
-            <>
-              <StrokeStyleGroup />
-              <div className="ctx-divider" />
-            </>
-          )}
-          {effectiveKind === 'shape' && (
-            <>
-              <ShapeTypeDropdown mode="shapes" />
-              <div className="ctx-divider" />
-              <ShapeStyleGroup />
-              <div className="ctx-divider" />
-            </>
-          )}
-          {effectiveKind === 'text' && (
-            <>
-              <ShapeTypeDropdown mode="text" />
-              <div className="ctx-divider" />
-              <TextStyleGroup />
-              <div className="ctx-divider" />
-            </>
-          )}
-          {effectiveKind === 'note' && (
-            <>
-              <ShapeTypeDropdown mode="note" />
-              <div className="ctx-divider" />
-              <NoteStyleGroup />
-              <div className="ctx-divider" />
-            </>
-          )}
-          {effectiveKind === 'code' && (
-            <>
-              <CodeStyleGroup />
-              <div className="ctx-divider" />
-            </>
-          )}
-          {effectiveKind === 'connector' && (
-            <>
-              <ConnectorGroup />
-              <div className="ctx-divider" />
-            </>
-          )}
+          <Menu />
         </>
       )}
-      <CommonActionsGroup />
-      <div className="ctx-divider" />
-      <OverflowButton />
     </div>
   );
 }

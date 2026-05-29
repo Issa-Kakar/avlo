@@ -1,0 +1,358 @@
+/* ===== Top Bars — floating chrome panels =====
+   `.top-bar` is the shared pill chrome (white fill, 12px radius, border,
+   two-layer shadow), reused verbatim by both bars. The left bar (TopBar —
+   logo / name / history) and the right bar (TopBarRight — avatars / Share)
+   differ only in edge position and internal padding/gap. */
+
+.top-bar {
+  position: fixed;
+  top: 7px;
+  z-index: 400;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  background: var(--color-chrome-surface);
+  border: 1px solid var(--color-chrome-border);
+  border-radius: var(--radius-chrome-pill);
+  box-shadow: var(--shadow-chrome-bar);
+  font-family: var(--font-ui);
+  user-select: none;
+}
+
+/* Left bar — logo / name / history. */
+.top-bar-left {
+  left: 9px;
+  padding: 0 6px 0 5px;
+  gap: 2px;
+}
+
+/* Right bar — collaborator avatars / Share. Anchored to the right edge,
+   mirroring the left bar; `inline-flex` lets it grow leftward as peers join. */
+.top-bar-right {
+  right: 9px;
+  padding: 0 7px;
+  gap: 0;
+}
+
+/* Logo (decorative) — display:block kills the inline-element phantom descender
+   space SVGs inherit by default. The +1px optical nudge compensates for
+   MuseoModerno's high x-height: pure flex centering lands the wordmark's
+   x-height center ~1.5px above where neighboring text (Untitled) naturally
+   sits, so the logo reads visibly high. Down 1px brings it within the
+   sub-px perceptibility threshold of the row's text baseline. */
+.top-bar-logo {
+  display: block;
+  color: var(--color-chrome-ink-tier);
+  flex-shrink: 0;
+  margin-left: 6px;
+  position: relative;
+  top: 1px;
+}
+
+/* Vertical divider — blue-tinted, shared with the context menu, main menu,
+   and zoom bar so every chrome surface speaks one divider language. */
+.top-bar-divider {
+  width: 2px;
+  height: 24px;
+  background: var(--color-chrome-divider);
+  margin: 0 4px 0 9px;
+  flex-shrink: 0;
+}
+
+/* History divider — symmetric, tighter margins so the chevron-divider-undo
+   trio reads as a single grouped affordance rather than three loosely-spaced
+   elements. Symmetric because both sides are empty button space. */
+.top-bar-divider-history {
+  margin: 0 6px;
+}
+
+/* Board name — `<span>` today (placeholder); becomes a text input on
+   rename. Cursor stays `text` to advertise direct editability. Height
+   math: `line-height: 28px` + 2px transparent border each side = 32px
+   visible footprint, matching the icon-button siblings (chevron / undo
+   / redo). Hover paints the same border in #818f9c — text color stays
+   put, no layout shift. `margin-left: 6px` compensates for the tighter
+   inner padding (6px each side, halved from 12) so the visible
+   logo↔title gap doesn't close. Inherits `font-family: var(--font-ui)`
+   from `.top-bar`. */
+.top-bar-name {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 28px;
+  color: var(--color-chrome-ink-tier);
+  border: 2px solid transparent;
+  border-radius: var(--radius-chrome-btn);
+  padding: 0 6px;
+  margin-left: 6px;
+  cursor: text;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 150ms ease;
+}
+
+.top-bar-name:hover {
+  border-color: #818f9c;
+}
+
+/* ===== Main menu trigger — chevron-down button (was the kebab) =====
+   Anchor wrapper keeps the dropdown absolutely-positioned relative to the
+   trigger; the trigger itself is the engaged-dark dropdown affordance: ink
+   at rest, fully filled + white glyph on `[aria-expanded="true"]`. */
+
+.main-menu-anchor {
+  position: relative;
+  display: inline-flex;
+  margin-left: 4px;
+}
+
+.top-bar-menu-trigger {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-chrome-btn);
+  cursor: pointer;
+  color: var(--color-chrome-ink-engaged);
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.top-bar-menu-trigger:hover {
+  background: var(--color-chrome-hover);
+}
+
+.top-bar-menu-trigger[aria-expanded="true"],
+.top-bar-menu-trigger[aria-expanded="true"]:hover,
+.top-bar-menu-trigger[aria-expanded="true"]:active {
+  background: var(--color-chrome-ink-engaged);
+  color: var(--color-chrome-surface);
+}
+
+.top-bar-menu-trigger-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* ===== Main menu — dropdown popover anchored under the trigger =====
+   Sits above the top-bar pill (z:400) so its corners aren't clipped by the
+   pill's overflow boundary; positioned by the .main-menu-anchor wrapper. */
+
+.main-menu {
+  position: absolute;
+  /* Clear the pill (~8px of pill below trigger bottom) + a 4px breathing
+     gap. Tight enough that the menu still feels tethered to the trigger
+     it dropped from, loose enough not to read as glued to the bar. */
+  top: calc(100% + 12px);
+  left: 0;
+  z-index: 401;
+  min-width: 210px;
+  padding: 6px;
+  background: var(--color-chrome-surface);
+  border: 1px solid var(--color-chrome-border);
+  border-radius: var(--radius-chrome-pill);
+  box-shadow: var(--shadow-chrome-popover);
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Snappy drop-in. transform-origin top-left anchors the scale to the
+     trigger so the menu reads as popping out from where it was summoned,
+     not inflating from its own center. ease-out-expo curve decelerates
+     hard at the end — feels instant on the leading edge, soft on the
+     landing, which is the right tradeoff for a frequently-accessed menu. */
+  transform-origin: top left;
+  animation: main-menu-enter 130ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes main-menu-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Section break — 2px blue-tinted bar, matches the context-menu divider
+   tone (and the topbar's own vertical divider thickness) so the surfaces
+   read as one design language. */
+.main-menu-divider {
+  height: 2px;
+  background: var(--color-chrome-divider);
+  margin: 4px 6px;
+  flex-shrink: 0;
+}
+
+/* ===== Menu item — leading icon · label · optional trailing chevron =====
+   Single ink token (#48525b) drives icon + label + chevron via currentColor,
+   so the row recolors as a unit on hover. Geometry: 32 tall, 12 horiz pad,
+   10 icon→label gap, label flex-grows so the chevron pins right. */
+
+.main-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-chrome-btn);
+  cursor: pointer;
+  color: var(--color-chrome-ink-body);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: left;
+  transition: background 120ms ease;
+}
+
+.main-menu-item:hover {
+  background: var(--color-chrome-hover);
+}
+
+.main-menu-item-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.main-menu-item-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.main-menu-item-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Chevron-right rides slightly smaller than the leading icon so the popout
+   affordance stays subordinate to the row's main glyph + label. */
+.main-menu-item-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.main-menu-item-chevron svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* History buttons (undo / redo) */
+.top-bar-history-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-chrome-btn);
+  cursor: pointer;
+  color: var(--color-chrome-ink-engaged);
+  transition: background 150ms ease;
+}
+
+.top-bar-history-btn:hover {
+  background: var(--color-chrome-hover);
+}
+
+/* Disabled state — cascade-ordered AFTER :hover so the disabled hover override
+   wins without !important. Deep-navy 32% alpha sits in the same family as
+   the active ink (#1b1f22) — fades cleanly without slipping into a foreign
+   warm/cool grey on the white pill. */
+.top-bar-history-btn:disabled {
+  color: var(--color-chrome-ink-disabled);
+  cursor: default;
+}
+
+.top-bar-history-btn:disabled:hover {
+  background: transparent;
+}
+
+/* Hair extra space between adjacent history buttons (on top of the 2px flex gap). */
+.top-bar-history-btn + .top-bar-history-btn {
+  margin-left: 2px;
+}
+
+.top-bar-history-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* ===== Right bar — avatars + Share ===== */
+
+/* Divider between the avatar cluster and the Share button. Reuses the
+   .top-bar-divider line; symmetric margins (the left bar's first divider is
+   asymmetric to balance text mass — the right bar has none to balance). */
+.top-bar-right .top-bar-divider {
+  margin: 0 8px;
+}
+
+/* Share button — the app's primary action: a vivid coral (#ef4e3a), a warm
+   foil to the toolbar's cool electric blue. Text + icon share white via
+   currentColor (~3.6:1 — readable for a bold label, under strict AA). Flat,
+   with the left padding trimmed so the leading icon sits closer to the edge. */
+.top-bar-share {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px 0 9px;
+  border: none;
+  border-radius: var(--radius-chrome-btn);
+  background: #ef4e3a;
+  color: var(--color-chrome-surface);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.top-bar-share:hover {
+  background: #d74634;
+}
+
+.top-bar-share:active {
+  background: #bf3e2e;
+  transform: scale(0.97);
+}
+
+.top-bar-share-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+/* ===== Responsive ===== */
+
+@media (max-width: 768px) {
+  .top-bar {
+    top: 8px;
+  }
+
+  .top-bar-left {
+    left: 8px;
+  }
+
+  .top-bar-right {
+    right: 8px;
+  }
+}

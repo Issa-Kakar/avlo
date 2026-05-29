@@ -3,7 +3,6 @@ import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedTextAlign } from '@/tools/selection/selection-actions';
 import { IconAlignTextCenter, IconAlignTextLeft, IconAlignTextRight } from './icons/AlignIcons';
-import { IconChevronDown } from './icons/UtilityIcons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
@@ -22,13 +21,12 @@ export function AlignDropdown() {
   const ActiveIcon = ALIGNS.find((a) => a.align === current)!.Icon;
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-type" onMouseDown={toggle} aria-expanded={open}>
-        <ActiveIcon width={16} height={16} />
-        <IconChevronDown className="ctx-dd-arrow" />
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-fmt ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+        <ActiveIcon />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu ctx-submenu-align">
+        <div className="ctx-submenu left-1/2 -translate-x-1/2 min-w-0 p-1 flex gap-0.5">
           {ALIGNS.map(({ align, Icon }) => (
             <button
               key={align}
@@ -39,7 +37,7 @@ export function AlignDropdown() {
                 close();
               }}
             >
-              <Icon width={16} height={16} />
+              <Icon width={20} height={20} />
             </button>
           ))}
         </div>

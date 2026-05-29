@@ -91,18 +91,19 @@ export function readStrokeRender(y: Y.Map<unknown>): StrokeRender {
 interface ShapeRender {
   shapeType: string;
   fillColor: string | undefined;
-  color: string;
+  /** undefined = no stroke (the key is absent / tombstoned) — caller skips it. */
+  color: string | undefined;
   width: number;
   opacity: number;
 }
 
-const _shapeScratch: ShapeRender = { shapeType: 'rect', fillColor: undefined, color: '#000', width: 1, opacity: 1 };
+const _shapeScratch: ShapeRender = { shapeType: 'rect', fillColor: undefined, color: undefined, width: 1, opacity: 1 };
 
 export function readShapeRender(y: Y.Map<unknown>): ShapeRender {
   const yi = y as YInternal;
   _shapeScratch.shapeType = readPrim<string>(yi, 'shapeType') ?? 'rect';
   _shapeScratch.fillColor = readPrim<string>(yi, 'fillColor');
-  _shapeScratch.color = readPrim<string>(yi, 'color') ?? '#000';
+  _shapeScratch.color = readPrim<string>(yi, 'color');
   const w = readPrim<number>(yi, 'width');
   _shapeScratch.width = w !== undefined ? w : (readPrim<number>(yi, 'strokeWidth') ?? 1);
   _shapeScratch.opacity = readPrim<number>(yi, 'opacity') ?? 1;

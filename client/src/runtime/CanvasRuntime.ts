@@ -18,6 +18,7 @@ import { setCursorOverride } from '@/stores/device-ui-store';
 import { contextMenuController } from './ContextMenuController';
 import { setLastCursorWorld } from './cursor-tracking';
 import { InputManager } from './InputManager';
+import { installUIZoomBlock } from './install-ui-zoom-block';
 import { isSpacebarPanMode } from './keyboard-manager';
 import { syncPresenceCursorOnCameraMove } from './presence/presence-pointer';
 import { SurfaceManager } from './SurfaceManager';
@@ -45,6 +46,7 @@ export class CanvasRuntime {
   private surfaceManager: SurfaceManager | null = null;
   private inputManager: InputManager | null = null;
   private cameraUnsub: (() => void) | null = null;
+  private uninstallZoomBlock: (() => void) | null = null;
   private wheelTimestamps: number[] = [];
 
   start(config: RuntimeConfig): void {
@@ -62,7 +64,12 @@ export class CanvasRuntime {
     this.inputManager = new InputManager(this, baseCanvas, container);
     this.inputManager.attach();
 
-    // 4. Camera subscription for tool view changes + context menu repositioning
+    // 4. Page-zoom block: preempts browser Ctrl/⌘ + wheel/zoom-key/pinch on
+    //    UI chrome and focused editors, which the canvas wheel handler can't
+    //    reach. Scoped to canvas-page lifetime — disposed in stop().
+    this.uninstallZoomBlock = installUIZoomBlock();
+
+    // 5. Camera subscription for tool view changes + context menu repositioning
     this.cameraUnsub = subscribeCamera(() => {
       if (!isEdgeScrolling()) getCurrentTool()?.onViewChange();
       contextMenuController.onCameraMove();
@@ -70,13 +77,23 @@ export class CanvasRuntime {
       syncPresenceCursorOnCameraMove();
     });
 
-    // 5. First-frame bootstrap
+    // 6. First-frame bootstrap
     renderLoop.invalidateAll();
     overlayLoop.invalidateAll();
   }
 
   stop(): void {
+    // Abort any in-flight tool gesture first (Y.Doc + editor host are still alive here, since
+    // the Canvas effect cleanup runs before RoomPage's disconnectRoom) so navigating away
+    // mid-stroke/marquee/transform doesn't carry tool state into the next room. Mirrors the
+    // pointer-cancel path — panTool is checked separately from the active tool since it can be
+    // mid-gesture (MMB / spacebar pan) independent of the selected tool.
+    if (panTool.isActive()) panTool.cancel();
+    const activeTool = getCurrentTool();
+    if (activeTool?.isActive()) activeTool.cancel();
+
     this.cameraUnsub?.();
+    this.uninstallZoomBlock?.();
 
     this.inputManager?.detach();
     cancelZoom();
@@ -93,6 +110,7 @@ export class CanvasRuntime {
     this.inputManager = null;
     this.surfaceManager = null;
     this.cameraUnsub = null;
+    this.uninstallZoomBlock = null;
   }
 
   // === Event Handlers (called by InputManager — modifiers already updated) ===

@@ -30,7 +30,7 @@ let active = false;
 function isEligible(): boolean {
   const tool = getCurrentTool();
   if (!tool?.isActive()) return false;
-  const at = useDeviceUIStore.getState().activeTool;
+  const at = useDeviceUIStore.getState().tool.active;
   return at === 'select' || at === 'connector' || at === 'shape';
 }
 

@@ -1,0 +1,150 @@
+/* Sticky-note color palette popout.
+
+   A near-black panel of swatches, each a miniature sticky note. A real drop
+   shadow is invisible on black, so depth is carried by a top-lit surface
+   gradient, a 1px rim-light bevel, and a folded corner — plus a color-matched
+   bloom on hover that reads as the note lifting toward the light.
+
+   Anatomy of one swatch — three layers, because the fold needs clip-path and
+   clip-path would eat an outer glow:
+     .sticky-swatch  the button — hover transform + bloom (outer shadow, unclipped)
+     ::before        the note face — fill + bevel, bottom-right corner chamfered
+     ::after         the dog-ear — the chamfered-off corner folded back onto the
+                     note, a darker triangle with its right angle pointing in. */
+
+.sticky-panel {
+  position: absolute;
+  /* Same offset + pill-centred anchoring as the pen inspector. The entry
+     animation animates transform, so its keyframes must carry the -50% Y
+     centring through or the panel jumps on open. */
+  left: calc(100% + 7px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 11px;
+  border-radius: 12px;
+  background: #0b0b0c;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow:
+    0 5px 18px -3px rgba(0, 0, 0, 0.55),
+    0 2px 5px rgba(0, 0, 0, 0.35);
+  z-index: 1;
+  animation: sticky-panel-in 130ms ease-out;
+}
+
+.sticky-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 44px);
+  gap: 8px;
+}
+
+/* --- a single sticky note ------------------------------------------------ */
+
+/* The button is the geometry layer: hover transform and the hover bloom (an
+   outer box-shadow — kept here because the clip-path on the face below would
+   clip an outer shadow away). It has no fill of its own. */
+.sticky-swatch {
+  /* per-swatch knobs — --fill / --tilt are set inline by the component */
+  --rim: 0.42; /* bright top inner edge (light catching the sheet) */
+  --edge: 0.055; /* faint rim so the tile keeps an edge on black */
+  --glow: var(--fill); /* hover bloom color */
+  --fold: 12px; /* chamfer leg = dog-ear size */
+
+  position: relative;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  /* transparent twin of the hover bloom so the bloom interpolates in smoothly */
+  box-shadow:
+    0 0 11px -1px transparent,
+    0 10px 20px -6px transparent;
+  transition:
+    transform 190ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 190ms ease;
+}
+
+/* the note face — bottom-right corner chamfered away, so the silhouette itself
+   shows the fold. lit top-left → body → deepened bottom-right: a sheet under
+   overhead light. */
+.sticky-swatch::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--fill), #ffffff 15%) 0%,
+    var(--fill) 47%,
+    color-mix(in srgb, var(--fill), #000000 9%) 100%
+  );
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, var(--rim)),
+    inset 0 -5px 7px -5px rgba(0, 0, 0, 0.26),
+    inset 0 0 0 1px rgba(255, 255, 255, var(--edge));
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--fold)), calc(100% - var(--fold)) 100%, 0 100%);
+}
+
+/* the dog-ear — the chamfered-off corner folded back onto the note. its
+   hypotenuse sits on the chamfer (the crease); its right angle points inward.
+   darker than the face: the back of the sheet, turned away from the light. */
+.sticky-swatch::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: var(--fold);
+  height: var(--fold);
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--fill), #000000 24%) 0%, color-mix(in srgb, var(--fill), #000000 12%) 50%);
+}
+
+/* near-black note: its fill is ~the panel color, so soften the white rim,
+   strengthen the edge, give the bloom a neutral light (a black glow would be
+   invisible), and flip the dog-ear lighter so the fold reads on a dark sheet. */
+.sticky-swatch[data-dark] {
+  --rim: 0.13;
+  --edge: 0.16;
+  --glow: rgba(255, 255, 255, 0.5);
+}
+
+.sticky-swatch[data-dark]::after {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--fill), #ffffff 10%) 0%, color-mix(in srgb, var(--fill), #ffffff 22%) 50%);
+}
+
+/* --- hover -------------------------------------------------------------- */
+
+.sticky-swatch:hover {
+  transform: translateY(-3px) scale(1.06) rotate(var(--tilt, 0deg));
+  box-shadow:
+    0 0 11px -1px color-mix(in srgb, var(--glow), transparent 58%),
+    0 10px 20px -6px color-mix(in srgb, var(--glow), transparent 46%);
+}
+
+@keyframes sticky-panel-in {
+  from {
+    opacity: 0;
+    transform: translate(-6px, -50%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+@media (max-width: 768px) {
+  .sticky-panel {
+    left: calc(100% + 6px);
+    padding: 9px;
+  }
+  .sticky-grid {
+    grid-template-columns: repeat(2, 40px);
+    gap: 6px;
+  }
+  .sticky-swatch {
+    width: 40px;
+    height: 40px;
+    --fold: 11px;
+  }
+}

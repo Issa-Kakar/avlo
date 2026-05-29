@@ -2,13 +2,13 @@ import type React from 'react';
 
 type SvgProps = React.SVGProps<SVGSVGElement>;
 
-/** Fill-based trash icon — lid, body with cutout interior, two internal lines */
+/** Mural-style filled trash icon — body + lid handle + two inner vertical cutouts via evenodd */
 export const IconTrash = (props: SvgProps) => (
-  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
     <path
       fillRule="evenodd"
       clipRule="evenodd"
-      d="M5.5 1a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 .5.5v1.5h3.75a.75.75 0 0 1 0 1.5h-.7L12.8 13.5a2 2 0 0 1-2 1.5H5.2a2 2 0 0 1-2-1.5L2.45 4h-.7a.75.75 0 0 1 0-1.5H5.5V1Zm1.5 0v1.5h2V1h-2ZM4 5.5l.6 7.5h6.8l.6-7.5H4ZM6.5 7a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 6.5 7Zm3 0a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 9.5 7Z"
+      d="M11 2a3 3 0 0 0-3 3v1H5a1 1 0 0 0 0 2h.129c0 .041.001.083.004.125l.75 12A2 2 0 0 0 7.879 22h8.242a2 2 0 0 0 1.996-1.875l.75-12c.003-.042.004-.084.004-.125H19a1 1 0 1 0 0-2h-3V5a3 3 0 0 0-3-3h-2Zm3 4V5a1 1 0 0 0-1-1h-2a1 1 0 0 0-1 1v1h4Zm-4 4a1 1 0 0 1 1 1v6a1 1 0 1 1-2 0v-6a1 1 0 0 1 1-1Zm5 1a1 1 0 1 0-2 0v6a1 1 0 1 0 2 0v-6Z"
     />
   </svg>
 );

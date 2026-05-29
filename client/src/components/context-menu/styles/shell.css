@@ -1,0 +1,67 @@
+/* ===== Context Menu — Bar Shell + Floating Container ===== */
+
+@layer components {
+  .ctx-menu {
+    display: inline-flex;
+    align-items: center;
+    height: 40px;
+    padding: 4px 6px;
+    background: #fff;
+    border: 1px solid var(--ctx-black-a06);
+    border-radius: 12px;
+    box-shadow:
+      0 2px 12px var(--ctx-black-a08),
+      0 1px 3px var(--ctx-black-a06);
+    gap: 2px;
+    user-select: none;
+    font-family: var(--font-ui);
+  }
+
+  /* Sits ABOVE the canvas layers (base 1, overlay 2, editor 3, cursors 4)
+     and BELOW page chrome (toolbar/zoom 380, top bar 400) so the chrome
+     and its dropdowns (zoom-menu, top-bar menus, toolbar inspectors)
+     always win when geometry can't keep them clear. Don't re-elevate.
+     Submenus inside ride in this stacking context via .ctx-submenu z:10. */
+  .context-menu-floating {
+    position: fixed;
+    width: max-content;
+    top: 0;
+    left: 0;
+    z-index: 300;
+    pointer-events: none;
+  }
+
+  .ctx-menu {
+    pointer-events: auto;
+    opacity: 1;
+    transition:
+      opacity 100ms linear,
+      transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .ctx-hidden .ctx-menu {
+    visibility: hidden;
+    opacity: 0;
+    transform: scale(0.96);
+    pointer-events: none;
+    transition: none;
+  }
+
+  /* ===== Button Group ===== */
+
+  .ctx-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  /* ===== Divider ===== */
+
+  .ctx-divider {
+    width: 2px;
+    height: 24px;
+    background: var(--ctx-divider);
+    margin: 0 4px;
+    flex-shrink: 0;
+  }
+}

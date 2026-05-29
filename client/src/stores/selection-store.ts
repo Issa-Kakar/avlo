@@ -11,6 +11,7 @@ import type { ObjectKind } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getHandle, getObjectsById } from '@/runtime/room-runtime';
 import { codeTool, textTool } from '@/runtime/tool-registry';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import {
   computeSelectionComposition,
   computeStyles,
@@ -394,3 +395,13 @@ export const selectIsTextEditing = (state: SelectionStore) => state.textEditingI
 export const selectInlineBold = (state: SelectionStore) => state.inlineStyles.bold;
 export const selectInlineItalic = (state: SelectionStore) => state.inlineStyles.italic;
 export const selectInlineHighlightColor = (state: SelectionStore) => state.inlineStyles.highlightColor;
+
+// === Cross-store: device-ui-store -> selection-store ===
+// One-way reaction (selection-store knows about device-ui-store; not the reverse).
+// Leaving 'select' clears any pending selection so other tools start clean.
+useDeviceUIStore.subscribe(
+  (s) => s.tool.active,
+  (_next, prev) => {
+    if (prev === 'select') useSelectionStore.getState().clearSelection();
+  },
+);

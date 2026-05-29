@@ -1,18 +1,18 @@
 import { ulid } from 'ulid';
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist, subscribeWithSelector } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
+import type { ConnectorVariantId } from '@/components/toolbar/connector-variants';
+import { CONNECTOR_VARIANT_SPECS } from '@/components/toolbar/connector-variants';
 import type { FontFamily, TextAlignV } from '@/core/accessors';
 import type { ConnectorCap, ConnectorType } from '@/core/connectors/types';
 import { generateUserProfile } from '@/utils/generate-user-profile';
 import { getCanvasElement } from './camera-store';
-import { useSelectionStore } from './selection-store';
 
-export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image' | 'code' | 'connector' | 'note';
-export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle';
-
-// Size types
-export type SizePreset = 4 | 7 | 10 | 13;
-export type ConnectorSizePreset = 2 | 4 | 6 | 8;
+// 'image' is intentionally absent — image is a fire-and-forget toolbar action,
+// not a sustained mode (see Toolbar.tsx + keyboard-manager.ts).
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'code' | 'connector' | 'note';
+export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle' | 'roundedRect';
 
 // Unified font size presets (used by context menu + store)
 export const TEXT_FONT_SIZE_PRESETS: readonly number[] = [10, 12, 14, 18, 24, 36, 48, 64, 80, 144];
@@ -23,22 +23,6 @@ export type TextAlign = 'left' | 'center' | 'right';
 // Font family options
 export type { FontFamily } from '@/core/accessors';
 export const TEXT_FONT_FAMILIES: readonly FontFamily[] = ['Grandstander', 'Inter', 'Lora', 'JetBrains Mono'];
-
-// Color palettes (module-level constants, not persisted)
-export const TEXT_COLOR_PALETTE: readonly string[] = [
-  '#262626',
-  '#EF4444',
-  '#F97316',
-  '#EAB308',
-  '#22C55E',
-  '#3B82F6',
-  '#8B5CF6',
-  '#6B7280',
-  '#FFFFFF',
-  '#EC4899',
-  '#06B6D4',
-  '#84CC16',
-];
 
 export const HIGHLIGHT_COLORS: readonly (string | null)[] = [
   null,
@@ -51,296 +35,493 @@ export const HIGHLIGHT_COLORS: readonly (string | null)[] = [
   '#b197fc',
 ];
 
-// Global drawing settings that all tools share
-export interface DrawingSettings {
-  size: SizePreset;
+/** A sticky note's fill color + display name. */
+export interface NoteColor {
+  name: string;
+  fill: string;
+}
+
+// Sticky-note palette — 12 colors, 6 rows of 2. Ordered as a warm→cool→neutral
+// hue sweep so the popout reads as a continuous ramp top-to-bottom. Every fill
+// is light enough for black body text except 'Black' (white text); all are
+// saturated enough to hold up against the panel's black background.
+export const NOTE_COLOR_PALETTE: readonly NoteColor[] = [
+  { name: 'Yellow', fill: '#FCF281' },
+  { name: 'Orange', fill: '#FFAD5C' },
+  { name: 'Red', fill: '#FF6E6E' },
+  { name: 'Pink', fill: '#FF8FB3' },
+  { name: 'Purple', fill: '#C193F2' },
+  { name: 'Blue', fill: '#8FB4FF' },
+  { name: 'Cyan', fill: '#73D2EE' },
+  { name: 'Teal', fill: '#67DEC6' },
+  { name: 'Green', fill: '#86DF9C' },
+  { name: 'Lime', fill: '#C5E27D' },
+  { name: 'White', fill: '#F2F1EC' },
+  { name: 'Black', fill: '#28282C' },
+];
+
+// Slot-based color storage — pen and highlighter each persist 3 colors
+// and an "active slot" pointer. The active slot's color is read at gesture
+// begin (no shared mirror field). Opacity is NOT stored — it's a module
+// constant (HIGHLIGHTER_OPACITY); pen is always 1.
+export type SlotColors = readonly [string, string, string];
+export type SlotIndex = 0 | 1 | 2;
+export const SLOT_INDICES = [0, 1, 2] as const satisfies readonly SlotIndex[];
+
+export type StrokeTool = 'pen' | 'highlighter';
+export const isStrokeTool = (t: Tool): t is StrokeTool => t === 'pen' || t === 'highlighter';
+
+// Highlighter draws at a fixed opacity, not user-tunable, so it's a constant
+// not stored state; pen is always 1.
+export const HIGHLIGHTER_OPACITY = 0.45;
+
+// Workspace preferences are flat top-level scalars, not a cluster. Each
+// preference has an independent consumer (grid renderer, snap engine,
+// presence dispatch, edge-scroll runtime, tool commit) — they share no
+// lifecycle, so grouping them would only add a drill (`s.prefs.x`) and
+// pull unrelated subscribers into one another's selector firings.
+// Hot-path consumers read via `useDeviceUIStore.getState().X`; reactive
+// consumers subscribe via the per-field selector below. Not yet wired —
+// UI surface to be added later.
+export type PointerInputKind = 'mouse' | 'trackpad';
+
+// Per-tool slot cluster — module-local; consumers go through resolveStrokeStyle.
+interface StrokeCluster {
+  slots: SlotColors;
+  activeSlot: SlotIndex;
+}
+/** The resolved draw style a DrawingTool gesture freezes at begin(). */
+export interface StrokeStyle {
   color: string;
+  width: number;
   opacity: number;
-  fill: boolean;
 }
 
-interface DeviceUIState {
-  // User identity (persisted)
-  userId: string;
-  userName: string;
-  userColor: string;
+// === State Interface ===
 
-  // Tool state
-  activeTool: Tool;
+export interface DeviceUIState {
+  user: { id: string; name: string; color: string };
+  tool: { active: Tool; cursorOverride: string | null };
+  /** Sticky-note color-palette popout. Ephemeral UI — never persisted. */
+  stickyPanelOpen: boolean;
 
-  // UNIFIED drawing settings
-  drawingSettings: DrawingSettings;
+  // Shared by pen + highlighter. Honest top-level scalar — not "owned" by either tool.
+  strokeWidth: number;
 
-  // Tool-specific settings
-  highlighterOpacity: number;
-  textSize: number;
-  connectorSize: ConnectorSizePreset;
-  shapeVariant: ShapeVariant;
+  strokeTools: Record<StrokeTool, StrokeCluster>;
+  shape: { variant: ShapeVariant; color: string; fillColor: string; width: number; align: TextAlign; alignV: TextAlignV };
+  connector: { color: string; width: number; type: ConnectorType; startCap: ConnectorCap; endCap: ConnectorCap };
+  text: { color: string; align: TextAlign; size: number; fontFamily: FontFamily; highlightColor: string | null; fillColor: string | null };
+  note: { align: TextAlign; alignV: TextAlignV; fontFamily: FontFamily; fillColor: string };
+  code: { lineNumbers: boolean; headerVisible: boolean };
 
-  // Text-specific settings
-  textColor: string;
-  textAlign: TextAlign;
-  textFontFamily: FontFamily;
-  highlightColor: string | null;
-  textFillColor: string | null;
-
-  // Note-specific settings
-  noteAlign: TextAlign;
-  noteAlignV: TextAlignV;
-  noteFontFamily: FontFamily;
-
-  // Code-specific settings
-  codeLineNumbers: boolean;
-  codeHeaderVisible: boolean;
-
-  // Connector cap/type settings
-  connectorStartCap: ConnectorCap;
-  connectorEndCap: ConnectorCap;
-  connectorType: ConnectorType;
-
-  // Shape alignment
-  shapeAlign: TextAlign;
-  shapeAlignV: TextAlignV;
-
-  // Fill color (separate from fill toggle)
-  fillColor: string;
-
-  // Placeholder tools
-  image: { enabled: boolean };
-
-  // Color system
-  recentColors: string[];
-  isColorPopoverOpen: boolean;
-
-  // Cursor override
-  cursorOverride: string | null;
-
-  // Actions
-  setActiveTool: (tool: Tool) => void;
-  setCursorOverride: (cursor: string | null) => void;
-
-  setDrawingSettings: (settings: Partial<DrawingSettings>) => void;
-  setDrawingSize: (size: SizePreset) => void;
-  setDrawingColor: (color: string) => void;
-  setDrawingOpacity: (opacity: number) => void;
-  setFillEnabled: (enabled: boolean) => void;
-
-  setHighlighterOpacity: (opacity: number) => void;
-  setTextSize: (size: number) => void;
-  setCodeLineNumbers: (v: boolean) => void;
-  setCodeHeaderVisible: (v: boolean) => void;
-  setConnectorSize: (size: ConnectorSizePreset) => void;
-  setConnectorStartCap: (cap: ConnectorCap) => void;
-  setConnectorEndCap: (cap: ConnectorCap) => void;
-  setConnectorType: (type: ConnectorType) => void;
-  setShapeVariant: (variant: ShapeVariant) => void;
-
-  setTextColor: (color: string) => void;
-  setTextAlign: (align: TextAlign) => void;
-  setFontFamily: (family: FontFamily) => void;
-  setHighlightColor: (color: string | null) => void;
-  setTextFillColor: (color: string | null) => void;
-  setNoteAlign: (align: TextAlign) => void;
-  setNoteAlignV: (alignV: TextAlignV) => void;
-  setNoteFontFamily: (family: FontFamily) => void;
-  setShapeAlign: (align: TextAlign) => void;
-  setShapeAlignV: (alignV: TextAlignV) => void;
-  setFillColor: (color: string) => void;
-
-  getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
-
-  addRecentColor: (hex: string) => void;
-  setColorPopoverOpen: (open: boolean) => void;
+  pointerInput: PointerInputKind;
+  gridEnabled: boolean;
+  alignObjects: boolean;
+  edgeScrolling: boolean;
+  showCollaboratorCursors: boolean;
+  // Quick-connect arrows around a selected bindable for drag-out connector creation.
+  showFlowConnectors: boolean;
+  // When false, tools auto-revert to `select` after one commit.
+  toolLock: boolean;
 }
 
-export const useDeviceUIStore = create<DeviceUIState>()(
-  persist(
-    (set, get) => ({
-      userId: '',
-      userName: '',
-      userColor: '',
+// === Actions Interface ===
 
-      activeTool: 'pen',
+export interface DeviceUIActions {
+  setActiveTool(tool: Tool): void;
+  setCursorOverride(cursor: string | null): void;
 
-      drawingSettings: {
-        size: 4,
-        color: '#262626',
-        opacity: 1.0,
-        fill: false,
-      },
+  openStickyPanel(): void;
+  closeStickyPanel(): void;
+  toggleStickyPanel(): void;
 
-      highlighterOpacity: 0.45,
-      textSize: 24,
-      connectorSize: 4,
-      codeLineNumbers: true,
-      codeHeaderVisible: true,
-      connectorStartCap: 'none' as ConnectorCap,
-      connectorEndCap: 'arrow' as ConnectorCap,
-      connectorType: 'straight' as ConnectorType,
-      shapeVariant: 'rectangle',
-      shapeAlign: 'center' as TextAlign,
-      shapeAlignV: 'middle' as TextAlignV,
-      fillColor: '#BFDBFE',
+  setStrokeWidth(width: number): void;
 
-      textColor: '#262626',
-      textAlign: 'left' as TextAlign,
-      textFontFamily: 'Grandstander' as FontFamily,
-      highlightColor: null,
-      textFillColor: null,
+  setStrokeActiveSlot(tool: StrokeTool, slot: SlotIndex): void;
+  setStrokeSlotColor(tool: StrokeTool, color: string): void;
 
-      noteAlign: 'center' as TextAlign,
-      noteAlignV: 'middle' as TextAlignV,
-      noteFontFamily: 'Grandstander' as FontFamily,
+  setShapeMode(variant: ShapeVariant): void;
+  setShapeVariant(variant: ShapeVariant): void;
+  setShapeColor(color: string): void;
+  setShapeFillColor(color: string): void;
+  setShapeWidth(width: number): void;
+  setShapeAlign(align: TextAlign): void;
+  setShapeAlignV(alignV: TextAlignV): void;
 
-      image: { enabled: false },
+  setConnectorColor(color: string): void;
+  setConnectorWidth(width: number): void;
+  setConnectorType(type: ConnectorType): void;
+  setConnectorStartCap(cap: ConnectorCap): void;
+  setConnectorEndCap(cap: ConnectorCap): void;
+  setConnectorMode(variant: ConnectorVariantId): void;
 
-      recentColors: [],
-      isColorPopoverOpen: false,
+  setTextColor(color: string): void;
+  setTextAlign(align: TextAlign): void;
+  setTextSize(size: number): void;
+  setTextFontFamily(family: FontFamily): void;
+  setTextHighlightColor(color: string | null): void;
+  setTextFillColor(color: string | null): void;
 
-      cursorOverride: null,
+  setNoteAlign(align: TextAlign): void;
+  setNoteAlignV(alignV: TextAlignV): void;
+  setNoteFontFamily(family: FontFamily): void;
+  setNoteFillColor(color: string): void;
 
-      // Actions
-      setActiveTool: (tool) => set({ activeTool: tool }),
-      setCursorOverride: (cursor) => {
-        // Idempotent: bail if value unchanged. Eliminates per-frame state churn
-        // from callers that re-emit the same cursor (e.g., SelectTool's hover
-        // gate writing `null` every pointermove while not over a handle).
-        if (get().cursorOverride === cursor) return;
-        set({ cursorOverride: cursor });
-        applyCursor();
-      },
+  setCodeLineNumbers(v: boolean): void;
+  setCodeHeaderVisible(v: boolean): void;
 
-      setDrawingSettings: (settings) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, ...settings },
-        })),
+  setPointerInput(kind: PointerInputKind): void;
+  toggleGridEnabled(): void;
+  toggleAlignObjects(): void;
+  toggleEdgeScrolling(): void;
+  toggleShowCollaboratorCursors(): void;
+  toggleShowFlowConnectors(): void;
+  toggleToolLock(): void;
+}
 
-      setDrawingSize: (size) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, size },
-        })),
+export type DeviceUIStore = DeviceUIState & DeviceUIActions;
 
-      setDrawingColor: (color) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, color },
-        })),
+export const useDeviceUIStore = create<DeviceUIStore>()(
+  subscribeWithSelector(
+    persist(
+      immer((set, get) => ({
+        user: { id: '', name: '', color: '' },
+        tool: { active: 'select', cursorOverride: null },
+        stickyPanelOpen: false,
 
-      setDrawingOpacity: (opacity) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, opacity },
-        })),
+        strokeWidth: 4,
 
-      setFillEnabled: (enabled) =>
-        set((state) => ({
-          drawingSettings: { ...state.drawingSettings, fill: enabled },
-        })),
+        strokeTools: {
+          pen: { slots: ['#131619', '#2196F3', '#E53030'], activeSlot: 0 },
+          highlighter: { slots: ['#FFC73B', '#FFC0CB', '#B5D9F2'], activeSlot: 0 },
+        },
 
-      setHighlighterOpacity: (opacity) => set({ highlighterOpacity: opacity }),
-      setTextSize: (size) => set({ textSize: size }),
-      setCodeLineNumbers: (v) => set({ codeLineNumbers: v }),
-      setCodeHeaderVisible: (v) => set({ codeHeaderVisible: v }),
-      setConnectorSize: (size) => set({ connectorSize: size }),
-      setConnectorStartCap: (cap) => set({ connectorStartCap: cap }),
-      setConnectorEndCap: (cap) => set({ connectorEndCap: cap }),
-      setConnectorType: (type) => set({ connectorType: type }),
-      setShapeVariant: (variant) => set({ shapeVariant: variant }),
+        shape: {
+          variant: 'rectangle',
+          color: '#131619',
+          fillColor: '#BFDBFE',
+          width: 4,
+          align: 'center',
+          alignV: 'middle',
+        },
 
-      setTextColor: (color) => set({ textColor: color }),
-      setTextAlign: (align) => set({ textAlign: align }),
-      setFontFamily: (family) => set({ textFontFamily: family }),
-      setHighlightColor: (color) => set({ highlightColor: color }),
-      setTextFillColor: (color) => set({ textFillColor: color }),
-      setNoteAlign: (align) => set({ noteAlign: align }),
-      setNoteAlignV: (alignV) => set({ noteAlignV: alignV }),
-      setNoteFontFamily: (family) => set({ noteFontFamily: family }),
-      setShapeAlign: (align) => set({ shapeAlign: align }),
-      setShapeAlignV: (alignV) => set({ shapeAlignV: alignV }),
-      setFillColor: (color) => set({ fillColor: color }),
+        connector: {
+          color: '#131619',
+          width: 4,
+          type: 'elbow',
+          startCap: 'none',
+          endCap: 'arrow',
+        },
 
-      // Helper method to get current tool settings
-      getCurrentToolSettings: () => {
-        const state = get();
-        const { activeTool, drawingSettings, highlighterOpacity, textSize, connectorSize } = state;
+        text: {
+          color: '#262626',
+          align: 'left',
+          size: 24,
+          fontFamily: 'Grandstander',
+          highlightColor: null,
+          fillColor: null,
+        },
 
-        // Base settings from unified drawing settings
-        const settings = {
-          size: drawingSettings.size as number,
-          color: drawingSettings.color,
-          opacity: drawingSettings.opacity,
-          fill: drawingSettings.fill,
-        };
+        note: {
+          align: 'center',
+          alignV: 'middle',
+          fontFamily: 'Grandstander',
+          fillColor: NOTE_COLOR_PALETTE[0].fill,
+        },
 
-        // Override with tool-specific settings
-        switch (activeTool) {
-          case 'highlighter':
-            settings.opacity = highlighterOpacity;
-            break;
-          case 'text':
-            settings.size = textSize;
-            break;
-          case 'connector':
-            settings.size = connectorSize;
-            break;
-          // eraser uses fixed 10px radius - no size override needed
-          // pen/shape use unified settings
-        }
+        code: { lineNumbers: true, headerVisible: true },
 
-        return settings;
-      },
+        pointerInput: 'mouse',
+        gridEnabled: false,
+        alignObjects: true,
+        edgeScrolling: true,
+        showCollaboratorCursors: true,
+        showFlowConnectors: true,
+        toolLock: false,
 
-      addRecentColor: (hex) =>
-        set((state) => {
-          const h = hex.trim().toLowerCase();
-          if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(h)) return {};
-          const fixed = new Set(TEXT_COLOR_PALETTE.map((c) => c.toLowerCase()));
-          if (fixed.has(h)) return {};
-          const next = [h, ...state.recentColors.filter((c) => c.toLowerCase() !== h)].slice(0, 5);
-          return { recentColors: next };
+        // === Actions ===
+
+        setActiveTool: (tool) =>
+          set((state) => {
+            state.tool.active = tool;
+          }),
+        setCursorOverride: (cursor) => {
+          if (get().tool.cursorOverride === cursor) return;
+          set((state) => {
+            state.tool.cursorOverride = cursor;
+          });
+        },
+
+        openStickyPanel: () =>
+          set((state) => {
+            state.stickyPanelOpen = true;
+          }),
+        closeStickyPanel: () => {
+          if (!get().stickyPanelOpen) return;
+          set((state) => {
+            state.stickyPanelOpen = false;
+          });
+        },
+        toggleStickyPanel: () =>
+          set((state) => {
+            state.stickyPanelOpen = !state.stickyPanelOpen;
+          }),
+
+        setStrokeWidth: (width) =>
+          set((state) => {
+            state.strokeWidth = width;
+          }),
+
+        setStrokeActiveSlot: (tool, slot) =>
+          set((state) => {
+            state.strokeTools[tool].activeSlot = slot;
+          }),
+        setStrokeSlotColor: (tool, color) =>
+          set((state) => {
+            const c = state.strokeTools[tool];
+            c.slots[c.activeSlot] = color;
+          }),
+
+        setShapeMode: (variant) =>
+          set((state) => {
+            state.tool.active = 'shape';
+            state.shape.variant = variant;
+          }),
+        setShapeVariant: (variant) =>
+          set((state) => {
+            state.shape.variant = variant;
+          }),
+        setShapeColor: (color) =>
+          set((state) => {
+            state.shape.color = color;
+          }),
+        setShapeFillColor: (color) =>
+          set((state) => {
+            state.shape.fillColor = color;
+          }),
+        setShapeWidth: (width) =>
+          set((state) => {
+            state.shape.width = width;
+          }),
+        setShapeAlign: (align) =>
+          set((state) => {
+            state.shape.align = align;
+          }),
+        setShapeAlignV: (alignV) =>
+          set((state) => {
+            state.shape.alignV = alignV;
+          }),
+
+        setConnectorColor: (color) =>
+          set((state) => {
+            state.connector.color = color;
+          }),
+        setConnectorWidth: (width) =>
+          set((state) => {
+            state.connector.width = width;
+          }),
+        setConnectorType: (type) =>
+          set((state) => {
+            state.connector.type = type;
+          }),
+        setConnectorStartCap: (cap) =>
+          set((state) => {
+            state.connector.startCap = cap;
+          }),
+        setConnectorEndCap: (cap) =>
+          set((state) => {
+            state.connector.endCap = cap;
+          }),
+        setConnectorMode: (variant) =>
+          set((state) => {
+            const spec = CONNECTOR_VARIANT_SPECS[variant];
+            state.connector.type = spec.type;
+            state.connector.startCap = spec.startCap;
+            state.connector.endCap = spec.endCap;
+          }),
+
+        setTextColor: (color) =>
+          set((state) => {
+            state.text.color = color;
+          }),
+        setTextAlign: (align) =>
+          set((state) => {
+            state.text.align = align;
+          }),
+        setTextSize: (size) =>
+          set((state) => {
+            state.text.size = size;
+          }),
+        setTextFontFamily: (family) =>
+          set((state) => {
+            state.text.fontFamily = family;
+          }),
+        setTextHighlightColor: (color) =>
+          set((state) => {
+            state.text.highlightColor = color;
+          }),
+        setTextFillColor: (color) =>
+          set((state) => {
+            state.text.fillColor = color;
+          }),
+
+        setNoteAlign: (align) =>
+          set((state) => {
+            state.note.align = align;
+          }),
+        setNoteAlignV: (alignV) =>
+          set((state) => {
+            state.note.alignV = alignV;
+          }),
+        setNoteFontFamily: (family) =>
+          set((state) => {
+            state.note.fontFamily = family;
+          }),
+        setNoteFillColor: (color) =>
+          set((state) => {
+            state.note.fillColor = color;
+          }),
+
+        setCodeLineNumbers: (v) =>
+          set((state) => {
+            state.code.lineNumbers = v;
+          }),
+        setCodeHeaderVisible: (v) =>
+          set((state) => {
+            state.code.headerVisible = v;
+          }),
+
+        setPointerInput: (kind) =>
+          set((state) => {
+            state.pointerInput = kind;
+          }),
+        toggleGridEnabled: () =>
+          set((state) => {
+            state.gridEnabled = !state.gridEnabled;
+          }),
+        toggleAlignObjects: () =>
+          set((state) => {
+            state.alignObjects = !state.alignObjects;
+          }),
+        toggleEdgeScrolling: () =>
+          set((state) => {
+            state.edgeScrolling = !state.edgeScrolling;
+          }),
+        toggleShowCollaboratorCursors: () =>
+          set((state) => {
+            state.showCollaboratorCursors = !state.showCollaboratorCursors;
+          }),
+        toggleShowFlowConnectors: () =>
+          set((state) => {
+            state.showFlowConnectors = !state.showFlowConnectors;
+          }),
+        toggleToolLock: () =>
+          set((state) => {
+            state.toolLock = !state.toolLock;
+          }),
+      })),
+      {
+        name: 'avlo.toolbar.v3',
+        version: 3,
+        storage: createJSONStorage(() => localStorage),
+        partialize: (s) => ({
+          user: s.user,
+          strokeWidth: s.strokeWidth,
+          strokeTools: s.strokeTools,
+          shape: s.shape,
+          connector: s.connector,
+          text: s.text,
+          note: s.note,
+          code: s.code,
+          pointerInput: s.pointerInput,
+          gridEnabled: s.gridEnabled,
+          alignObjects: s.alignObjects,
+          edgeScrolling: s.edgeScrolling,
+          showCollaboratorCursors: s.showCollaboratorCursors,
+          showFlowConnectors: s.showFlowConnectors,
+          toolLock: s.toolLock,
+          // tool.active + tool.cursorOverride + stickyPanelOpen intentionally excluded.
         }),
-
-      setColorPopoverOpen: (open) => set({ isColorPopoverOpen: open }),
-    }),
-    {
-      name: 'avlo.toolbar.v4',
-      version: 2,
-    },
+      },
+    ),
   ),
 );
+
+// Stable action handler exports — Zustand actions are defined once inside
+// create(), so destructuring them here yields references that never change.
+// Import these directly in JSX so memoized children retain prop equality.
+export const {
+  setActiveTool,
+  setStrokeActiveSlot,
+  setStrokeSlotColor,
+  setStrokeWidth,
+  setShapeMode,
+  setShapeVariant,
+  setShapeColor,
+  setShapeFillColor,
+  setShapeWidth,
+  setShapeAlign,
+  setShapeAlignV,
+  setConnectorColor,
+  setConnectorWidth,
+  setConnectorType,
+  setConnectorStartCap,
+  setConnectorEndCap,
+  setConnectorMode,
+  setTextColor,
+  setTextAlign,
+  setTextSize,
+  setTextFontFamily,
+  setTextHighlightColor,
+  setTextFillColor,
+  setNoteAlign,
+  setNoteAlignV,
+  setNoteFontFamily,
+  setNoteFillColor,
+  openStickyPanel,
+  closeStickyPanel,
+  toggleStickyPanel,
+  setCodeLineNumbers,
+  setCodeHeaderVisible,
+  setPointerInput,
+  toggleGridEnabled,
+  toggleAlignObjects,
+  toggleEdgeScrolling,
+  toggleShowCollaboratorCursors,
+  toggleShowFlowConnectors,
+  toggleToolLock,
+} = useDeviceUIStore.getState();
 
 // ============================================
 // USER IDENTITY INITIALIZATION
 // ============================================
 
-if (!useDeviceUIStore.getState().userId) {
+if (!useDeviceUIStore.getState().user.id) {
   const profile = generateUserProfile();
   useDeviceUIStore.setState({
-    userId: ulid(),
-    userName: profile.name,
-    userColor: profile.color,
+    user: { id: ulid(), name: profile.name, color: profile.color },
   });
 }
 
 /** Imperative getter — returns the stable user ID string. */
 export function getUserId(): string {
-  return useDeviceUIStore.getState().userId;
+  return useDeviceUIStore.getState().user.id;
 }
 
 /** Imperative getter — returns the full user profile for presence. */
 export function getUserProfile(): { userId: string; name: string; color: string } {
-  const s = useDeviceUIStore.getState();
-  return { userId: s.userId, name: s.userName, color: s.userColor };
+  const s = useDeviceUIStore.getState().user;
+  return { userId: s.id, name: s.name, color: s.color };
 }
 
 // ============================================
 // CURSOR MANAGEMENT
 // ============================================
 
-/**
- * Compute the appropriate cursor based on active tool.
- */
 function computeBaseCursor(): string {
-  const { activeTool } = useDeviceUIStore.getState();
-  switch (activeTool) {
+  const active = useDeviceUIStore.getState().tool.active;
+  switch (active) {
     case 'eraser':
       return 'url("/cursors/avloEraser.cur") 16 16, auto';
     case 'pan':
@@ -362,7 +543,7 @@ function computeBaseCursor(): string {
 export function applyCursor(): void {
   const canvas = getCanvasElement();
   if (!canvas) return;
-  const override = useDeviceUIStore.getState().cursorOverride;
+  const override = useDeviceUIStore.getState().tool.cursorOverride;
   canvas.style.cursor = override ?? computeBaseCursor();
 }
 
@@ -374,25 +555,62 @@ export function setCursorOverride(cursor: string | null): void {
   useDeviceUIStore.getState().setCursorOverride(cursor);
 }
 
-/**
- * Self-subscription for tool changes.
- * When activeTool changes and canvas is available, apply the new cursor.
- * This subscription is set up once at module initialization and lives
- * for the lifetime of the app.
- */
-useDeviceUIStore.subscribe((state, prevState) => {
-  if (state.activeTool !== prevState.activeTool) {
-    applyCursor();
-    if (prevState.activeTool === 'select') {
-      useSelectionStore.getState().clearSelection();
-    }
-  }
-});
+// Apply cursor whenever tool.active or tool.cursorOverride changes.
+// Side-effect lives where the change is observed, not where it's set.
+useDeviceUIStore.subscribe((s) => s.tool.active, applyCursor);
+useDeviceUIStore.subscribe((s) => s.tool.cursorOverride, applyCursor);
+
+// The sticky-note palette popout only makes sense while the note tool is
+// active — any switch away from 'note' (toolbar, keyboard, shape-mode)
+// dismisses it. closeStickyPanel is idempotent, so non-note→non-note is a no-op.
+useDeviceUIStore.subscribe(
+  (s) => s.tool.active,
+  (active) => {
+    if (active !== 'note') closeStickyPanel();
+  },
+);
 
 // ============================================
 // SELECTORS
 // ============================================
-export const selectTextColor = (s: DeviceUIState) => s.textColor;
-export const selectTextAlign = (s: DeviceUIState) => s.textAlign;
-export const selectTextSize = (s: DeviceUIState) => s.textSize;
-export const selectHighlightColor = (s: DeviceUIState) => s.highlightColor;
+
+// Scalar selectors — Object.is suffices, no shallow.
+export const selectActiveTool = (s: DeviceUIState) => s.tool.active;
+export const selectStickyPanelOpen = (s: DeviceUIState) => s.stickyPanelOpen;
+export const selectStrokeWidth = (s: DeviceUIState) => s.strokeWidth;
+export const selectTextColor = (s: DeviceUIState) => s.text.color;
+export const selectTextAlign = (s: DeviceUIState) => s.text.align;
+export const selectTextSize = (s: DeviceUIState) => s.text.size;
+export const selectTextHighlightColor = (s: DeviceUIState) => s.text.highlightColor;
+export const selectTextFontFamily = (s: DeviceUIState) => s.text.fontFamily;
+
+/** Resolve a stroke tool's draw style — the color/width/opacity a DrawingTool gesture
+ * freezes at begin(). Collapses the slot indirection so consumers never touch slots. */
+export function resolveStrokeStyle(s: DeviceUIState, tool: StrokeTool): StrokeStyle {
+  const c = s.strokeTools[tool];
+  return {
+    color: c.slots[c.activeSlot],
+    width: s.strokeWidth,
+    opacity: tool === 'highlighter' ? HIGHLIGHTER_OPACITY : 1,
+  };
+}
+
+// Cluster selectors — return existing object references; consumers can use these
+// directly because unrelated updates don't change the cluster's identity.
+export const selectShape = (s: DeviceUIState) => s.shape;
+export const selectConnector = (s: DeviceUIState) => s.connector;
+export const selectText = (s: DeviceUIState) => s.text;
+export const selectNote = (s: DeviceUIState) => s.note;
+export const selectCode = (s: DeviceUIState) => s.code;
+export const selectUser = (s: DeviceUIState) => s.user;
+
+// Per-pref scalar selectors — stable refs for `useDeviceUIStore(selectX)`
+// and `useDeviceUIStore.subscribe(selectX, fn)`. Each is independent; a
+// toggle of `gridEnabled` doesn't fire `showCollaboratorCursors` consumers.
+export const selectPointerInput = (s: DeviceUIState) => s.pointerInput;
+export const selectGridEnabled = (s: DeviceUIState) => s.gridEnabled;
+export const selectAlignObjects = (s: DeviceUIState) => s.alignObjects;
+export const selectEdgeScrolling = (s: DeviceUIState) => s.edgeScrolling;
+export const selectShowCollaboratorCursors = (s: DeviceUIState) => s.showCollaboratorCursors;
+export const selectShowFlowConnectors = (s: DeviceUIState) => s.showFlowConnectors;
+export const selectToolLock = (s: DeviceUIState) => s.toolLock;

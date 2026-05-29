@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { usePresenceStore } from '@/stores/presence-store';
+import './UserAvatarCluster.css';
 
 export function UserAvatarCluster() {
   const peerIdentities = usePresenceStore((s) => s.peerIdentities);

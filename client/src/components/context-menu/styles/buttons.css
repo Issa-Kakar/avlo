@@ -1,0 +1,108 @@
+/* ===== Context Menu — Buttons =====
+   Base .ctx-btn family first, then the shared engaged-trigger marker, then
+   every remaining variant in source order. Same-specificity :hover vs .active /
+   [aria-expanded] collisions resolve by declaration order, so the whole
+   .ctx-btn family stays in this one file. */
+
+@layer components {
+  .ctx-btn {
+    height: 32px;
+    min-width: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 6px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    /* Icon buttons dominate the bar; default ink is the engaged dark. Text-
+       bearing triggers (filter, language) paint via explicit SVG `fill`, so
+       they ignore this. */
+    color: var(--ctx-engaged);
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-size: 13px;
+    transition: background 150ms ease;
+    outline: none;
+  }
+
+  .ctx-btn:hover {
+    background: var(--ctx-hover);
+  }
+
+  .ctx-btn:active {
+    background: var(--ctx-black-a08);
+  }
+
+  .ctx-btn:disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+
+  .ctx-btn:focus-visible {
+    outline: 2px solid var(--ctx-accent);
+    outline-offset: -1px;
+  }
+
+  /* ===== Engaged Trigger Marker =====
+     Composes with any .ctx-btn variant whose [aria-expanded="true"] state
+     should fill var(--ctx-engaged) and flip currentColor to white. Icons
+     drawn with `currentColor` flip white; icons with explicit `fill` props
+     (ColorTeardrop, IconColorFill, IconColorBorder) ignore the color flip
+     and stay drawn by their own props. Triggers that intentionally don't
+     flip on open (typeface, language) don't carry this class. */
+
+  .ctx-btn-engaged[aria-expanded="true"],
+  .ctx-btn-engaged[aria-expanded="true"]:hover,
+  .ctx-btn-engaged[aria-expanded="true"]:active {
+    background: var(--ctx-engaged);
+    color: #fff;
+  }
+
+  /* ===== Button Variants ===== */
+
+  .ctx-btn-sq {
+    width: 32px;
+    padding: 0;
+  }
+
+  .ctx-btn-sq svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* ===== Format buttons (.ctx-btn-fmt) — bold / italic / code header / code
+     output toggles + align dropdown triggers =====
+     The `.active` toggle state fills engaged dark with white ink. Dropdown
+     triggers using this class (align dropdowns) get their open-state flip
+     from .ctx-btn-engaged instead. */
+
+  .ctx-btn-fmt svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .ctx-btn-fmt.active,
+  .ctx-btn-fmt.active:hover {
+    background: var(--ctx-engaged);
+    color: #fff;
+  }
+
+  /* ===== Filter Button (FilterObjectsDropdown trigger) =====
+     Nested SVG-text rules under [aria-expanded="true"] live in
+     svg-triggers.css and key off this class. */
+
+  .ctx-btn-filter {
+    padding: 0 8px;
+    gap: 6px;
+  }
+
+  /* ===== Language Button (LanguageDropdown trigger) =====
+     Filter chrome minus the engaged open-state — a code block always has a
+     selected language, so the trigger needs no "engaged" fill. */
+
+  .ctx-btn-lang {
+    padding: 0 8px;
+    gap: 6px;
+  }
+}

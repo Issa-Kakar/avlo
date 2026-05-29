@@ -1,7 +1,6 @@
 import { buildShapePathFromFrame, emitShapeIntoSink } from '@/core/geometry/shape-path';
 import type { FrameTuple } from '@/core/types/geometry';
 import type { ShapePreview } from '@/tools/types';
-import { createFillFromStroke } from '@/utils/color';
 
 /**
  * Draw a shape preview. Context is already in world transform.
@@ -35,8 +34,8 @@ export function drawShapePreview(ctx: CanvasRenderingContext2D, preview: ShapePr
   }
 
   const path = buildShapePathFromFrame(preview.shapeType, frame);
-  if (preview.fill) {
-    ctx.fillStyle = createFillFromStroke(preview.color);
+  if (preview.fillColor) {
+    ctx.fillStyle = preview.fillColor;
     ctx.fill(path);
   }
   ctx.stroke(path);

@@ -594,7 +594,7 @@ export class ConnectorFlowController {
   private computeHoverPreview(sourceId: string, side: FlowSide, sourceHandle: ObjectHandle): FlowPreview | null {
     const frame = frameOf(sourceHandle);
     if (!frame) return null;
-    const width = useDeviceUIStore.getState().connectorSize;
+    const width = useDeviceUIStore.getState().connector.width;
     // Source routing shape type — a shape's `shapeType`, `'rect'` for a note.
     // The duplicate copies the source, so this is also the duplicate's type;
     // it matches exactly what `bakeCanonicalEndpoint` reads post-commit.
@@ -681,8 +681,8 @@ export class ConnectorFlowController {
     const frame = frameOf(sourceHandle);
     if (!frame) return false;
     const st = useDeviceUIStore.getState();
-    this.frozenColor = st.drawingSettings.color;
-    this.frozenWidth = st.connectorSize;
+    this.frozenColor = st.connector.color;
+    this.frozenWidth = st.connector.width;
     this.dragSourceId = sourceId;
     const dir = SIDE_DIR[side];
     this.fromSnap = buildElbowSnap(sourceId, flowAnchor(getHandleShapeType(sourceHandle), dir), frame, dir);
@@ -759,8 +759,8 @@ export class ConnectorFlowController {
     if (!hover) return null;
     const { sourceId, preview } = hover;
     const st = useDeviceUIStore.getState();
-    const color = st.drawingSettings.color;
-    const width = st.connectorSize;
+    const color = st.connector.color;
+    const width = st.connector.width;
 
     if (preview.kind === 'candidate') {
       return createConnector({

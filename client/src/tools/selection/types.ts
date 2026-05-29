@@ -8,7 +8,7 @@ import type { Slot } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
-import type { ObjectKind } from '@/core/types/objects';
+import type { ConnectorCap, ConnectorType, ObjectKind } from '@/core/types/objects';
 
 // ============================================================================
 // Selection Composition
@@ -46,20 +46,16 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
 // ============================================================================
 
 export interface SelectedStyles {
-  /** First object's stroke/border color. Used by all kinds. */
-  color: string;
-  /** Multiple different stroke colors detected. Used by strokes, shapes, connectors. */
+  /** First object's stroke/border color, null = no stroke (shapes). Used by all kinds. */
+  color: string | null;
+  /** Multiple different stroke colors detected. Used by strokes and connectors. */
   colorMixed: boolean;
-  /** Second stroke color for split indicator. Only set when colorMixed. */
-  colorSecond: string | null;
   /** Uniform stroke width, null if mixed. Used by strokes, shapes, connectors. */
   width: number | null;
   /** First shape's fill color, null = no fill. Used by shapesOnly. Kept even when mixed. */
   fillColor: string | null;
   /** Multiple different fill colors detected. Used by shapesOnly. */
   fillColorMixed: boolean;
-  /** Second fill color for split indicator. Only set when fillColorMixed. */
-  fillColorSecond: string | null;
   /** Uniform shape type, 'text' for textOnly, null if mixed. Used by shapesOnly, textOnly. */
   shapeType: string | null;
   /** First text object's fontSize (rounded). Used by textOnly. */
@@ -78,16 +74,22 @@ export interface SelectedStyles {
   codeHeaderVisible: boolean | null;
   /** Code block output visibility. Used by codeOnly. */
   codeOutputVisible: boolean | null;
+  /** First connector's routing type. Used by connector-only. No mixed flag — the
+   *  trigger reflects the first connector and routing types don't blend in UI. */
+  connectorType: ConnectorType | null;
+  /** First connector's start cap. Used by connector-only. Same first-applicable
+   *  rule as `connectorType` — no mixed affordance. */
+  startCap: ConnectorCap | null;
+  /** First connector's end cap. Used by connector-only. */
+  endCap: ConnectorCap | null;
 }
 
 export const EMPTY_STYLES: SelectedStyles = {
-  color: '#262626',
+  color: null,
   colorMixed: false,
-  colorSecond: null,
   width: null,
   fillColor: null,
   fillColorMixed: false,
-  fillColorSecond: null,
   shapeType: null,
   fontSize: null,
   textAlign: null,
@@ -97,6 +99,9 @@ export const EMPTY_STYLES: SelectedStyles = {
   codeLanguage: null,
   codeHeaderVisible: null,
   codeOutputVisible: null,
+  connectorType: null,
+  startCap: null,
+  endCap: null,
 };
 
 export interface InlineStyles {

@@ -25,7 +25,7 @@ import {
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { bringSelectedForward, bringSelectedToFront, sendSelectedBackward, sendSelectedToBack } from '@/core/z-order/z-actions';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { type ShapeVariant, setCursorOverride, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
+import { type ShapeVariant, setCursorOverride, setShapeMode, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { deleteSelected, setSelectedHighlight, toggleSelectedBold, toggleSelectedItalic } from '@/tools/selection/selection-actions';
 import { computeUniformInlineStyles } from '@/tools/selection/selection-utils';
@@ -140,7 +140,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case 'a':
       e.preventDefault();
-      if (gestureActive && useDeviceUIStore.getState().activeTool !== 'select') tool!.cancel();
+      if (gestureActive && useDeviceUIStore.getState().tool.active !== 'select') tool!.cancel();
       selectAll();
       return;
 
@@ -182,7 +182,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
         if (highlightColor) {
           setSelectedHighlight(null);
         } else {
-          const deviceHighlight = useDeviceUIStore.getState().highlightColor;
+          const deviceHighlight = useDeviceUIStore.getState().text.highlightColor;
           setSelectedHighlight(deviceHighlight || '#ffd43b');
         }
       }
@@ -246,13 +246,11 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     return;
   }
 
-  // Shape variant switch
+  // Shape variant switch — atomic (single set() → single subscriber fire).
   const variant = SHAPE_KEYS[key];
   if (variant) {
     e.preventDefault();
-    const store = useDeviceUIStore.getState();
-    store.setActiveTool('shape');
-    store.setShapeVariant(variant);
+    setShapeMode(variant);
     return;
   }
 
@@ -286,7 +284,7 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
 
   // Enter — start editing the single selected text/shape/note (textTool) or code block (codeTool).
   // Omitting the entry point lets the editor default the cursor to the end of the document.
-  if (key === 'enter' && useDeviceUIStore.getState().activeTool === 'select') {
+  if (key === 'enter' && useDeviceUIStore.getState().tool.active === 'select') {
     if (selectedIds.length !== 1) return;
     const handle = getHandle(selectedIds[0]);
     if (!handle) return;

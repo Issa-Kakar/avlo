@@ -8,10 +8,10 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { getCodeProps } from '@/core/accessors';
-import { codeSystem } from '@/core/code/code-system';
+import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
-import { hydrateImages } from '@/core/image/image-manager';
+import { ensureImageWorkers, hydrateImages } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
@@ -24,6 +24,7 @@ import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { getUserId } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
+import { bindUndoManagerToHistoryStore } from './history-bridge';
 import { attach, detach } from './presence/presence';
 
 /** Viewport-cull then publish a dirty rect. `vp` is a scratch tuple from `getVisibleBoundsTuple()`. */
@@ -66,6 +67,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Undo/Redo manager
   private undoManager: Y.UndoManager | null = null;
+  private unbindHistory: (() => void) | null = null;
 
   // Track if destroyed for cleanup
   private destroyed = false;
@@ -99,6 +101,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
+
+    // Spawn the image worker pool now (synchronous, parallel with init's IDB/WS) so the first
+    // image bitmap is ready ASAP. Idempotent + session-scoped — see ensureImageWorkers().
+    ensureImageWorkers();
 
     // Async init: IDB → hydrate → observer → UndoManager → WS
     void this.init();
@@ -136,6 +142,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       trackedOrigins: new Set([this.userId, ySyncPluginKey]),
       captureTimeout: 500,
     });
+    this.unbindHistory = bindUndoManagerToHistoryStore(this.undoManager);
   }
 
   mutate(fn: () => void): void {
@@ -179,6 +186,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       p.disconnect();
       p.destroy();
     });
+    this.unbindHistory = dispose(this.unbindHistory, (fn) => fn());
     this.undoManager = dispose(this.undoManager, (m) => m.destroy());
     this.objectsObserver = dispose(this.objectsObserver, (fn) => this.objects.unobserveDeep(fn));
 
@@ -191,8 +199,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear z-order rank table
     this.zOrder.clear();
 
+    // Drop UI selection so stale selectedIds don't render against the next room's objects.
+    useSelectionStore.getState().clearSelection();
+
     // Clear all object caches (geometry + layout)
     clearAllObjectCaches();
+
+    // Terminate the lezer worker pool (re-created lazily in the next room). Kept out of
+    // clearAllObjectCaches() — that also runs on hydrate, which must NOT kill the pool.
+    terminateCodeWorkers();
 
     // Clear object maps
     this.objectsById.clear();
@@ -242,6 +257,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             const startEnd = ev.keysChanged.has('start') || ev.keysChanged.has('end');
             if (startEnd || ev.keysChanged.has('connectorType')) {
               router.onConnectorEdited(id, yObj, startEnd);
+            }
+            // Caps bake into the cached Path2D (arrowhead is built geometry, not
+            // paint-time chrome) — pre-evict regardless of bbox so a cap toggle
+            // whose extent doesn't dominate the route bbox still rebuilds. Phase B's
+            // bbox-driven eviction would otherwise leave the old Path2D in place.
+            if (ev.keysChanged.has('startCap') || ev.keysChanged.has('endCap')) {
+              evictGeometry(id);
             }
           } else if (kind === 'shape' && ev.keysChanged.has('shapeType')) {
             evictGeometry(id); // pre-evict Path2D so renderer doesn't re-check per draw

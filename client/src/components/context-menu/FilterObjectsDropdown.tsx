@@ -1,33 +1,32 @@
 import type React from 'react';
+import { IconArrow } from '@/components/toolbar/icons/IconArrow';
+import { IconCode } from '@/components/toolbar/icons/IconCode';
+import { IconImage } from '@/components/toolbar/icons/IconImage';
+import { IconLink } from '@/components/toolbar/icons/IconLink';
+import { IconPen } from '@/components/toolbar/icons/IconPen';
+import { IconShapes } from '@/components/toolbar/icons/IconShapes';
+import { IconStickyNote } from '@/components/toolbar/icons/IconStickyNote';
+import { IconText } from '@/components/toolbar/icons/IconText';
 import type { ObjectKind } from '@/core/types/objects';
 import type { KindCounts } from '@/tools/selection/types';
-import {
-  IconChevronDown,
-  IconCodeBlock,
-  IconConnectorLine,
-  IconImages,
-  IconPenStroke,
-  IconShapes,
-  IconStickySquareFold,
-  IconTextType,
-} from './icons';
+import { IconChevronDown } from './icons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 // Keys are ObjectKind (singular), matching KindCounts / SelectionKind exactly.
-// 'bookmark' is intentionally omitted — no UI yet.
 const KIND_CONFIG: {
   key: ObjectKind;
   label: string;
   Icon: React.FC<React.SVGProps<SVGSVGElement>>;
 }[] = [
-  { key: 'stroke', label: 'Strokes', Icon: IconPenStroke },
-  { key: 'shape', label: 'Shapes', Icon: IconShapes },
-  { key: 'text', label: 'Text', Icon: IconTextType },
-  { key: 'connector', label: 'Connectors', Icon: IconConnectorLine },
-  { key: 'code', label: 'Code Block', Icon: IconCodeBlock },
-  { key: 'note', label: 'Sticky Note', Icon: IconStickySquareFold },
-  { key: 'image', label: 'Images', Icon: IconImages },
+  { key: 'stroke', label: 'Stroke', Icon: IconPen },
+  { key: 'shape', label: 'Shape', Icon: IconShapes },
+  { key: 'text', label: 'Text', Icon: IconText },
+  { key: 'connector', label: 'Connector', Icon: IconArrow },
+  { key: 'code', label: 'Code Block', Icon: IconCode },
+  { key: 'note', label: 'Sticky Note', Icon: IconStickyNote },
+  { key: 'image', label: 'Image', Icon: IconImage },
+  { key: 'bookmark', label: 'Link', Icon: IconLink },
 ];
 
 interface FilterObjectsDropdownProps {
@@ -39,30 +38,13 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-filter" onMouseDown={toggle} aria-expanded={open}>
-        <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
-          <text
-            x="0"
-            y="9"
-            fill="#6B7280"
-            fontSize="10"
-            fontWeight="500"
-            letterSpacing="0.03em"
-            fontFamily="var(--font-stack)"
-            textRendering="geometricPrecision"
-          >
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-filter ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
+        <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" className="shrink-0">
+          <text className="ctx-filter-trigger-label" x="0" y="9">
             FILTER
           </text>
-          <text
-            x="0"
-            y="24"
-            fill="#1F2937"
-            fontSize="13"
-            fontWeight="600"
-            fontFamily="var(--font-stack)"
-            textRendering="geometricPrecision"
-          >
+          <text className="ctx-filter-trigger-total" x="0" y="24">
             {kindCounts.total} objects
           </text>
         </svg>
@@ -70,23 +52,23 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
       </MenuButton>
 
       {open && (
-        <div className="ctx-submenu ctx-submenu-filter">
+        <div className="ctx-submenu left-0 translate-x-0 min-w-[140px]">
           {KIND_CONFIG.map(({ key, label, Icon }) => {
             const count = kindCounts[key];
             if (count === 0) return null;
             return (
               <button
                 key={key}
-                className="ctx-submenu-item ctx-filter-item"
+                className="ctx-submenu-item h-9 gap-2.5 text-xs font-bold whitespace-nowrap"
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onFilterByKind(key);
                   close();
                 }}
               >
-                <Icon width={22} height={22} />
+                <Icon width={20} height={20} />
                 <span>{label}</span>
-                <span className="ctx-filter-num">{count}</span>
+                <span className="ml-auto text-[var(--ctx-text)] text-[11px] font-medium tabular-nums">{count}</span>
               </button>
             );
           })}

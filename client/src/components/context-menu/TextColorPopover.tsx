@@ -1,4 +1,5 @@
-import { CONTEXT_MENU_COLORS } from './color-palette';
+import { CheckIcon } from '@/components/toolbar/color/CheckIcon';
+import { checkmarkColorFor, colorsEqual, luminance, PALETTE, PALETTE_COLS } from '@/components/toolbar/color/palette';
 import { TextColorIcon } from './icons';
 import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
@@ -8,31 +9,37 @@ interface TextColorPopoverProps {
   onSelect?: (color: string) => void;
 }
 
+// Light swatches blend into the white picker — give them a darker edge for
+// contrast. Mirror of the toolbar picker's white edge on near-black swatches.
+const NEAR_WHITE = 0.86;
+
 export function TextColorPopover({ color, onSelect }: TextColorPopoverProps) {
   const { open, containerRef, toggle, close } = useDropdown();
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton className="ctx-btn-color" onMouseDown={toggle}>
+    <div ref={containerRef} className="relative">
+      <MenuButton className="ctx-btn-sq ctx-btn-engaged" onMouseDown={toggle} aria-expanded={open}>
         <TextColorIcon barColor={color} width={20} height={20} />
       </MenuButton>
       {open && (
-        <div className="ctx-submenu" style={{ minWidth: 'auto', padding: 0 }}>
-          <div className="ctx-color-grid">
-            {CONTEXT_MENU_COLORS.map((c, i) => {
-              const isPastel = i >= 9;
-              const isSelected = color === c;
+        <div className="ctx-submenu min-w-0 p-0">
+          <div className="ctx-cp-grid" style={{ gridTemplateColumns: `repeat(${PALETTE_COLS}, 1fr)` }}>
+            {PALETTE.map((c) => {
+              const active = colorsEqual(c, color);
               return (
                 <button
                   key={c}
-                  className={`ctx-color-swatch${isPastel ? ' pastel' : ''}${isSelected ? ' selected' : ''}`}
+                  className="ctx-cp-swatch"
+                  data-near-white={luminance(c) > NEAR_WHITE || undefined}
                   style={{ background: c }}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     onSelect?.(c);
                     close();
                   }}
-                />
+                >
+                  {active && <CheckIcon color={checkmarkColorFor(c)} size={13} />}
+                </button>
               );
             })}
           </div>

@@ -1,0 +1,128 @@
+.color-picker {
+  position: absolute;
+  left: calc(100% + 12px);
+  top: -8px;
+  background: var(--dock-bg, #101720);
+  border-radius: 12px;
+  /* Two-layer precise shadow — matches the weight picker. */
+  box-shadow:
+    0 -1px 1px rgba(0, 0, 0, 0.15),
+    0 3px 3px rgba(0, 0, 0, 0.35);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: picker-pop 140ms ease-out;
+  z-index: 1;
+}
+
+.picker-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.picker-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform 100ms ease;
+}
+
+.picker-swatch:hover {
+  transform: scale(1.08);
+}
+
+/* Near-black swatches need a visible edge — their fill is nearly the dock
+   color itself. Matches ColorButton's dark-slot edge: white at 0.55, so black
+   reads the same in the picker as in a slot. It's a border, not the slot's
+   inset box-shadow — an inset would sit 1px inside this swatch's own border
+   and read undersized — but a 0.55 border over the near-black fill composites
+   to the same grey the slot's 0.55 inset does. */
+.picker-swatch[data-near-black] {
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+/* Active swatch: dock-bg gap ring + the swatch's own color — the same composite
+   as ColorButton.is-active, so a picked color reads like the active slot.
+   --slot-tint is set inline by colorButtonStyle(). No dark-variant override
+   needed: the rings sit outside the 1px border, which already carries the
+   near-black edge (above). */
+.picker-swatch.is-active {
+  box-shadow:
+    0 0 0 2px var(--dock-bg, #101720),
+    0 0 0 4px var(--slot-tint);
+}
+
+.picker-actions {
+  display: flex;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.picker-action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--icon-muted, #f5f5f5);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 120ms ease;
+}
+
+.picker-action-btn:hover:not(:disabled) {
+  background: var(--dock-hover, #383838);
+}
+
+.picker-action-btn[aria-pressed="true"] {
+  background: var(--dock-hover, #383838);
+}
+
+.picker-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.picker-hex {
+  display: flex;
+  gap: 4px;
+}
+
+.picker-hex input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
+  outline: none;
+}
+
+.picker-hex input:focus {
+  border-color: var(--accent, #1f51ff);
+}
+
+.picker-hex-apply {
+  width: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--icon-muted, #f5f5f5);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.picker-hex-apply:hover {
+  background: var(--dock-hover, #383838);
+}

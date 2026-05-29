@@ -8,6 +8,7 @@ Imperative modules for keyboard shortcuts, DOM event registration, modifier stat
 |------|---------|
 | `runtime/keyboard-manager.ts` | All keybinding dispatch: tool switches, modifiers, spacebar pan, paste routing |
 | `runtime/InputManager.ts` | Sole DOM event registrar + modifier state owner (shift/ctrl/meta) |
+| `runtime/install-ui-zoom-block.ts` | Page-zoom block: window-capture wheel+ctrl, Cmd/Ctrl + plus/minus/equal/0, Safari gesturestart; install/dispose by CanvasRuntime, scoped to canvas-room |
 | `runtime/cursor-tracking.ts` | Last cursor world position for paste placement |
 | `runtime/viewport/zoom.ts` | Animated zoom: step, fit-to-bounds, reset, center-preserving transforms |
 | `runtime/viewport/edge-scroll.ts` | Auto-pan near viewport edges during qualifying drags |

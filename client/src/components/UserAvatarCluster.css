@@ -1,0 +1,49 @@
+/* UserAvatarCluster — co-located styles, moved out of RoomPage.css's old
+   design-system monolith. Token values inlined; dark-theme variants dropped. */
+
+.user-avatar-cluster {
+  display: flex;
+  align-items: center;
+  gap: -3px; /* pre-existing: `gap` rejects negatives — see Gotchas */
+  cursor: pointer;
+}
+
+.micro-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: white;
+  border: 2px solid white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: transform 100ms ease;
+  position: relative;
+  background: #ffffff; /* old --bg-primary; per-peer JSX style overrides it */
+}
+
+.micro-avatar-initials {
+  font-size: 10px;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.micro-avatar:hover {
+  transform: scale(1.1);
+  z-index: 1;
+}
+
+.micro-avatar-me {
+  background: #1d4ed8;
+  color: white;
+}
+
+.user-overflow {
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 600;
+}

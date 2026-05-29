@@ -38,13 +38,33 @@ import type { WorkerInbound, WorkerOutbound } from './image-worker';
 // Workers
 // ============================================================
 
-const workers: [Worker, Worker] = [
-  new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
-  new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
-];
+// Two image-worker instances: worker[0] primary (ingest + upload + decode), worker[1] decoder.
+// Created lazily via ensureImageWorkers() (called from RoomDocManager construction) so importing
+// this module — e.g. from a future landing/dashboard entry that transitively pulls it in —
+// spawns NO workers. Once created they persist for the session (they drain the IDB upload queue
+// across rooms) and are never terminated on room leave.
+let workers!: [Worker, Worker];
+let workersReady = false;
 
-workers[0].postMessage({ type: 'init', role: 'primary' } satisfies WorkerInbound);
-workers[1].postMessage({ type: 'init', role: 'decoder' } satisfies WorkerInbound);
+/**
+ * Spawn the image worker pool if not already up. Idempotent + session-scoped. Called from
+ * RoomDocManager construction (synchronously, in parallel with its async init) so the first
+ * image bitmap is ready ASAP. The `online` listener and clear() guard on `workersReady` so they
+ * no-op before any room has constructed the pool.
+ */
+export function ensureImageWorkers(): void {
+  if (workersReady) return;
+  workersReady = true;
+  workers = [
+    new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
+    new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
+  ];
+  for (const w of workers) w.onmessage = handleWorkerMessage;
+  workers[0].postMessage({ type: 'init', role: 'primary' } satisfies WorkerInbound);
+  workers[1].postMessage({ type: 'init', role: 'decoder' } satisfies WorkerInbound);
+  // Drain uploads queued in a prior session, now that a room exists.
+  workers[0].postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);
+}
 
 /** Hash-route by assetId first char for consistent per-asset worker affinity. */
 function workerFor(assetId: string): Worker {
@@ -214,8 +234,6 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
     }
   }
 }
-
-for (const w of workers) w.onmessage = handleWorkerMessage;
 
 /** Invalidate canvas region for decoded bitmap. O(1) via cached bbox, gated on actual viewport. */
 function invalidateBitmapRegion(assetId: string): void {
@@ -567,16 +585,17 @@ export function clear(): void {
   inflightIngests.clear();
   _assetInfo.clear();
   _decodeQueue.length = 0;
-  for (const w of workers) w.postMessage({ type: 'clear' } satisfies WorkerInbound);
+  if (workersReady) for (const w of workers) w.postMessage({ type: 'clear' } satisfies WorkerInbound);
 }
 
 // ============================================================
 // Module-level init (runs once on import)
 // ============================================================
 
+// Online → resume the upload drain. Registered at module scope (cheap; spawns no worker) so it's
+// live even on a future landing/dashboard entry, but guarded on `workersReady`: with no room
+// opened this session there's no pool and nothing in-memory to drain (prior-session IDB uploads
+// drain when the first RoomDocManager calls ensureImageWorkers()).
 window.addEventListener('online', () => {
-  workers[0].postMessage({ type: 'online' } satisfies WorkerInbound);
+  if (workersReady) workers[0].postMessage({ type: 'online' } satisfies WorkerInbound);
 });
-
-// Drain pending uploads from prior sessions
-workers[0].postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);

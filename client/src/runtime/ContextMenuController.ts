@@ -6,9 +6,12 @@ import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-st
 
 const SETTLE_MS = 150;
 
-// Exclusion zone padding — keeps menu clear of toolbar (top) and zoom controls (bottom-left)
-const FLIP_PADDING = { top: 66, bottom: 76, left: 12, right: 12 };
-const SHIFT_PADDING = { top: 66, bottom: 12, left: 12, right: 12 };
+// Exclusion zones — keeps menu clear of topbar (top, ~55px), vertical toolbar
+// (left, ~57px), and zoom controls (bottom-right, ~64px) via flip-away.
+// FLIP only acts on the main axis (top↔bottom); cross-axis padding there has
+// no fallback to switch to, so the left toolbar is handled by SHIFT instead.
+const FLIP_PADDING = { top: 64, bottom: 76, left: 12, right: 12 };
+const SHIFT_PADDING = { top: 64, bottom: 12, left: 64, right: 12 };
 
 /**
  * ContextMenuController — floating-ui powered positioning for the context menu.

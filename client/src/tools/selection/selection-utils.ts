@@ -7,7 +7,9 @@ import {
   CODE_FONT_SIZE,
   CODE_LANGUAGE,
   COLOR,
+  CONNECTOR_TYPE,
   collectHandles,
+  END_CAP,
   FILL_COLOR,
   FONT_FAMILY,
   FONT_SIZE,
@@ -15,6 +17,7 @@ import {
   HEADER_VISIBLE,
   OUTPUT_VISIBLE,
   SHAPE_TYPE,
+  START_CAP,
   TEXT_ALIGN,
   TEXT_ALIGN_V,
   TEXT_COLOR,
@@ -103,15 +106,16 @@ export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyle
   const lang = foldField(handles, CODE_LANGUAGE);
   const header = foldField(handles, HEADER_VISIBLE);
   const output = foldField(handles, OUTPUT_VISIBLE);
+  const connType = foldField(handles, CONNECTOR_TYPE);
+  const startCap = foldField(handles, START_CAP);
+  const endCap = foldField(handles, END_CAP);
 
   return {
-    color: color.value ?? '#262626',
+    color: color.value,
     colorMixed: color.mixed,
-    colorSecond: color.mixed ? color.second : null,
     width: width.mixed ? null : width.value,
     fillColor: fill.value,
     fillColorMixed: fill.mixed,
-    fillColorSecond: fill.mixed ? fill.second : null,
     shapeType: shape.mixed ? null : (shape.value ?? (kind === 'text' ? 'text' : null)),
     fontSize: kind === 'code' ? codeFs.value : fontSize.value,
     textAlign: align.mixed ? null : align.value,
@@ -121,6 +125,12 @@ export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyle
     codeLanguage: kind === 'code' ? (lang.mixed ? null : lang.value) : null,
     codeHeaderVisible: kind === 'code' ? (header.mixed ? null : header.value) : null,
     codeOutputVisible: kind === 'code' ? (output.mixed ? null : output.value) : null,
+    // Mixed connector selections collapse to the first connector's type/caps —
+    // no "mixed" UI affordance (routing types + caps don't blend), so triggers
+    // reflect whatever fell out of each fold's first-applicable read.
+    connectorType: kind === 'connector' ? connType.value : null,
+    startCap: kind === 'connector' ? startCap.value : null,
+    endCap: kind === 'connector' ? endCap.value : null,
   };
 }
 
@@ -128,11 +138,9 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
   return (
     a.color === b.color &&
     a.colorMixed === b.colorMixed &&
-    a.colorSecond === b.colorSecond &&
     a.width === b.width &&
     a.fillColor === b.fillColor &&
     a.fillColorMixed === b.fillColorMixed &&
-    a.fillColorSecond === b.fillColorSecond &&
     a.shapeType === b.shapeType &&
     a.fontSize === b.fontSize &&
     a.textAlign === b.textAlign &&
@@ -141,7 +149,10 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.labelColor === b.labelColor &&
     a.codeLanguage === b.codeLanguage &&
     a.codeHeaderVisible === b.codeHeaderVisible &&
-    a.codeOutputVisible === b.codeOutputVisible
+    a.codeOutputVisible === b.codeOutputVisible &&
+    a.connectorType === b.connectorType &&
+    a.startCap === b.startCap &&
+    a.endCap === b.endCap
   );
 }
 

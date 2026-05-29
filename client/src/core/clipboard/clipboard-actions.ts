@@ -403,7 +403,7 @@ export function pasteUrlAsText(url: string, worldX: number, worldY: number, obje
 // === Shared Text Object Creation ===
 
 function createPastedTextObject(fragment: Y.XmlFragment, charCount: number, position?: [number, number], existingId?: string): void {
-  const { textSize: fontSize, textFontFamily: fontFamily, textColor: color, textAlign: align, textFillColor } = useDeviceUIStore.getState();
+  const { size: fontSize, fontFamily, color, align, fillColor: textFillColor } = useDeviceUIStore.getState().text;
 
   const [worldX, worldY] = position ?? getPasteTarget();
   const objectId = existingId ?? ulid();

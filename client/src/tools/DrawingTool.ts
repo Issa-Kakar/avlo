@@ -8,16 +8,16 @@ import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { getUserId, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
-import { createFillFromStroke } from '@/utils/color';
+import { getUserId, isStrokeTool, resolveStrokeStyle, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { PointerTool, PreviewData, ShapeType } from './types';
 
 /** Toolbar shape variant → stored shapeType. */
 const SHAPE_VARIANT_TO_TYPE: Record<ShapeVariant, Exclude<ShapeType, 'line'>> = {
-  rectangle: 'roundedRect',
+  rectangle: 'rect',
   ellipse: 'ellipse',
   diamond: 'diamond',
   triangle: 'triangle',
+  roundedRect: 'roundedRect',
 };
 
 /** Click-to-place (single-click with shape tool) produces a 180wu fixed shape. */
@@ -73,7 +73,8 @@ export class DrawingTool implements PointerTool {
   private color = '#000';
   private size = 4;
   private opacity = 1;
-  private fill = false;
+  /** Shape fill — set for toolbar shape gestures, null for snap-from-stroke and freehand. */
+  private fillColor: string | null = null;
 
   // Hold + click-to-place
   private hold = new HoldDetector(() => this.onHoldFire());
@@ -87,14 +88,7 @@ export class DrawingTool implements PointerTool {
 
   begin(pointerId: number, worldX: number, worldY: number): void {
     const ui = useDeviceUIStore.getState();
-    const settings = ui.drawingSettings;
-    const activeTool = ui.activeTool;
-
-    this.toolType = activeTool === 'highlighter' ? 'highlighter' : 'pen';
-    this.color = settings.color;
-    this.size = settings.size;
-    this.opacity = this.toolType === 'highlighter' ? ui.highlighterOpacity : (settings.opacity ?? 1);
-    this.fill = settings.fill;
+    const activeTool = ui.tool.active;
 
     this.drawing = true;
     this.pointerId = pointerId;
@@ -106,11 +100,22 @@ export class DrawingTool implements PointerTool {
 
     if (activeTool === 'shape') {
       this.mode = 'shape';
-      this.shapeType = SHAPE_VARIANT_TO_TYPE[ui.shapeVariant];
+      this.toolType = 'pen';
+      this.shapeType = SHAPE_VARIANT_TO_TYPE[ui.shape.variant];
+      this.color = ui.shape.color;
+      this.size = ui.shape.width;
+      this.opacity = 1;
+      this.fillColor = ui.shape.fillColor;
       this.points = [];
-    } else {
+    } else if (isStrokeTool(activeTool)) {
+      const style = resolveStrokeStyle(ui, activeTool);
       this.mode = 'stroke';
+      this.toolType = activeTool;
       this.shapeType = null;
+      this.color = style.color;
+      this.size = style.width;
+      this.opacity = style.opacity;
+      this.fillColor = null;
       this.points = [p];
       const [sx, sy] = worldToCanvas(worldX, worldY);
       this.hold.start({ x: sx, y: sy });
@@ -207,7 +212,7 @@ export class DrawingTool implements PointerTool {
         color: this.color,
         width: this.size,
         opacity: this.opacity,
-        fill: this.fill,
+        fillColor: this.fillColor,
       };
     }
 
@@ -396,7 +401,7 @@ export class DrawingTool implements PointerTool {
         m.set('shapeType', shapeType);
         m.set('color', this.color);
         m.set('width', this.size);
-        if (this.fill) m.set('fillColor', createFillFromStroke(this.color));
+        if (this.fillColor) m.set('fillColor', this.fillColor);
         m.set('opacity', this.opacity);
         m.set('frame', frame);
         m.set('ownerId', userId);

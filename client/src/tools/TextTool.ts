@@ -44,7 +44,7 @@ import {
   getNoteDerivedFontSize,
   getNoteLayout,
   getNotePadding,
-  NOTE_FILL_COLOR,
+  getStickyNoteTextColor,
   NOTE_WIDTH,
 } from '@/core/text/sticky-note';
 import { getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-measure';
@@ -54,7 +54,7 @@ import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
 import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
-import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { closeStickyPanel, getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import type { PointerTool, PreviewData } from './types';
@@ -104,7 +104,10 @@ export class TextTool implements PointerTool {
     this.gestureActive = true;
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
-    const tool = useDeviceUIStore.getState().activeTool;
+    const tool = useDeviceUIStore.getState().tool.active;
+    // A note-tool press on the canvas is a create/edit gesture (panning takes a
+    // separate path) — dismiss the sticky palette so it isn't left hanging.
+    if (tool === 'note') closeStickyPanel();
     this.hitTextId = pickTopmostOfKind([worldX, worldY], { px: 8 }, tool === 'note' ? 'note' : 'text');
   }
 
@@ -123,7 +126,7 @@ export class TextTool implements PointerTool {
       this.mountEditor(this.hitTextId, false);
     } else {
       let [x, y] = this.downWorld;
-      if (useDeviceUIStore.getState().activeTool === 'note') {
+      if (useDeviceUIStore.getState().tool.active === 'note') {
         x -= NOTE_WIDTH / 2;
         y -= NOTE_WIDTH / 2;
       }
@@ -181,14 +184,14 @@ export class TextTool implements PointerTool {
     // Create label fields if shape without label
     const isNewLabel = handle.kind === 'shape' && !hasLabel(handle.y);
     if (isNewLabel) {
-      const { textSize, textFontFamily, textColor, shapeAlign, shapeAlignV } = useDeviceUIStore.getState();
+      const { text, shape } = useDeviceUIStore.getState();
       transact(() => {
         handle.y.set('content', new Y.XmlFragment());
-        handle.y.set('fontSize', textSize);
-        handle.y.set('fontFamily', textFontFamily);
-        handle.y.set('labelColor', textColor);
-        handle.y.set('align', shapeAlign);
-        handle.y.set('alignV', shapeAlignV);
+        handle.y.set('fontSize', text.size);
+        handle.y.set('fontFamily', text.fontFamily);
+        handle.y.set('labelColor', text.color);
+        handle.y.set('align', shape.align);
+        handle.y.set('alignV', shape.alignV);
       });
     }
 
@@ -223,8 +226,8 @@ export class TextTool implements PointerTool {
   private createTextObject(worldX: number, worldY: number): string {
     const objectId = ulid();
     const userId = getUserId();
-    const store = useDeviceUIStore.getState();
-    const isNoteMode = store.activeTool === 'note';
+    const ui = useDeviceUIStore.getState();
+    const isNoteMode = ui.tool.active === 'note';
 
     transact(() => {
       const yObj = new Y.Map<unknown>();
@@ -237,18 +240,18 @@ export class TextTool implements PointerTool {
       if (isNoteMode) {
         yObj.set('kind', 'note');
         yObj.set('scale', 1);
-        yObj.set('fontFamily', store.noteFontFamily);
-        yObj.set('align', store.noteAlign);
-        yObj.set('alignV', store.noteAlignV);
-        yObj.set('fillColor', NOTE_FILL_COLOR);
+        yObj.set('fontFamily', ui.note.fontFamily);
+        yObj.set('align', ui.note.align);
+        yObj.set('alignV', ui.note.alignV);
+        yObj.set('fillColor', ui.note.fillColor);
       } else {
         yObj.set('kind', 'text');
-        yObj.set('fontSize', store.textSize);
-        yObj.set('fontFamily', store.textFontFamily);
-        yObj.set('color', store.textColor);
-        yObj.set('align', store.textAlign);
+        yObj.set('fontSize', ui.text.size);
+        yObj.set('fontFamily', ui.text.fontFamily);
+        yObj.set('color', ui.text.color);
+        yObj.set('align', ui.text.align);
         yObj.set('width', 'auto');
-        if (store.textFillColor) yObj.set('fillColor', store.textFillColor);
+        if (ui.text.fillColor) yObj.set('fillColor', ui.text.fillColor);
       }
 
       yObj.set('z', generateZAtTop(getZOrder().maxZ()));
@@ -379,7 +382,7 @@ export class TextTool implements PointerTool {
       container.style.maxWidth = `${contentWidth * scale}px`;
       container.style.maxHeight = `${maxContentH * scale}px`;
       container.dataset.widthMode = 'note';
-      container.style.setProperty('--text-color', '#1a1a1a');
+      container.style.setProperty('--text-color', getStickyNoteTextColor(props.fillColor));
     } else {
       // Text object: origin-based positioning
       const props = getTextProps(handle.y)!;
@@ -495,7 +498,7 @@ export class TextTool implements PointerTool {
       // Only consume canvas clicks when text tool is active — prevents creating
       // a new text object on click-off. Other tools (select, draw, etc.) should
       // receive the event so the click-off also starts their gesture.
-      const tool = useDeviceUIStore.getState().activeTool;
+      const tool = useDeviceUIStore.getState().tool.active;
       if (tool === 'text' || tool === 'note') {
         const canvas = getCanvasElement();
         if (canvas?.contains(target)) {
@@ -713,9 +716,14 @@ export class TextTool implements PointerTool {
         this.positionEditor();
     } else {
       if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
-      if (keys.has('fillColor') && handle.kind !== 'note') this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
 
       if (handle.kind === 'note') {
+        // Notes paint their body on canvas, so fillColor drives the contrast
+        // text-color CSS var rather than a DOM background.
+        if (keys.has('fillColor')) {
+          const fill = getFillColor(handle.y) ?? '#FEF3AC';
+          this.container.style.setProperty('--text-color', getStickyNoteTextColor(fill));
+        }
         // fontFamily change: repopulate cache before positionEditor reads it
         // (this observer fires before the deep observer's computeNoteBBox)
         if (keys.has('fontFamily')) {
@@ -726,6 +734,7 @@ export class TextTool implements PointerTool {
         if (keys.has('align') || keys.has('alignV') || keys.has('origin') || keys.has('scale') || keys.has('fontFamily'))
           this.positionEditor();
       } else {
+        if (keys.has('fillColor')) this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
         if (keys.has('align')) applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
         if (keys.has('origin') || keys.has('fontSize') || keys.has('fontFamily') || keys.has('width')) this.positionEditor();
       }
