@@ -14,8 +14,9 @@ dropdown menu that hangs off the left bar.
 - **`TopBar`** (left, `top-bar-left`) — Avlo logo · board name
   ("Untitled" hardcoded) · main-menu trigger · divider · undo/redo. The
   hamburger sidebar toggle used to be the first item here but was
-  removed in favor of making the logo itself clickable to a future
-  dashboard / room-list page; `SidebarIcon.tsx` is preserved in case
+  removed in favor of making the logo itself clickable; it is now a
+  TanStack `<Link to="/home" preload="intent">` → the dashboard (see
+  **Navigation precedent** below). `SidebarIcon.tsx` is preserved in case
   the decision reverses.
 - **`TopBarRight`** (right, `top-bar-right`) — collaborator avatars ·
   divider · Share button.
@@ -100,6 +101,31 @@ Every button suppresses focus via `onMouseDown={preventFocus}` +
 exception that proves the rule — it has its own dedicated coral fill and
 active scale-down, since it's the one primary action and reads as
 clickable chrome rather than a tool button.
+
+### Logo link (`.top-bar-logo-link`)
+The Avlo wordmark wrapped in a `<Link to="/home">` — the bar's one navigation
+control (behavior + preload live in **Navigation precedent**; this is the
+pixel/CSS side).
+- `inline-flex`, no padding, `margin-left: 6px` + `flex-shrink: 0` — both moved
+  off `.top-bar-logo` onto the link. The SVG keeps `display: block` + its
+  `top: 1px` optical nudge, so the wordmark sits **pixel-identically** to the
+  pre-link layout; wrapping it changed nothing at rest.
+- **Focusable**, unlike the tool buttons above (no `tabIndex=-1` / `preventFocus`):
+  the only keyboard-tabbable control in the bar. `:focus-visible` paints the
+  `#818f9c` hairline (shared with `.top-bar-name:hover`). Activating it leaves
+  the canvas, so there's no canvas focus to protect.
+- **Hover wash** = the standard button hover (`var(--color-chrome-hover)` @
+  `var(--radius-chrome-btn)`, 150ms), but drawn on a `::before`, not the link's
+  own background. The pseudo-element earns button-like breathing room *without*
+  padding the link (padding would shove the wordmark + board name off their
+  tuned spots). `z-index: -1` drops it behind the glyphs — the link's `auto`
+  z-index lets the negative layer resolve in the pill's stacking context (above
+  the fill, below the positioned SVG), so the wash never tints the wordmark.
+- Wash `inset: 1px -5px 1px -5px`: 32px tall (the `1px` top/bottom brackets it to
+  the sibling-button height), extended ~5px each side. The wordmark sits left in
+  its viewBox box and the pill edge bounds the left, so the room grows mostly
+  rightward into the gap before the board name — stopping ~3px short of the
+  name's own hover border (the two never paint at once).
 
 ### Dividers
 `.top-bar-divider` — 2×24, vertical, `flex-shrink: 0`. Today only used
@@ -235,6 +261,31 @@ SVG inherit via `currentColor`. The hover wash is on the row, not the
 icon, so the entire row recolors as a unit when (and if) the row's text
 color changes later.
 
+### Navigation & route preload (precedent)
+The logo is the **first and only cross-route navigation** in the app, so it
+sets the pattern.
+
+- **Use `<Link to>` , not a button + `useNavigate`.** It renders a real
+  `<a href>` — keyboard activation, middle-click / ⌘-click "open in new tab",
+  and right-click all work for free, plus a type-safe `to`.
+- **No manual teardown.** Leaving the room unmounts `RoomPage`, whose cleanup
+  effect already runs `disconnectRoom()` → `roomDoc.destroy()` (and the child
+  `Canvas` runs `runtime.stop()` first, while the Y.Doc is still alive). The
+  navigation rides that existing path — don't add connect/disconnect calls.
+- **Keyboard-focusable on purpose.** Unlike the bar's tool buttons (which
+  suppress focus to protect canvas shortcuts), the logo link tabs and shows a
+  `:focus-visible` ring — activating it leaves the canvas, so there's no focus
+  to protect.
+- **`preload="intent"` is opt-in per `<Link>`, never global.** It warms the
+  `/home` chunk on hover (~50ms) for an instant nav, and is safe because
+  `/home` has no `beforeLoad`/loader (pure chunk fetch). `router.ts` keeps
+  `defaultPreload: false` **deliberately**: intent-preload runs a route's
+  `beforeLoad`, and `/room/$roomId`'s `beforeLoad` calls `connectRoom()` (which
+  destroys the active room's Y.Doc + opens a fresh IndexedDB/WS provider). A
+  global default would fire that on hover; the 30s `defaultPreloadStaleTime`
+  means the preloaded match is reused on click, so even an `if (!preload)` guard
+  wouldn't re-run it. Only preload routes whose `beforeLoad` is side-effect-free.
+
 ---
 
 ## Icons
@@ -246,7 +297,7 @@ churn.
 | File | viewBox | Native size | Notes |
 |---|---|---|---|
 | `AvloLogo.tsx` | `0 4 64 34` | 34h | MuseoModerno 600 wordmark "avlo" at `fontSize 30`, baseline `y=29`. ViewBox tuned so the 'l' ascender clears the top by ~3u and the bowls have right-side room. Font is self-hosted — woff2 subset (wght 400–700, Latin) loaded via @font-face in `index.css`, built by `scripts/subset-museomoderno.py`; not preloaded (single chrome glyph run, `font-display:swap` covers it). The `top: 1px` nudge in `.top-bar-logo` compensates for MuseoModerno's relatively high x-height: pure flex centering lands the wordmark ~1.5px above the row's text optical center, so +1px brings it within sub-px of the board name's. |
-| `SidebarIcon.tsx` | `0 0 24 24` | 24×24 | Three filled pill rows, deliberately tighter spacing than a standard hamburger so it reads "sidebar" rather than "menu". **Unmounted today** — the sidebar button was removed in favor of a future logo-as-dashboard-link approach; the icon file is preserved in case the sidebar returns. |
+| `SidebarIcon.tsx` | `0 0 24 24` | 24×24 | Three filled pill rows, deliberately tighter spacing than a standard hamburger so it reads "sidebar" rather than "menu". **Unmounted today** — the sidebar button was removed in favor of the now-implemented logo-as-dashboard link (the logo is a `<Link to="/home">`); the icon file is preserved in case the sidebar returns. |
 | `ChevronDownIcon.tsx` | `0 0 24 24` | 20×20 (CSS) | Mural solid chevron. Glyph for the main-menu trigger. |
 | `ChevronRightIcon.tsx` | `0 0 24 24` | 16×16 (CSS) | Same Mural geometry rotated 90°. Popout affordance on main-menu rows. |
 | `ExportIcon.tsx` | `0 0 24 24` | 20×20 (CSS) | Mural download SVG with the arrow path **vertically mirrored** around y=6.942 (y_abs → 13.884 − y_abs; dy_rel → −dy_rel; arc sweep flag flipped 0↔1). Tail now sits at the bottom (overlapping the tray top by 0.384 — same visual continuity the original had between tip and tray), so it reads as "upload out of the tray" instead of "download into it". Tray path is untouched. |
@@ -269,7 +320,7 @@ comes from CSS, never the SVG itself — pass `width` / `height` through
 ```
 RoomPage.tsx
 ├── <TopBar />
-│   ├── AvloLogo             ← future: clickable → dashboard
+│   ├── <Link to=/home preload=intent> › AvloLogo   → /home dashboard
 │   ├── .top-bar-name        ("Untitled" — hardcoded; future text input)
 │   ├── MainMenuTrigger      ← owns the dropdown
 │   │   └── MainMenu (open ? rendered : null)
@@ -284,7 +335,7 @@ RoomPage.tsx
     └── .top-bar-share       (clipboard placeholder)
 ```
 
-The board name and AvloLogo are **placeholders** — board name will be
-wired to text-input on rename; logo will become clickable → dashboard
-(a room-list page yet to be designed). The Share button works (copies
-URL) but is also a placeholder for a real share flow.
+The board name is a **placeholder** — it will be wired to a text input on
+rename. The AvloLogo is now the app's one cross-route link (→ `/home`
+dashboard); see **Navigation precedent** below. The Share button works
+(copies URL) but is also a placeholder for a real share flow.

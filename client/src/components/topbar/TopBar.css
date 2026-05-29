@@ -34,19 +34,68 @@
   gap: 0;
 }
 
-/* Logo (decorative) — display:block kills the inline-element phantom descender
-   space SVGs inherit by default. The +1px optical nudge compensates for
-   MuseoModerno's high x-height: pure flex centering lands the wordmark's
+/* Logo wordmark (the SVG). display:block kills the inline-element phantom
+   descender space SVGs inherit by default. The +1px optical nudge compensates
+   for MuseoModerno's high x-height: pure flex centering lands the wordmark's
    x-height center ~1.5px above where neighboring text (Untitled) naturally
-   sits, so the logo reads visibly high. Down 1px brings it within the
-   sub-px perceptibility threshold of the row's text baseline. */
+   sits, so the logo reads visibly high. Down 1px brings it within the sub-px
+   perceptibility threshold of the row's text baseline. Layout (margin / shrink)
+   lives on the wrapping link so the hover/focus target hugs the glyph. */
 .top-bar-logo {
   display: block;
   color: var(--color-chrome-ink-tier);
-  flex-shrink: 0;
-  margin-left: 6px;
   position: relative;
   top: 1px;
+}
+
+/* Logo link — the wordmark is a TanStack <Link to="/home">, the canvas app's
+   one cross-route navigation. inline-flex hugs the SVG with no padding, and
+   margin-left/flex-shrink moved here verbatim from .top-bar-logo, so the
+   wordmark sits pixel-identically to before. Unlike the bar's tool buttons —
+   which suppress focus (tabIndex=-1 + preventFocus) to keep canvas keyboard
+   shortcuts alive — the logo stays keyboard-focusable: activating it leaves the
+   canvas, so there's no focus to protect. */
+.top-bar-logo-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 6px;
+  cursor: pointer;
+}
+
+/* Hover wash — the chrome's standard button hover (var(--color-chrome-hover) at
+   var(--radius-chrome-btn), 150ms), matching .top-bar-menu-trigger / undo-redo.
+   Drawn on a pseudo-element, not the link's own background, so it gets button-
+   like breathing room WITHOUT padding the link (padding would push the wordmark
+   + board name off their tuned positions). z-index:-1 keeps it behind the
+   wordmark: the link's auto z-index lets the negative layer resolve in the
+   pill's stacking context — above the pill fill, below the positioned SVG — so
+   the wash never tints the glyphs. The wide wordmark needs generous hover room,
+   so the inset extends the wash ~5px past it on each side — reaching a little
+   into the gap before the board name on the right (the left is bounded by the
+   pill edge, so growth is mostly rightward). It stops ~3px short of the board
+   name's own hover border, and the two never show at once. The 1px top/bottom
+   brackets the wash to the 32px sibling-button height. */
+.top-bar-logo-link::before {
+  content: "";
+  position: absolute;
+  inset: 1px -5px 1px -5px;
+  border-radius: var(--radius-chrome-btn);
+  background-color: transparent;
+  transition: background-color 150ms ease;
+  z-index: -1;
+}
+
+.top-bar-logo-link:hover::before {
+  background-color: var(--color-chrome-hover);
+}
+
+/* Keyboard focus ring — the chrome's #818f9c hairline (shared with
+   .top-bar-name:hover); the bar's one focusable control. */
+.top-bar-logo-link:focus-visible {
+  outline: 2px solid #818f9c;
+  outline-offset: 2px;
 }
 
 /* Vertical divider — blue-tinted, shared with the context menu, main menu,

@@ -2,10 +2,17 @@
 
 The canvas-list landing surface — the screen a user lands on to browse / search /
 sort / open their canvases. Mounted by `routes/home.tsx`; `/` redirects here
-(`routes/index.tsx`). It mounts **no** canvas/room runtime (no `connectRoom`).
+(`routes/index.tsx`), and the room's top-bar logo links here
+(`<Link to="/home" preload="intent">`). It mounts **no** canvas/room runtime
+(no `connectRoom`).
 
 > **Placeholder.** UI only, no backend. The single data seam is `data.ts`
-> (`CANVASES` query + `NOW` + `ME`). The only interactive behaviors today are the
+> (`CANVASES` query + `NOW` + `ME`). When the backend lands, that query belongs
+> in a route **`loader`** (not a component effect): the top-bar logo
+> intent-preloads `/home`, so a `loader` is warmed on hover, ahead of the click.
+> Keep this route's `beforeLoad`/loader **side-effect-free** — that is exactly
+> why the logo can preload it (see `topbar/CLAUDE.md` › *Navigation precedent*).
+> The only interactive behaviors today are the
 > **star toggle** and the Home **Filter/Sort** dropdowns (local state). Search,
 > New Canvas, kebab menus, and row clicks are visual-only — the wiring points are
 > noted in code.
