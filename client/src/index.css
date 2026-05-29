@@ -51,6 +51,24 @@
   --shadow-chrome-popover: 0 4px 16px rgba(0, 0, 0, 0.1), 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
+/* Dashboard (the /home canvas-list surface — components/dashboard/). A distinct
+   visual surface from the room-page chrome above: it reuses the chrome inks /
+   accent / hover / surface where the value matches exactly (see Dashboard.css),
+   and adds the surface-specific hairlines + states below. Tailwind v4 emits
+   bg-dash-*, text-dash-*, border-dash-* utilities from these names. */
+@theme {
+  --color-dash-ink: #2f2f2f; /* dashboard text ink, a notch lighter than engaged — unselected nav + room name */
+  --color-dash-accent-press: #2f6fe0; /* New Canvas pressed */
+  --color-dash-search-border: #818f9c; /* search field border + search icon at rest */
+  --color-dash-line: #ececee; /* sidebar + topbar hairline */
+  --color-dash-row-line: #eef0f2; /* data-row hairline */
+  --color-dash-header-line: #e3e6e9; /* header-row underline (1.5px) */
+  --color-dash-border: #d6dadf; /* dropdown menu border */
+  --color-dash-muted: #9aa1a7; /* empty-state text */
+}
+/* Reused chrome tokens carry the rest: selected nav fill + star + kebab + dropdown
+   chevron = ink-engaged (#1b1f22); date/owner cells = ink-tier (#282e34). */
+
 /* Mobile pinch-zoom + pull-to-refresh block — scoped to canvas rooms by the
    `canvas-room` class set in install-ui-zoom-block.ts. Landing / list pages
    keep native browser behavior. */

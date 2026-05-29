@@ -2,6 +2,6 @@ import { createFileRoute, redirect } from '@tanstack/react-router';
 
 export const Route = createFileRoute('/')({
   beforeLoad: () => {
-    throw redirect({ to: '/room/$roomId', params: { roomId: 'dev' } });
+    throw redirect({ to: '/home' });
   },
 });

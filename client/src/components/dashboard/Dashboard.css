@@ -1,0 +1,477 @@
+/* =============================================================================
+   Dashboard (/home canvas-list surface). Co-located stylesheet, imported once by
+   Dashboard.tsx. Wrapped in @layer components so any inline Tailwind utilities
+   cleanly override. Colors come from the shared chrome tokens + the dash-* tokens
+   added in index.css's @theme — no literals except genuinely single-use shadows
+   / washes (noted inline). Classes are prefixed `dash-`.
+   ============================================================================= */
+
+/* Menu entrance — fade + an 8px downward glide into place, on the "emphasized
+   decelerate" curve (quick to appear, soft settle): the canonical easing for an
+   element entering the screen, so the menu reads as deploying from the trigger
+   rather than blinking in. Deliberately NO scale — scaling this bordered,
+   text-filled box re-rastered the glyphs (shimmer) and fringed the rounded border
+   (white edge); translate composites cleanly and keeps border + text crisp.
+   Reduced-motion users get an instant, motionless reveal (rule below, unlayered so
+   it wins over the layered .dash-dd-menu animation). */
+@keyframes dash-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-dd-menu {
+    animation: none;
+  }
+}
+
+@layer components {
+  /* ----- shell ----- */
+  .dash-root {
+    display: flex;
+    height: 100vh;
+    width: 100%;
+    background: var(--color-chrome-surface);
+    font-family: var(--font-ui);
+    color: var(--color-chrome-ink-engaged);
+  }
+
+  .dash-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .dash-scroll {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  .dash-content {
+    padding: 36px 48px 56px;
+  }
+
+  .dash-spine {
+    max-width: 1280px;
+  }
+
+  /* ----- sidebar ----- */
+  .dash-sidebar {
+    width: 244px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--color-dash-line);
+    padding: 22px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .dash-logo {
+    padding-left: 10px;
+    color: var(--color-chrome-ink-tier);
+  }
+
+  .dash-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .dash-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    height: 44px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--color-dash-ink);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease;
+  }
+
+  .dash-nav-item:hover {
+    background: var(--color-chrome-hover);
+  }
+
+  .dash-nav-active,
+  .dash-nav-active:hover {
+    background: var(--color-chrome-ink-engaged);
+    color: #fff;
+  }
+
+  .dash-nav-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  /* ----- top bar ----- */
+  .dash-topbar {
+    height: 76px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 48px;
+    border-bottom: 1px solid var(--color-dash-line);
+  }
+
+  .dash-topbar-row {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    width: 100%;
+    max-width: 1280px;
+  }
+
+  .dash-search {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1;
+    max-width: 380px;
+    height: 50px;
+    padding: 0 18px;
+    border-radius: 11px;
+    background: var(--color-chrome-surface);
+    border: 3px solid var(--color-dash-search-border);
+    color: var(--color-dash-search-border); /* search icon inherits */
+    transition:
+      border-color 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .dash-search:focus-within {
+    border-color: var(--color-chrome-accent);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); /* accent @ 15% — single use */
+  }
+
+  .dash-search-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: var(--font-ui);
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--color-chrome-ink-engaged);
+  }
+
+  .dash-search-input::placeholder {
+    color: var(--color-chrome-ink-tier);
+    opacity: 1;
+  }
+
+  .dash-topbar-spacer {
+    flex: 1;
+  }
+
+  .dash-new-canvas {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    height: 44px;
+    padding: 0 18px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 10px;
+    background: var(--color-chrome-accent);
+    color: #fff;
+    font-family: var(--font-ui);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    box-shadow: 0 1px 2px rgba(27, 31, 34, 0.12); /* engaged-ink @ 12% — single use */
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      transform 120ms ease;
+  }
+
+  .dash-new-canvas:active {
+    background: var(--color-dash-accent-press);
+    transform: scale(0.985);
+  }
+
+  /* ----- page heading + controls ----- */
+  .dash-h1 {
+    margin: 0 0 4px;
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--color-chrome-ink-engaged);
+  }
+
+  .dash-h1-home {
+    margin-bottom: 24px;
+  }
+
+  .dash-controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  /* ----- table ----- */
+  .dash-table {
+    margin-top: 18px;
+  }
+
+  /* Home sits below the Filter/Sort row — extra separation so the section reads. */
+  .dash-table-spacious {
+    margin-top: 30px;
+  }
+
+  .dash-thead {
+    display: grid;
+    align-items: center;
+    height: 44px;
+    padding: 0 8px;
+    border-bottom: 1.5px solid var(--color-dash-header-line);
+  }
+
+  .dash-th {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+    color: var(--color-chrome-ink-body);
+    text-align: left;
+  }
+
+  .dash-th-star {
+    padding-left: 10px;
+  }
+
+  .dash-th-kebab {
+    text-align: center;
+  }
+
+  .dash-row {
+    display: grid;
+    align-items: center;
+    height: 60px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--color-dash-row-line);
+    background: transparent;
+    cursor: pointer;
+    transition: background 100ms ease;
+  }
+
+  .dash-row:hover {
+    background: var(--color-chrome-hover);
+  }
+
+  .dash-section {
+    padding: 22px 8px 8px 10px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--color-chrome-ink-body);
+  }
+
+  .dash-empty {
+    padding: 48px 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--color-dash-muted);
+  }
+
+  /* ----- cells ----- */
+  .dash-star-cell {
+    display: flex;
+    justify-content: flex-start;
+    padding-left: 10px;
+  }
+
+  .dash-star-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    /* both states use engaged ink — filled vs outline (StarIcon `filled`) carries the state */
+    color: var(--color-chrome-ink-engaged);
+    cursor: pointer;
+  }
+
+  .dash-cell-name {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-dash-ink);
+    padding-right: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dash-cell-date {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-chrome-ink-tier);
+  }
+
+  .dash-cell-owner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-chrome-ink-tier);
+  }
+
+  .dash-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 25px;
+    height: 25px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .dash-kebab-cell {
+    display: flex;
+    justify-content: center;
+  }
+
+  .dash-kebab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--color-chrome-ink-engaged);
+    cursor: pointer;
+    transition: background 100ms ease;
+  }
+
+  .dash-kebab:hover {
+    background: rgba(27, 31, 34, 0.07); /* dark wash, distinct from the blue row hover — single use */
+  }
+
+  /* ----- Filter / Sort dropdown ----- */
+  .dash-dd {
+    position: relative;
+  }
+
+  .dash-dd-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px; /* chevron sits right beside the label — no space-between push, hugs content */
+    height: 40px;
+    padding: 0 14px;
+    border: none;
+    border-radius: var(--radius-chrome-btn);
+    background: transparent;
+    color: var(--color-chrome-ink-engaged);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease;
+  }
+
+  .dash-dd-trigger:hover {
+    background: var(--color-chrome-hover);
+  }
+
+  .dash-dd-trigger[aria-expanded="true"],
+  .dash-dd-trigger[aria-expanded="true"]:hover {
+    background: var(--color-chrome-ink-engaged);
+    color: #fff;
+  }
+
+  /* No own color — inherits the trigger's currentColor, so it always matches the
+     label (#1b1f22 at rest, white on open) and rides the trigger's color transition.
+     No rotation on open. */
+  .dash-dd-chevron {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .dash-dd-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    min-width: 100%;
+    z-index: 50;
+    padding: 6px;
+    background: var(--color-chrome-surface);
+    border: 1px solid var(--color-dash-border);
+    border-radius: 12px;
+    box-shadow:
+      0 8px 24px rgba(27, 31, 34, 0.12),
+      0 1px 4px rgba(27, 31, 34, 0.06); /* heavier popover — single use */
+    animation: dash-menu-in 180ms cubic-bezier(0.05, 0.7, 0.1, 1);
+  }
+
+  .dash-dd-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 40px;
+    padding: 0 12px 0 14px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--color-chrome-ink-engaged);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 700;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .dash-dd-item:hover {
+    background: var(--color-chrome-hover);
+  }
+
+  .dash-dd-item-selected,
+  .dash-dd-item-selected:hover {
+    background: var(--color-chrome-ink-engaged);
+    color: #fff;
+  }
+
+  .dash-dd-item-label {
+    flex: 1;
+  }
+
+  .dash-dd-check {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: #fff;
+  }
+}
