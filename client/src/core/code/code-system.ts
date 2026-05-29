@@ -560,6 +560,17 @@ function requestClearAll(): void {
   dispatch({ type: 'clearAll' });
 }
 
+/**
+ * Terminate the warm worker pool — room teardown only (NOT hydrate, which also clears caches).
+ * Workers re-create lazily via ensureWorkers() on the next parse. No-op if never spun up.
+ */
+export function terminateCodeWorkers(): void {
+  if (!workersReady) return;
+  for (const w of workers) w.terminate();
+  workers.length = 0;
+  workersReady = false;
+}
+
 // ============================================================================
 // §7 DELTA CONVERSION
 // ============================================================================

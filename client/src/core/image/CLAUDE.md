@@ -235,7 +235,8 @@ Multiple objects sharing an assetId: use MAX ppsp → highest quality level.
 ## Main Thread State (image-manager.ts)
 
 ```typescript
-const workers: [Worker, Worker] = [new Worker(...), new Worker(...)]
+let workers!: [Worker, Worker]   // created lazily by ensureImageWorkers() (RDM construction)
+let workersReady = false
 // workers[0] = primary (ingest + upload + decode), workers[1] = decoder only
 // Hash-routed: workerFor(assetId) = workers[assetId.charCodeAt(0) & 1]
 
@@ -278,13 +279,15 @@ postToPrimary(msg): void                             // Forward message to prima
 clear(): void                                        // Room teardown: close all bitmaps, clear caches
 ```
 
-### Module-Level Init (runs once on import)
+### Worker creation (lazy) + module-level init
+
+Workers are NOT created at import. `ensureImageWorkers()` (idempotent) spawns the pool, wires `onmessage`, posts `init` to both workers + `drain-uploads` to primary. It is called from `RoomDocManager`'s constructor (synchronously, in parallel with its async init), so a bare module import — e.g. a future landing/dashboard entry that transitively pulls this file — spawns nothing. Workers persist for the session (they drain the IDB upload queue across rooms); never terminated on room leave.
+
+The only module-scope side effect is the `online` listener, guarded on `workersReady` so it no-ops until a room has built the pool:
 ```typescript
-workers[0].postMessage({ type: 'init', role: 'primary' })
-workers[1].postMessage({ type: 'init', role: 'decoder' })
-workers[0].postMessage({ type: 'drain-uploads' })
-window.addEventListener('online', () => workers[0].postMessage({ type: 'online' }))
-for (const w of workers) w.onmessage = handleWorkerMessage
+window.addEventListener('online', () => {
+  if (workersReady) workers[0].postMessage({ type: 'online' })
+})
 ```
 
 No CanvasRuntime coupling for upload queue or invalidation — self-managed.
@@ -548,7 +551,7 @@ Hit testing flows through `core/spatial/hit-dispatch.ts` — image joins code in
 | `handleDrop(e)` | Drop event | Filter `image/*` + `.svg` files → `createImageFromBlob()` per file |
 
 Upload queue and bitmap invalidation are self-managed:
-- Upload queue: module-level `online` listener + `drain-uploads` on import
+- Upload queue: module-level `online` listener (guarded) + `drain-uploads` fired by `ensureImageWorkers()` on first room construction
 - Bitmap invalidation: `worker.onmessage` handler queries spatial index and calls `invalidateWorld()` directly
 
 ### Clipboard Integration (`clipboard-actions.ts`)

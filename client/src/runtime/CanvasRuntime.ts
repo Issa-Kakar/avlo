@@ -83,6 +83,15 @@ export class CanvasRuntime {
   }
 
   stop(): void {
+    // Abort any in-flight tool gesture first (Y.Doc + editor host are still alive here, since
+    // the Canvas effect cleanup runs before RoomPage's disconnectRoom) so navigating away
+    // mid-stroke/marquee/transform doesn't carry tool state into the next room. Mirrors the
+    // pointer-cancel path — panTool is checked separately from the active tool since it can be
+    // mid-gesture (MMB / spacebar pan) independent of the selected tool.
+    if (panTool.isActive()) panTool.cancel();
+    const activeTool = getCurrentTool();
+    if (activeTool?.isActive()) activeTool.cancel();
+
     this.cameraUnsub?.();
     this.uninstallZoomBlock?.();
 

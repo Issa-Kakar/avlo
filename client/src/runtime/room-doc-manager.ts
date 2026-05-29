@@ -8,10 +8,10 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { getCodeProps } from '@/core/accessors';
-import { codeSystem } from '@/core/code/code-system';
+import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
-import { hydrateImages } from '@/core/image/image-manager';
+import { ensureImageWorkers, hydrateImages } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
@@ -101,6 +101,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
+
+    // Spawn the image worker pool now (synchronous, parallel with init's IDB/WS) so the first
+    // image bitmap is ready ASAP. Idempotent + session-scoped — see ensureImageWorkers().
+    ensureImageWorkers();
 
     // Async init: IDB → hydrate → observer → UndoManager → WS
     void this.init();
@@ -195,8 +199,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear z-order rank table
     this.zOrder.clear();
 
+    // Drop UI selection so stale selectedIds don't render against the next room's objects.
+    useSelectionStore.getState().clearSelection();
+
     // Clear all object caches (geometry + layout)
     clearAllObjectCaches();
+
+    // Terminate the lezer worker pool (re-created lazily in the next room). Kept out of
+    // clearAllObjectCaches() — that also runs on hydrate, which must NOT kill the pool.
+    terminateCodeWorkers();
 
     // Clear object maps
     this.objectsById.clear();

@@ -239,7 +239,7 @@ itself floors `cap = max(s.spanCap, 16)`.
 | `evict(id)` / `clear()` | Deletion / room change |
 
 Helpers exported from `code-system.ts` and consumed externally: `getCodeFrame`,
-`getCodeSource`, `computeCodeBBox`.
+`getCodeSource`, `computeCodeBBox`, `terminateCodeWorkers` (kills the warm pool on room teardown — see Integration).
 
 ## DOM Editor (CodeTool)
 
@@ -349,7 +349,7 @@ throws.
 
 - **`code-tokens.ts` imports `code-system.ts` as `type` only**. A value import
   would chain `code-tokens → code-system → RenderLoop → image-manager`,
-  dragging top-level `new Worker(...)` and `window.addEventListener(...)` into
+  dragging image-manager's top-level `window.addEventListener(...)` into
   the lezer worker — module-load aborts before `onmessage` is installed and
   parse requests silently drop. The spans cap helpers
   (`ensureSpansDataCap` / `ensureSpansLineCap`) live in `code-tokens.ts`
@@ -369,7 +369,9 @@ throws.
 `codeSystem.handleContentChange(id, ev, lang)`. `computeCodeBBox(id, yObj)` is
 called for code in hydration and incremental update paths. Object deletion →
 `codeSystem.evict(id)`. Room change → `codeSystem.clear()` (broadcasts to
-ALL workers).
+ALL workers). Room teardown (`RoomDocManager.destroy()`) additionally calls
+`terminateCodeWorkers()` — the lazy pool is killed and re-created on demand in
+the next room (kept out of `clearAllObjectCaches()`, which also runs on hydrate).
 
 **`renderer/object-cache.ts`** dispatches `code` to `codeSystem.evict` and
 `clearAllObjectCaches` to `codeSystem.clear`.
