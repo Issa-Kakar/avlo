@@ -51,6 +51,7 @@ import { isBindableKind } from '@/core/types/objects';
 import { isCtrlHeld } from '@/runtime/InputManager';
 import { getAttachedConnectors, getHandle, getObjects, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
+import { useCameraStore } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
 
@@ -76,14 +77,26 @@ const FLOW_SIBLING_GAP_FACTOR = 0.25;
 const FLOW_OFFSET_MAX_REACH = 4;
 /** Tolerance for "an anchor sits on the side midpoint" (normalized [0..1] units). */
 const FLOW_ANCHOR_EPS = 0.02;
-/** Button center offset outward from the selection box (screen px). */
+/** Max button-center offset outward from the selection box (screen px). `flowButtonCenters`
+ * shrinks it with the selection's smaller screen dim so the buttons stay visually proportional
+ * when zoomed out — the fixed offset feels too wide once the source is small on screen. Floored
+ * at `FLOW_BTN_ARROW_RADIUS_PX` so the hovered disc never overlaps the source. */
 export const FLOW_BTN_OFFSET_PX = 22;
 /** Rest blue-dot radius (screen px). */
 export const FLOW_DOT_RADIUS_PX = 3;
-/** Hovered button radius (screen px). */
-export const FLOW_BTN_HOVER_RADIUS_PX = 10;
+/** Hovered arrow-mode button radius (screen px) — the full disc, no white ring sitting beyond it.
+ * Sized just past the arrow glyph's max extent (tip at radius 7 + cap ≈ 1) so the rest→hover
+ * pop stays modest while leaving a thin visible margin around the arrow. The drag-mode button
+ * is smaller (renderer-local). Also the floor on the per-frame offset clamp — a smaller
+ * offset would let the hovered disc overlap the source. */
+export const FLOW_BTN_ARROW_RADIUS_PX = 10;
 /** Hit radius (screen px). */
 const FLOW_BTN_HIT_PX = 14;
+/** Min smaller-axis screen dim (px) below which flow buttons hide — well above
+ * `HANDLE_MIN_BBOX_PX`, so flow vanishes earlier than resize handles do. The fixed
+ * offset + hover radius feels disproportionate on a small on-screen selection long
+ * before its corner stamps physically meet. */
+export const FLOW_MIN_BBOX_PX = 32;
 /** Hover-preview alpha. */
 export const FLOW_PREVIEW_OPACITY = 0.4;
 
@@ -150,17 +163,23 @@ const _btnCenters: [Point, Point, Point, Point] = [
 ];
 
 /**
- * The 4 flow-button centers — bbox cardinal positions pushed `FLOW_BTN_OFFSET_PX`
- * outward from the selection box. The buttons are pure UI affordances and live
- * at the bbox edges regardless of shape geometry, so a triangle's E button sits
- * outside the bbox like every other shape's E button (consistent click target,
- * never crowded into the interior). The connector anchor is shape-aware and
- * resolved separately via `flowAnchor` — a triangle's E/W connector routes from
- * the slanted-edge midpoint even though the button sits at the bbox edge.
+ * The 4 flow-button centers — bbox cardinal positions pushed outward from the
+ * selection box. The offset is `FLOW_BTN_OFFSET_PX` (screen px) for comfortably-
+ * sized selections and shrinks with the smaller screen dim once that ratio gets
+ * tight, so the buttons stay visually proportional when zoomed out (floored at
+ * `FLOW_BTN_ARROW_RADIUS_PX` so the hovered disc can't overlap the source).
+ * The buttons are pure UI affordances and live at the bbox edges regardless of
+ * shape geometry, so a triangle's E button sits outside the bbox like every
+ * other shape's E button (consistent click target, never crowded into the
+ * interior). The connector anchor is shape-aware and resolved separately via
+ * `flowAnchor` — a triangle's E/W connector routes from the slanted-edge
+ * midpoint even though the button sits at the bbox edge.
  * Returns a module scratch in `FLOW_SIDES` order — read it before the next call.
  */
 export function flowButtonCenters(b: Readonly<BBoxTuple>, scale: number): readonly Point[] {
-  const off = FLOW_BTN_OFFSET_PX / scale;
+  const minScreenDim = Math.min((b[2] - b[0]) * scale, (b[3] - b[1]) * scale);
+  const offPx = Math.max(FLOW_BTN_ARROW_RADIUS_PX, Math.min(FLOW_BTN_OFFSET_PX, minScreenDim * 0.5));
+  const off = offPx / scale;
   const cx = (b[0] + b[2]) / 2;
   const cy = (b[1] + b[3]) / 2;
   // n
@@ -194,7 +213,10 @@ export function hitFlowButton(at: Point, b: Readonly<BBoxTuple>, scale: number):
 /**
  * The single flow-button visibility gate. Returns the source handle + its
  * selection bbox when all conditions hold (single bindable selection, standard
- * mode, no transform, handles visible, not full-DOM editing), else `null`.
+ * mode, no transform, handles visible, selection's smaller screen dim ≥
+ * `FLOW_MIN_BBOX_PX`, not full-DOM editing), else `null`. The screen-dim check
+ * hides flow earlier than handles do — the fixed offset + hover radius dominate
+ * a small on-screen selection long before its corner stamps physically meet.
  * Shared by `SelectTool` (hit) and the renderer (draw) so they never disagree.
  */
 export function flowButtonGate(): FlowGate | null {
@@ -208,6 +230,8 @@ export function flowButtonGate(): FlowGate | null {
   if (!handle || !isBindableKind(handle.kind)) return null;
   const bbox = computeSelectionBounds();
   if (!bbox || !shouldShowHandles(bbox)) return null;
+  const scale = useCameraStore.getState().scale;
+  if (Math.min((bbox[2] - bbox[0]) * scale, (bbox[3] - bbox[1]) * scale) < FLOW_MIN_BBOX_PX) return null;
   return { handle, bbox };
 }
 

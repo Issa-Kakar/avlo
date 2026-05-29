@@ -291,16 +291,22 @@ The async CM import window (~500ms cold) used to fall between
 `appendChild(container)` and `new EditorView(...)`, flashing an empty
 container. The mount is now atomic:
 
-1. Build container off-DOM (set dimensions, CSS vars, optionally header div).
+1. Build container off-DOM (set dimensions, CSS vars, optionally header div). These dimensions are **provisional scaffolding** — a pre-await snapshot CM builds into, never the authoritative on-screen geometry (see step 6).
 2. Mark intent: `pendingMountId = objectId`.
 3. `Promise.all` over `@codemirror/*` + `getCodeMirrorExtensions()` (the only async window).
 4. **Abort check:** if `pendingMountId !== objectId` (re-entrant `startEditing`) or `getHandle(objectId)` is null/wrong-kind (deleted during wait), drop the half-built container and return.
 5. Build CM state + view; CM renders into the still-off-DOM container.
-6. **Atomic swap** (single tick): `host.appendChild(container)` → `beginCodeEditing(id)` → set instance refs → invalidate.
-7. Post-swap wiring: focus routing, syncConf extraction, main UM sealing, Y.Map observer, document-level event handlers.
+6. **Atomic swap** (single tick, no paint between statements): `host.appendChild(container)` → set instance refs → **`positionEditor()`** → `beginCodeEditing(id)` → invalidate. The `positionEditor()` call is load-bearing: it re-derives left/top/width/fontSize/CSS-vars/header/output from the **live** camera + props, because a zoom/pan during the async window (or a remote geometry edit) would otherwise leave the step-1 snapshot stale exactly when the canvas stops painting this id — the editor would freeze at the old transform for the handoff frame while the canvas repaints neighbors at the new one. It runs post-`appendChild` so `requestMeasure()` measures an attached element.
+7. Post-swap wiring: focus routing, syncConf extraction, main UM sealing, Y.Map observer, document-level event handlers. Focus routing's `posAtCoords` maps the entry click through a **live** `worldToClient` read *inside* its rAF (not a pre-await snapshot) so the caret lands correctly if the camera moved during/after the swap.
 
 `commitAndClose` also clears `pendingMountId` so a programmatic close during
 the await window aborts the mount cleanly.
+
+**Geometry invariant:** `positionEditor()` is the *single* authority for the
+editor's on-screen geometry. It runs once at the atomic swap (step 6) and again
+on every `onViewChange` (camera move) and every geometry-affecting Y.Map key
+change while editing. Nothing else establishes user-visible position/size —
+PHASE 1 only scaffolds CM's off-DOM build.
 
 **Focus routing on mount:** click in header region (Y < `origin[1] +
 headerBarHeight`) → focus title input. Else `pendingEntryWorld` → focus CM and

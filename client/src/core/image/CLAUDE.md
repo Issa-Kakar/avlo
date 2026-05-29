@@ -192,6 +192,8 @@ All entry points converge to `createImageFromBlob(blob, worldX, worldY, opts?)`.
 
 **Important:** Image is NOT a persistent tool (no `ImageTool` class). The `i` key and toolbar button open a file picker as a one-shot action.
 
+**Batch cap:** Drop and picker batches are capped at `MAX_FILES_PER_BATCH` (20) via `exceedsBatchLimit` in `image-actions.ts`. Over-limit batches are rejected wholesale (current feedback: `console.warn` only — toast wiring pending). Paste paths are inherently single-image and bypass the check.
+
 **Paste architecture:** Cmd+V is NOT handled in keydown. Instead, a DOM `paste` event listener checks `clipboardData.files` for OS file copies (which `navigator.clipboard.read()` can't access), then falls back to `pasteFromClipboard()` for all other paste types (internal, external HTML/text, browser image copy).
 
 ---

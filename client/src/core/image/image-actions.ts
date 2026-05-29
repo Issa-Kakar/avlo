@@ -17,6 +17,17 @@ import { enqueue, ingest } from './image-manager';
 const MAX_SVG_INPUT = 10 * 1024 * 1024; // 10 MB
 const SVG_TIMEOUT = 10_000; // 10 s
 
+export const MAX_FILES_PER_BATCH = 20; // hard cap per drop / picker batch
+
+export function exceedsBatchLimit(count: number, source: 'drop' | 'picker'): boolean {
+  if (count > MAX_FILES_PER_BATCH) {
+    // TODO: surface via toast once toast pipeline is wired.
+    console.warn(`[image] ${source} rejected: ${count} files exceeds batch limit of ${MAX_FILES_PER_BATCH}`);
+    return true;
+  }
+  return false;
+}
+
 /**
  * Rasterize an SVG blob to a high-res PNG via <img> + canvas.
  *
@@ -158,6 +169,10 @@ export function openImageFilePicker(): void {
   input.addEventListener('change', () => {
     const files = input.files;
     if (!files || files.length === 0) {
+      input.remove();
+      return;
+    }
+    if (exceedsBatchLimit(files.length, 'picker')) {
       input.remove();
       return;
     }
