@@ -9,7 +9,7 @@ export const FRAME_CONFIG = {
 export const PF_OPTIONS_BASE = {
   thinning: 0.0,
   smoothing: 0.5,
-  streamline: 0.5,
+  streamline: 0.7,
   simulatePressure: false,
   start: {
     cap: true,
