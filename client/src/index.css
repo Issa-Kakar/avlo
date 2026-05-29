@@ -83,6 +83,17 @@ html {
   font-display: swap;
 }
 
+/* --- MuseoModerno (the "avlo" logo wordmark — AvloLogo.tsx, wght 600) ---
+   Self-hosted woff2 subset (wght 400–700, Latin), replacing the former Google
+   Fonts <link>. Only consumer today is the logo; not preloaded (see index.html). */
+@font-face {
+  font-family: "MuseoModerno";
+  src: url("/fonts/MuseoModerno[wght].woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* --- Grandstander --- */
 @font-face {
   font-family: "Grandstander";

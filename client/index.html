@@ -26,12 +26,10 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:image" content="https://example.com/aqua-ink/og-image.png" />
 
-    <!-- Logo font (Google Fonts — temporary; self-host before ship) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=MuseoModerno:wght@100..900&display=swap" rel="stylesheet" />
-
-    <!-- Preload variable font subsets -->
+    <!-- Preload variable font subsets. (MuseoModerno — the logo wordmark — is
+         self-hosted via @font-face in index.css but deliberately NOT preloaded:
+         it's a single chrome glyph run, and font-display:swap covers the brief
+         swap. Add a preload line here if a swap-flash on the logo is unwanted.) -->
     <link rel="preload" href="/fonts/SchibstedGrotesk[wght].woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/Grandstander.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/Inter.woff2" as="font" type="font/woff2" crossorigin />

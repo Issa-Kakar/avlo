@@ -3,7 +3,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'strict-dynamic'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io wss://avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io wss://avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
