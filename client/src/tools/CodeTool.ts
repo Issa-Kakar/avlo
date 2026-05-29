@@ -415,17 +415,33 @@ export class CodeTool implements PointerTool {
     }
 
     // ─── PHASE 5: ATOMIC SWAP ──────────────────────────────────────────────
-    // In a single tick: container hits the DOM (visible with full content),
-    // canvas suppresses its code rendering for this id, overlay clears its
-    // resize handles. From the user's perspective, one frame: code disappears
-    // from canvas + handles disappear + DOM appears with fully rendered CM.
+    // In a single tick (no paint occurs between these synchronous statements):
+    // container hits the DOM, its screen geometry is re-derived from the LIVE
+    // camera, canvas suppresses its code rendering for this id, overlay clears
+    // its resize handles. From the user's perspective, one frame: code
+    // disappears from canvas + handles disappear + DOM appears with fully
+    // rendered CM, positioned exactly where the canvas was painting it.
     host.appendChild(container);
-    useSelectionStore.getState().beginCodeEditing(objectId);
 
     this.editorView = view;
     this.container = container;
     this.objectId = objectId;
     this.pendingMountId = null;
+
+    // Re-sync to the LIVE camera + props before the canvas hands off. PHASE 1
+    // positioned the container from a scale/pan snapshot taken *before* the
+    // async import window; a zoom/pan during that ~500ms (or a remote geometry
+    // edit) leaves left/top/width/fontSize/CSS-vars/header/output stale, and the
+    // handoff frame would show the editor frozen at the old transform while the
+    // canvas repaints neighbors at the new one. positionEditor() is the single
+    // authority for on-screen geometry — it recomputes everything from current
+    // state here, then again on every onViewChange while editing. PHASE 1's
+    // geometry is therefore only scaffolding for CM's off-DOM build; this call
+    // establishes the first user-visible frame. Runs post-appendChild so its
+    // requestMeasure() measures an attached element.
+    this.positionEditor();
+
+    useSelectionStore.getState().beginCodeEditing(objectId);
 
     invalidateOverlay();
     invalidateWorldAll();
@@ -439,7 +455,6 @@ export class CodeTool implements PointerTool {
     if (clickedHeader && this.titleInput) {
       this.titleInput.focus();
     } else if (entryWorld) {
-      const [cx, cy] = worldToClient(entryWorld[0], entryWorld[1]);
       view.focus();
       requestAnimationFrame(() => {
         if (!this.editorView) return;
@@ -448,6 +463,11 @@ export class CodeTool implements PointerTool {
           dispatch(spec: unknown): void;
           focus(): void;
         };
+        // Map the click's world point through a LIVE worldToClient here, not at
+        // mount: the camera may have moved between the swap and this rAF (zoom
+        // still settling), and posAtCoords resolves against the editor's current
+        // on-screen position. A pre-await snapshot would land the caret wrong.
+        const [cx, cy] = worldToClient(entryWorld[0], entryWorld[1]);
         const pos = v.posAtCoords({ x: cx, y: cy });
         if (pos != null) {
           v.dispatch({ selection: { anchor: pos } });
