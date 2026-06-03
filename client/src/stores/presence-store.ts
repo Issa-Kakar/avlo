@@ -7,7 +7,7 @@
  */
 
 import { create } from 'zustand';
-import { getUserId } from './device-ui-store';
+import { getUserId } from './auth-store';
 
 export interface PeerIdentity {
   name: string;

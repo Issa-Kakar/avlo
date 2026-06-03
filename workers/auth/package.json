@@ -1,0 +1,24 @@
+{
+  "name": "@avlo/auth",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:tsc": "tsc --noEmit",
+    "types": "wrangler types",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@avlo/shared": "*",
+    "@avlo/worker-shared": "*",
+    "@hono-rate-limiter/cloudflare": "^0.2.2",
+    "@hono/zod-validator": "^0.7.6",
+    "hono": "^4.12.15",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251106.1",
+    "typescript": "^6.0.3"
+  }
+}

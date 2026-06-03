@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "avlo-users",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Bindings land per implementation step (kept minimal until a route needs them):
+  //   step 4 — D1 DB (+ migrations_dir), service AUTH, ratelimit RL_ROOMS
+  //   step 5 — queue consumers avlo-room-visits / avlo-room-meta (+ 2 DLQ)
+  //   step 8 — cross-script DO `rooms` (script_name: "avlo") for setPermission
+
+  // routes uncommented post-DNS-transfer + remaining pre-prod essentials
+  // "routes": [{ "pattern": "users.avlo.io", "custom_domain": true }],
+
+  "dev": { "port": 8793 },
+  "observability": { "enabled": true },
+  "minify": true
+}

@@ -1,4 +1,3 @@
-import { ulid } from 'ulid';
 import { create } from 'zustand';
 import { createJSONStorage, persist, subscribeWithSelector } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
@@ -6,7 +5,6 @@ import type { ConnectorVariantId } from '@/components/toolbar/connector-variants
 import { CONNECTOR_VARIANT_SPECS } from '@/components/toolbar/connector-variants';
 import type { FontFamily, TextAlignV } from '@/core/accessors';
 import type { ConnectorCap, ConnectorType } from '@/core/connectors/types';
-import { generateUserProfile } from '@/utils/generate-user-profile';
 import { getCanvasElement } from './camera-store';
 
 // 'image' is intentionally absent — image is a fire-and-forget toolbar action,
@@ -100,7 +98,6 @@ export interface StrokeStyle {
 // === State Interface ===
 
 export interface DeviceUIState {
-  user: { id: string; name: string; color: string };
   tool: { active: Tool; cursorOverride: string | null };
   /** Sticky-note color-palette popout. Ephemeral UI — never persisted. */
   stickyPanelOpen: boolean;
@@ -186,7 +183,6 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
   subscribeWithSelector(
     persist(
       immer((set, get) => ({
-        user: { id: '', name: '', color: '' },
         tool: { active: 'select', cursorOverride: null },
         stickyPanelOpen: false,
 
@@ -426,7 +422,6 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
         version: 3,
         storage: createJSONStorage(() => localStorage),
         partialize: (s) => ({
-          user: s.user,
           strokeWidth: s.strokeWidth,
           strokeTools: s.strokeTools,
           shape: s.shape,
@@ -493,27 +488,9 @@ export const {
   toggleToolLock,
 } = useDeviceUIStore.getState();
 
-// ============================================
-// USER IDENTITY INITIALIZATION
-// ============================================
-
-if (!useDeviceUIStore.getState().user.id) {
-  const profile = generateUserProfile();
-  useDeviceUIStore.setState({
-    user: { id: ulid(), name: profile.name, color: profile.color },
-  });
-}
-
-/** Imperative getter — returns the stable user ID string. */
-export function getUserId(): string {
-  return useDeviceUIStore.getState().user.id;
-}
-
-/** Imperative getter — returns the full user profile for presence. */
-export function getUserProfile(): { userId: string; name: string; color: string } {
-  const s = useDeviceUIStore.getState().user;
-  return { userId: s.id, name: s.name, color: s.color };
-}
+// Identity (userId / name / color) moved to `stores/auth-store.ts` — it is
+// server-resolved via `/me`, not a client mint. Consumers import `getUserId` /
+// `getUserProfile` from there.
 
 // ============================================
 // CURSOR MANAGEMENT
@@ -602,7 +579,6 @@ export const selectConnector = (s: DeviceUIState) => s.connector;
 export const selectText = (s: DeviceUIState) => s.text;
 export const selectNote = (s: DeviceUIState) => s.note;
 export const selectCode = (s: DeviceUIState) => s.code;
-export const selectUser = (s: DeviceUIState) => s.user;
 
 // Per-pref scalar selectors — stable refs for `useDeviceUIStore(selectX)`
 // and `useDeviceUIStore.subscribe(selectX, fn)`. Each is independent; a

@@ -4,7 +4,7 @@
  * This is the ONE seam to replace when the canvas-list backend lands:
  *   - swap `CANVASES` for the real canvases query,
  *   - swap `NOW` for `Date.now()`,
- *   - swap `ME` for the signed-in user's display name (device-ui-store getUserProfile().name).
+ *   - swap `ME` for the signed-in user's display name (auth-store getUserProfile().name).
  * Everything else (filter / sort / group / format) is written against real
  * epoch-millisecond timestamps already, so it carries over unchanged.
  */

@@ -10,8 +10,12 @@ export const createCors = (_serviceName: string) =>
       if (ALLOWED_PROD.has(origin)) return origin;
       return null;
     },
-    allowMethods: ['GET', 'PUT', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Content-Length', 'Range', 'If-None-Match', 'If-Modified-Since'],
-    exposeHeaders: ['ETag', 'Content-Range'],
+    // Credentialed cross-origin: the SPA calls subdomain workers with
+    // `credentials: 'include'` so the `.avlo.io` cookie rides (§12). Requires a
+    // specific reflected origin (never `*`) + `Access-Control-Allow-Credentials`.
+    credentials: true,
+    allowMethods: ['GET', 'PUT', 'POST', 'PATCH', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Content-Length', 'Range', 'If-None-Match', 'If-Modified-Since', 'x-d1-bookmark'],
+    exposeHeaders: ['ETag', 'Content-Range', 'x-d1-bookmark'],
     maxAge: 86400,
   });

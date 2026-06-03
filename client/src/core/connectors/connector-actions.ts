@@ -20,7 +20,7 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { ConnectorCap, ConnectorEndpoint, ConnectorType } from '@/core/types/objects';
 import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
-import { getUserId } from '@/stores/device-ui-store';
+import { getUserId } from '@/stores/auth-store';
 
 /** Fully-resolved inputs for a new connector. Caller resolves snap → endpoint. */
 export interface CreateConnectorParams {

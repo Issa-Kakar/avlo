@@ -10,7 +10,8 @@ import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
-import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { getUserId } from '@/stores/auth-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { enqueue, ingest } from './image-manager';
 

@@ -1,6 +1,10 @@
 export * from './types/identifiers';
+export { Permission } from './types/permission';
 export type { YObjects } from './types/y-doc';
 export { isSvg, parseImageDimensions, validateImage } from './utils/image-validation';
+export { generateRoomId, normalizeRoomId, ROOM_ID_RE } from './utils/room-id';
 export { ulid } from './utils/ulid';
 export { extractDomain, isValidHttpUrl, normalizeUrl, prettifyDomain } from './utils/url-utils';
+export { asUserId, generateUserId, USER_ID_RE } from './utils/user-id';
+export { colorForUserId, nameForUserId, PRESENCE_COLORS, type UserProfile, userProfileFor } from './utils/user-profile';
 export * from './z-order';

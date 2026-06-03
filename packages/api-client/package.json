@@ -25,6 +25,14 @@
     "./unfurl": {
       "types": "./src/unfurl.ts",
       "default": "./src/unfurl.ts"
+    },
+    "./auth": {
+      "types": "./src/auth.ts",
+      "default": "./src/auth.ts"
+    },
+    "./users": {
+      "types": "./src/users.ts",
+      "default": "./src/users.ts"
     }
   },
   "scripts": {

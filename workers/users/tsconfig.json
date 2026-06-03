@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["./worker-configuration.d.ts"],
+    "noEmit": true,
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "paths": {
+      "@avlo/shared": ["../../packages/shared/src/index.ts"],
+      "@avlo/shared/*": ["../../packages/shared/src/*"],
+      "@avlo/worker-shared": ["../../packages/worker-shared/src/index.ts"],
+      "@avlo/worker-shared/*": ["../../packages/worker-shared/src/*"],
+      "@avlo/db": ["../../packages/db/src/index.ts"],
+      "@avlo/db/*": ["../../packages/db/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "worker-configuration.d.ts"]
+}

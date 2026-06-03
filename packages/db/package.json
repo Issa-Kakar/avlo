@@ -1,0 +1,37 @@
+{
+  "name": "@avlo/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./schema-d1": {
+      "types": "./src/schema-d1.ts",
+      "default": "./src/schema-d1.ts"
+    },
+    "./schema-do": {
+      "types": "./src/schema-do.ts",
+      "default": "./src/schema-do.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:tsc": "tsc --noEmit",
+    "db:generate-d1": "drizzle-kit generate --config src/drizzle-d1.config.ts",
+    "db:generate-do": "drizzle-kit generate --config src/drizzle-do.config.ts"
+  },
+  "dependencies": {
+    "@avlo/shared": "*",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251106.1",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^6.0.3"
+  }
+}

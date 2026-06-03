@@ -14,6 +14,8 @@ const clientPort = parseInt(process.env.VITE_PORT || '3000', 10);
 const MAIN_PORT = devPorts.main + portOffset;
 const IMAGES_PORT = devPorts.images + portOffset;
 const UNFURL_PORT = devPorts.unfurl + portOffset;
+const AUTH_PORT = devPorts.auth + portOffset;
+const USERS_PORT = devPorts.users + portOffset;
 
 const proxyConfig = {
   '/parties': {
@@ -30,6 +32,18 @@ const proxyConfig = {
     target: `http://localhost:${UNFURL_PORT}`,
     changeOrigin: true,
     rewrite: (p: string) => p.replace(/^\/api\/unfurl/, ''),
+  },
+  // Same-origin proxy → cookies auto-attach on dev (no cross-origin credentials
+  // dance). Prod is a true subdomain (auth/users.avlo.io) reached cross-origin.
+  '/api/auth': {
+    target: `http://localhost:${AUTH_PORT}`,
+    changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/api\/auth/, ''),
+  },
+  '/api/users': {
+    target: `http://localhost:${USERS_PORT}`,
+    changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/api\/users/, ''),
   },
 };
 

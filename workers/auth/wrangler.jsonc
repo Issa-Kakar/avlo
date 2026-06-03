@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "avlo-auth",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Bindings land per implementation step (kept minimal until a route needs them):
+  //   step 2 — secret ANON_SECRET (workers/auth/.dev.vars; signs the avlo_anon HMAC cookie) [active]
+  //   step 3 — ratelimit RL_AUTH (cloudflareRateLimiter tier-1)
+  //   deferred (OAuth) — KV SESSIONS, secrets GOOGLE_CLIENT_SECRET / OAUTH_PKCE_SECRET, service USERS
+
+  // routes uncommented post-DNS-transfer + remaining pre-prod essentials
+  // "routes": [{ "pattern": "auth.avlo.io", "custom_domain": true }],
+
+  "dev": { "port": 8792 },
+  "observability": { "enabled": true },
+  "minify": true
+}

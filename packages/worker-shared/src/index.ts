@@ -1,4 +1,5 @@
 export { syntheticCacheUrl } from './cache-keys';
+export { ANON_COOKIE, AnonToken, type AuthCtx, cookieOpts, mintAnonToken, verifyAnonToken } from './cookies';
 export { createCors } from './cors';
 export { applyCsp, type CspProfile } from './csp';
 export { isPrivateHost } from './ssrf';

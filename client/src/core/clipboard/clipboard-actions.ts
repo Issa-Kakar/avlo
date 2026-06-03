@@ -24,7 +24,8 @@ import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { animateToFit } from '@/runtime/viewport/zoom';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
-import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { getUserId } from '@/stores/auth-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { deleteSelected } from '@/tools/selection/selection-actions';
 import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';

@@ -43,6 +43,10 @@ lerna-debug.log*
 .env.test.local
 .env.production.local
 
+# Wrangler local secrets (per-worker dev secrets, never committed)
+.dev.vars
+**/.dev.vars
+
 # TypeScript
 *.tsbuildinfo
 

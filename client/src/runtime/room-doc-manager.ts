@@ -2,7 +2,7 @@
  * RoomDocManager - Central authority for Y.Doc and real-time collaboration
  */
 
-import { getZ, isZKey, type RoomId, type YObjects, type ZKey } from '@avlo/shared';
+import { getZ, isZKey, type RoomId, type UserId, type YObjects, type ZKey } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
@@ -21,7 +21,7 @@ import { evictGeometry } from '@/renderer/geometry-cache';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
-import { getUserId } from '@/stores/device-ui-store';
+import { getUserId } from '@/stores/auth-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import { bindUndoManagerToHistoryStore } from './history-bridge';
@@ -58,7 +58,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
-  private readonly userId: string;
+  private readonly userId: UserId;
   readonly objects: YObjects;
 
   // Providers

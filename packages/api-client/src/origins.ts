@@ -16,6 +16,11 @@
 // worker, and SW global scopes (all three are where this module is consumed).
 export const IMAGES_ORIGIN = import.meta.env.PROD ? 'https://images.avlo.io' : `${location.origin}/api/images`;
 export const UNFURL_ORIGIN = import.meta.env.PROD ? 'https://unfurl.avlo.io' : `${location.origin}/api/unfurl`;
+// Credentialed subdomain workers (cookies ride via Domain=.avlo.io + CORS
+// credentials). Dev hits them through the Vite proxy (same-origin → cookies
+// auto-attach); prod is a true cross-origin subdomain.
+export const AUTH_ORIGIN = import.meta.env.PROD ? 'https://auth.avlo.io' : `${location.origin}/api/auth`;
+export const USERS_ORIGIN = import.meta.env.PROD ? 'https://users.avlo.io' : `${location.origin}/api/users`;
 
 // Sync host: SPA is same-origin with main worker in prod, so `window.location.host`
 // works untouched. Exposed here only so the SW can match WSS by host.

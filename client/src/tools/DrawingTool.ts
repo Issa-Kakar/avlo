@@ -8,7 +8,8 @@ import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { getUserId, isStrokeTool, resolveStrokeStyle, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
+import { getUserId } from '@/stores/auth-store';
+import { isStrokeTool, resolveStrokeStyle, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { PointerTool, PreviewData, ShapeType } from './types';
 
 /** Toolbar shape variant → stored shapeType. */

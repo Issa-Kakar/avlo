@@ -5,6 +5,7 @@
  */
 import { getRouteApi } from '@tanstack/react-router';
 import { useEffect } from 'react';
+import { normalizeRoomId } from '@avlo/shared';
 import { disconnectRoom } from '@/runtime/room-runtime';
 import { Canvas } from './Canvas';
 import { Toolbar } from './toolbar';
@@ -28,7 +29,7 @@ function RoomCanvas() {
 export default function RoomPage() {
   const { roomId } = route.useParams();
   useEffect(() => {
-    return () => disconnectRoom(roomId);
+    return () => disconnectRoom(normalizeRoomId(roomId) ?? undefined);
   }, [roomId]);
   return <RoomCanvas key={roomId} />;
 }

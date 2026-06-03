@@ -28,6 +28,7 @@
  * (appendTransaction can't work because stack-item-popped fires AFTER doc.transact() returns,
  * which is after _typeChanged already dispatched the PM transaction with the wrong selection.)
  */
+import type { UserId } from '@avlo/shared';
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { redo, undo, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from '@tiptap/y-tiptap';
@@ -46,7 +47,7 @@ declare module '@tiptap/core' {
 export interface TextCollaborationOptions {
   fragment: XmlFragment | null;
   yObj: Y.Map<unknown> | null;
-  userId: string | null;
+  userId: UserId | null;
   mainUndoManager: Y.UndoManager | null;
   onPropsSync: ((keys: Set<string>) => void) | null;
 }
