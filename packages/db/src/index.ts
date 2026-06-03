@@ -4,7 +4,8 @@
 // (D1Database, DurableObjectStorage). The omission of an `@avlo/db` path entry
 // from client/tsconfig*.json is the guardrail (mirrors @avlo/worker-shared).
 //
-// Populated across the platform build:
-//   • step 4 — schema-d1.ts (users/rooms/room_visits) + d1.ts (getSessionDB/withRetry)
-//   • step 6 — schema-do.ts (room_meta, lives in the room DO's ctx.storage)
-export {};
+// The DO subschema is also reachable via the `@avlo/db/schema-do` subpath export
+// (room.ts wants `import * as schema from '@avlo/db/schema-do'` for drizzle()).
+export { createDB, getSessionDB, withRetry } from './d1';
+export { roomMeta } from './schema-do';
+export { rooms, roomVisits, users } from './schema-d1';

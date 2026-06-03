@@ -5,10 +5,30 @@
   "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
   "compatibility_flags": ["nodejs_compat"],
 
-  // Bindings land per implementation step (kept minimal until a route needs them):
-  //   step 4 — D1 DB (+ migrations_dir), service AUTH, ratelimit RL_ROOMS
-  //   step 5 — queue consumers avlo-room-visits / avlo-room-meta (+ 2 DLQ)
-  //   step 8 — cross-script DO `rooms` (script_name: "avlo") for setPermission
+  // step 4 — D1 (sole schema owner) + drizzle migrations; service AUTH; tier-1 RL_ROOMS.
+  // database_id is a format-plausible placeholder (deploy-gated; local dev keys on the
+  // binding name + shared --persist-to, so the id is irrelevant locally).
+  "d1_databases": [
+    { "binding": "DB", "database_name": "avlo-db", "database_id": "00000000-0000-0000-0000-000000000001", "migrations_dir": "drizzle" }
+  ],
+  "services": [{ "binding": "AUTH", "service": "avlo-auth", "entrypoint": "AuthRpc" }],
+  "ratelimits": [{ "name": "RL_ROOMS", "namespace_id": "1004", "simple": { "limit": 120, "period": 60 } }],
+
+  // step 6/8 — cross-script DO: bind main's RoomDurableObject to call setPermission.
+  // script_name MUST equal main's wrangler `name` ("avlo").
+  "durable_objects": {
+    "bindings": [{ "name": "rooms", "class_name": "RoomDurableObject", "script_name": "avlo" }]
+  },
+
+  // step 5 — one consumer, BOTH queues (switch on batch.queue), each with its own DLQ.
+  //   visits: viral burst = thousands of distinct keys → cap size, low latency.
+  //   meta: rare → timeout-driven, size never binds.
+  "queues": {
+    "consumers": [
+      { "queue": "avlo-room-visits", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 3, "dead_letter_queue": "avlo-room-visits-dlq" },
+      { "queue": "avlo-room-meta", "max_batch_timeout": 1, "max_retries": 3, "dead_letter_queue": "avlo-room-meta-dlq" }
+    ]
+  },
 
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [{ "pattern": "users.avlo.io", "custom_domain": true }],

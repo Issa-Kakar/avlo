@@ -7,6 +7,11 @@
 
   "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "avlo-assets" }],
 
+  // step 3 — edge auth gate (AuthRpc.verifySession on PUT) + tier-1 userId rate limiter.
+  // service_name MUST equal the auth worker's wrangler `name`.
+  "services": [{ "binding": "AUTH", "service": "avlo-auth", "entrypoint": "AuthRpc" }],
+  "ratelimits": [{ "name": "RL_UPLOAD", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } }],
+
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [{ "pattern": "images.avlo.io", "custom_domain": true }],
 

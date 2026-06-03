@@ -1,8 +1,9 @@
 import { applyCsp, assetKeyParam } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { createFactory } from 'hono/factory';
+import type { ImagesEnv } from './env';
 
-const factory = createFactory<{ Bindings: Env }>();
+const factory = createFactory<ImagesEnv>();
 
 export const handleGetAsset = factory.createHandlers(zValidator('param', assetKeyParam), async (c) => {
   const { key } = c.req.valid('param');

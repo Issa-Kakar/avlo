@@ -292,7 +292,9 @@ async function uploadOne(assetId: string, entry: UploadEntry): Promise<void> {
   }
 
   try {
-    const resp = await fetch(assetUrl(assetId), { method: 'PUT', body: blob });
+    // credentials:'include' so the .avlo.io cookie rides cross-origin to the images
+    // worker's auth gate (H13); same-origin in dev sends it anyway.
+    const resp = await fetch(assetUrl(assetId), { method: 'PUT', body: blob, credentials: 'include' });
 
     if (resp.ok || resp.status === 409) {
       await removeUploadEntry(assetId);

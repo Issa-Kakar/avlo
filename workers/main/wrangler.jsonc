@@ -19,6 +19,18 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDurableObject"] }],
   "r2_buckets": [{ "binding": "DOCS", "bucket_name": "avlo-docs" }],
 
+  // step 6/7 — edge auth (AuthRpc.verifySession in onBeforeConnect) + room-event producers.
+  // The DO is the sole emitter of projection events about itself (§6).
+  "services": [{ "binding": "AUTH", "service": "avlo-auth", "entrypoint": "AuthRpc" }],
+  "queues": {
+    "producers": [
+      { "binding": "ROOM_VISITS", "queue": "avlo-room-visits" },
+      { "binding": "ROOM_META", "queue": "avlo-room-meta" }
+    ]
+  },
+  // drizzle-kit's generated migrations.js imports the .sql as text modules — ship them.
+  "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
+
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [
   //   { "pattern": "avlo.io",     "custom_domain": true },

@@ -8,6 +8,10 @@
   "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "avlo-assets" }],
   // "images": [{ "binding": "IMG_TRANSFORM" }],   // wire up when OG-image resize / favicon thumbnail lands
 
+  // step 3 — edge auth gate (AuthRpc.verifySession) + tier-1 userId rate limiter.
+  "services": [{ "binding": "AUTH", "service": "avlo-auth", "entrypoint": "AuthRpc" }],
+  "ratelimits": [{ "name": "RL_UPLOAD", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } }],
+
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [{ "pattern": "unfurl.avlo.io", "custom_domain": true }],
 

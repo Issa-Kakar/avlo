@@ -2,6 +2,7 @@ import { extractDomain, isSvg, parseImageDimensions, validateImage } from '@avlo
 import { applyCsp, syntheticCacheUrl } from '@avlo/worker-shared';
 import type { Context } from 'hono';
 import type { UnfurlResponseBody } from './app-type';
+import type { UnfurlEnv } from './env';
 
 // --- Constants ---
 
@@ -151,7 +152,7 @@ function resolveUrl(href: string | null | undefined, pageUrl: string): string | 
 
 // --- Handler ---
 
-export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) => {
+export const handleUnfurl = async (c: Context<UnfurlEnv>, url: string) => {
   console.warn('[unfurl] request:', url);
   const domain = extractDomain(url);
 
@@ -321,7 +322,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   return jsonCached(c, cache, cacheKey, data);
 };
 
-function jsonCached(c: Context<{ Bindings: Env }>, cache: Cache, cacheKey: string, data: UnfurlResponseBody): Response {
+function jsonCached(c: Context<UnfurlEnv>, cache: Cache, cacheKey: string, data: UnfurlResponseBody): Response {
   const body = JSON.stringify(data);
   const headers = new Headers({
     'Content-Type': 'application/json',

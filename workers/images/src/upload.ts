@@ -2,8 +2,9 @@ import { validateImage } from '@avlo/shared';
 import { applyCsp, assetKeyParam, contentLengthBound, MAX_UPLOAD_BYTES } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { createFactory } from 'hono/factory';
+import type { ImagesEnv } from './env';
 
-const factory = createFactory<{ Bindings: Env }>();
+const factory = createFactory<ImagesEnv>();
 
 export const handleUpload = factory.createHandlers(
   zValidator('param', assetKeyParam), // H1: 400 fast on malformed key

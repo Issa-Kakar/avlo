@@ -22,6 +22,7 @@ import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cach
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { getUserId } from '@/stores/auth-store';
+import { resetRoomSession, setRoomAccess, setRoomMode } from '@/stores/room-session-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import { bindUndoManagerToHistoryStore } from './history-bridge';
@@ -201,6 +202,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Drop UI selection so stale selectedIds don't render against the next room's objects.
     useSelectionStore.getState().clearSelection();
+
+    // Reset the server-delivered mode/access flags so the next room starts at 'connecting'.
+    resetRoomSession();
 
     // Clear all object caches (geometry + layout)
     clearAllObjectCaches();
@@ -522,6 +526,23 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           this.repackSpatialIndex();
           this.wsRepacked = true;
         }
+      });
+
+      // Close-code policy (H27): the stock provider blindly reconnects on EVERY close.
+      // 4401/4403 are terminal — record the denial + disconnect so the retry loop stops.
+      // 1006/1008/transient closes fall through to the provider's auto-reconnect.
+      this.websocketProvider.on('connection-close', (event: CloseEvent) => {
+        if (event.code === 4401 || event.code === 4403) {
+          setRoomAccess(event.code === 4401 ? 'unauthenticated' : 'forbidden');
+          this.websocketProvider?.disconnect();
+        }
+      });
+
+      // Effective editor/viewer mode arrives out-of-band as a `mode:` custom message
+      // (the provider already stripped the `__YPS:` prefix). Stored only — no editing-
+      // surface gating yet (the viewer client is deferred, §17 step 8).
+      this.websocketProvider.on('custom-message', (message: string) => {
+        if (message.startsWith('mode:')) setRoomMode(message.slice(5) === 'viewer' ? 'viewer' : 'editor');
       });
     } catch (err: unknown) {
       console.error('[RoomDocManager] WebSocket initialization failed:', err);
