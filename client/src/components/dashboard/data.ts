@@ -1,22 +1,27 @@
 /**
- * Dashboard placeholder data + derivation logic.
+ * Dashboard display model + pure derivation logic.
  *
- * This is the ONE seam to replace when the canvas-list backend lands:
- *   - swap `CANVASES` for the real canvases query,
- *   - swap `NOW` for `Date.now()`,
- *   - swap `ME` for the signed-in user's display name (auth-store getUserProfile().name).
- * Everything else (filter / sort / group / format) is written against real
- * epoch-millisecond timestamps already, so it carries over unchanged.
+ * Live data is the read-time merge in `query/room-list.ts` (`useRoomList()`): the D1
+ * server projection (TanStack Query) unioned with the local facts store. This file
+ * owns the `Canvas` display shape, the owner labels, and the pure
+ * filter/sort/group/format helpers — all written against real epoch-ms timestamps,
+ * so they carry over to merged rooms unchanged.
  */
 
 export interface Canvas {
   id: string;
   name: string;
-  owner: string; // display name; avatar is derived from initials + a name-hash tint
+  owner: string; // OWNER_SELF | OWNER_OTHER — display label; avatar derived from initials + name-hash tint
   starred: boolean;
-  openedTs: number; // last-opened, epoch ms
+  openedTs: number; // last-opened, epoch ms (max of local + server)
   createdTs: number; // created, epoch ms
 }
+
+// Owner labels — no account names until OAuth, so ownership renders as a binary: you
+// (self avatar) vs. someone else (no avatar). The merge resolves the server `isOwner`
+// flag to one of these; `applyFilter`'s "Owned by me" pivots on OWNER_SELF.
+export const OWNER_SELF = 'Me';
+export const OWNER_OTHER = 'Anonymous';
 
 export type FilterOption = 'Owned by anyone' | 'Owned by me' | 'Not owned by me';
 export type SortOption = 'Last opened' | 'Last created' | 'Oldest' | 'Alphabetically';
@@ -30,24 +35,6 @@ export interface CanvasGroup {
 export const FILTER_OPTIONS: readonly FilterOption[] = ['Owned by anyone', 'Owned by me', 'Not owned by me'];
 export const SORT_OPTIONS: readonly SortOption[] = ['Last opened', 'Last created', 'Oldest', 'Alphabetically'];
 export const RECENCY_ORDER: readonly Recency[] = ['Today', 'Yesterday', 'Earlier this week', 'Older'];
-
-/** Fixed anchor for deterministic placeholder buckets. Replace with `Date.now()` when wired. */
-const at = (year: number, month: number, day: number) => new Date(year, month - 1, day).getTime();
-export const NOW = at(2026, 5, 28);
-
-/** Current user (placeholder). Replace with the signed-in user's name. */
-export const ME = 'Issa Kakar';
-
-export const CANVASES: readonly Canvas[] = [
-  { id: 'c1', name: "Issa's room", owner: 'Issa Kakar', starred: true, openedTs: at(2026, 5, 28), createdTs: at(2026, 3, 12) },
-  { id: 'c2', name: 'Product Design Sprint', owner: 'Issa Kakar', starred: false, openedTs: at(2026, 5, 28), createdTs: at(2026, 4, 2) },
-  { id: 'c3', name: 'Q3 Roadmap Planning', owner: 'Maya Lindqvist', starred: true, openedTs: at(2026, 5, 27), createdTs: at(2026, 2, 18) },
-  { id: 'c4', name: 'Engineering Standup', owner: 'Daniel Osei', starred: false, openedTs: at(2026, 5, 27), createdTs: at(2026, 1, 9) },
-  { id: 'c5', name: 'Marketing Brainstorm', owner: 'Priya Nair', starred: false, openedTs: at(2026, 5, 25), createdTs: at(2026, 4, 22) },
-  { id: 'c6', name: 'Onboarding Flows', owner: 'Issa Kakar', starred: true, openedTs: at(2026, 5, 24), createdTs: at(2026, 3, 30) },
-  { id: 'c7', name: 'Research Repository', owner: 'Sofia Ramos', starred: false, openedTs: at(2026, 5, 12), createdTs: at(2025, 11, 3) },
-  { id: 'c8', name: 'Brand Refresh', owner: 'Maya Lindqvist', starred: false, openedTs: at(2026, 4, 28), createdTs: at(2025, 12, 15) },
-];
 
 /* ----- owner avatar derivation ----- */
 
@@ -76,7 +63,7 @@ const sameYearFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'num
 const otherYearFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
 /** "May 28" within the current year, "Nov 3, 2025" otherwise. */
-export function formatDate(ts: number, now: number = NOW): string {
+export function formatDate(ts: number, now: number = Date.now()): string {
   const fmt = new Date(ts).getFullYear() === new Date(now).getFullYear() ? sameYearFmt : otherYearFmt;
   return fmt.format(ts);
 }
@@ -88,7 +75,7 @@ const startOfDay = (ms: number): number => {
   return d.getTime();
 };
 
-export function recencyBucket(ts: number, now: number = NOW): Recency {
+export function recencyBucket(ts: number, now: number = Date.now()): Recency {
   const days = Math.round((startOfDay(now) - startOfDay(ts)) / DAY_MS);
   if (days <= 0) return 'Today';
   if (days === 1) return 'Yesterday';
@@ -99,8 +86,8 @@ export function recencyBucket(ts: number, now: number = NOW): Recency {
 /* ----- filter / sort / group ----- */
 
 export function applyFilter(list: readonly Canvas[], filter: FilterOption): Canvas[] {
-  if (filter === 'Owned by me') return list.filter((c) => c.owner === ME);
-  if (filter === 'Not owned by me') return list.filter((c) => c.owner !== ME);
+  if (filter === 'Owned by me') return list.filter((c) => c.owner === OWNER_SELF);
+  if (filter === 'Not owned by me') return list.filter((c) => c.owner !== OWNER_SELF);
   return [...list];
 }
 
@@ -119,7 +106,7 @@ export function sortCanvases(list: Canvas[], sort: SortOption): Canvas[] {
 }
 
 /** Group by last-opened recency, in RECENCY_ORDER. Empty buckets stay in the array; the table skips them. */
-export function groupByRecency(list: readonly Canvas[], now: number = NOW): CanvasGroup[] {
+export function groupByRecency(list: readonly Canvas[], now: number = Date.now()): CanvasGroup[] {
   const sorted = [...list].sort((a, b) => b.openedTs - a.openedTs);
   return RECENCY_ORDER.map((title) => ({ title, rows: sorted.filter((c) => recencyBucket(c.openedTs, now) === title) }));
 }

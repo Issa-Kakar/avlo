@@ -1,8 +1,12 @@
 import { createRouter } from '@tanstack/react-router';
+import { queryClient } from './query/client';
 import { routeTree } from './routeTree.gen';
 
 export const router = createRouter({
   routeTree,
+  // Supplied to every loader as `context.queryClient` (router context, not React
+  // context) — the root route is createRootRouteWithContext<{ queryClient }>.
+  context: { queryClient },
   // Route preloading is OPT-IN PER <Link> (see the top-bar logo's
   // preload="intent"), never global. Intent-preload runs a route's beforeLoad,
   // and /room/$roomId's beforeLoad calls connectRoom() — which destroys the

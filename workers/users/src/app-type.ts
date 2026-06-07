@@ -4,7 +4,7 @@
 // The real handlers live in ./index.ts + ./handlers; the drift guard there
 // keeps this file structurally aligned with the real `typeof app`.
 
-import { Permission } from '@avlo/shared';
+import { Permission, type RoomId } from '@avlo/shared';
 import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
 import { z } from 'zod/v4';
@@ -13,7 +13,7 @@ import { z } from 'zod/v4';
  *  are display-only (the access decision reads the DO, never D1). `permission` is
  *  the shared `Permission` type (a pure literal union). */
 export interface RoomListEntry {
-  roomId: string;
+  roomId: RoomId;
   title: string | null;
   permission: Permission;
   isOwner: boolean;

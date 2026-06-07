@@ -1,12 +1,11 @@
 import { getSessionDB, rooms, roomVisits, withRetry } from '@avlo/db';
-import { asRoomId, Permission, ROOM_ID_RE } from '@avlo/shared';
-import { type RoomDoStub } from '@avlo/worker-shared';
+import type { RoomDoStub } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { desc, eq } from 'drizzle-orm';
 import { createFactory } from 'hono/factory';
-import { z } from 'zod/v4';
 import type { RoomListEntry, RoomListResponse } from '../app-type';
 import type { UsersEnv } from '../env';
+import { permissionBody, permissionParam } from '../zod/permission';
 
 const factory = createFactory<UsersEnv>();
 
@@ -48,9 +47,6 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
   c.header('x-d1-bookmark', bookmark);
   return c.json({ rooms: entries, bookmark } satisfies RoomListResponse);
 });
-
-const permissionParam = z.object({ id: z.string().regex(ROOM_ID_RE).transform(asRoomId) });
-const permissionBody = z.object({ permission: Permission });
 
 /**
  * `PATCH /rooms/:id/permission` (§8) — the server-side permission seam (no client UI

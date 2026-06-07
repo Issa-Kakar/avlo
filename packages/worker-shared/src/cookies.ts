@@ -1,14 +1,16 @@
-import { asUserId, type UserId, USER_ID_RE } from '@avlo/shared';
-import { z } from 'zod/v4';
+import type { UserId } from '@avlo/shared';
+import type { z } from 'zod/v4';
+import { AnonToken } from './zod/anon-token';
 
 /**
  * Cookie attributes + the anon-token shape (mint + verify), single-sourced (§11/§14a).
  *
  * Issuance itself goes through `hono/cookie`'s `setSignedCookie`/`getSignedCookie`
  * on direct browser responses (H18). This module owns (a) the one attribute builder
- * both dev and prod share, (b) the `AnonToken` schema + `mintAnonToken` so the
- * payload shape is defined exactly once (the `/me` handler and the RPC verifier both
- * consume them), and (c) a raw HMAC verifier for the RPC path
+ * both dev and prod share, (b) `mintAnonToken` over the `AnonToken` schema (now in
+ * `./zod/anon-token`) so the payload is minted + verified from one definition (the `/me`
+ * handler and the RPC verifier both consume them), and (c) a raw HMAC verifier for the
+ * RPC path
  * (`AuthRpc.verifySession`) that has only a cookie header string, no Hono context.
  */
 
@@ -17,17 +19,6 @@ export interface AuthCtx {
   userId: UserId;
   isAnon: boolean;
 }
-
-/**
- * Post-HMAC anon-token payload — the single source for both directions. `userId` is
- * format-gated by `USER_ID_RE` then branded, so a truncated/legacy cookie rejects
- * cleanly (→ re-mint) rather than feeding a half-id downstream (§14a).
- */
-export const AnonToken = z.object({
-  userId: z.string().regex(USER_ID_RE).transform(asUserId),
-  iat: z.number(),
-  nonce: z.string(),
-});
 
 /** Serialize a fresh anon-token payload for `setSignedCookie`. `satisfies z.input`
  *  ties the minted shape to the verifier's schema — they cannot drift. */

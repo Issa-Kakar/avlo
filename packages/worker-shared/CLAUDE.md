@@ -14,12 +14,18 @@ The package publishes TS source directly via `exports` (no dist build). Consumer
 | `src/ssrf.ts` | `isPrivateHost(hostname)` — blocks `localhost`, `[::1]`, `.local`, `.internal`, 127/10/172.16-31/192.168/169.254/0.x. Used in Zod `.refine`. |
 | `src/cache-keys.ts` | `syntheticCacheUrl(service, key)` — namespaces synthetic edge-cache keys by service. `caches.default` keys on full URL; real URLs include host but synthetic keys are bare and easy to collide cross-service. |
 | `src/surface-drift.ts` | `assertSurfaceMatch<Real, Mock>(true)` — Hono route-surface drift guard for the `app-type.ts` pattern. See `workers/CLAUDE.md` → App-Type Pattern. |
+| `src/cookies.ts` | `verifyAnonToken` (raw HMAC verify + `AnonToken` parse — the RPC path, no Hono ctx), `mintAnonToken`, `cookieOpts` (dev/prod cookie attrs), `ANON_COOKIE`, `AuthCtx`. Schema lives in `zod/anon-token.ts`. |
+| `src/require-auth.ts` | `requireAuth<E>()` — generic Hono gate; verifies the session via the `AUTH` service RPC into `c.get('userId')` (401 if absent). Called with an explicit env arg per worker. |
+| `src/rate-limit.ts` | `userRateLimiter<E>(binding)` — tier-1 `cloudflareRateLimiter` keyed on `c.get('userId')`. |
+| `src/rpc-surfaces.ts` | `AuthRpcSurface` / `RoomDoStub` — cross-config RPC cast targets (the `AUTH` service + cross-script `rooms` DO are untyped across wrangler configs). |
+| `src/zod/anon-token.ts` | `AnonToken` — post-HMAC `avlo_anon` cookie payload `{ userId, iat, nonce }`. `safeParse`d by `cookies.ts` (mint + verify), not a `zValidator`. |
 | `src/zod/asset-key.ts` | `assetKeyParam` — `{ key: regex(/^[0-9a-f]{64}$/) }`. Canonical lowercase hex, no uppercase. |
 | `src/zod/content-length.ts` | `contentLengthBound(max)` + `MAX_UPLOAD_BYTES = 10MB`. Hono `header` validator that rejects oversize requests BEFORE the body is awaited (H2). |
+| `src/zod/room-event.ts` | `VisitEvent` / `MetaEvent` — branded-on-parse queue event schemas (§6). `safeParse`d by the `users` queue consumer so a poison body acks to DLQ. |
 | `src/zod/url-param.ts` | `unfurlQuery` — `{ url: normalizeUrl + isPrivateHost refine }`. SSRF guard runs inside Zod (H9). |
 
 ## Invariants
 
 - **Barrel-only exports.** No subpath exports in `package.json`. Every consumer imports from `@avlo/worker-shared`. Keeps the public surface flat and the package.json minimal.
-- **Inline schemas — `zValidator` only.** `unfurlQuery` and `contentLengthBound` use `zod/v4` (project standard). The asset-key regex is lowercase-hex-only — canonical form, uppercase rejected.
+- **`zod/` is the home for every schema.** All `zod/v4` schemas live in `src/zod/` — request validators (`assetKeyParam`, `contentLengthBound`, `unfurlQuery`) AND parse/`safeParse` data schemas (`AnonToken` for the signed cookie, `VisitEvent`/`MetaEvent` for the queue). The modules that *use* them (`cookies.ts`, the queue consumer) import from `./zod/*`. Keeps every schema greppable in one place. The `app-type.ts` mocks are the one exception — their inline schemas stay inline (ambient-free isolation; a mock must not import worker-shared).
 - **`responses.ts` is intentionally absent.** Earlier drafts had `jsonErr`/`notFound` helpers; they were never used. Most workers want raw `new Response(...)` for full header control. Reintroduce only if there's a real call site.

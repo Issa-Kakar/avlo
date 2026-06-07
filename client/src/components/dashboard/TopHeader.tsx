@@ -1,9 +1,9 @@
 import { PlusAltIcon } from './icons/PlusAltIcon';
 import { SearchIcon } from './icons/SearchIcon';
 
-// Search field + New Canvas. Both are visual-only placeholders today; focus and
-// press states are CSS (:focus-within / :active), so this stays render-free.
-export function TopHeader() {
+// Search field (visual-only placeholder — focus state is CSS) + New Canvas. The only
+// behavior is New Canvas → onNewCanvas (mint a room id + navigate).
+export function TopHeader({ onNewCanvas }: { onNewCanvas: () => void }) {
   return (
     <header className="dash-topbar">
       <div className="dash-topbar-row">
@@ -14,7 +14,7 @@ export function TopHeader() {
 
         <div className="dash-topbar-spacer" />
 
-        <button type="button" className="dash-new-canvas">
+        <button type="button" className="dash-new-canvas" onClick={onNewCanvas}>
           <PlusAltIcon width={21} height={21} />
           New Canvas
         </button>

@@ -2,7 +2,7 @@
 
 > Pre-production, solo dev. Routes blocks are **commented out** in every `wrangler.jsonc` — the merge changes nothing in production. Deploy is gated on DNS transfer + additional pre-prod essentials, both out of scope.
 
-Three independently-deployed Workers, one folder each. Shared server primitives live in `@avlo/worker-shared`; typed HTTP-RPC clients live in `@avlo/api-client` (browser/SW side).
+Five independently-deployed Workers, one folder each. Shared server primitives live in `@avlo/worker-shared`; D1 + DO-SQLite Drizzle schemas in `@avlo/db`; typed HTTP-RPC clients live in `@avlo/api-client` (browser/SW side).
 
 ## Topology
 
@@ -20,9 +20,13 @@ workers/main               workers/images           workers/unfurl
 
 | Worker | Folder | Wrangler `name` | Dev port | Prod subdomain | Bindings |
 |---|---|---|---|---|---|
-| **main** | `workers/main/` | `avlo` | 8787 | `avlo.io`, `www.avlo.io` | `ASSETS` (Static Assets), `rooms` (DO/SQLite), `DOCS` (R2) |
-| **images** | `workers/images/` | `avlo-images` | 8790 | `images.avlo.io` | `IMAGES` (R2 `avlo-assets`) |
-| **unfurl** | `workers/unfurl/` | `avlo-unfurl` | 8791 | `unfurl.avlo.io` | `IMAGES` (R2 `avlo-assets`, shared) |
+| **main** | `workers/main/` | `avlo` | 8787 | `avlo.io`, `www.avlo.io` | `ASSETS` (Static Assets), `rooms` (DO/SQLite), `DOCS` (R2), `AUTH` (service), `ROOM_VISITS`/`ROOM_META` (queue producers) |
+| **images** | `workers/images/` | `avlo-images` | 8790 | `images.avlo.io` | `IMAGES` (R2 `avlo-assets`), `AUTH` (service), `RL_UPLOAD` |
+| **unfurl** | `workers/unfurl/` | `avlo-unfurl` | 8791 | `unfurl.avlo.io` | `IMAGES` (R2 `avlo-assets`, shared), `AUTH` (service), `RL_UPLOAD` |
+| **auth** | `workers/auth/` | `avlo-auth` | 8792 | `auth.avlo.io` | secret `ANON_SECRET` |
+| **users** | `workers/users/` | `avlo-users` | 8793 | `users.avlo.io` | `DB` (D1 `avlo-db`), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), queue consumers `avlo-room-visits`/`avlo-room-meta` (+DLQs) |
+
+> Beyond the three public R2/SPA edge workers above, **auth** (`auth.avlo.io` — `GET /me`, the signed `avlo_anon` cookie, `AuthRpc.verifySession`) and **users** (`users.avlo.io` — `GET /rooms`, `PATCH /rooms/:id/permission`, the queue→D1 consumer) form the identity + dashboard-data vertical. `@avlo/db` owns the D1 + DO-SQLite schemas they (and main) share.
 
 **Naming rule (load-bearing):** Sibling workers use `workers/<short>/` = wrangler `name` `avlo-<short>` = subdomain stem `<short>.avlo.io`. The main worker is asymmetric on every axis — wrangler `name: "avlo"` (bare, preserves the `rooms` DO namespace), subdomain `avlo.io` (bare, canonical app identity). The `avlo-` prefix is for things *attached to* the app; the app itself is just `avlo`. **Do not rename main.**
 
@@ -64,9 +68,32 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 
 **Unfurl writes R2 directly.** It binds the same `avlo-assets` bucket as the images worker. An inter-worker round-trip to call `images.put(key, body)` would do the same hash + put — one less hop to do it inline. `validateImage` stays single-sourced via `@avlo/shared`.
 
+### `workers/auth/` — anonymous identity (§2)
+| File | Responsibility |
+|---|---|
+| `src/index.ts` | `createCors('auth')`, `GET /me`, drift-guard, default export + `AuthRpc`. |
+| `src/handlers/me.ts` | `GET /me` — verify + slide the signed `avlo_anon` cookie, else mint a fresh `userId`; `name`/`color` deterministic from id (`@avlo/shared`). 400-day sliding Max-Age. |
+| `src/rpc.ts` | `AuthRpc extends WorkerEntrypoint` — `verifySession(cookieHeader)` (anon-only today; OAuth/KV is the seam). |
+| `src/app-type.ts` | Public mock — `MeResponse` wire shape for `hc<AuthApp>`. |
+
+`/me` is the ONLY identity resolver — no client-side `userId` mint. Dev: Vite `/api/auth/*` proxy.
+
+### `workers/users/` — dashboard data + projections (§4–§8)
+| File | Responsibility |
+|---|---|
+| `src/index.ts` | `createCors` → `requireAuth` → `userRateLimiter(RL_ROOMS)` → routes; default export `{ fetch, queue }` + `UsersRpc`. |
+| `src/handlers/rooms.ts` | `GET /rooms` (D1 Sessions read, `x-d1-bookmark`, `isOwner` derived) + `PATCH /rooms/:id/permission` (→ cross-script `rooms` DO `setPermission`; 403 on non-owner). |
+| `src/queue.ts` | `consume` — both queues (`switch(batch.queue)`); `safeParse` → ack-drop poison; coalesce + idempotent upsert (visits `max()`, meta LWW / first-write-wins). |
+| `src/rpc.ts` | `UsersRpc extends WorkerEntrypoint` — `linkAccount` OAuth-deferred stub. |
+| `src/env.ts` | `UsersEnv = { Bindings: Env; Variables: { userId: UserId } }`, threaded through every handler (Hono `Context` is invariant in `Variables`). |
+| `src/zod/permission.ts` | `permissionParam`/`permissionBody` validators for the PATCH route. |
+| `src/app-type.ts` | Public mock — `RoomListEntry`/`RoomListResponse` wire shapes for `hc<UsersApp>`. |
+
+Globally auth-gated. D1 is the sole schema owner (`@avlo/db`). Dev: Vite `/api/users/*` proxy.
+
 ## App-Type Pattern (Option H)
 
-Each worker that exposes a typed HTTP-RPC client to `@avlo/api-client` has a **public mock** in `src/app-type.ts` separate from the real handler in `src/index.ts`. The mock encodes the wire shape (paths, methods, validators, response types) ambient-free so client-side typecheck can traverse it without pulling worker ambient types (`Env`, `R2Bucket`, `HTMLRewriter`, `caches.default`).
+Each worker that exposes a typed HTTP-RPC client to `@avlo/api-client` (auth, users, images, unfurl — main is exempt) has a **public mock** in `src/app-type.ts` separate from the real handler in `src/index.ts`. The mock encodes the wire shape (paths, methods, validators, response types) ambient-free so client-side typecheck can traverse it without pulling worker ambient types (`Env`, `R2Bucket`, `HTMLRewriter`, `caches.default`).
 
 **Why a mock?** The cross-tsconfig leak: `@avlo/api-client`'s `import type { ImagesApp } from '../../../workers/images/src/index'` would drag the real index's ambient deps into client compilation (cascading `TS2304` failures). The mock has none of those — it's pure Hono + Zod + inline schemas — so client compilation traverses it cleanly.
 
@@ -98,7 +125,7 @@ When adding a new worker (`code-exec`, `auth`, `ai`, …):
 3. Add the drift-guard `assertSurfaceMatch<typeof app, PublicSurface>(true)` call in `src/index.ts`.
 4. Create `packages/api-client/src/<name>.ts` (`hc<FooApp>(FOO_ORIGIN)`) and re-export from `packages/api-client/src/index.ts`.
 5. Add a Vite proxy entry in `client/vite.config.ts`.
-6. Add a dev port to `scripts/dev-ports.json` (heed the `_comment` re. `PORT_OFFSET` bump when the 4th worker lands).
+6. Add a dev port to `scripts/dev-ports.json` (heed the `_comment`: `PORT_OFFSET` is already `10`; keep it ≥ the port-span).
 7. Add `dev:<name>` to root `package.json` and to the `dev` concurrently chain.
 8. Add the typecheck workspace to the root `typecheck` and `typecheck:tsc` scripts.
 9. Add a `deploy:<name>` script to root `package.json`.
@@ -125,18 +152,27 @@ Every PR touching a worker route must satisfy these. Non-negotiable.
 | H11 | Inter-worker calls via `WorkerEntrypoint`, never public `fetch()` or `hc` over service-binding fetcher. | `[[services]] entrypoint: "FooRpc"` + `await env.FOO.method(args)` |
 | H12 | Every worker exports `export type <Name>App = typeof app;` (or re-exports from `app-type`) + any `WorkerEntrypoint` classes. | Last lines of `src/index.ts` |
 
+## Platform Hardening (auth / users / room DO)
+
+The identity + authz vertical layers these on top of H1–H12 (the formal H13–H28 enumeration from plan §15 is still to be merged into the table above):
+
+- **Server-resolved identity only.** No client-side `userId` mint; auth `/me` is the sole source. `UserId`/`RoomId` are branded + validated at every wire boundary (`AnonToken` parse, `verifyAnonToken`, queue `safeParse`, D1 `$type<>()`, the edge-stamped `x-avlo-user-id` header verified in `on-before-connect`).
+- **Auth gate before handler.** `requireAuth` (via the `AUTH` service RPC) resolves `c.get('userId')` before any gated route; `userRateLimiter` keys tier-1 limits on it.
+- **The DO is the authority.** Room permission/ownership decisions read the room DO (never D1); `setPermission` is owner-only and re-pushes/evicts live connections. D1 is a display projection only; producers tie payloads to the event schemas (`satisfies z.input<…>`), the consumer `safeParse`s + upserts idempotently.
+- **Known gap:** auth + users JSON responses don't yet apply the `api-json` CSP profile (H5) — pending the planned Hono-secure-headers + per-worker-CORS pass.
+
 ## Dev Orchestration
 
 Single source of truth for base ports: `scripts/dev-ports.json`. `scripts/dev-worker.mjs` reads it + applies `PORT_OFFSET`. Vite imports the same JSON for proxy targets.
 
 ```bash
-npm run dev                                # all four (Vite + main + images + unfurl)
-PORT_OFFSET=4 VITE_PORT=3001 npm run dev   # parallel session (dev:p alias)
+npm run dev                                # all six (Vite + main + images + unfurl + auth + users)
+PORT_OFFSET=10 VITE_PORT=5180 npm run dev   # parallel session (dev:p alias)
 npm run dev:images                         # single worker, useful with separate Vite
 (cd workers/<name> && npm run types)       # regenerate worker-configuration.d.ts
 ```
 
-**Bump `PORT_OFFSET`** in `dev-ports.json`'s `_comment` and in `dev:p` to **10** when adding the 4th worker — today's offset of 4 will collide with `code-exec` at base 8792.
+**`PORT_OFFSET` is `10`** (in `dev-ports.json`'s `_comment` + the `dev:p` alias). Base ports span 8787…8793, so the offset must stay ≥ 7; 10 leaves headroom and keeps inspector ports (base+1000+offset) collision-free. `dev:p` also uses `VITE_PORT=5180` (3001 is reserved on some WSL2/Windows hosts).
 
 **Shared Miniflare state.** `dev-worker.mjs` passes `--persist-to=<repoRoot>/.wrangler/state` (absolute) to every `wrangler dev`. Without this, wrangler v4 resolves the default `.wrangler/` *relative to the config file's directory*, so each `workers/<name>/.wrangler/state/v3/r2/avlo-assets/` becomes a separate physical bucket — unfurl writes an OG image, the images worker's bucket stays empty, and the browser's GET 404s in dev. The path must be absolute (relative paths re-resolve against the config dir in some wrangler versions). Sharing requires *both* a shared persist root *and* matching `bucket_name` in every config — `r2_buckets[].bucket_name = "avlo-assets"` is identical in `workers/{images,unfurl}/wrangler.jsonc`. Same constraint applies if KV (`id`), D1 (`database_id`), DOs, or Queues are ever shared across workers. `.wrangler/` is gitignored at the repo root.
 

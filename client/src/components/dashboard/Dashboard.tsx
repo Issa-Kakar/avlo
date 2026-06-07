@@ -1,9 +1,13 @@
+import { generateRoomId } from '@avlo/shared';
+import { useNavigate } from '@tanstack/react-router';
 import { useCallback, useMemo, useState } from 'react';
+import { useRoomList } from '@/query/room-list';
+import { createRoom, toggleStar } from '@/stores/room-list-store';
 import type { Column } from './CanvasRow';
 import { CanvasTable } from './CanvasTable';
 import {
   applyFilter,
-  CANVASES,
+  type Canvas,
   type CanvasGroup,
   FILTER_OPTIONS,
   type FilterOption,
@@ -44,12 +48,14 @@ function homeColumns(sort: SortOption): Column[] {
 }
 
 interface ViewProps {
-  starredIds: ReadonlySet<string>;
+  canvases: Canvas[];
+  onOpen: (id: string) => void;
   onToggleStar: (id: string) => void;
 }
 
 function HomeView({
-  starredIds,
+  canvases,
+  onOpen,
   onToggleStar,
   filter,
   setFilter,
@@ -57,7 +63,10 @@ function HomeView({
   setSort,
 }: ViewProps & { filter: FilterOption; setFilter: (v: FilterOption) => void; sort: SortOption; setSort: (v: SortOption) => void }) {
   const columns = useMemo(() => homeColumns(sort), [sort]);
-  const groups = useMemo<CanvasGroup[]>(() => [{ title: null, rows: sortCanvases(applyFilter(CANVASES, filter), sort) }], [filter, sort]);
+  const groups = useMemo<CanvasGroup[]>(
+    () => [{ title: null, rows: sortCanvases(applyFilter(canvases, filter), sort) }],
+    [canvases, filter, sort],
+  );
 
   return (
     <>
@@ -66,61 +75,69 @@ function HomeView({
         <SortFilterDropdown label="Filter by" options={FILTER_OPTIONS} value={filter} onChange={setFilter} />
         <SortFilterDropdown label="Sort by" options={SORT_OPTIONS} value={sort} onChange={setSort} />
       </div>
-      <CanvasTable columns={columns} groups={groups} starredIds={starredIds} onToggleStar={onToggleStar} spacious />
+      <CanvasTable columns={columns} groups={groups} onOpen={onOpen} onToggleStar={onToggleStar} spacious />
     </>
   );
 }
 
-function RecentView({ starredIds, onToggleStar }: ViewProps) {
-  const groups = useMemo(() => groupByRecency(CANVASES), []);
+function RecentView({ canvases, onOpen, onToggleStar }: ViewProps) {
+  const groups = useMemo(() => groupByRecency(canvases), [canvases]);
   return (
     <>
       <h1 className="dash-h1">Recent</h1>
-      <CanvasTable columns={RECENT_COLUMNS} groups={groups} starredIds={starredIds} onToggleStar={onToggleStar} />
+      <CanvasTable columns={RECENT_COLUMNS} groups={groups} onOpen={onOpen} onToggleStar={onToggleStar} />
     </>
   );
 }
 
-function StarredView({ starredIds, onToggleStar }: ViewProps) {
+function StarredView({ canvases, onOpen, onToggleStar }: ViewProps) {
   const groups = useMemo<CanvasGroup[]>(
-    () => [{ title: null, rows: CANVASES.filter((c) => starredIds.has(c.id)).sort((a, b) => b.openedTs - a.openedTs) }],
-    [starredIds],
+    () => [{ title: null, rows: canvases.filter((c) => c.starred).sort((a, b) => b.openedTs - a.openedTs) }],
+    [canvases],
   );
   return (
     <>
       <h1 className="dash-h1">Starred</h1>
-      <CanvasTable columns={RECENT_COLUMNS} groups={groups} starredIds={starredIds} onToggleStar={onToggleStar} />
+      <CanvasTable columns={RECENT_COLUMNS} groups={groups} onOpen={onOpen} onToggleStar={onToggleStar} />
     </>
   );
 }
 
 export function Dashboard() {
+  const navigate = useNavigate();
+  const canvases = useRoomList();
   const [view, setView] = useState<DashboardView>('home');
-  const [starredIds, setStarredIds] = useState<Set<string>>(() => new Set(CANVASES.filter((c) => c.starred).map((c) => c.id)));
   const [filter, setFilter] = useState<FilterOption>('Owned by anyone');
   const [sort, setSort] = useState<SortOption>('Last opened');
 
-  const toggleStar = useCallback((id: string) => {
-    setStarredIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const openCanvas = useCallback(
+    (id: string) => {
+      void navigate({ to: '/room/$roomId', params: { roomId: id } });
+    },
+    [navigate],
+  );
+
+  // New Canvas: mint a room id, stamp local facts (so it appears instantly), navigate.
+  // Zero round-trips — the DO mints ownership on first connect, the queue projects to D1.
+  const newCanvas = useCallback(() => {
+    const id = generateRoomId();
+    createRoom(id);
+    void navigate({ to: '/room/$roomId', params: { roomId: id } });
+  }, [navigate]);
 
   return (
     <div className="dash-root">
       <Sidebar view={view} onSelect={setView} />
       <main className="dash-main">
-        <TopHeader />
+        <TopHeader onNewCanvas={newCanvas} />
         <div className="dash-scroll">
           <div className="dash-content">
             {/* max-width spine — shares the same left edge + right cap as the top-bar row */}
             <div className="dash-spine">
               {view === 'home' && (
                 <HomeView
-                  starredIds={starredIds}
+                  canvases={canvases}
+                  onOpen={openCanvas}
                   onToggleStar={toggleStar}
                   filter={filter}
                   setFilter={setFilter}
@@ -128,8 +145,8 @@ export function Dashboard() {
                   setSort={setSort}
                 />
               )}
-              {view === 'recent' && <RecentView starredIds={starredIds} onToggleStar={toggleStar} />}
-              {view === 'starred' && <StarredView starredIds={starredIds} onToggleStar={toggleStar} />}
+              {view === 'recent' && <RecentView canvases={canvases} onOpen={openCanvas} onToggleStar={toggleStar} />}
+              {view === 'starred' && <StarredView canvases={canvases} onOpen={openCanvas} onToggleStar={toggleStar} />}
             </div>
           </div>
         </div>

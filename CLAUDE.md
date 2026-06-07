@@ -16,6 +16,7 @@ npm run lint         # Biome — skip routine runs (noisy, sometimes wrong); pre
 
 - `@avlo/shared` → `packages/shared/src/*` (cross-runtime; client + server)
 - `@avlo/worker-shared` → `packages/worker-shared/src/*` (server-only — never imported client-side)
+- `@avlo/db` → `packages/db/src/*` (server-only — D1 + DO-SQLite Drizzle schemas; never client-side)
 - `@avlo/api-client` → `packages/api-client/src/*` (browser/SW typed `hc<AppType>` clients)
 - `@/*` → `client/src/*`
 
@@ -125,9 +126,13 @@ All paths relative to `client/src/` unless noted.
 | File | Responsibility |
 |------|----------------|
 | `camera-store.ts` | Camera state, coordinate transforms, canvas element, pointer capture, per-room persistence |
-| `device-ui-store.ts` | Toolbar state, drawing settings, user identity, cursor management (persisted) |
+| `device-ui-store.ts` | Toolbar state, drawing settings, cursor management (persisted; immer). The structural model for new stores |
+| `auth-store.ts` | Server-resolved identity — synchronous persisted mirror of the `/me` query (`query/me.ts`, its only writer). `getUserId`/`getUserProfile` throwing getters |
 | `selection-store.ts` | Selection state, transform state |
 | `presence-store.ts` | Peer identities + count (Zustand, for React components only) |
+| `room-list-store.ts` | Local per-room facts (createdAt/lastVisitedAt/starred), localStorage; merged with the D1 projection in `query/room-list.ts` (immer) |
+| `room-session-store.ts` | Server-delivered room mode/access (`mode:` custom message; 4401/4403 close codes) |
+| `history-store.ts` | Undo/redo availability (`canUndo`/`canRedo`) for toolbar buttons |
 
 ### Utils + Shared
 | File | Responsibility |
@@ -136,25 +141,31 @@ All paths relative to `client/src/` unless noted.
 | `utils/dispose.ts` | `dispose<T>(value, fn): null` — single-line teardown chain |
 | `utils/color.ts` | `createFillFromStroke(stroke, mixRatio)` |
 | `utils/generate-user-profile.ts` | Random adjective+animal name + color palette |
-| `packages/shared/src/types/identifiers.ts` | `RoomId`, `UserId`, `StrokeId`, `TextId` |
+| `packages/shared/src/types/identifiers.ts` | `RoomId`, `UserId`, `StrokeId`, `TextId` (branded) |
+| `packages/shared/src/types/permission.ts` | `Permission` (`z.enum`; value + type) |
+| `packages/shared/src/utils/user-id.ts` | `generateUserId` (auth `/me` only), `asUserId`, `USER_ID_RE` |
+| `packages/shared/src/utils/room-id.ts` | `generateRoomId`, `normalizeRoomId`, `asRoomId`, `ROOM_ID_RE` |
+| `packages/shared/src/utils/user-profile.ts` | `nameForUserId`, `colorForUserId`, `userProfileFor`, `PRESENCE_COLORS` |
 | `packages/shared/src/utils/ulid.ts` | `ulid()` |
-| `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain` |
+| `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain`, `prettifyDomain` |
 | `packages/shared/src/utils/image-validation.ts` | `validateImage`, `isSvg`, `parseImageDimensions` |
 
 ### Server (`workers/`)
 
-Three independently-deployed Cloudflare Workers. Full architecture, hardening invariants, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
+Five independently-deployed Cloudflare Workers. Full architecture, hardening invariants, ports, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
 
 | Worker | Folder | Prod | Bindings | Surface |
 |---|---|---|---|---|
-| **main** | `workers/main/` | `avlo.io` | `ASSETS` (Static Assets), `rooms` (DO), `DOCS` (R2) | SPA via Assets binding + WSS `/parties/*` via `partyserverMiddleware` + `RoomDurableObject` |
-| **images** | `workers/images/` | `images.avlo.io` | `IMAGES` (R2) | `PUT/GET /:key` — Zod param, content-length bound, hash-verify, edge cache, Range, CSP |
-| **unfurl** | `workers/unfurl/` | `unfurl.avlo.io` | `IMAGES` (R2, shared) | `GET /?url=` — Zod query + SSRF refine, HTMLRewriter OG extraction, image→R2, edge cache 7d |
+| **main** | `workers/main/` | `avlo.io` | `ASSETS` (Static Assets), `rooms` (DO/SQLite), `DOCS` (R2), `AUTH` (service), `ROOM_VISITS`/`ROOM_META` (queue producers) | SPA via Assets binding + WSS `/parties/*` (`partyserverMiddleware` + `on-before-connect` identity gate) + `RoomDurableObject` (per-room meta in DO-SQLite, live permissions, tier-3 WS limiter) |
+| **images** | `workers/images/` | `images.avlo.io` | `IMAGES` (R2), `AUTH` (service), `RL_UPLOAD` | `PUT/GET /:key` — `requireAuth` on PUT, Zod param, content-length bound, hash-verify, edge cache, Range, CSP |
+| **unfurl** | `workers/unfurl/` | `unfurl.avlo.io` | `IMAGES` (R2, shared), `AUTH` (service), `RL_UPLOAD` | `GET /?url=` — `requireAuth`, Zod query + SSRF refine, HTMLRewriter OG extraction, image→R2, edge cache 7d |
+| **auth** | `workers/auth/` | `auth.avlo.io` | secret `ANON_SECRET` | `GET /me` (signed `avlo_anon` cookie mint/slide) + `AuthRpc.verifySession` (cross-worker identity) |
+| **users** | `workers/users/` | `users.avlo.io` | `DB` (D1, sole schema owner), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), queue **consumers** `avlo-room-visits`/`avlo-room-meta` (+DLQs) | `GET /rooms` (dashboard list) + `PATCH /rooms/:id/permission` + `queue` consumer projecting visits/meta → D1 |
 
-Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client}/CLAUDE.md` cover the shared backend primitives and typed-RPC clients respectively.
+`@avlo/db` (server-only) owns the D1 + DO-SQLite Drizzle schemas. Identity is **server-resolved only** (`/me`) — the client never mints a userId. Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client,db}/CLAUDE.md` cover the shared backend primitives, typed-RPC clients, and DB schemas.
 
 ### Routes + UI
-`routes/__root.tsx`, `routes/index.tsx`, `routes/room.$roomId.tsx` (calls `connectRoom` in `beforeLoad`).
+`routes/__root.tsx` (queryClient context + `PersistQueryClientProvider`), `routes/index.tsx` (→ `/home` redirect), `routes/home.tsx` (dashboard — `useRoomList`), `routes/room.$roomId.tsx` (`connectRoom` in `beforeLoad`).
 `components/Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `TopBar.tsx`, `TopBarRight.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`, `icons/`, `toolbar/`, `context-menu/` (own CLAUDE.md).
 Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
 
@@ -232,11 +243,12 @@ Document pointer event → InputManager → presence-pointer.ts
 
 ## Routing (TanStack Router)
 
-File-based with auto code splitting. Three routes; auto-generated `routeTree.gen.ts`.
-- `beforeLoad` calls `connectRoom(roomId)` — creates Y.Doc, starts providers, restores camera (not code-split — runs while component chunk downloads)
-- `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount
-- `key={roomId}` on `RoomCanvas` forces full remount on room switch
-- `getRouteApi('/room/$roomId').useParams()` for `roomId` in components
+File-based with auto code splitting; auto-generated `routeTree.gen.ts`. `/` redirects to `/home` (dashboard); `/room/$roomId` is the canvas.
+- `__root` supplies the `queryClient` via router context + wraps `PersistQueryClientProvider`; its `beforeLoad` warms `/me` (non-blocking `void ensureIdentity()`).
+- `/home` loader: `await ensureIdentity()` (cookie for `/rooms`) then `void prefetchQuery(roomsQueryOptions())` (warm, never throws — offline-first).
+- `/room/$roomId` `beforeLoad`: `normalizeRoomId` → `await ensureIdentity()` → `connectRoom(roomId)` → `recordVisit(roomId)` (visit recorded AFTER connect so the dashboard doesn't re-sort on the way out). connectRoom creates the Y.Doc, starts providers, restores camera.
+- `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount; `key={roomId}` forces full remount on room switch.
+- `getRouteApi('/room/$roomId').useParams()` for `roomId` in components.
 
 ---
 
@@ -496,11 +508,21 @@ Imperative: `useCameraStore.getState()`. Reactive: `useCameraStore(selector)`. C
 
 ## Device UI Store (`stores/device-ui-store.ts`)
 
-Persisted Zustand store. `activeTool`, `drawingSettings` (size/color/opacity/fill), user identity (`userId`/`userName`/`userColor` — generated on first visit), per-tool defaults (text, note, shape, connector, code), `cursorOverride`.
+Persisted Zustand store (immer). `activeTool`, `drawingSettings` (size/color/opacity/fill), per-tool defaults (text, note, shape, connector, code), `cursorOverride`. **The structural model for new stores** — State + Actions interfaces, actions inside `create` via `immer`, stable destructured action exports, `subscribe` side-effects.
 
-Imperative getters: `getUserId()` (used for `ownerId`, undo tracking, presence self-filter), `getUserProfile()` → `{ userId, name, color }`, `setCursorOverride`, `applyCursor`. Constants: `TEXT_FONT_SIZE_PRESETS`, `TEXT_FONT_FAMILIES`, `TEXT_COLOR_PALETTE`, `HIGHLIGHT_COLORS`.
+Imperative getters: `setCursorOverride`, `applyCursor`. Constants: `TEXT_FONT_SIZE_PRESETS`, `TEXT_FONT_FAMILIES`, `HIGHLIGHT_COLORS`, `NOTE_COLOR_PALETTE`.
+
+**Identity lives in `stores/auth-store.ts`** (not here) — server-resolved via `/me`, never a client mint. `getUserId()` / `getUserProfile()` (throwing getters; used for `ownerId`, undo origin, presence self-filter) are there; the `/me` TanStack Query (`query/me.ts`) is the sole writer. See Query Layer below.
 
 ---
+
+## Query Layer (`query/` — TanStack Query)
+
+Server-projection reads + identity, IndexedDB-persisted (`PersistQueryClientProvider` + idb-keyval); `networkMode: 'offlineFirst'`.
+- `client.ts` — the `QueryClient` + idb persister.
+- `me.ts` — `meQueryOptions` (the `/me` identity query; its `staleTime` IS the anon-cookie slide throttle, off query-cache `dataUpdatedAt` — no `lastValidatedAt` in any store) + `ensureIdentity` (cold visitor → `await ensureQueryData`; returning visitor → `void prefetchQuery`, fire-and-forget). The queryFn is the sole writer of `auth-store`.
+- `rooms.ts` — `roomsQueryOptions` (`GET /rooms`; threads the D1 `x-d1-bookmark` for read-your-writes).
+- `room-list.ts` — `useRoomList` merges the D1 projection with `room-list-store` facts by roomId (offline-first; local-only rooms never dropped).
 
 ## Selection System
 

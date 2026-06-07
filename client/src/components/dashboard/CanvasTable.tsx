@@ -4,13 +4,13 @@ import type { CanvasGroup } from './data';
 interface CanvasTableProps {
   columns: readonly Column[];
   groups: readonly CanvasGroup[];
-  starredIds: ReadonlySet<string>;
+  onOpen: (id: string) => void;
   onToggleStar: (id: string) => void;
   /** Home view sits below a Filter/Sort row — adds extra top separation. */
   spacious?: boolean;
 }
 
-export function CanvasTable({ columns, groups, starredIds, onToggleStar, spacious = false }: CanvasTableProps) {
+export function CanvasTable({ columns, groups, onOpen, onToggleStar, spacious = false }: CanvasTableProps) {
   const template = columns.map((c) => c.width).join(' ');
   const allEmpty = groups.every((g) => g.rows.length === 0);
 
@@ -39,7 +39,7 @@ export function CanvasTable({ columns, groups, starredIds, onToggleStar, spaciou
                 columns={columns}
                 template={template}
                 canvas={canvas}
-                starred={starredIds.has(canvas.id)}
+                onOpen={onOpen}
                 onToggleStar={onToggleStar}
               />
             ))}

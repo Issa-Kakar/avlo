@@ -1,11 +1,13 @@
 import * as schemaDo from '@avlo/db/schema-do';
 import { asRoomId, asUserId, maxZLength, Permission, renormalizeZ, type UserId, Z_RENORM_MAX_KEY_LEN, Z_RENORM_ORIGIN } from '@avlo/shared';
+import type { MetaEvent, VisitEvent } from '@avlo/worker-shared';
 import { eq } from 'drizzle-orm';
-import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
+import { type DrizzleSqliteDODatabase, drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 import { YServer } from 'y-partyserver';
 import * as Y from 'yjs';
+import type { z } from 'zod/v4';
 import migrations from '../drizzle/migrations';
 
 // One canonical head per room, V2-encoded at rest
@@ -60,9 +62,6 @@ export class RoomDurableObject extends YServer<Env> {
   // on the hot path. Hibernation clears it (the DO only hibernates after idle).
   #rl = new Map<Connection<ConnState>, RateState>();
   #boot = Date.now();
-  // Guard the empty-room R2 flush: connections closed at the 4401/4403 gate never edited
-  // the doc, so a flood of forbidden attempts must not trigger pointless R2 writes.
-  #authorizedConnected = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -118,11 +117,17 @@ export class RoomDurableObject extends YServer<Env> {
     if (!this.meta) {
       const now = Date.now();
       this.meta = { ownerId: userId, permission: 'public', createdAt: now, updatedAt: now };
-      this.db.insert(roomMeta).values({ roomId: asRoomId(this.name), ...this.meta }).run(); // authoritative SQLite
+      this.db
+        .insert(roomMeta)
+        .values({ roomId: asRoomId(this.name), ...this.meta })
+        .run(); // authoritative SQLite
       try {
-        await this.env.ROOM_META.send({ roomId: this.name, ...this.meta }); // durability-critical one-shot (§6)
+        await this.env.ROOM_META.send({ roomId: this.name, ...this.meta } satisfies z.input<typeof MetaEvent>); // durability-critical one-shot (§6)
       } catch (err) {
-        console.error('room creation projection failed', err); // connect proceeds; heals on next meta
+        // Connect proceeds — DO meta is already durable on disk. A missed send only loses the
+        // D1 row, which a *cross-device* first visit would notice (this device shows it from
+        // local facts). Durable fix when warranted: an alarm-based transactional outbox.
+        console.error('room creation projection failed', err);
       }
     }
     if (this.meta.permission === 'private' && this.meta.ownerId !== userId) {
@@ -133,14 +138,15 @@ export class RoomDurableObject extends YServer<Env> {
     // 3. STAMP IDENTITY — the ONLY setState, before super (a later non-spread write would
     // wipe y-partyserver's __ypsAwarenessIds, §19/H19).
     conn.setState({ userId });
-    this.#authorizedConnected = true;
     await super.onConnect(conn, ctx); // YServer: syncStep1 + awareness merge
 
     // 4. PUSH EFFECTIVE MODE — out-of-band __YPS: string (never parsed by the Yjs decoder).
     this.sendCustomMessage(conn, `mode:${this.isReadOnly(conn) ? 'viewer' : 'editor'}`);
 
     // 5. PROJECT THE VISIT — fire-and-forget, error-handled (waitUntil is a no-op in a DO, §6).
-    this.env.ROOM_VISITS.send({ userId, roomId: this.name, visitedAt: Date.now() }).catch((err) => console.error('visit projection failed', err));
+    this.env.ROOM_VISITS.send({ userId, roomId: this.name, visitedAt: Date.now() } satisfies z.input<typeof VisitEvent>).catch((err) =>
+      console.error('visit projection failed', err),
+    );
   }
 
   /** Live read-only recompute from in-memory meta — reflects permission flips on the very next message (§8/H17). */
@@ -159,13 +165,24 @@ export class RoomDurableObject extends YServer<Env> {
     Permission.parse(next); // authority-boundary guard (§14a)
     if (!this.meta || this.meta.ownerId !== caller) throw new Error('forbidden');
     const now = Date.now();
-    this.db.update(roomMeta).set({ permission: next, updatedAt: now }).where(eq(roomMeta.roomId, asRoomId(this.name))).run();
+    this.db
+      .update(roomMeta)
+      .set({ permission: next, updatedAt: now })
+      .where(eq(roomMeta.roomId, asRoomId(this.name)))
+      .run();
     this.meta = { ...this.meta, permission: next, updatedAt: now }; // ★ warm-cache fix
-    await this.env.ROOM_META.send({ roomId: this.name, ownerId: this.meta.ownerId, permission: next, createdAt: this.meta.createdAt, updatedAt: now });
+    await this.env.ROOM_META.send({
+      roomId: this.name,
+      ownerId: this.meta.ownerId,
+      permission: next,
+      createdAt: this.meta.createdAt,
+      updatedAt: now,
+    } satisfies z.input<typeof MetaEvent>);
 
     for (const c of this.getConnections<ConnState>()) {
       if (c.state?.userId === caller) continue;
-      if (next === 'private') c.close(4403, 'forbidden'); // evict — a viewer state can't express "gone"
+      if (next === 'private')
+        c.close(4403, 'forbidden'); // evict — a viewer state can't express "gone"
       else this.sendCustomMessage(c, `mode:${this.isReadOnly(c) ? 'viewer' : 'editor'}`); // re-push, no reconnect
     }
   }
@@ -210,10 +227,13 @@ export class RoomDurableObject extends YServer<Env> {
     await super.onClose(connection, code, reason, wasClean);
     this.#rl.delete(connection);
 
-    // If the room is now empty AND an authorized connection ever attached, flush the doc
-    // immediately (non-debounced). getConnections() yields only OPEN sockets; after
-    // super.onClose() the departing socket is already excluded.
-    if (this.#authorizedConnected && this.getConnections()[Symbol.iterator]().next().done) {
+    // If the room is now empty, flush the doc immediately (non-debounced). This runs on the
+    // fresh instance after a hibernation wake too — onLoad re-hydrates the doc before onClose,
+    // so the snapshot is whole. getConnections() yields only OPEN sockets; after super.onClose()
+    // the departing socket is already excluded. We flush on ANY empty close (the pre-permissions
+    // behavior) — tracking whether an authorized editor attached, just to skip one R2 write on a
+    // forbidden-only isolate, isn't worth the state to keep correct across hibernation.
+    if (this.getConnections()[Symbol.iterator]().next().done) {
       // One microturn in case a final Yjs update just landed
       await Promise.resolve();
       try {

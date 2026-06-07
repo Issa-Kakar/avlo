@@ -1,6 +1,6 @@
 # @avlo/api-client
 
-Browser- and SW-safe typed HTTP-RPC clients for the public Workers (`images`, `unfurl`). Wraps Hono's `hc<AppType>(origin)` — `import type` for AppType (fully erased at build), `hc` from `hono/client` is the only runtime import.
+Browser- and SW-safe typed HTTP-RPC clients for the public Workers (`images`, `unfurl`, `auth`, `users`). Wraps Hono's `hc<AppType>(origin)` — `import type` for AppType (fully erased at build), `hc` from `hono/client` is the only runtime import.
 
 Used anywhere transport is HTTP `fetch` over the public internet: main browser bundle, web workers (`?worker` and bare entries), and the service worker. **Worker-to-Worker is binary RPC via `WorkerEntrypoint`** — different transport, see `workers/CLAUDE.md` §Inter-Worker.
 
@@ -11,8 +11,10 @@ The package publishes TS source directly via `exports` (no dist build).
 | File | Exports |
 |---|---|
 | `src/index.ts` | Barrel: origins + matchers + clients + AppType types |
-| `src/origins.ts` | `IMAGES_ORIGIN`, `UNFURL_ORIGIN`, `SYNC_HOST_PROD` — driven by `import.meta.env.PROD`. Has a file-scoped `/// <reference types="vite/client" />` for `ImportMetaEnv` resolution under path-mapped compilation (e.g., when api-client typechecks in isolation or via a workspace include from outside). |
+| `src/origins.ts` | `AUTH_ORIGIN`, `IMAGES_ORIGIN`, `UNFURL_ORIGIN`, `USERS_ORIGIN`, `SYNC_HOST_PROD` — driven by `import.meta.env.PROD`. Has a file-scoped `/// <reference types="vite/client" />` for `ImportMetaEnv` resolution under path-mapped compilation (e.g., when api-client typechecks in isolation or via a workspace include from outside). |
 | `src/sw-matchers.ts` | `isImagesRequest(url, origin)`, `isSyncRequest(url, syncHostProd)` — zero-dep URL matching for the SW fetch handler. |
+| `src/auth.ts` | `authClient = hc<AuthApp>(AUTH_ORIGIN, { init: { credentials: 'include' } })` — the `/me` identity resolver; the cookie rides via `credentials:'include'`. Re-exports `MeResponse` (through `AuthApp`). |
+| `src/users.ts` | `usersClient = hc<UsersApp>(USERS_ORIGIN)` (credentials:'include') — `GET /rooms` + `PATCH /rooms/:id/permission`. Re-exports `RoomListEntry`/`RoomListResponse`. |
 | `src/images.ts` | `imagesClient = hc<ImagesApp>(IMAGES_ORIGIN)` |
 | `src/unfurl.ts` | `unfurlClient = hc<UnfurlApp>(UNFURL_ORIGIN)` |
 

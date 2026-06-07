@@ -5,8 +5,10 @@ import { sql } from 'drizzle-orm';
 /**
  * Queue consumer (§6/H23) — one handler binding BOTH queues, discriminating on
  * `batch.queue` (the queue name IS the discriminator; no `type` field). Each message is
- * `safeParse`d against its flat schema — a poison body acks-drops to that queue's DLQ
- * instead of crashing the batch. Coalesce within the batch, then one upsert per key.
+ * `safeParse`d against its flat schema — a poison body is `ack`-dropped (discarded; NOT
+ * routed to the DLQ, which is retry-exhaustion only) so one bad message can't crash the
+ * batch. Dev-time choice — proper poison handling (quarantine + inspect + alert) is later
+ * work. Coalesce within the batch, then one upsert per key.
  * No inner `withRetry`: a thrown error → `batch.retryAll()` (Queue-level redelivery with
  * backoff, exhausted → DLQ); an inner retry would just stall the batch.
  *
@@ -21,7 +23,7 @@ export async function consume(batch: MessageBatch, env: Env): Promise<void> {
       for (const m of batch.messages) {
         const p = VisitEvent.safeParse(m.body);
         if (!p.success) {
-          m.ack(); // poison → drop to DLQ
+          m.ack(); // discard poison (not DLQ — see header)
           continue;
         }
         const e = p.data;
