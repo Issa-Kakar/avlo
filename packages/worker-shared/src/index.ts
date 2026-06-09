@@ -1,7 +1,7 @@
 export { syntheticCacheUrl } from './cache-keys';
 export { ANON_COOKIE, type AuthCtx, cookieOpts, mintAnonToken, verifyAnonToken } from './cookies';
-export { createCors } from './cors';
-export { applyCsp, type CspProfile } from './csp';
+export { type CorsOptions, createCors, isAllowedOrigin, isDevHost } from './cors';
+export { applyCsp, type CspProfile, cspError, cspHeaders } from './csp';
 export { userRateLimiter } from './rate-limit';
 export { requireAuth } from './require-auth';
 export type { AuthRpcSurface, RoomDoStub } from './rpc-surfaces';

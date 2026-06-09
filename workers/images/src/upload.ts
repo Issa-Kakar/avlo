@@ -1,5 +1,5 @@
 import { validateImage } from '@avlo/shared';
-import { applyCsp, assetKeyParam, contentLengthBound, MAX_UPLOAD_BYTES } from '@avlo/worker-shared';
+import { assetKeyParam, contentLengthBound, MAX_UPLOAD_BYTES } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { createFactory } from 'hono/factory';
 import type { ImagesEnv } from './env';
@@ -32,8 +32,8 @@ export const handleUpload = factory.createHandlers(
     // 5. Persist.
     await c.env.IMAGES.put(key, buffer, { httpMetadata: { contentType: mimeType } });
 
+    // CSP stamped by the route's cspHeaders('api-json') middleware on egress.
     const headers = new Headers({ 'Content-Type': 'application/json' });
-    applyCsp(headers, 'api-json');
     return new Response(JSON.stringify({ key, status: 'created' }), { status: 201, headers });
   },
 );

@@ -1,4 +1,4 @@
-import { applyCsp, assetKeyParam } from '@avlo/worker-shared';
+import { assetKeyParam } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { createFactory } from 'hono/factory';
 import type { ImagesEnv } from './env';
@@ -34,8 +34,7 @@ export const handleGetAsset = factory.createHandlers(zValidator('param', assetKe
   object.writeHttpMetadata(headers);
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
   headers.set('ETag', object.httpEtag);
-  headers.set('Accept-Ranges', 'bytes'); // capability advertisement
-  applyCsp(headers, 'asset-body');
+  headers.set('Accept-Ranges', 'bytes'); // capability advertisement (CSP stamped by cspHeaders middleware)
 
   // Compute Content-Range / 206 only when the client opted in via Range. The
   // start !== 0 || end !== size - 1 guard then handles the legitimate case of

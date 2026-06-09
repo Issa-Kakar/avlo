@@ -50,9 +50,9 @@ Same-origin SPA + WSS — SPA on `avlo.io` opens `wss://avlo.io/parties/rooms/<i
 ### `workers/images/` — image upload + GET
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | `createCors('images')`, route table, drift-guard assertion, default export. |
-| `src/upload.ts` | `handleUpload` (H1 zod param + H2 content-length-bound + dedup + magic-byte + hash-verify + R2 put + H5 CSP). |
-| `src/get.ts` | `handleGetAsset` (H1 zod param, Range bypasses `caches.default`, R2 conditional + range read, H5 CSP, `Accept-Ranges` advertised). |
+| `src/index.ts` | per-worker `createCors({ methods: ['GET','PUT'], … })`, route-scoped `cspHeaders` (`asset-body` GET / `api-json` PUT) + `csrf` on PUT, `app.onError` CSP stamp, drift-guard, default export. |
+| `src/upload.ts` | `handleUpload` (H1 zod param + H2 content-length-bound + dedup + magic-byte + hash-verify + R2 put). CSP via the route's `cspHeaders('api-json')`. |
+| `src/get.ts` | `handleGetAsset` (H1 zod param, Range bypasses `caches.default`, R2 conditional + range read, `Accept-Ranges` advertised). CSP via the route's `cspHeaders('asset-body')` — covers 200/206 + the 304/404 early returns. |
 | `src/app-type.ts` | Public mock app — wire shape for `hc<ImagesApp>(...)`. Ambient-free. |
 
 Path is bare `/:key`. Dev uses `/api/images/:key` via Vite proxy with `rewrite` stripping the prefix.
@@ -60,7 +60,7 @@ Path is bare `/:key`. Dev uses `/api/images/:key` via Vite proxy with `rewrite` 
 ### `workers/unfurl/` — bookmark unfurl
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | `createCors('unfurl')`, `zValidator('query', unfurlQuery)`, drift-guard. |
+| `src/index.ts` | `createCors({ methods: ['GET'] })` + `cspHeaders('api-json')`, `zValidator('query', unfurlQuery)`, drift-guard. |
 | `src/unfurl.ts` | HTMLRewriter OG extraction, image fetch + R2 store (shared `avlo-assets`), edge cache 7d via `syntheticCacheUrl('unfurl', …)`. |
 | `src/app-type.ts` | Public mock + exported `UnfurlResponseBody` (real handler imports the type to constrain its data builder). |
 
@@ -71,7 +71,7 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 ### `workers/auth/` — anonymous identity (§2)
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | `createCors('auth')`, `GET /me`, drift-guard, default export + `AuthRpc`. |
+| `src/index.ts` | `createCors({ methods: ['GET'] })` + `cspHeaders('api-json')`, `GET /me`, drift-guard, default export + `AuthRpc`. |
 | `src/handlers/me.ts` | `GET /me` — verify + slide the signed `avlo_anon` cookie, else mint a fresh `userId`; `name`/`color` deterministic from id (`@avlo/shared`). 400-day sliding Max-Age. |
 | `src/rpc.ts` | `AuthRpc extends WorkerEntrypoint` — `verifySession(cookieHeader)` (anon-only today; OAuth/KV is the seam). |
 | `src/app-type.ts` | Public mock — `MeResponse` wire shape for `hc<AuthApp>`. |
@@ -81,7 +81,7 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 ### `workers/users/` — dashboard data + projections (§4–§8)
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | `createCors` → `requireAuth` → `userRateLimiter(RL_ROOMS)` → routes; default export `{ fetch, queue }` + `UsersRpc`. |
+| `src/index.ts` | `createCors({methods:['GET','PATCH'],…})` → `cspHeaders('api-json')` → `csrf` → `requireAuth` → `userRateLimiter(RL_ROOMS)` → routes; `app.onError` CSP stamp; default export `{ fetch, queue }` + `UsersRpc`. |
 | `src/handlers/rooms.ts` | `GET /rooms` (D1 Sessions read, `x-d1-bookmark`, `isOwner` derived) + `PATCH /rooms/:id/permission` (→ cross-script `rooms` DO `setPermission`; 403 on non-owner). |
 | `src/queue.ts` | `consume` — both queues (`switch(batch.queue)`); `safeParse` → ack-drop poison; coalesce + idempotent upsert (visits `max()`, meta LWW / first-write-wins). |
 | `src/rpc.ts` | `UsersRpc extends WorkerEntrypoint` — `linkAccount` OAuth-deferred stub. |
@@ -143,8 +143,8 @@ Every PR touching a worker route must satisfy these. Non-negotiable.
 | H2 | `Content-Length` bounded BEFORE body await. | `zValidator('header', contentLengthBound(MAX))` |
 | H3 | Zod does NOT touch image bytes, `Range`, or `If-*` headers. | Explicit — see `@avlo/worker-shared/zod/*` |
 | H4 | Content-addressed keys server-computed and compared. | `sha256Hex(buffer) === key` |
-| H5 | CSP set on every response via `applyCsp(headers, profile)`. | Per-handler call before `return new Response`. Empty-body 502/204 still get the profile (consistency, defense in depth). |
-| H6 | CORS is first middleware on every cross-origin worker. | `app.use('*', createCors(name))` first. Main is exempt (same-origin SPA + WSS). |
+| H5 | CSP set on every *returned* response via the `cspHeaders(profile)` egress middleware (never a forgettable per-handler call). | `app.use('*', cspHeaders(profile))`, or route-scoped where a worker serves two profiles (images GET `asset-body` / PUT `api-json`). Covers 304/404 early returns + the `requireAuth` 401. Thrown `HTTPException`s (csrf 403) are stamped by `app.onError`. |
+| H6 | CORS is first middleware on every cross-origin worker, scoped per worker. | `app.use('*', createCors({ methods, allowHeaders?, exposeHeaders? }))` first — each worker advertises only the verbs + headers it serves. Main is exempt (same-origin SPA + WSS). |
 | H7 | Synthetic cache keys namespaced by service. | `syntheticCacheUrl('unfurl', sha)` |
 | H8 | No worker writes to a bucket it doesn't bind. | `r2_buckets` declared per-service |
 | H9 | SSRF guard runs in a Zod `.refine`, not handler. | `unfurlQuery` chain |
@@ -159,7 +159,9 @@ The identity + authz vertical layers these on top of H1–H12 (the formal H13–
 - **Server-resolved identity only.** No client-side `userId` mint; auth `/me` is the sole source. `UserId`/`RoomId` are branded + validated at every wire boundary (`AnonToken` parse, `verifyAnonToken`, queue `safeParse`, D1 `$type<>()`, the edge-stamped `x-avlo-user-id` header verified in `on-before-connect`).
 - **Auth gate before handler.** `requireAuth` (via the `AUTH` service RPC) resolves `c.get('userId')` before any gated route; `userRateLimiter` keys tier-1 limits on it.
 - **The DO is the authority.** Room permission/ownership decisions read the room DO (never D1); `setPermission` is owner-only and re-pushes/evicts live connections. D1 is a display projection only; producers tie payloads to the event schemas (`satisfies z.input<…>`), the consumer `safeParse`s + upserts idempotently.
-- **Known gap:** auth + users JSON responses don't yet apply the `api-json` CSP profile (H5) — pending the planned Hono-secure-headers + per-worker-CORS pass.
+- **CSP is middleware, not per-handler.** `cspHeaders(profile)` (worker-shared) stamps the profile on egress, so every returned response — auth `/me`, users `/rooms` + PATCH, the `requireAuth` 401, images' 304/404 — carries it with nothing to forget. `applyCsp` remains for hand-built `Headers` + the `onError` path (csrf's thrown 403).
+- **CORS is per-worker.** `createCors({ methods, allowHeaders?, exposeHeaders? })` advertises only what each worker serves (auth `GET`; users `GET`+`PATCH` + `x-d1-bookmark`; images `GET`+`PUT` + range/etag/accept-ranges; unfurl `GET`). The shared `isAllowedOrigin`/`isDevHost` predicate reflects the origin allowlist and gates `http://localhost:*` to dev (by request `Host`), so prod never reflects a localhost origin against the credentialed `.avlo.io` cookie.
+- **CSRF on mutating routes.** `hono/csrf` guards users `PATCH` + images `PUT`, reusing the CORS origin allowlist (one source of truth). It engages only on form content-types — `application/json` and binary uploads bypass, so `hc` traffic is unaffected — and never on GET/HEAD; service-binding RPC bypasses HTTP middleware entirely. **Tripwire:** revisit csrf coverage and the `SameSite=Lax` cookie if the session goes `SameSite=None`/OAuth, or any subdomain begins serving first-party HTML.
 
 ## Dev Orchestration
 
@@ -198,7 +200,7 @@ This is the load-bearing check that proves type-only imports of worker AppTypes 
 | Read `c.req.param/query/header(...)` without Zod | `zValidator(...)` first (H1) |
 | Buffer body before `Content-Length` check | Validate header first (H2) |
 | Trust client-provided content hash | Server `sha256Hex(buffer) === key` (H4) |
-| Inline CSP literals on a `Response` | `applyCsp(headers, profile)` (H5) |
+| Inline CSP literals, or a per-handler `applyCsp` you can forget | `cspHeaders(profile)` middleware (H5); `applyCsp` only for hand-built `Headers` / `onError` |
 | Serve cached 200 to a `Range` request | Skip `caches.default.match` when `Range` present |
 | Re-introduce `ASSETS` as binding for the images R2 bucket | Binding is `IMAGES`; `ASSETS` is reserved for Static Assets on main |
 | Rename main's wrangler `name` from `avlo` to `avlo-main` | Asymmetry is load-bearing — preserves DO namespace, signals canonical app identity |

@@ -1,5 +1,5 @@
 import { extractDomain, isSvg, parseImageDimensions, validateImage } from '@avlo/shared';
-import { applyCsp, syntheticCacheUrl } from '@avlo/worker-shared';
+import { syntheticCacheUrl } from '@avlo/worker-shared';
 import type { Context } from 'hono';
 import type { UnfurlResponseBody } from './app-type';
 import type { UnfurlEnv } from './env';
@@ -328,7 +328,7 @@ function jsonCached(c: Context<UnfurlEnv>, cache: Cache, cacheKey: string, data:
     'Content-Type': 'application/json',
     'Cache-Control': 'public, max-age=604800',
   });
-  applyCsp(headers, 'api-json'); // H5
+  // CSP (api-json) stamped on egress by the cspHeaders middleware (H5).
   const response = new Response(body, { status: 200, headers });
 
   // Populate edge cache in background (clone for cache)
@@ -337,11 +337,8 @@ function jsonCached(c: Context<UnfurlEnv>, cache: Cache, cacheKey: string, data:
   return response;
 }
 
-// Empty-body responses (502/204) still get the api-json CSP profile so the
-// cross-site headers (X-Content-Type-Options, CORP) are consistent with the
-// success path. H5: applies to every response, not just JSON bodies.
+// Empty-body responses (502/204). The api-json CSP profile is stamped on egress by the
+// cspHeaders('api-json') middleware (H5), so body and bodyless responses stay consistent.
 function emptyApiResponse(status: number): Response {
-  const headers = new Headers();
-  applyCsp(headers, 'api-json');
-  return new Response(null, { status, headers });
+  return new Response(null, { status });
 }

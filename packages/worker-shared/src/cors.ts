@@ -2,20 +2,48 @@ import { cors } from 'hono/cors';
 
 const ALLOWED_PROD = new Set<string>(['https://avlo.io', 'https://www.avlo.io']);
 
-export const createCors = (_serviceName: string) =>
+/**
+ * Dev iff the request's own `Host` is localhost/127.0.0.1 — mirrors `cookieOpts`' dev split.
+ * Gating the localhost-origin allowance behind this means prod never reflects a `http://localhost:*`
+ * origin against the credentialed `.avlo.io` cookie (a browser can't forge `Origin`, so this is
+ * defense in depth, not a live hole).
+ */
+export const isDevHost = (host: string | undefined | null): boolean =>
+  !!host && (host.includes('localhost') || host.startsWith('127.0.0.1'));
+
+/**
+ * The single allowed-origin predicate, shared by CORS reflection and the csrf guard — one source
+ * of truth for "an origin that is ours". Returns the reflected origin string (CORS needs it) or
+ * `null`. `origin` is `''` (from cors) or `undefined` (from csrf) when the header is absent;
+ * localhost is allowed only when the request is itself dev.
+ */
+export const isAllowedOrigin = (origin: string | undefined | null, isDev: boolean): string | null => {
+  if (!origin) return null;
+  if (isDev && origin.startsWith('http://localhost:')) return origin;
+  if (ALLOWED_PROD.has(origin)) return origin;
+  return null;
+};
+
+export interface CorsOptions {
+  /** The non-OPTIONS verbs this worker serves. `OPTIONS` is appended for the preflight. */
+  methods: readonly string[];
+  /** Request headers the worker reads. Defaults to `['Content-Type']`. */
+  allowHeaders?: readonly string[];
+  /** Response headers the browser may read. Defaults to none. */
+  exposeHeaders?: readonly string[];
+}
+
+/**
+ * Per-worker CORS (H6, first middleware). Each worker advertises only the methods + headers it
+ * actually uses — no shared catch-all surface. Reflected origin (never `*`) + `credentials` so the
+ * SPA's cross-subdomain calls carry the `.avlo.io` cookie. Hono appends `Vary: Origin` automatically.
+ */
+export const createCors = ({ methods, allowHeaders = ['Content-Type'], exposeHeaders = [] }: CorsOptions) =>
   cors({
-    origin: (origin) => {
-      if (!origin) return null;
-      if (origin.startsWith('http://localhost:')) return origin;
-      if (ALLOWED_PROD.has(origin)) return origin;
-      return null;
-    },
-    // Credentialed cross-origin: the SPA calls subdomain workers with
-    // `credentials: 'include'` so the `.avlo.io` cookie rides (§12). Requires a
-    // specific reflected origin (never `*`) + `Access-Control-Allow-Credentials`.
+    origin: (origin, c) => isAllowedOrigin(origin, isDevHost(c.req.header('host'))),
     credentials: true,
-    allowMethods: ['GET', 'PUT', 'POST', 'PATCH', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Content-Length', 'Range', 'If-None-Match', 'If-Modified-Since', 'x-d1-bookmark'],
-    exposeHeaders: ['ETag', 'Content-Range', 'x-d1-bookmark'],
+    allowMethods: [...methods, 'OPTIONS'],
+    allowHeaders: [...allowHeaders],
+    exposeHeaders: [...exposeHeaders],
     maxAge: 86400,
   });
