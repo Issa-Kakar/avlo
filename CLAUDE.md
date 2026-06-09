@@ -8,10 +8,11 @@ Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,i
 
 ## Commands & Aliases
 ```bash
-npm run typecheck    # typecheck client + all three workers (must run from repo root)
-npm run dev          # Vite :3000 + workers :8787/:8788/:8789 — ask before starting
+npm run typecheck    # tsgo — client + all 5 workers; THE typecheck (run from repo root)
+npm run dev          # Vite :3000 + workers :8787, :8790-8793 — ask before starting
 npm run lint         # Biome — skip routine runs (noisy, sometimes wrong); pre-commit auto-formats
 ```
+> **Typecheck is tsgo** for client and workers alike — `npm run typecheck` is the only check an agent runs. `npm run typecheck:tsc` (a `tsc` parity pass) is reserved for CI and pre-prod; don't reach for tsc after backend/worker edits.
 > In the `avlo-parallel` worktree, run `npm run dev:p` instead of `npm run dev` — it shifts every wrangler port by `PORT_OFFSET` so the two checkouts can run side-by-side without colliding.
 
 - `@avlo/shared` → `packages/shared/src/*` (cross-runtime; client + server)

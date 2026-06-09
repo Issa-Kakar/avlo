@@ -114,7 +114,7 @@ const app = new Hono<{ Bindings: Env }>().get('/', …);
 assertSurfaceMatch<typeof app, PublicSurface>(true);
 ```
 
-When real/mock paths × methods diverge in either direction, `AssertEqual<…>` resolves to `never`, the `true` argument fails the parameter type, and tsc/tsgo flag the call site. Verified empirically in both directions.
+When real/mock paths × methods diverge in either direction, `AssertEqual<…>` resolves to `never`, the `true` argument fails the parameter type, and tsgo/tsc flag the call site. Verified empirically in both directions.
 
 ## Future-Worker Checklist
 
@@ -180,7 +180,7 @@ npm run dev:images                         # single worker, useful with separate
 
 ## CI
 
-`.github/workflows/ci.yml` runs typecheck (tsgo + tsc ground truth), biome check, client build, and the **SW bundle isolation grep**:
+`.github/workflows/ci.yml` runs typecheck (tsgo — the same check you run locally — plus a redundant `tsc --noEmit` pass whose only job is to catch the preview compiler ever diverging from tsc), biome check, client build, and the **SW bundle isolation grep**:
 
 ```bash
 grep -E 'partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost' client/dist/sw.js
@@ -209,6 +209,7 @@ This is the load-bearing check that proves type-only imports of worker AppTypes 
 | Add `@avlo/worker-shared` to `client/tsconfig.json` paths | The omission IS the guardrail |
 | Import `import type { FooApp } from '…/workers/foo/src/index'` in `@avlo/api-client` | Always import from `.../src/app-type`. The mock exists to prevent the ambient-types leak; bypassing reintroduces it |
 | Drop `assertSurfaceMatch<...>(true)` from a real `index.ts` | Without it, mock and real silently diverge and typed clients reference stale routes |
+| Stop to run `tsc` / `npm run typecheck:tsc` as a "ground truth" pass after worker/backend edits | `npm run typecheck` (tsgo) **is** the check — client *and* workers, no exceptions. The `tsc` parity pass is reserved for CI and pre-prod; it is never an agent step |
 | Uncomment a `[[routes]]` block as part of any refactor | Deploy is gated on more than DNS — additional pre-prod essentials still needed |
 | Speculatively cap `cpu_ms` in `wrangler.jsonc` | No cap until profiling shows a pathological ceiling worth defending |
 | Use `console.log` in worker code | Biome blocks it; `console.warn`/`error` with redacted payloads (H10) |
