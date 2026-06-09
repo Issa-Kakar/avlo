@@ -15,7 +15,7 @@ export type TextId = string; // ULID format
 export type UserId = string & { readonly __userId: unique symbol };
 
 /**
- * Room id — a branded string. 12-char Crockford base32, canonical uppercase.
+ * Room id — a branded string. 14-char base62 nanoid (~83 bits), case-sensitive.
  * Constructed ONLY by `generateRoomId()` / `normalizeRoomId()` (`utils/room-id.ts`),
  * so the brand makes a raw string un-assignable and every `RoomId` is validated at
  * its source. Still assignable TO `string` (Y.Doc guid, IDB db name, camera-store key).

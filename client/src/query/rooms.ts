@@ -13,6 +13,7 @@
 import { type RoomListEntry, usersClient } from '@avlo/api-client';
 import { queryOptions } from '@tanstack/react-query';
 import { queryClient } from './client';
+import { ensureIdentity } from './me';
 
 export interface RoomsQueryData {
   rooms: RoomListEntry[];
@@ -25,6 +26,11 @@ export function roomsQueryOptions() {
   return queryOptions({
     queryKey: ROOMS_QUERY_KEY,
     queryFn: async (): Promise<RoomsQueryData> => {
+      // The signed cookie /rooms authenticates with must exist first. Identity is
+      // resolved HERE, not in the /home loader, so the dashboard shell paints
+      // instantly even for a cold visitor; deduped with the root beforeLoad warm-up
+      // via the shared me query key. Instant for a returning visitor.
+      await ensureIdentity();
       const prev = queryClient.getQueryData<RoomsQueryData>(ROOMS_QUERY_KEY);
       const res = await usersClient.rooms.$get({}, prev?.bookmark ? { headers: { 'x-d1-bookmark': prev.bookmark } } : undefined);
       if (!res.ok) throw new Error(`GET /rooms ${res.status}`);

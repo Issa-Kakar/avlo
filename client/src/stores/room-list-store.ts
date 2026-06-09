@@ -12,6 +12,7 @@
  * callers pass through frictionlessly, and a local facts map crosses no trust boundary
  * that would need the brand re-narrowed.
  */
+import { ROOM_ID_RE } from '@avlo/shared';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
@@ -67,6 +68,15 @@ export const useRoomListStore = create<RoomListStore>()(
     })),
     {
       name: 'avlo.rooms.v1',
+      // v1 = the roomId format pivot (12-char base32 → 14-char base62). Pre-pivot ids
+      // fail the new format gate and would sit as dead dashboard rows that bounce to
+      // /home — purge them once on rehydrate.
+      version: 1,
+      migrate: (persisted) => {
+        const s = persisted as RoomListState;
+        for (const id in s.rooms) if (!ROOM_ID_RE.test(id)) delete s.rooms[id];
+        return s;
+      },
       storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({ rooms: s.rooms }),
     },

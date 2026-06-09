@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "6f3f24e3-8468-4609-8b39-ac289bbf3334",
+  "id": "51ad905b-3b58-4d34-8213-e8c2f7475368",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "room_visits": {
@@ -27,25 +27,26 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "rev": {
+          "name": "rev",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
         }
       },
       "indexes": {
         "idx_room_visits_user_recent": {
           "name": "idx_room_visits_user_recent",
-          "columns": [
-            "user_id",
-            "last_visited_at"
-          ],
+          "columns": ["user_id", "last_visited_at"],
           "isUnique": false
         }
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "room_visits_user_id_room_id_pk": {
-          "columns": [
-            "user_id",
-            "room_id"
-          ],
+          "columns": ["user_id", "room_id"],
           "name": "room_visits_user_id_room_id_pk"
         }
       },
@@ -94,8 +95,24 @@
           "name": "title",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'Untitled'"
+        },
+        "rev": {
+          "name": "rev",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
           "autoincrement": false
+        },
+        "deleted": {
+          "name": "deleted",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
         }
       },
       "indexes": {},
@@ -153,9 +170,7 @@
       "indexes": {
         "users_google_sub_unique": {
           "name": "users_google_sub_unique",
-          "columns": [
-            "google_sub"
-          ],
+          "columns": ["google_sub"],
           "isUnique": true
         }
       },

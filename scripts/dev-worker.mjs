@@ -41,20 +41,46 @@ const repoRoot = resolve(here, '..');
 // is the second half of the contract: same persist root + same bucket name =
 // one shared subdirectory across workers.
 const persistTo = resolve(repoRoot, '.wrangler/state');
-const proc = spawn(
-  'npx',
-  [
-    'wrangler',
-    'dev',
-    '-c',
-    `workers/${name}/wrangler.jsonc`,
-    '--port',
-    String(port),
-    '--inspector-port',
-    String(inspectorPort),
-    '--persist-to',
-    persistTo,
-  ],
-  { stdio: 'inherit', cwd: repoRoot, shell: true },
-);
-proc.on('exit', (code) => process.exit(code ?? 0));
+
+// Workerd startup on the shared persist root can race sibling workers CREATING the
+// same metadata.sqlite (cache/r2/do subdirs) — the loser dies with a fatal
+// `database is locked: SQLITE_BUSY` (observed on the first six-way boot after wiping
+// `.wrangler/state`; once the files exist, concurrent opens are fine). An early
+// nonzero exit IS that race in practice — retry with jitter so one loser doesn't
+// take down the whole `concurrently -k` session. A real config error still surfaces:
+// it keeps crashing past MAX_RETRIES. Signal kills (`code === null`, concurrently's
+// SIGTERM) never retry.
+const STARTUP_WINDOW_MS = 15_000;
+const MAX_RETRIES = 2;
+let attempts = 0;
+
+function run() {
+  const startedAt = Date.now();
+  const proc = spawn(
+    'npx',
+    [
+      'wrangler',
+      'dev',
+      '-c',
+      `workers/${name}/wrangler.jsonc`,
+      '--port',
+      String(port),
+      '--inspector-port',
+      String(inspectorPort),
+      '--persist-to',
+      persistTo,
+    ],
+    { stdio: 'inherit', cwd: repoRoot, shell: true },
+  );
+  proc.on('exit', (code) => {
+    if (code !== null && code !== 0 && Date.now() - startedAt < STARTUP_WINDOW_MS && attempts < MAX_RETRIES) {
+      attempts += 1;
+      const delay = 500 + Math.floor(Math.random() * 1000);
+      console.error(`[dev-worker] ${name} crashed during startup (exit ${code}) — retrying ${attempts}/${MAX_RETRIES} in ${delay}ms`);
+      setTimeout(run, delay);
+      return;
+    }
+    process.exit(code ?? 0);
+  });
+}
+run();

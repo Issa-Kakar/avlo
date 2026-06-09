@@ -83,7 +83,7 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 |---|---|
 | `src/index.ts` | `createCors({methods:['GET','PATCH'],…})` → `cspHeaders('api-json')` → `csrf` → `requireAuth` → `userRateLimiter(RL_ROOMS)` → routes; `app.onError` CSP stamp; default export `{ fetch, queue }` + `UsersRpc`. |
 | `src/handlers/rooms.ts` | `GET /rooms` (D1 Sessions read, `x-d1-bookmark`, `isOwner` derived) + `PATCH /rooms/:id/permission` (→ cross-script `rooms` DO `setPermission`; 403 on non-owner). |
-| `src/queue.ts` | `consume` — both queues (`switch(batch.queue)`); `safeParse` → ack-drop poison; coalesce + idempotent upsert (visits `max()`, meta LWW / first-write-wins). |
+| `src/queue.ts` | `consume` — both queues (`switch(batch.queue)`); `safeParse` → ack-drop poison; coalesce by the DO's per-room `rev`, then ONE `db.batch` of chunked multi-row upserts (≤96 bound params/statement — D1 caps 100). LWW guarded by `excluded.rev >`; owner/createdAt first-write-wins. |
 | `src/rpc.ts` | `UsersRpc extends WorkerEntrypoint` — `linkAccount` OAuth-deferred stub. |
 | `src/env.ts` | `UsersEnv = { Bindings: Env; Variables: { userId: UserId } }`, threaded through every handler (Hono `Context` is invariant in `Variables`). |
 | `src/zod/permission.ts` | `permissionParam`/`permissionBody` validators for the PATCH route. |

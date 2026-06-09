@@ -1,10 +1,9 @@
+import m0000 from './0000_furry_captain_stacy.sql';
 import journal from './meta/_journal.json';
-import m0000 from './0000_tricky_hellfire_club.sql';
 
-  export default {
-    journal,
-    migrations: {
-      m0000
-    }
-  }
-  
+export default {
+  journal,
+  migrations: {
+    m0000,
+  },
+};

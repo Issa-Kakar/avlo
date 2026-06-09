@@ -1,38 +1,34 @@
+import { customAlphabet } from 'nanoid';
 import type { RoomId } from '../types/identifiers';
 
 /**
- * Crockford base32, uppercase canonical, 12 chars (~60 bits). Gates BOTH the
- * client redirect and the worker edge pre-filter (`onBeforeConnect`) from one
- * source — a cheap DoS/format guard, NOT a security boundary (existence +
- * permission still resolve in the DO, §13).
+ * Base62, case-SENSITIVE, 14 chars (~83 bits). Gates BOTH the client redirect
+ * and the worker edge pre-filter (`onBeforeConnect`) from one source — a cheap
+ * DoS/format guard, NOT a security boundary (existence + permission still
+ * resolve in the DO, §13).
  */
-export const ROOM_ID_RE = /^[0-9A-HJKMNP-TV-Z]{12}$/;
+export const ROOM_ID_RE = /^[0-9A-Za-z]{14}$/;
 
-// Crockford base32 alphabet — excludes I, L, O, U (ambiguity). 32 chars, so a
-// `byte & 31` index is uniform.
-const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const ID_LEN = 12;
+// nanoid customAlphabet — CSPRNG-backed, uniform over the 62-char alphabet.
+const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+const ID_LEN = 14;
+const nano = customAlphabet(ALPHABET, ID_LEN);
 
 /**
- * Mint a fresh canonical room id from CSPRNG bytes. Client-mintable (runs in the
- * browser), which is what enables optimistic + offline room creation (§12/§13).
+ * Mint a fresh room id. Client-mintable (runs in the browser), which is what
+ * enables optimistic + offline room creation (§12/§13).
  */
 export function generateRoomId(): RoomId {
-  const bytes = new Uint8Array(ID_LEN);
-  crypto.getRandomValues(bytes);
-  let out = '';
-  for (let i = 0; i < ID_LEN; i++) out += ALPHABET[bytes[i] & 31];
-  return out as RoomId;
+  return nano() as RoomId;
 }
 
 /**
- * Uppercase-canonicalize + validate. Returns the brand or null. Crockford
- * ambiguity folding (I/L→1, O→0) is intentionally NOT applied — ids are reached
- * via copied canonical links, not retyped, so a malformed id redirects home (§13).
+ * Validate + brand. Returns the brand or null. Base62 is case-sensitive, so
+ * there is NO case folding — ids are reached via copied canonical links, not
+ * retyped, so a malformed id redirects home (§13).
  */
 export function normalizeRoomId(raw: string): RoomId | null {
-  const up = raw.toUpperCase();
-  return ROOM_ID_RE.test(up) ? (up as RoomId) : null;
+  return ROOM_ID_RE.test(raw) ? (raw as RoomId) : null;
 }
 
 /**

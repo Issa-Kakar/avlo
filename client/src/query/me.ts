@@ -7,7 +7,10 @@
  * sliding Max-Age; re-bumping it on visit keeps it effectively permanent, but we must NOT
  * hit `/me` on every navigation. The me query's `staleTime` IS that throttle: query-cache
  * `dataUpdatedAt` (persisted to IDB) is the clock, so there is no `lastValidatedAt`
- * bookkeeping in any store.
+ * bookkeeping in any store. The clock only works because `main.tsx` awaits
+ * `restoreQueryCache()` BEFORE the router mounts — `ensureIdentity` callers (root
+ * beforeLoad, room beforeLoad, rooms queryFn) all run after restore, so a fresh me
+ * query is a genuine no-op instead of an every-boot refetch.
  *
  * The `queryFn` is the sole writer of the auth-store (`setIdentity`) — the synchronous
  * read mirror the rest of the app reads via `getUserId` / `getUserProfile`.

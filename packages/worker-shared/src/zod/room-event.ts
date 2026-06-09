@@ -14,20 +14,29 @@ import { z } from 'zod/v4';
 const userId = z.string().regex(USER_ID_RE).transform(asUserId);
 const roomId = z.string().regex(ROOM_ID_RE).transform(asRoomId);
 
-/** High-volume per-connect recency (room-visits queue). `lastVisitedAt` reduces via `max()`. */
+/** The DO's per-room monotonic counter — strictly increasing across BOTH queues, so each
+ *  D1 row's rev subsequence is monotonic and `excluded.rev >` resolves ordering exactly
+ *  (wall-clock can stall or tie in Workers; a counter cannot). */
+const rev = z.number().int().nonnegative();
+
+/** High-volume per-connect recency (room-visits queue). Ordering resolves by `rev`; `visitedAt` is display data. */
 export const VisitEvent = z.object({
   userId,
   roomId,
   visitedAt: z.number(),
+  rev,
 });
 export type VisitEvent = z.infer<typeof VisitEvent>;
 
-/** Rare room creation + permission flip (room-meta queue). owner/createdAt first-write-wins, permission LWW by `updatedAt`. */
+/** Rare room creation + permission flip (room-meta queue). owner/createdAt first-write-wins, the rest LWW by `rev`. */
 export const MetaEvent = z.object({
   roomId,
   ownerId: userId,
   permission: Permission,
   createdAt: z.number(),
   updatedAt: z.number(),
+  title: z.string(),
+  rev,
+  deleted: z.boolean(),
 });
 export type MetaEvent = z.infer<typeof MetaEvent>;

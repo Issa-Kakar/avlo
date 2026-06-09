@@ -24,7 +24,7 @@ export function mergeRooms(serverRooms: readonly RoomListEntry[] | undefined, fa
       const f = facts[r.roomId];
       byId.set(r.roomId, {
         id: r.roomId,
-        name: r.title || r.roomId, // no rename UI yet → the id is the only distinguishing label
+        name: r.title, // NOT NULL server-side ('Untitled' until a rename UI exists)
         owner: r.isOwner ? OWNER_SELF : OWNER_OTHER,
         starred: f?.starred ?? false,
         openedTs: f ? Math.max(r.lastVisitedAt, f.lastVisitedAt) : r.lastVisitedAt,
@@ -38,7 +38,7 @@ export function mergeRooms(serverRooms: readonly RoomListEntry[] | undefined, fa
   for (const id in facts) {
     if (byId.has(id)) continue;
     const f = facts[id];
-    byId.set(id, { id, name: id, owner: OWNER_SELF, starred: f.starred, openedTs: f.lastVisitedAt, createdTs: f.createdAt });
+    byId.set(id, { id, name: 'Untitled', owner: OWNER_SELF, starred: f.starred, openedTs: f.lastVisitedAt, createdTs: f.createdAt });
   }
 
   return [...byId.values()];

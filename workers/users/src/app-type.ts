@@ -14,7 +14,7 @@ import { z } from 'zod/v4';
  *  the shared `Permission` type (a pure literal union). */
 export interface RoomListEntry {
   roomId: RoomId;
-  title: string | null;
+  title: string; // NOT NULL in D1 (DEFAULT 'Untitled'); rename RPC is future work
   permission: Permission;
   isOwner: boolean;
   lastVisitedAt: number;

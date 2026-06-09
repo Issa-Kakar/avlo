@@ -166,7 +166,7 @@ Five independently-deployed Cloudflare Workers. Full architecture, hardening inv
 `@avlo/db` (server-only) owns the D1 + DO-SQLite Drizzle schemas. Identity is **server-resolved only** (`/me`) — the client never mints a userId. Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client,db}/CLAUDE.md` cover the shared backend primitives, typed-RPC clients, and DB schemas.
 
 ### Routes + UI
-`routes/__root.tsx` (queryClient context + `PersistQueryClientProvider`), `routes/index.tsx` (→ `/home` redirect), `routes/home.tsx` (dashboard — `useRoomList`), `routes/room.$roomId.tsx` (`connectRoom` in `beforeLoad`).
+`routes/__root.tsx` (queryClient context + `QueryClientProvider` — the IDB cache restore happens in `main.tsx` BEFORE the router mounts), `routes/index.tsx` (→ `/home` redirect), `routes/home.tsx` (dashboard — `useRoomList`), `routes/room.$roomId.tsx` (`connectRoom` in `beforeLoad`).
 `components/Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `TopBar.tsx`, `TopBarRight.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`, `icons/`, `toolbar/`, `context-menu/` (own CLAUDE.md).
 Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
 
@@ -245,9 +245,9 @@ Document pointer event → InputManager → presence-pointer.ts
 ## Routing (TanStack Router)
 
 File-based with auto code splitting; auto-generated `routeTree.gen.ts`. `/` redirects to `/home` (dashboard); `/room/$roomId` is the canvas.
-- `__root` supplies the `queryClient` via router context + wraps `PersistQueryClientProvider`; its `beforeLoad` warms `/me` (non-blocking `void ensureIdentity()`).
-- `/home` loader: `await ensureIdentity()` (cookie for `/rooms`) then `void prefetchQuery(roomsQueryOptions())` (warm, never throws — offline-first).
-- `/room/$roomId` `beforeLoad`: `normalizeRoomId` → `await ensureIdentity()` → `connectRoom(roomId)` → `recordVisit(roomId)` (visit recorded AFTER connect so the dashboard doesn't re-sort on the way out). connectRoom creates the Y.Doc, starts providers, restores camera.
+- `main.tsx` awaits `restoreQueryCache()` (concurrent with fonts) BEFORE `<RouterProvider/>` — load-bearing: `beforeLoad`/loaders fire during router mount, and the me query's restored `dataUpdatedAt` is the `/me` slide-throttle clock. `__root` supplies the `queryClient` via router context + wraps plain `QueryClientProvider`; its `beforeLoad` warms `/me` (non-blocking `void ensureIdentity()` — a true no-op while fresh).
+- `/home` loader: fully non-blocking — `void prefetchQuery(roomsQueryOptions())`; identity resolves INSIDE the rooms queryFn (cookie ordered before `/rooms`; cold visitors still paint the dashboard instantly).
+- `/room/$roomId` `beforeLoad`: `normalizeRoomId` (validate-only — base62 is case-sensitive, no canonicalize rewrite) → `await ensureIdentity()` → `connectRoom(roomId)` → `recordVisit(roomId)` (visit recorded AFTER connect so the dashboard doesn't re-sort on the way out). connectRoom creates the Y.Doc, starts providers, restores camera.
 - `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount; `key={roomId}` forces full remount on room switch.
 - `getRouteApi('/room/$roomId').useParams()` for `roomId` in components.
 
@@ -519,8 +519,8 @@ Imperative getters: `setCursorOverride`, `applyCursor`. Constants: `TEXT_FONT_SI
 
 ## Query Layer (`query/` — TanStack Query)
 
-Server-projection reads + identity, IndexedDB-persisted (`PersistQueryClientProvider` + idb-keyval); `networkMode: 'offlineFirst'`.
-- `client.ts` — the `QueryClient` + idb persister.
+Server-projection reads + identity, IndexedDB-persisted (idb-keyval; restored by `main.tsx` awaiting `restoreQueryCache()` BEFORE the router mounts — never inside the React tree); `networkMode: 'offlineFirst'`.
+- `client.ts` — the `QueryClient` + idb persister + `restoreQueryCache()` (21d `maxAge`/`gcTime` — hard ceiling 2^31−1 ms ≈ 24.8d: `gcTime` feeds a raw setTimeout, overflow = instant GC of observerless queries).
 - `me.ts` — `meQueryOptions` (the `/me` identity query; its `staleTime` IS the anon-cookie slide throttle, off query-cache `dataUpdatedAt` — no `lastValidatedAt` in any store) + `ensureIdentity` (cold visitor → `await ensureQueryData`; returning visitor → `void prefetchQuery`, fire-and-forget). The queryFn is the sole writer of `auth-store`.
 - `rooms.ts` — `roomsQueryOptions` (`GET /rooms`; threads the D1 `x-d1-bookmark` for read-your-writes).
 - `room-list.ts` — `useRoomList` merges the D1 projection with `room-list-store` facts by roomId (offline-first; local-only rooms never dropped).

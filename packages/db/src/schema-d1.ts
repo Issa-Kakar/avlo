@@ -7,6 +7,12 @@ import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlit
  * §0). Timestamps are epoch-ms INTEGER; ids are TEXT, brand-typed via `$type<>()` so a
  * query selects `UserId`/`RoomId` rather than a bare string. Schema is single-sourced
  * here so the worker and drizzle-kit agree; pre-prod → no migration chains (§5).
+ *
+ * All three tables are `WITHOUT ROWID` — TEXT (or composite-TEXT) PKs, narrow rows,
+ * every write a PK upsert: the textbook fit (one PK-clustered B-tree instead of a rowid
+ * tree + a duplicate PK unique index). Drizzle can't express it, so it is HAND-APPENDED
+ * to each CREATE TABLE in the generated migration SQL — re-append after any
+ * `db:generate-d1` regenerate.
  */
 
 /** Durable account directory. Anonymous users are NOT rows here (stateless, §2). */
@@ -21,12 +27,14 @@ export const users = sqliteTable('users', {
 
 /** Eventually-consistent projection of each room DO's authority. DISPLAY ONLY. */
 export const rooms = sqliteTable('rooms', {
-  roomId: text('room_id').$type<RoomId>().primaryKey(), // 12-char base32 (§13)
+  roomId: text('room_id').$type<RoomId>().primaryKey(), // 14-char base62 (§13)
   ownerId: text('owner_id').$type<UserId>().notNull(), // first-write-wins (immutable)
-  permission: text('permission').$type<Permission>().notNull(), // LWW by updatedAt
+  permission: text('permission').$type<Permission>().notNull(), // LWW by rev
   createdAt: integer('created_at').notNull(), // first-write-wins
-  updatedAt: integer('updated_at').notNull(), // LWW guard for permission
-  title: text('title'), // nullable; future
+  updatedAt: integer('updated_at').notNull(), // display/audit (rev is the LWW guard)
+  title: text('title').notNull().default('Untitled'), // display; rename RPC is future work
+  rev: integer('rev').notNull(), // DO's per-room monotonic counter — the LWW guard
+  deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false), // DO tombstone projection (no delete flow yet)
 });
 
 /** Per-user access + recency list — the dashboard's primary source. Visit facts only. */
@@ -35,7 +43,8 @@ export const roomVisits = sqliteTable(
   {
     userId: text('user_id').$type<UserId>().notNull(),
     roomId: text('room_id').$type<RoomId>().notNull(),
-    lastVisitedAt: integer('last_visited_at').notNull(), // max() reducer
+    lastVisitedAt: integer('last_visited_at').notNull(), // display/sort (rev resolves ordering)
+    rev: integer('rev').notNull(), // per-room monotonic counter — ordering resolver
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.roomId] }), // upsert target + "my visit to room X"

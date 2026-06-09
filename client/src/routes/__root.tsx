@@ -1,7 +1,6 @@
-import type { QueryClient } from '@tanstack/react-query';
-import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
+import { type QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createRootRouteWithContext, Outlet } from '@tanstack/react-router';
-import { persister, queryClient } from '@/query/client';
+import { queryClient } from '@/query/client';
 import { ensureIdentity } from '@/query/me';
 
 // Loaders reach the QueryClient through the router context (not React context), so it
@@ -12,8 +11,10 @@ export interface RouterContext {
 
 export const Route = createRootRouteWithContext<RouterContext>()({
   // Warm /me at app boot so the signed cookie + identity resolve as early as possible
-  // (deduped with the room route's awaited ensureIdentity and the dashboard loader).
-  // Non-blocking — safe under the logo's intent-preload of /home.
+  // (deduped with the room route's awaited ensureIdentity and the rooms queryFn).
+  // Non-blocking — and a true no-op while the me query is fresh: main.tsx awaits the
+  // IDB cache restore BEFORE the router mounts, so the staleTime throttle sees the
+  // persisted dataUpdatedAt. Safe under the logo's intent-preload of /home.
   beforeLoad: () => {
     void ensureIdentity();
   },
@@ -21,12 +22,12 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 });
 
 function RootComponent() {
-  // PersistQueryClientProvider restores the IndexedDB-persisted cache once at boot,
-  // then renders. Components read the cache via hooks; loaders read the same singleton
-  // via router context.
+  // Plain provider — the persisted cache is restored in main.tsx before the router
+  // renders (no PersistQueryClientProvider/isRestoring gating needed). Components
+  // read the cache via hooks; loaders read the same singleton via router context.
   return (
-    <PersistQueryClientProvider client={queryClient} persistOptions={{ persister, buster: 'v1' }}>
+    <QueryClientProvider client={queryClient}>
       <Outlet />
-    </PersistQueryClientProvider>
+    </QueryClientProvider>
   );
 }

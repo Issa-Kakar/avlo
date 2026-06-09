@@ -2,30 +2,38 @@
  * TanStack Query client + IndexedDB cache persister.
  *
  * The QueryClient is the single in-memory cache for server-projection reads (today
- * the dashboard's `GET /rooms`). It is persisted to IndexedDB via idb-keyval so a
- * returning visitor sees their last room list instantly — restored once at boot by
- * `PersistQueryClientProvider` (routes/__root), never read synchronously by app
- * code. The async stays fully encapsulated in the persister, which is exactly why
- * the projection lives here and not in the synchronous localStorage facts store
- * (`stores/room-list-store.ts`) — the two halves are merged in `query/room-list.ts`.
+ * the dashboard's `GET /rooms`) plus the `/me` identity query. It is persisted to
+ * IndexedDB via idb-keyval and restored ONCE, BEFORE the router renders —
+ * `main.tsx` awaits `restoreQueryCache()` ahead of `<RouterProvider/>`. That
+ * ordering is load-bearing: route `beforeLoad`/loaders fire during router mount,
+ * and the me query's restored `dataUpdatedAt` is the cookie-slide throttle clock.
+ * Restoring inside the React tree (the old `PersistQueryClientProvider`) ran AFTER
+ * `beforeLoad`, so every boot saw an empty cache and refetched `/me`.
  *
- * `gcTime` ≥ the persister's 24h default `maxAge` so a cached query survives in memory
- * long enough to be re-persisted. `networkMode: 'offlineFirst'` is a deliberate choice
- * for an offline-first app: run the queryFn once regardless of `navigator.onLine` (don't
- * sit 'paused'), and on failure fall back to durable local facts — the dashboard renders
- * from localStorage, identity from the persisted auth-store. Retries still back off and
- * resume on reconnect.
+ * `maxAge`/`gcTime` are 21d so the offline-first rooms list survives a multi-day
+ * absence (`gcTime` ≥ `maxAge`, else a restored-but-idle query is GC'd before it
+ * can re-persist). `networkMode: 'offlineFirst'` is a deliberate choice for an
+ * offline-first app: run the queryFn once regardless of `navigator.onLine` (don't
+ * sit 'paused'), and on failure fall back to durable local facts — the dashboard
+ * renders from localStorage, identity from the persisted auth-store. Retries still
+ * back off and resume on reconnect.
  */
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { QueryClient } from '@tanstack/react-query';
+import { persistQueryClient } from '@tanstack/react-query-persist-client';
 import { del, get, set } from 'idb-keyval';
 
 const DAY_MS = 86_400_000;
+// HARD CEILING: must stay < 2^31−1 ms (~24.8 days). `gcTime` feeds a raw setTimeout;
+// an overflowed delay fires at ~1ms and instantly GCs every observerless query — the
+// prefetch-only /me entry first — silently breaking the slide throttle (30d WAS that
+// bug: /me refired on every refresh and navigation).
+const PERSIST_MAX_AGE = 21 * DAY_MS;
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      gcTime: DAY_MS,
+      gcTime: PERSIST_MAX_AGE,
       staleTime: 30_000,
       retry: 2,
       networkMode: 'offlineFirst',
@@ -45,3 +53,14 @@ export const persister = createAsyncStoragePersister({
     removeItem: (key) => del(key),
   },
 });
+
+/**
+ * Restore the persisted cache into the QueryClient and install the save
+ * subscription. Awaited by `main.tsx` before the router renders (one IDB get +
+ * JSON.parse — milliseconds, concurrent with the font await that already gates
+ * first paint). Never rejects: a corrupt/failed restore boots with a cold cache.
+ */
+export function restoreQueryCache(): Promise<void> {
+  const [, restored] = persistQueryClient({ queryClient, persister, buster: 'v1', maxAge: PERSIST_MAX_AGE });
+  return restored.catch((err) => console.error('[query] cache restore failed:', err));
+}

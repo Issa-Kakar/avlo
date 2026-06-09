@@ -21,12 +21,19 @@ interface ConnState {
 }
 
 /** The room DO's authoritative meta (one `room_meta` row, minus the roomId PK = this.name).
- *  `Permission` (imported from @avlo/shared) is both the Zod enum value and its inferred type. */
+ *  `Permission` (imported from @avlo/shared) is both the Zod enum value and its inferred type.
+ *  `rev` is the per-room monotonic counter: bumped + persisted BEFORE every queue send (both
+ *  queues share it), so the D1 consumer resolves ordering with a plain `excluded.rev >` guard
+ *  and at-least-once redelivery is a no-op. `deleted` is the persistent tombstone (no delete
+ *  flow yet — column + type prep only). */
 interface RoomMeta {
   ownerId: UserId;
   permission: Permission;
   createdAt: number;
   updatedAt: number;
+  title: string;
+  rev: number;
+  deleted: boolean;
 }
 
 // --- Tier-3 WS message limiter (§10/H25) — generous abuse backstop, not an editing throttle.
@@ -116,7 +123,7 @@ export class RoomDurableObject extends YServer<Env> {
     // 2. CREATE-OR-AUTHORIZE — first authorized connect mints ownership (single-threaded).
     if (!this.meta) {
       const now = Date.now();
-      this.meta = { ownerId: userId, permission: 'public', createdAt: now, updatedAt: now };
+      this.meta = { ownerId: userId, permission: 'public', createdAt: now, updatedAt: now, title: 'Untitled', rev: 1, deleted: false };
       this.db
         .insert(roomMeta)
         .values({ roomId: asRoomId(this.name), ...this.meta })
@@ -143,8 +150,16 @@ export class RoomDurableObject extends YServer<Env> {
     // 4. PUSH EFFECTIVE MODE — out-of-band __YPS: string (never parsed by the Yjs decoder).
     this.sendCustomMessage(conn, `mode:${this.isReadOnly(conn) ? 'viewer' : 'editor'}`);
 
-    // 5. PROJECT THE VISIT — fire-and-forget, error-handled (waitUntil is a no-op in a DO, §6).
-    this.env.ROOM_VISITS.send({ userId, roomId: this.name, visitedAt: Date.now() } satisfies z.input<typeof VisitEvent>).catch((err) =>
+    // 5. PROJECT THE VISIT — fire-and-forget send, error-handled (waitUntil is a no-op in a
+    // DO, §6). The rev bump is made durable BEFORE the send so a DO restart can never
+    // reissue a lower rev — the consumer's ordering guard rides on monotonicity.
+    const rev = ++this.meta.rev;
+    this.db
+      .update(roomMeta)
+      .set({ rev })
+      .where(eq(roomMeta.roomId, asRoomId(this.name)))
+      .run();
+    this.env.ROOM_VISITS.send({ userId, roomId: this.name, visitedAt: Date.now(), rev } satisfies z.input<typeof VisitEvent>).catch((err) =>
       console.error('visit projection failed', err),
     );
   }
@@ -165,19 +180,14 @@ export class RoomDurableObject extends YServer<Env> {
     Permission.parse(next); // authority-boundary guard (§14a)
     if (!this.meta || this.meta.ownerId !== caller) throw new Error('forbidden');
     const now = Date.now();
+    const rev = this.meta.rev + 1;
     this.db
       .update(roomMeta)
-      .set({ permission: next, updatedAt: now })
+      .set({ permission: next, updatedAt: now, rev })
       .where(eq(roomMeta.roomId, asRoomId(this.name)))
       .run();
-    this.meta = { ...this.meta, permission: next, updatedAt: now }; // ★ warm-cache fix
-    await this.env.ROOM_META.send({
-      roomId: this.name,
-      ownerId: this.meta.ownerId,
-      permission: next,
-      createdAt: this.meta.createdAt,
-      updatedAt: now,
-    } satisfies z.input<typeof MetaEvent>);
+    this.meta = { ...this.meta, permission: next, updatedAt: now, rev }; // ★ warm-cache fix
+    await this.env.ROOM_META.send({ roomId: this.name, ...this.meta } satisfies z.input<typeof MetaEvent>);
 
     for (const c of this.getConnections<ConnState>()) {
       if (c.state?.userId === caller) continue;
