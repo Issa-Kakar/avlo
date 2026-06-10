@@ -14,7 +14,7 @@ export const roomMeta = sqliteTable('room_meta', {
   permission: text('permission').$type<Permission>().notNull(),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
-  title: text('title').notNull().default('Untitled'), // rename RPC is future work
+  title: text('title').notNull().default('Untitled'), // owner-only rename via the DO's setTitle RPC
   rev: integer('rev').notNull(), // monotonic per-room counter — bumped before EVERY queue send; the projection's ordering resolver
   deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false), // persistent tombstone (no delete flow yet)
 });

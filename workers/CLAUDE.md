@@ -26,7 +26,7 @@ workers/main               workers/images           workers/unfurl
 | **auth** | `workers/auth/` | `avlo-auth` | 8792 | `auth.avlo.io` | secret `ANON_SECRET` |
 | **users** | `workers/users/` | `avlo-users` | 8793 | `users.avlo.io` | `DB` (D1 `avlo-db`), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), queue consumers `avlo-room-visits`/`avlo-room-meta` (+DLQs) |
 
-> Beyond the three public R2/SPA edge workers above, **auth** (`auth.avlo.io` — `GET /me`, the signed `avlo_anon` cookie, `AuthRpc.verifySession`) and **users** (`users.avlo.io` — `GET /rooms`, `PATCH /rooms/:id/permission`, the queue→D1 consumer) form the identity + dashboard-data vertical. `@avlo/db` owns the D1 + DO-SQLite schemas they (and main) share.
+> Beyond the three public R2/SPA edge workers above, **auth** (`auth.avlo.io` — `GET /me`, the signed `avlo_anon` cookie, `AuthRpc.verifySession`) and **users** (`users.avlo.io` — `GET /rooms`, `PATCH /rooms/:id/{permission,title}`, the queue→D1 consumer) form the identity + dashboard-data vertical. `@avlo/db` owns the D1 + DO-SQLite schemas they (and main) share.
 
 **Naming rule (load-bearing):** Sibling workers use `workers/<short>/` = wrangler `name` `avlo-<short>` = subdomain stem `<short>.avlo.io`. The main worker is asymmetric on every axis — wrangler `name: "avlo"` (bare, preserves the `rooms` DO namespace), subdomain `avlo.io` (bare, canonical app identity). The `avlo-` prefix is for things *attached to* the app; the app itself is just `avlo`. **Do not rename main.**
 
@@ -38,7 +38,7 @@ workers/main               workers/images           workers/unfurl
 | File | Responsibility |
 |---|---|
 | `src/index.ts` | `partyserverMiddleware()` on `/parties/*`, Assets binding fallback for everything else. Exports `RoomDurableObject` + `MainApp`. |
-| `src/room.ts` | `RoomDurableObject extends YServer<Env>` — hibernate, debounced V2 snapshot to `env.DOCS`, hard-flush + z-key renorm on empty-room close. Single trigger by design (onLoad scan would be defensive O(N) for a self-healing failure: long keys are perf, not correctness, and the next successful onClose catches up). Never-empty rooms are a documented limitation; if profiling ever surfaces it, add alarm-based periodic renorm. |
+| `src/room.ts` | `RoomDurableObject extends YServer<Env>` — hibernate, debounced V2 snapshot to `env.DOCS`, hard-flush + z-key renorm on empty-room close. Single trigger by design (onLoad scan would be defensive O(N) for a self-healing failure: long keys are perf, not correctness, and the next successful onClose catches up). Never-empty rooms are a documented limitation; if profiling ever surfaces it, add alarm-based periodic renorm. Meta RPCs `setPermission`/`setTitle` (owner-only; `setTitle` mints meta when absent — offline-created room renamed pre-first-connect) share `#mintMeta`/`#projectMeta`, return the `MetaEvent` snapshot, and push `mode:`/`title:`/`owner:` custom messages (`title:` rebroadcast to every connection on rename). The enqueue inside `#projectMeta` is try/caught — SQLite already committed; the users worker's direct write + the next meta event converge D1. |
 | `wrangler.jsonc` | `assets.directory: ../../client/dist`, `binding: ASSETS`, `run_worker_first: ["/parties/*"]`, `migrations: new_sqlite_classes`. |
 
 Same-origin SPA + WSS — SPA on `avlo.io` opens `wss://avlo.io/parties/rooms/<id>` via `window.location.host` in `client/src/runtime/room-doc-manager.ts`. No CORS, no preflight.
@@ -82,11 +82,11 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 | File | Responsibility |
 |---|---|
 | `src/index.ts` | `createCors({methods:['GET','PATCH'],…})` → `cspHeaders('api-json')` → `csrf` → `requireAuth` → `userRateLimiter(RL_ROOMS)` → routes; `app.onError` CSP stamp; default export `{ fetch, queue }` + `UsersRpc`. |
-| `src/handlers/rooms.ts` | `GET /rooms` (D1 Sessions read, `x-d1-bookmark`, `isOwner` derived) + `PATCH /rooms/:id/permission` (→ cross-script `rooms` DO `setPermission`; 403 on non-owner). |
-| `src/queue.ts` | `consume` — both queues (`switch(batch.queue)`); `safeParse` → ack-drop poison; coalesce by the DO's per-room `rev`, then ONE `db.batch` of chunked multi-row upserts (≤96 bound params/statement — D1 caps 100). LWW guarded by `excluded.rev >`; owner/createdAt first-write-wins. |
+| `src/handlers/rooms.ts` | `GET /rooms` (D1 Sessions read, `x-d1-bookmark`, `isOwner` derived) + `PATCH /rooms/:id/{permission,title}` (→ cross-script DO `setPermission`/`setTitle`; 403 on non-owner). Both PATCHes then run `projectMetaRYW` — the returned snapshot direct-written to D1 via the shared rev-guarded upsert on a `first-primary` session, bookmark out in body + `x-d1-bookmark` (read-your-writes for instant nav home); a failed direct write returns `''`, never an error (the queue converges). |
+| `src/queue.ts` | `consume` — both queues (`switch(batch.queue)`); `safeParse` → ack-drop poison; coalesce by the DO's per-room `rev`, then ONE `db.batch` of chunked multi-row upserts (≤96 bound params/statement — D1 caps 100). Meta rows go through `upsertRoomsFromMeta` (@avlo/db — the same statement the PATCH handlers direct-write with). LWW guarded by `excluded.rev >`; owner/createdAt first-write-wins. |
 | `src/rpc.ts` | `UsersRpc extends WorkerEntrypoint` — `linkAccount` OAuth-deferred stub. |
 | `src/env.ts` | `UsersEnv = { Bindings: Env; Variables: { userId: UserId } }`, threaded through every handler (Hono `Context` is invariant in `Variables`). |
-| `src/zod/permission.ts` | `permissionParam`/`permissionBody` validators for the PATCH route. |
+| `src/zod/rooms.ts` | `roomIdParam`/`permissionBody`/`titleBody` validators for the PATCH routes (`titleBody` normalizes via the shared `normalizeRoomTitle`). |
 | `src/app-type.ts` | Public mock — `RoomListEntry`/`RoomListResponse` wire shapes for `hc<UsersApp>`. |
 
 Globally auth-gated. D1 is the sole schema owner (`@avlo/db`). Dev: Vite `/api/users/*` proxy.

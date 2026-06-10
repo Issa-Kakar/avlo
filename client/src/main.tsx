@@ -5,6 +5,9 @@ import './index.css';
 import { ensureFontsLoaded } from './core/text/font-loader';
 import { resetFontMetrics } from './core/text/text-measure';
 import { restoreQueryCache } from './query/client';
+// Side-effect: registers the rename mutation defaults BEFORE restoreQueryCache() resumes
+// hydrated paused mutations (route code-splitting would otherwise register them too late).
+import './query/room-rename';
 
 async function loadFonts() {
   try {

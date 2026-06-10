@@ -12,7 +12,7 @@ import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
 import type { UsersApp as PublicSurface } from './app-type';
 import type { UsersEnv } from './env';
-import { handleGetRooms, handleSetPermission } from './handlers/rooms';
+import { handleGetRooms, handleSetPermission, handleSetTitle } from './handlers/rooms';
 import { consume } from './queue';
 import { UsersRpc } from './rpc';
 
@@ -29,7 +29,8 @@ const app = new Hono<UsersEnv>()
     userRateLimiter<UsersEnv>((c) => c.env.RL_ROOMS),
   )
   .get('/rooms', ...handleGetRooms)
-  .patch('/rooms/:id/permission', ...handleSetPermission);
+  .patch('/rooms/:id/permission', ...handleSetPermission)
+  .patch('/rooms/:id/title', ...handleSetTitle);
 
 // csrf throws (rather than returns), so its 403 skips the cspHeaders egress stamp — cspError
 // re-applies the profile to thrown responses (and keeps Hono's log + 500 for unexpected errors).

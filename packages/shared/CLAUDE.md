@@ -16,7 +16,9 @@ Cross-runtime utilities and types used by client and Cloudflare Workers.
   `utils/room-id.ts` (`generateRoomId`, `normalizeRoomId`, `asRoomId`, `ROOM_ID_RE`),
   `utils/user-profile.ts` (`nameForUserId`/`colorForUserId`/`userProfileFor` — deterministic
   from `userId`; `PRESENCE_COLORS`).
-- `utils/` — ULID, image validation, URL helpers (`normalizeUrl`/`isValidHttpUrl`/`extractDomain`/`prettifyDomain`).
+- `utils/` — ULID, image validation, URL helpers (`normalizeUrl`/`isValidHttpUrl`/`extractDomain`/`prettifyDomain`),
+  room titles (`utils/room-title.ts` — `ROOM_TITLE_MAX_LEN` + `normalizeRoomTitle`, the single rename validity rule
+  shared by the client input, the users worker Zod body, and the room DO's authority guard).
 
 ## Invariants
 

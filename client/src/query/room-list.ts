@@ -24,7 +24,7 @@ export function mergeRooms(serverRooms: readonly RoomListEntry[] | undefined, fa
       const f = facts[r.roomId];
       byId.set(r.roomId, {
         id: r.roomId,
-        name: r.title, // NOT NULL server-side ('Untitled' until a rename UI exists)
+        name: r.title, // NOT NULL server-side; owner renames land here via the D1 projection
         owner: r.isOwner ? OWNER_SELF : OWNER_OTHER,
         starred: f?.starred ?? false,
         openedTs: f ? Math.max(r.lastVisitedAt, f.lastVisitedAt) : r.lastVisitedAt,
@@ -35,10 +35,18 @@ export function mergeRooms(serverRooms: readonly RoomListEntry[] | undefined, fa
 
   // Local-only rooms (created/visited on this device, not yet projected to D1) — never
   // dropped. The creator owns it until the DO mints meta + the queue projects to D1.
+  // `f.title` is the locally-given name (offline rename); server title wins once projected.
   for (const id in facts) {
     if (byId.has(id)) continue;
     const f = facts[id];
-    byId.set(id, { id, name: 'Untitled', owner: OWNER_SELF, starred: f.starred, openedTs: f.lastVisitedAt, createdTs: f.createdAt });
+    byId.set(id, {
+      id,
+      name: f.title ?? 'Untitled',
+      owner: OWNER_SELF,
+      starred: f.starred,
+      openedTs: f.lastVisitedAt,
+      createdTs: f.createdAt,
+    });
   }
 
   return [...byId.values()];

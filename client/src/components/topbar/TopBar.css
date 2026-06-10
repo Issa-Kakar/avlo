@@ -115,15 +115,14 @@
   margin: 0 6px;
 }
 
-/* Board name — `<span>` today (placeholder); becomes a text input on
-   rename. Cursor stays `text` to advertise direct editability. Height
-   math: `line-height: 28px` + 2px transparent border each side = 32px
-   visible footprint, matching the icon-button siblings (chevron / undo
-   / redo). Hover paints the same border in #818f9c — text color stays
-   put, no layout shift. `margin-left: 6px` compensates for the tighter
-   inner padding (6px each side, halved from 12) so the visible
-   logo↔title gap doesn't close. Inherits `font-family: var(--font-ui)`
-   from `.top-bar`. */
+/* Board name — `RoomTitle`: a span at rest, an auto-sizing input while the
+   owner edits. Height math: `line-height: 28px` + 2px transparent border
+   each side = 32px visible footprint, matching the icon-button siblings
+   (chevron / undo / redo). `margin-left: 6px` compensates for the tighter
+   inner padding (6px each side, halved from 12) so the visible logo↔title
+   gap doesn't close. Inherits `font-family: var(--font-ui)` from `.top-bar`.
+   The slot hugs `content + padding` and grows with the name up to
+   `max-width: 160px`, then ellipsizes. */
 .top-bar-name {
   font-size: 13px;
   font-weight: 700;
@@ -133,7 +132,7 @@
   border-radius: var(--radius-chrome-btn);
   padding: 0 6px;
   margin-left: 6px;
-  cursor: text;
+  cursor: default;
   white-space: nowrap;
   max-width: 160px;
   overflow: hidden;
@@ -141,8 +140,47 @@
   transition: border-color 150ms ease;
 }
 
-.top-bar-name:hover {
+/* Owner-only edit affordance: `cursor: text` + the #818f9c hover border.
+   Non-owners keep the plain label above (no hover, default cursor). */
+.top-bar-name-editable {
+  cursor: text;
+}
+
+.top-bar-name-editable:hover {
   border-color: #818f9c;
+}
+
+/* Edit mode — the inline-grid mirror trick: the hidden ::after replicates the
+   draft (`attr(data-value)` + a trailing space so the caret never clips), both
+   it and the input share grid cell 1/1, so the track — and therefore the pill —
+   grows with typing under the same 160px cap. The engaged border stays painted
+   for the whole edit (it IS the focus ring here). */
+.top-bar-name-edit {
+  display: inline-grid;
+  cursor: text;
+  border-color: #818f9c;
+}
+
+.top-bar-name-edit::after {
+  content: attr(data-value) " ";
+  visibility: hidden;
+  white-space: pre;
+  grid-area: 1 / 1;
+}
+
+.top-bar-name-input {
+  grid-area: 1 / 1;
+  width: 100%;
+  min-width: 1ch;
+  height: 28px;
+  font: inherit;
+  line-height: 28px;
+  color: inherit;
+  background: none;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
 }
 
 /* ===== Main menu trigger — chevron-down button (was the kebab) =====

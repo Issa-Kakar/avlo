@@ -17,7 +17,7 @@ The package publishes TS source directly via `exports` (no dist build). Consumer
 | `src/cookies.ts` | `verifyAnonToken` (raw HMAC verify + `AnonToken` parse — the RPC path, no Hono ctx), `mintAnonToken`, `cookieOpts` (dev/prod cookie attrs), `ANON_COOKIE`, `AuthCtx`. Schema lives in `zod/anon-token.ts`. |
 | `src/require-auth.ts` | `requireAuth<E>()` — generic Hono gate; verifies the session via the `AUTH` service RPC into `c.get('userId')` (401 if absent). Called with an explicit env arg per worker. |
 | `src/rate-limit.ts` | `userRateLimiter<E>(binding)` — tier-1 `cloudflareRateLimiter` keyed on `c.get('userId')`. |
-| `src/rpc-surfaces.ts` | `AuthRpcSurface` / `RoomDoStub` — cross-config RPC cast targets (the `AUTH` service + cross-script `rooms` DO are untyped across wrangler configs). |
+| `src/rpc-surfaces.ts` | `AuthRpcSurface` / `RoomDoStub` — cross-config RPC cast targets (the `AUTH` service + cross-script `rooms` DO are untyped across wrangler configs). `RoomDoStub.setPermission`/`setTitle` return the post-mutation `MetaEvent` snapshot for the users worker's direct rev-guarded D1 write + bookmark. Convention-typed only — keep signatures byte-identical with `workers/main/src/room.ts`. |
 | `src/zod/anon-token.ts` | `AnonToken` — post-HMAC `avlo_anon` cookie payload `{ userId, iat, nonce }`. `safeParse`d by `cookies.ts` (mint + verify), not a `zValidator`. |
 | `src/zod/asset-key.ts` | `assetKeyParam` — `{ key: regex(/^[0-9a-f]{64}$/) }`. Canonical lowercase hex, no uppercase. |
 | `src/zod/content-length.ts` | `contentLengthBound(max)` + `MAX_UPLOAD_BYTES = 10MB`. Hono `header` validator that rejects oversize requests BEFORE the body is awaited (H2). |

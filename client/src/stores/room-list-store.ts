@@ -21,6 +21,9 @@ export interface RoomFacts {
   createdAt: number;
   lastVisitedAt: number;
   starred: boolean;
+  /** Last title this device gave the room. Display fallback for LOCAL-ONLY rooms only —
+   *  once the room is server-known, the D1 projection's title wins in the merge. */
+  title?: string;
 }
 
 interface RoomListState {
@@ -34,6 +37,8 @@ interface RoomListActions {
   recordVisit(roomId: string): void;
   /** Toggle a room's local star (dashboard). Back-fills facts for a server-only row. */
   toggleStar(roomId: string): void;
+  /** Stamp the last locally-given title (rename mutation). Back-fills facts; `undefined` clears (rollback). */
+  setRoomTitleFact(roomId: string, title: string | undefined): void;
 }
 
 export type RoomListStore = RoomListState & RoomListActions;
@@ -65,6 +70,16 @@ export const useRoomListStore = create<RoomListStore>()(
             s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, starred: true };
           }
         }),
+      setRoomTitleFact: (roomId, title) =>
+        set((s) => {
+          const prev = s.rooms[roomId];
+          if (prev) {
+            prev.title = title;
+          } else if (title !== undefined) {
+            const now = Date.now();
+            s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, starred: false, title };
+          }
+        }),
     })),
     {
       name: 'avlo.rooms.v1',
@@ -85,4 +100,4 @@ export const useRoomListStore = create<RoomListStore>()(
 
 // Stable action refs — defined once inside create(), so destructuring yields references
 // that never change (mirrors device-ui-store). Import these directly at call sites.
-export const { createRoom, recordVisit, toggleStar } = useRoomListStore.getState();
+export const { createRoom, recordVisit, toggleStar, setRoomTitleFact } = useRoomListStore.getState();

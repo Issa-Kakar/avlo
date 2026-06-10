@@ -20,9 +20,9 @@ import { ZRankTable } from '@/core/z-order/z-rank-table';
 import { evictGeometry } from '@/renderer/geometry-cache';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { getUserId } from '@/stores/auth-store';
-import { resetRoomSession, setRoomAccess, setRoomMode } from '@/stores/room-session-store';
+import { getVisibleBoundsTuple } from '@/stores/camera-store';
+import { resetRoomSession, setRoomAccess, setRoomIsOwner, setRoomMode, setRoomTitle } from '@/stores/room-session-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import { bindUndoManagerToHistoryStore } from './history-bridge';
@@ -538,11 +538,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         }
       });
 
-      // Effective editor/viewer mode arrives out-of-band as a `mode:` custom message
-      // (the provider already stripped the `__YPS:` prefix). Stored only — no editing-
-      // surface gating yet (the viewer client is deferred, §17 step 8).
+      // Server-pushed session state arrives out-of-band as prefixed custom messages (the
+      // provider already stripped the `__YPS:` prefix). `mode:` — effective editor/viewer
+      // (stored only; viewer gating deferred, §17 step 8). `title:` — pushed on connect +
+      // rebroadcast on every rename. `owner:` — per-connection ownership flag (gates the
+      // rename affordance; enforcement stays in the DO).
       this.websocketProvider.on('custom-message', (message: string) => {
         if (message.startsWith('mode:')) setRoomMode(message.slice(5) === 'viewer' ? 'viewer' : 'editor');
+        else if (message.startsWith('title:')) setRoomTitle(message.slice(6));
+        else if (message.startsWith('owner:')) setRoomIsOwner(message.slice(6) === '1');
       });
     } catch (err: unknown) {
       console.error('[RoomDocManager] WebSocket initialization failed:', err);

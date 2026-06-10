@@ -1,4 +1,4 @@
-import { getSessionDB, rooms, roomVisits } from '@avlo/db';
+import { getSessionDB, roomVisits, upsertRoomsFromMeta } from '@avlo/db';
 import { MetaEvent, VisitEvent } from '@avlo/worker-shared';
 import { sql } from 'drizzle-orm';
 
@@ -74,33 +74,9 @@ export async function consume(batch: MessageBatch, env: Env): Promise<void> {
       }
       const ms = [...metas.values()];
       if (ms.length) {
-        const stmts = chunk(ms, META_ROWS_MAX).map((rows) =>
-          db
-            .insert(rooms)
-            .values(
-              rows.map((e) => ({
-                roomId: e.roomId,
-                ownerId: e.ownerId,
-                permission: e.permission,
-                createdAt: e.createdAt,
-                updatedAt: e.updatedAt,
-                title: e.title,
-                rev: e.rev,
-                deleted: e.deleted,
-              })),
-            )
-            .onConflictDoUpdate({
-              target: rooms.roomId,
-              set: {
-                permission: sql`excluded.permission`,
-                updatedAt: sql`excluded.updated_at`,
-                title: sql`excluded.title`,
-                rev: sql`excluded.rev`,
-                deleted: sql`excluded.deleted`,
-              },
-              setWhere: sql`excluded.rev > ${rooms.rev}`, // owner/createdAt untouched → first-write-wins
-            }),
-        );
+        // Shared rev-guarded upsert (@avlo/db) — same statement the §8 PATCH handlers use
+        // for their direct read-your-writes write; owner/createdAt first-write-wins.
+        const stmts = chunk(ms, META_ROWS_MAX).map((rows) => upsertRoomsFromMeta(db, rows));
         await db.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]);
       }
     }

@@ -131,8 +131,8 @@ All paths relative to `client/src/` unless noted.
 | `auth-store.ts` | Server-resolved identity — synchronous persisted mirror of the `/me` query (`query/me.ts`, its only writer). `getUserId`/`getUserProfile` throwing getters |
 | `selection-store.ts` | Selection state, transform state |
 | `presence-store.ts` | Peer identities + count (Zustand, for React components only) |
-| `room-list-store.ts` | Local per-room facts (createdAt/lastVisitedAt/starred), localStorage; merged with the D1 projection in `query/room-list.ts` (immer) |
-| `room-session-store.ts` | Server-delivered room mode/access (`mode:` custom message; 4401/4403 close codes) |
+| `room-list-store.ts` | Local per-room facts (createdAt/lastVisitedAt/starred + `title` fact — local-only-room display fallback, stamped by the rename mutation), localStorage; merged with the D1 projection in `query/room-list.ts` (immer) |
+| `room-session-store.ts` | Server-delivered room session state (immer): mode/access (`mode:` custom message; 4401/4403 close codes) + `title`/`isOwner` (`title:`/`owner:` pushes, seeded from the rooms cache in the room route's beforeLoad — `title` drives the TopBar name + tab title, `isOwner` gates the rename affordance) |
 | `history-store.ts` | Undo/redo availability (`canUndo`/`canRedo`) for toolbar buttons |
 
 ### Utils + Shared
@@ -146,6 +146,7 @@ All paths relative to `client/src/` unless noted.
 | `packages/shared/src/types/permission.ts` | `Permission` (`z.enum`; value + type) |
 | `packages/shared/src/utils/user-id.ts` | `generateUserId` (auth `/me` only), `asUserId`, `USER_ID_RE` |
 | `packages/shared/src/utils/room-id.ts` | `generateRoomId`, `normalizeRoomId`, `asRoomId`, `ROOM_ID_RE` |
+| `packages/shared/src/utils/room-title.ts` | `ROOM_TITLE_MAX_LEN`, `normalizeRoomTitle` — the single rename validity rule (client input, users Zod, DO guard) |
 | `packages/shared/src/utils/user-profile.ts` | `nameForUserId`, `colorForUserId`, `userProfileFor`, `PRESENCE_COLORS` |
 | `packages/shared/src/utils/ulid.ts` | `ulid()` |
 | `packages/shared/src/utils/url-utils.ts` | `normalizeUrl`, `isValidHttpUrl`, `extractDomain`, `prettifyDomain` |
@@ -161,7 +162,7 @@ Five independently-deployed Cloudflare Workers. Full architecture, hardening inv
 | **images** | `workers/images/` | `images.avlo.io` | `IMAGES` (R2), `AUTH` (service), `RL_UPLOAD` | `PUT/GET /:key` — `requireAuth` on PUT, Zod param, content-length bound, hash-verify, edge cache, Range, CSP |
 | **unfurl** | `workers/unfurl/` | `unfurl.avlo.io` | `IMAGES` (R2, shared), `AUTH` (service), `RL_UPLOAD` | `GET /?url=` — `requireAuth`, Zod query + SSRF refine, HTMLRewriter OG extraction, image→R2, edge cache 7d |
 | **auth** | `workers/auth/` | `auth.avlo.io` | secret `ANON_SECRET` | `GET /me` (signed `avlo_anon` cookie mint/slide) + `AuthRpc.verifySession` (cross-worker identity) |
-| **users** | `workers/users/` | `users.avlo.io` | `DB` (D1, sole schema owner), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), queue **consumers** `avlo-room-visits`/`avlo-room-meta` (+DLQs) | `GET /rooms` (dashboard list) + `PATCH /rooms/:id/permission` + `queue` consumer projecting visits/meta → D1 |
+| **users** | `workers/users/` | `users.avlo.io` | `DB` (D1, sole schema owner), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), queue **consumers** `avlo-room-visits`/`avlo-room-meta` (+DLQs) | `GET /rooms` (dashboard list) + `PATCH /rooms/:id/{permission,title}` (owner-only DO RPC → direct rev-guarded D1 write + RYW bookmark) + `queue` consumer projecting visits/meta → D1 |
 
 `@avlo/db` (server-only) owns the D1 + DO-SQLite Drizzle schemas. Identity is **server-resolved only** (`/me`) — the client never mints a userId. Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client,db}/CLAUDE.md` cover the shared backend primitives, typed-RPC clients, and DB schemas.
 
@@ -247,7 +248,7 @@ Document pointer event → InputManager → presence-pointer.ts
 File-based with auto code splitting; auto-generated `routeTree.gen.ts`. `/` redirects to `/home` (dashboard); `/room/$roomId` is the canvas.
 - `main.tsx` awaits `restoreQueryCache()` (concurrent with fonts) BEFORE `<RouterProvider/>` — load-bearing: `beforeLoad`/loaders fire during router mount, and the me query's restored `dataUpdatedAt` is the `/me` slide-throttle clock. `__root` supplies the `queryClient` via router context + wraps plain `QueryClientProvider`; its `beforeLoad` warms `/me` (non-blocking `void ensureIdentity()` — a true no-op while fresh).
 - `/home` loader: fully non-blocking — `void prefetchQuery(roomsQueryOptions())`; identity resolves INSIDE the rooms queryFn (cookie ordered before `/rooms`; cold visitors still paint the dashboard instantly).
-- `/room/$roomId` `beforeLoad`: `normalizeRoomId` (validate-only — base62 is case-sensitive, no canonicalize rewrite) → `await ensureIdentity()` → `connectRoom(roomId)` → `recordVisit(roomId)` (visit recorded AFTER connect so the dashboard doesn't re-sort on the way out). connectRoom creates the Y.Doc, starts providers, restores camera.
+- `/room/$roomId` `beforeLoad`: `normalizeRoomId` (validate-only — base62 is case-sensitive, no canonicalize rewrite) → `await ensureIdentity()` → `connectRoom(roomId)` → seed session-store title/isOwner from the rooms cache + facts (skipped on same-room re-nav so WS truth isn't clobbered) → `recordVisit(roomId)` (visit recorded AFTER connect so the dashboard doesn't re-sort on the way out). connectRoom creates the Y.Doc, starts providers, restores camera.
 - `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount; `key={roomId}` forces full remount on room switch.
 - `getRouteApi('/room/$roomId').useParams()` for `roomId` in components.
 
@@ -520,10 +521,11 @@ Imperative getters: `setCursorOverride`, `applyCursor`. Constants: `TEXT_FONT_SI
 ## Query Layer (`query/` — TanStack Query)
 
 Server-projection reads + identity, IndexedDB-persisted (idb-keyval; restored by `main.tsx` awaiting `restoreQueryCache()` BEFORE the router mounts — never inside the React tree); `networkMode: 'offlineFirst'`.
-- `client.ts` — the `QueryClient` + idb persister + `restoreQueryCache()` (21d `maxAge`/`gcTime` — hard ceiling 2^31−1 ms ≈ 24.8d: `gcTime` feeds a raw setTimeout, overflow = instant GC of observerless queries).
+- `client.ts` — the `QueryClient` + idb persister + `restoreQueryCache()` (21d `maxAge`/`gcTime` — hard ceiling 2^31−1 ms ≈ 24.8d: `gcTime` feeds a raw setTimeout, overflow = instant GC of observerless queries). Post-restore it fires `resumePausedMutations()` WITHOUT awaiting (an offline-resumed mutation pends until reconnect — awaiting would hang first paint).
 - `me.ts` — `meQueryOptions` (the `/me` identity query; its `staleTime` IS the anon-cookie slide throttle, off query-cache `dataUpdatedAt` — no `lastValidatedAt` in any store) + `ensureIdentity` (cold visitor → `await ensureQueryData`; returning visitor → `void prefetchQuery`, fire-and-forget). The queryFn is the sole writer of `auth-store`.
 - `rooms.ts` — `roomsQueryOptions` (`GET /rooms`; threads the D1 `x-d1-bookmark` for read-your-writes).
 - `room-list.ts` — `useRoomList` merges the D1 projection with `room-list-store` facts by roomId (offline-first; local-only rooms never dropped).
+- `room-rename.ts` — the rename mutation (`PATCH /rooms/:id/title`) as `setMutationDefaults(['rename-room'])` + the `useRenameRoom()` hook. Optimistic across the rooms cache + session store + title fact (rolled back from persisted context on error); success merges the canonical title + RYW bookmark (`'' ` never clobbers a real one). Offline renames pause, dehydrate with the cache, and replay serially (`scope`). **`main.tsx` imports this module BEFORE `init()`** — hydrated paused mutations resolve their `mutationFn` from these defaults at restore time (route code-splitting registers nothing else that early).
 
 ## Selection System
 

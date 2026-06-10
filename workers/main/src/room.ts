@@ -1,5 +1,15 @@
 import * as schemaDo from '@avlo/db/schema-do';
-import { asRoomId, asUserId, maxZLength, Permission, renormalizeZ, type UserId, Z_RENORM_MAX_KEY_LEN, Z_RENORM_ORIGIN } from '@avlo/shared';
+import {
+  asRoomId,
+  asUserId,
+  maxZLength,
+  normalizeRoomTitle,
+  Permission,
+  renormalizeZ,
+  type UserId,
+  Z_RENORM_MAX_KEY_LEN,
+  Z_RENORM_ORIGIN,
+} from '@avlo/shared';
 import type { MetaEvent, VisitEvent } from '@avlo/worker-shared';
 import { eq } from 'drizzle-orm';
 import { type DrizzleSqliteDODatabase, drizzle } from 'drizzle-orm/durable-sqlite';
@@ -121,21 +131,11 @@ export class RoomDurableObject extends YServer<Env> {
     const userId = asUserId(raw); // verified + format-gated at the edge — a trusted boundary
 
     // 2. CREATE-OR-AUTHORIZE — first authorized connect mints ownership (single-threaded).
+    // Connect proceeds even if the projection enqueue fails — DO meta is already durable
+    // on disk; a missed send only loses the D1 row until the next meta event (§6).
     if (!this.meta) {
-      const now = Date.now();
-      this.meta = { ownerId: userId, permission: 'public', createdAt: now, updatedAt: now, title: 'Untitled', rev: 1, deleted: false };
-      this.db
-        .insert(roomMeta)
-        .values({ roomId: asRoomId(this.name), ...this.meta })
-        .run(); // authoritative SQLite
-      try {
-        await this.env.ROOM_META.send({ roomId: this.name, ...this.meta } satisfies z.input<typeof MetaEvent>); // durability-critical one-shot (§6)
-      } catch (err) {
-        // Connect proceeds — DO meta is already durable on disk. A missed send only loses the
-        // D1 row, which a *cross-device* first visit would notice (this device shows it from
-        // local facts). Durable fix when warranted: an alarm-based transactional outbox.
-        console.error('room creation projection failed', err);
-      }
+      this.meta = this.#mintMeta(userId, 'Untitled');
+      await this.#projectMeta(this.meta);
     }
     if (this.meta.permission === 'private' && this.meta.ownerId !== userId) {
       conn.close(4403, 'forbidden');
@@ -147,8 +147,11 @@ export class RoomDurableObject extends YServer<Env> {
     conn.setState({ userId });
     await super.onConnect(conn, ctx); // YServer: syncStep1 + awareness merge
 
-    // 4. PUSH EFFECTIVE MODE — out-of-band __YPS: string (never parsed by the Yjs decoder).
+    // 4. PUSH EFFECTIVE MODE + ROOM META — out-of-band __YPS: strings (never parsed by the
+    // Yjs decoder). `title` is room-wide (re-pushed on rename); `owner` is per-connection.
     this.sendCustomMessage(conn, `mode:${this.isReadOnly(conn) ? 'viewer' : 'editor'}`);
+    this.sendCustomMessage(conn, `title:${this.meta.title}`);
+    this.sendCustomMessage(conn, `owner:${this.meta.ownerId === userId ? '1' : '0'}`);
 
     // 5. PROJECT THE VISIT — fire-and-forget send, error-handled (waitUntil is a no-op in a
     // DO, §6). The rev bump is made durable BEFORE the send so a DO restart can never
@@ -170,13 +173,45 @@ export class RoomDurableObject extends YServer<Env> {
   }
 
   /**
+   * First-write mint — the authenticated first toucher owns the room (single-threaded DO).
+   * Builds + persists the row and RETURNS it; the caller assigns `this.meta` inline so TS
+   * narrowing survives at the call site.
+   */
+  #mintMeta(ownerId: UserId, title: string): RoomMeta {
+    const now = Date.now();
+    const meta: RoomMeta = { ownerId, permission: 'public', createdAt: now, updatedAt: now, title, rev: 1, deleted: false };
+    this.db
+      .insert(roomMeta)
+      .values({ roomId: asRoomId(this.name), ...meta })
+      .run(); // authoritative SQLite
+    return meta;
+  }
+
+  /**
+   * Snapshot + enqueue the meta projection, returning the snapshot (§6). The enqueue is
+   * try/caught: the SQLite write already committed, so a failed send must never fail the
+   * caller — the users worker's direct D1 write and/or the next meta event converge the
+   * projection. Durable fix when warranted: an alarm-based transactional outbox.
+   */
+  async #projectMeta(meta: RoomMeta): Promise<MetaEvent> {
+    const snapshot: MetaEvent = { roomId: asRoomId(this.name), ...meta };
+    try {
+      await this.env.ROOM_META.send(snapshot satisfies z.input<typeof MetaEvent>);
+    } catch (err) {
+      console.error('meta projection enqueue failed', err);
+    }
+    return snapshot;
+  }
+
+  /**
    * Owner-only permission flip, reached by cross-script raw RPC from `users` (§8). Works
    * even on a cold/evicted DO because meta loads in the constructor. Updates SQLite +
    * mutates this.meta in memory (★ warm-cache fix — warm DOs don't re-run onStart/onLoad,
    * so the SQLite write alone leaves isReadOnly stale on the live connections that matter)
-   * + projects + re-pushes/evicts live non-owner connections.
+   * + re-pushes/evicts live non-owner connections + projects, returning the snapshot for
+   * the users worker's read-your-writes D1 write.
    */
-  async setPermission(caller: UserId, next: Permission): Promise<void> {
+  async setPermission(caller: UserId, next: Permission): Promise<MetaEvent> {
     Permission.parse(next); // authority-boundary guard (§14a)
     if (!this.meta || this.meta.ownerId !== caller) throw new Error('forbidden');
     const now = Date.now();
@@ -187,7 +222,6 @@ export class RoomDurableObject extends YServer<Env> {
       .where(eq(roomMeta.roomId, asRoomId(this.name)))
       .run();
     this.meta = { ...this.meta, permission: next, updatedAt: now, rev }; // ★ warm-cache fix
-    await this.env.ROOM_META.send({ roomId: this.name, ...this.meta } satisfies z.input<typeof MetaEvent>);
 
     for (const c of this.getConnections<ConnState>()) {
       if (c.state?.userId === caller) continue;
@@ -195,6 +229,38 @@ export class RoomDurableObject extends YServer<Env> {
         c.close(4403, 'forbidden'); // evict — a viewer state can't express "gone"
       else this.sendCustomMessage(c, `mode:${this.isReadOnly(c) ? 'viewer' : 'editor'}`); // re-push, no reconnect
     }
+
+    return this.#projectMeta(this.meta);
+  }
+
+  /**
+   * Owner-only rename, reached by cross-script raw RPC from `users` (§8) — same shape as
+   * setPermission: authority-boundary guard → SQLite + warm-cache → live push → project +
+   * return the snapshot. The new title is broadcast to EVERY connection (the renamer's own
+   * tabs included — idempotent there). If meta doesn't exist yet (offline-created room
+   * renamed from the dashboard before its first connect, replayed on reconnect), mint it
+   * exactly like onConnect would — the authenticated renamer IS the creator.
+   */
+  async setTitle(caller: UserId, raw: string): Promise<MetaEvent> {
+    const title = normalizeRoomTitle(raw);
+    if (title === null) throw new Error('invalid'); // authority-boundary guard (§14a)
+    if (!this.meta) {
+      this.meta = this.#mintMeta(caller, title);
+    } else {
+      if (this.meta.ownerId !== caller) throw new Error('forbidden');
+      const now = Date.now();
+      const rev = this.meta.rev + 1;
+      this.db
+        .update(roomMeta)
+        .set({ title, updatedAt: now, rev })
+        .where(eq(roomMeta.roomId, asRoomId(this.name)))
+        .run();
+      this.meta = { ...this.meta, title, updatedAt: now, rev }; // ★ warm-cache fix
+    }
+
+    for (const c of this.getConnections<ConnState>()) this.sendCustomMessage(c, `title:${title}`);
+
+    return this.#projectMeta(this.meta);
   }
 
   /**

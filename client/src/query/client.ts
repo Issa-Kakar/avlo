@@ -59,8 +59,19 @@ export const persister = createAsyncStoragePersister({
  * subscription. Awaited by `main.tsx` before the router renders (one IDB get +
  * JSON.parse — milliseconds, concurrent with the font await that already gates
  * first paint). Never rejects: a corrupt/failed restore boots with a cold cache.
+ *
+ * Hydrated PAUSED mutations (offline renames queued pre-reload) are resumed
+ * fire-and-forget: a still-offline mutation's promise stays pending until the
+ * network returns, so awaiting it here would hang first paint on an offline
+ * boot. Their `mutationFn`/callbacks resolve from `setMutationDefaults` — the
+ * `query/room-rename` side-effect import in `main.tsx` registers them before
+ * this runs. (Live reconnect resumption is automatic via the mounted client.)
  */
 export function restoreQueryCache(): Promise<void> {
   const [, restored] = persistQueryClient({ queryClient, persister, buster: 'v1', maxAge: PERSIST_MAX_AGE });
-  return restored.catch((err) => console.error('[query] cache restore failed:', err));
+  return restored
+    .then(() => {
+      void queryClient.resumePausedMutations();
+    })
+    .catch((err) => console.error('[query] cache restore failed:', err));
 }

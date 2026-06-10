@@ -2,8 +2,9 @@ import { generateRoomId } from '@avlo/shared';
 import { useNavigate } from '@tanstack/react-router';
 import { useCallback, useMemo, useState } from 'react';
 import { useRoomList } from '@/query/room-list';
+import { useRenameRoom } from '@/query/room-rename';
 import { createRoom, toggleStar } from '@/stores/room-list-store';
-import type { Column } from './CanvasRow';
+import type { Column, RowRenameProps } from './CanvasRow';
 import { CanvasTable } from './CanvasTable';
 import {
   applyFilter,
@@ -47,20 +48,20 @@ function homeColumns(sort: SortOption): Column[] {
   ];
 }
 
-interface ViewProps {
+interface ViewProps extends RowRenameProps {
   canvases: Canvas[];
+  renamingId: string | null;
   onOpen: (id: string) => void;
   onToggleStar: (id: string) => void;
 }
 
 function HomeView({
   canvases,
-  onOpen,
-  onToggleStar,
   filter,
   setFilter,
   sort,
   setSort,
+  ...rowProps
 }: ViewProps & { filter: FilterOption; setFilter: (v: FilterOption) => void; sort: SortOption; setSort: (v: SortOption) => void }) {
   const columns = useMemo(() => homeColumns(sort), [sort]);
   const groups = useMemo<CanvasGroup[]>(
@@ -75,22 +76,22 @@ function HomeView({
         <SortFilterDropdown label="Filter by" options={FILTER_OPTIONS} value={filter} onChange={setFilter} />
         <SortFilterDropdown label="Sort by" options={SORT_OPTIONS} value={sort} onChange={setSort} />
       </div>
-      <CanvasTable columns={columns} groups={groups} onOpen={onOpen} onToggleStar={onToggleStar} spacious />
+      <CanvasTable columns={columns} groups={groups} {...rowProps} spacious />
     </>
   );
 }
 
-function RecentView({ canvases, onOpen, onToggleStar }: ViewProps) {
+function RecentView({ canvases, ...rowProps }: ViewProps) {
   const groups = useMemo(() => groupByRecency(canvases), [canvases]);
   return (
     <>
       <h1 className="dash-h1">Recent</h1>
-      <CanvasTable columns={RECENT_COLUMNS} groups={groups} onOpen={onOpen} onToggleStar={onToggleStar} />
+      <CanvasTable columns={RECENT_COLUMNS} groups={groups} {...rowProps} />
     </>
   );
 }
 
-function StarredView({ canvases, onOpen, onToggleStar }: ViewProps) {
+function StarredView({ canvases, ...rowProps }: ViewProps) {
   const groups = useMemo<CanvasGroup[]>(
     () => [{ title: null, rows: canvases.filter((c) => c.starred).sort((a, b) => b.openedTs - a.openedTs) }],
     [canvases],
@@ -98,7 +99,7 @@ function StarredView({ canvases, onOpen, onToggleStar }: ViewProps) {
   return (
     <>
       <h1 className="dash-h1">Starred</h1>
-      <CanvasTable columns={RECENT_COLUMNS} groups={groups} onOpen={onOpen} onToggleStar={onToggleStar} />
+      <CanvasTable columns={RECENT_COLUMNS} groups={groups} {...rowProps} />
     </>
   );
 }
@@ -109,6 +110,8 @@ export function Dashboard() {
   const [view, setView] = useState<DashboardView>('home');
   const [filter, setFilter] = useState<FilterOption>('Owned by anyone');
   const [sort, setSort] = useState<SortOption>('Last opened');
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const { mutate: renameRoom } = useRenameRoom();
 
   const openCanvas = useCallback(
     (id: string) => {
@@ -125,6 +128,13 @@ export function Dashboard() {
     void navigate({ to: '/room/$roomId', params: { roomId: id } });
   }, [navigate]);
 
+  // Kebab → Rename (owner rows only). The optimistic update + offline queueing live in
+  // the mutation defaults (query/room-rename.ts); the input commits pre-normalized text.
+  const onRenameStart = useCallback((id: string) => setRenamingId(id), []);
+  const onRenameEnd = useCallback(() => setRenamingId(null), []);
+  const onRenameCommit = useCallback((id: string, title: string) => renameRoom({ roomId: id, title }), [renameRoom]);
+  const rowProps = { renamingId, onOpen: openCanvas, onToggleStar: toggleStar, onRenameStart, onRenameCommit, onRenameEnd };
+
   return (
     <div className="dash-root">
       <Sidebar view={view} onSelect={setView} />
@@ -135,18 +145,10 @@ export function Dashboard() {
             {/* max-width spine — shares the same left edge + right cap as the top-bar row */}
             <div className="dash-spine">
               {view === 'home' && (
-                <HomeView
-                  canvases={canvases}
-                  onOpen={openCanvas}
-                  onToggleStar={toggleStar}
-                  filter={filter}
-                  setFilter={setFilter}
-                  sort={sort}
-                  setSort={setSort}
-                />
+                <HomeView canvases={canvases} {...rowProps} filter={filter} setFilter={setFilter} sort={sort} setSort={setSort} />
               )}
-              {view === 'recent' && <RecentView canvases={canvases} onOpen={openCanvas} onToggleStar={toggleStar} />}
-              {view === 'starred' && <StarredView canvases={canvases} onOpen={openCanvas} onToggleStar={toggleStar} />}
+              {view === 'recent' && <RecentView canvases={canvases} {...rowProps} />}
+              {view === 'starred' && <StarredView canvases={canvases} {...rowProps} />}
             </div>
           </div>
         </div>

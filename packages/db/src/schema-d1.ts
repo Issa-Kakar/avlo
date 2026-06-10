@@ -26,16 +26,24 @@ export const users = sqliteTable('users', {
 });
 
 /** Eventually-consistent projection of each room DO's authority. DISPLAY ONLY. */
-export const rooms = sqliteTable('rooms', {
-  roomId: text('room_id').$type<RoomId>().primaryKey(), // 14-char base62 (§13)
-  ownerId: text('owner_id').$type<UserId>().notNull(), // first-write-wins (immutable)
-  permission: text('permission').$type<Permission>().notNull(), // LWW by rev
-  createdAt: integer('created_at').notNull(), // first-write-wins
-  updatedAt: integer('updated_at').notNull(), // display/audit (rev is the LWW guard)
-  title: text('title').notNull().default('Untitled'), // display; rename RPC is future work
-  rev: integer('rev').notNull(), // DO's per-room monotonic counter — the LWW guard
-  deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false), // DO tombstone projection (no delete flow yet)
-});
+export const rooms = sqliteTable(
+  'rooms',
+  {
+    roomId: text('room_id').$type<RoomId>().primaryKey(), // 14-char base62 (§13)
+    ownerId: text('owner_id').$type<UserId>().notNull(), // first-write-wins (immutable)
+    permission: text('permission').$type<Permission>().notNull(), // LWW by rev
+    createdAt: integer('created_at').notNull(), // first-write-wins
+    updatedAt: integer('updated_at').notNull(), // display/audit (rev is the LWW guard)
+    title: text('title').notNull().default('Untitled'), // LWW by rev (rename RPC)
+    rev: integer('rev').notNull(), // DO's per-room monotonic counter — the LWW guard
+    deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false), // DO tombstone projection (no delete flow yet)
+  },
+  // One-time cost per room creation; serves the future OAuth promote/adopt ownership
+  // fan-out (`UPDATE rooms SET owner_id = new WHERE owner_id = old`). FULL index, not
+  // partial-on-not-deleted: the migration UPDATE must touch tombstoned rows too, and
+  // SQLite only uses a partial index when the query implies its predicate.
+  (t) => [index('idx_rooms_owner').on(t.ownerId)],
+);
 
 /** Per-user access + recency list — the dashboard's primary source. Visit facts only. */
 export const roomVisits = sqliteTable(

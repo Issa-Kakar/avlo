@@ -1,16 +1,27 @@
-import { CanvasRow, type Column } from './CanvasRow';
+import { CanvasRow, type Column, type RowRenameProps } from './CanvasRow';
 import type { CanvasGroup } from './data';
 
-interface CanvasTableProps {
+interface CanvasTableProps extends RowRenameProps {
   columns: readonly Column[];
   groups: readonly CanvasGroup[];
+  renamingId: string | null;
   onOpen: (id: string) => void;
   onToggleStar: (id: string) => void;
   /** Home view sits below a Filter/Sort row — adds extra top separation. */
   spacious?: boolean;
 }
 
-export function CanvasTable({ columns, groups, onOpen, onToggleStar, spacious = false }: CanvasTableProps) {
+export function CanvasTable({
+  columns,
+  groups,
+  renamingId,
+  onOpen,
+  onToggleStar,
+  onRenameStart,
+  onRenameCommit,
+  onRenameEnd,
+  spacious = false,
+}: CanvasTableProps) {
   const template = columns.map((c) => c.width).join(' ');
   const allEmpty = groups.every((g) => g.rows.length === 0);
 
@@ -39,8 +50,12 @@ export function CanvasTable({ columns, groups, onOpen, onToggleStar, spacious = 
                 columns={columns}
                 template={template}
                 canvas={canvas}
+                renaming={canvas.id === renamingId}
                 onOpen={onOpen}
                 onToggleStar={onToggleStar}
+                onRenameStart={onRenameStart}
+                onRenameCommit={onRenameCommit}
+                onRenameEnd={onRenameEnd}
               />
             ))}
           </div>

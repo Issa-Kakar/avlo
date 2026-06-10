@@ -14,7 +14,7 @@ import { z } from 'zod/v4';
  *  the shared `Permission` type (a pure literal union). */
 export interface RoomListEntry {
   roomId: RoomId;
-  title: string; // NOT NULL in D1 (DEFAULT 'Untitled'); rename RPC is future work
+  title: string; // NOT NULL in D1 (DEFAULT 'Untitled'); renamed via PATCH /rooms/:id/title
   permission: Permission;
   isOwner: boolean;
   lastVisitedAt: number;
@@ -31,13 +31,18 @@ const app = new Hono()
     const body: RoomListResponse = { rooms: [], bookmark: '' };
     return c.json(body);
   })
-  // §8 permission seam — body shape so a future client PATCH is typed; response is
-  // display-only here (the surface match is path × method, not response type).
+  // §8 meta-mutation seams — body shapes so client PATCHes are typed (the surface match
+  // is path × method, not response type). Both return the read-your-writes `bookmark`
+  // (also exposed as the `x-d1-bookmark` response header); title returns the canonical
+  // normalized title so the client can confirm its optimistic value.
   .patch(
     '/rooms/:id/permission',
     zValidator('param', z.object({ id: z.string() })),
     zValidator('json', z.object({ permission: Permission })),
-    (c) => c.json({} as { ok: true } | { error: string }),
+    (c) => c.json({} as { ok: true; bookmark: string } | { error: string }),
+  )
+  .patch('/rooms/:id/title', zValidator('param', z.object({ id: z.string() })), zValidator('json', z.object({ title: z.string() })), (c) =>
+    c.json({} as { ok: true; title: string; bookmark: string } | { error: string }),
   );
 
 export type UsersApp = typeof app;

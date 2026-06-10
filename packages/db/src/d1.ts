@@ -1,4 +1,5 @@
-import { drizzle } from 'drizzle-orm/d1';
+import { sql } from 'drizzle-orm';
+import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema-d1';
 
 /**
@@ -26,6 +27,32 @@ export function getSessionDB(DB: D1Database, bookmark?: string | null) {
 
 /** Escape hatch only — CLI scripts with no request context. Not used on any request path. */
 export const createDB = (DB: D1Database) => drizzle(DB, { schema });
+
+/**
+ * The standardized `rooms` projection write — one rev-guarded multi-row upsert shared by
+ * the queue consumer (chunked statements into `db.batch`) and the users worker's direct
+ * read-your-writes write after a DO meta RPC (awaited inline, then `session.getBookmark()`).
+ * `ownerId`/`createdAt` are deliberately absent from `set` (first-write-wins); the rest is
+ * LWW resolved by the DO's per-room monotonic `rev` — a duplicate, stale, or already-applied
+ * delivery fails `excluded.rev >` and no-ops, which is exactly what makes the direct-write +
+ * queue double-write idempotent in either order.
+ */
+export function upsertRoomsFromMeta(db: DrizzleD1Database<typeof schema>, rows: (typeof schema.rooms.$inferInsert)[]) {
+  return db
+    .insert(schema.rooms)
+    .values(rows)
+    .onConflictDoUpdate({
+      target: schema.rooms.roomId,
+      set: {
+        permission: sql`excluded.permission`,
+        updatedAt: sql`excluded.updated_at`,
+        title: sql`excluded.title`,
+        rev: sql`excluded.rev`,
+        deleted: sql`excluded.deleted`,
+      },
+      setWhere: sql`excluded.rev > ${schema.rooms.rev}`,
+    });
+}
 
 /**
  * Transient-only retry (exp backoff + full jitter) for user-facing direct paths

@@ -6,6 +6,6 @@
 //
 // The DO subschema is also reachable via the `@avlo/db/schema-do` subpath export
 // (room.ts wants `import * as schema from '@avlo/db/schema-do'` for drizzle()).
-export { createDB, getSessionDB, withRetry } from './d1';
-export { roomMeta } from './schema-do';
+export { createDB, getSessionDB, upsertRoomsFromMeta, withRetry } from './d1';
 export { rooms, roomVisits, users } from './schema-d1';
+export { roomMeta } from './schema-do';

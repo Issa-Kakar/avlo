@@ -6,28 +6,32 @@ sort / open their canvases. Mounted by `routes/home.tsx`; `/` redirects here
 (`<Link to="/home" preload="intent">`). It mounts **no** canvas/room runtime
 (no `connectRoom`).
 
-> **Placeholder.** UI only, no backend. The single data seam is `data.ts`
-> (`CANVASES` query + `NOW` + `ME`). When the backend lands, that query belongs
-> in a route **`loader`** (not a component effect): the top-bar logo
-> intent-preloads `/home`, so a `loader` is warmed on hover, ahead of the click.
-> Keep this route's `beforeLoad`/loader **side-effect-free** — that is exactly
-> why the logo can preload it (see `topbar/CLAUDE.md` › *Navigation precedent*).
-> The only interactive behaviors today are the
-> **star toggle** and the Home **Filter/Sort** dropdowns (local state). Search,
-> New Canvas, kebab menus, and row clicks are visual-only — the wiring points are
-> noted in code.
+> **Live data.** Rows come from `useRoomList()` (`query/room-list.ts` — the D1
+> projection merged with local facts); the `/home` route warms it with a
+> non-blocking `void prefetchQuery` loader, which is why the top-bar logo can
+> intent-preload `/home` (see `topbar/CLAUDE.md` › *Navigation precedent*) —
+> keep this route's `beforeLoad`/loader **side-effect-free**.
+> Interactive today: **row click → open room**, **New Canvas** (mint id + local
+> facts + navigate), **star toggle**, the Home **Filter/Sort** dropdowns, and
+> the **kebab → Rename** flow (owner rows only; inline input in the name cell,
+> committed through `useRenameRoom()` — `query/room-rename.ts`). Search is
+> visual-only.
+>
+> **TODO (user-flagged):** the rename UI has rough touches — some weird
+> behaviour/bugs to follow up on. Specifics will be provided in a later
+> session; don't infer the fixes from this doc.
 
 ## Shape
 
 ```
-Dashboard            shell — owns view ('home'|'recent'|'starred') + starredIds + Home filter/sort
+Dashboard            shell — owns view ('home'|'recent'|'starred') + Home filter/sort + renamingId + useRenameRoom
 ├── Sidebar          AvloLogo (reused from topbar/icons) + 3 nav buttons; active = matches view
 └── main
     ├── TopHeader    search field + New Canvas (focus/press are CSS, render-free)
     └── scroll › content › spine(max-width 1280)
         └── HomeView / RecentView / StarredView   useMemo'd filter→sort→group → CanvasTable
-            └── CanvasTable   column-driven header + grouped rows + empty state
-                └── CanvasRow (memo) → Cell      OwnerAvatar in the owner cell
+            └── CanvasTable   column-driven header + grouped rows + empty state (threads renamingId → per-row boolean)
+                └── CanvasRow (memo) → Cell      OwnerAvatar in the owner cell; KebabMenuCell (owner rows) + NameCell input while renaming
 ```
 
 The `spine` (max-width 1280, left-aligned) shares the top bar row's left edge + right
@@ -36,9 +40,17 @@ cap, so the New Canvas button lines up with the table's right edge.
 ## Conventions / performance
 
 - **Hover is CSS, not React.** Row background uses a `:hover` selector (`Dashboard.css`) —
-  `CanvasRow` is `memo`'d, so a hover never triggers a render and a star toggle re-renders only
-  the toggled row (it receives a `starred` **boolean**, not the Set). The kebab is persistently
-  visible (not hover-revealed).
+  `CanvasRow` is `memo`'d, so a hover never triggers a render; a star toggle or rename start/end
+  re-renders only the affected row (rows receive `starred`/`renaming` **booleans**, never the
+  Set/id). The kebab is persistently visible (not hover-revealed) on OWNED rows only — rename is
+  owner-only and an inert button next to working ones reads as broken, so non-owned rows get an
+  empty cell with the same grid footprint.
+- **Rename flow.** Kebab (`useDropdown`, right-anchored `.dash-row-menu`) → "Rename" swaps the
+  name cell to an uncontrolled `.dash-rename-input` (Enter/blur commit, Esc cancels via ref
+  flag; empty/unchanged reverts). `Dashboard` owns `renamingId` + commits pre-normalized
+  (`normalizeRoomTitle`) text through `useRenameRoom()`; optimistic update + offline queueing
+  live in the mutation defaults (`query/room-rename.ts`). Kebab/menu/input all stopPropagation
+  and the row ignores clicks while renaming, so editing never opens the room.
 - **One generic dropdown** (`SortFilterDropdown`, used for both Filter + Sort) built on the
   context-menu's shared `useDropdown` hook. Open fill + selected row are CSS, keyed off
   `[aria-expanded]` + `.dash-dd-item-selected`. The menu enter is a fade + 8px downward glide on the
@@ -61,12 +73,12 @@ cap, so the New Canvas button lines up with the table's right edge.
 
 | File | Responsibility |
 |------|----------------|
-| `Dashboard.tsx` | Shell + state (view / starredIds / filter / sort) + the three view components + column templates. The only importer of `Dashboard.css`. |
+| `Dashboard.tsx` | Shell + state (view / filter / sort / renamingId) + `useRenameRoom` commit + the three view components + column templates. The only importer of `Dashboard.css`. |
 | `Sidebar.tsx` | Logo + nav. |
-| `TopHeader.tsx` | Search field + New Canvas (visual-only). |
+| `TopHeader.tsx` | Search field (visual-only) + New Canvas (mint id + facts + navigate). |
 | `SortFilterDropdown.tsx` | Generic Filter/Sort dropdown. |
-| `CanvasTable.tsx` | Column-driven header + grouped body + empty state. Owns the `Column` contract (`CanvasRow.tsx`). |
-| `CanvasRow.tsx` | `memo`'d row + `Cell` renderer + `Column` type. |
+| `CanvasTable.tsx` | Column-driven header + grouped body + empty state. Owns the `Column` contract (`CanvasRow.tsx`); derives each row's `renaming` boolean from `renamingId`. |
+| `CanvasRow.tsx` | `memo`'d row + `Cell` renderer + `Column`/`RowRenameProps` types + `KebabMenuCell` (owner-only Rename menu) + `NameCell` (inline rename input). |
 | `OwnerAvatar.tsx` | 25×25 initials circle, tint by name. |
 | `data.ts` | Types + placeholder `CANVASES` + filter/sort/group + `tintFor`/`initials`/`formatDate`/`recencyBucket`. **The backend seam.** |
 | `Dashboard.css` | All styles (`@layer components`, `dash-*` classes). |

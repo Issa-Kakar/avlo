@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router';
 import { HistoryButtons } from './HistoryButtons';
 import { AvloLogo } from './icons/AvloLogo';
 import { MainMenuTrigger } from './MainMenuTrigger';
+import { RoomTitle } from './RoomTitle';
 import './TopBar.css';
 
 export function TopBar() {
@@ -18,7 +19,7 @@ export function TopBar() {
       <Link to="/home" preload="intent" className="top-bar-logo-link" aria-label="Home" title="Home">
         <AvloLogo className="top-bar-logo" height={34} />
       </Link>
-      <span className="top-bar-name">Untitled</span>
+      <RoomTitle />
       <MainMenuTrigger />
       <div className="top-bar-divider top-bar-divider-history" />
       <HistoryButtons />

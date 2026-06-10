@@ -357,6 +357,35 @@
   .dash-kebab-cell {
     display: flex;
     justify-content: center;
+    position: relative; /* anchor for the row kebab menu */
+  }
+
+  /* Row kebab menu — the shared .dash-dd-menu popover, re-anchored to the kebab's
+     right edge (the kebab is the last column; a left-anchored menu would hang past
+     the table's right cap). */
+  .dash-row-menu {
+    left: auto;
+    right: 4px;
+    min-width: 150px;
+  }
+
+  /* Inline rename input — same type as the static name cell (14/600/-0.01em), framed
+     by the chrome's interactive hairline (#818f9c, shared with the topbar title) so
+     edit mode is unambiguous. The 9px text inset from padding+border reads as the
+     input's own affordance, not a layout glitch. */
+  .dash-rename-input {
+    width: 100%;
+    height: 32px;
+    padding: 0 8px;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-dash-ink);
+    background: var(--color-chrome-surface);
+    border: 1px solid #818f9c;
+    border-radius: 8px;
+    outline: none;
   }
 
   .dash-kebab {

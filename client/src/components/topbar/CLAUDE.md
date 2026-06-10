@@ -7,12 +7,17 @@
 >
 > **Task scope comes from the prompt, not this doc.** The body below
 > describes what currently exists.
+>
+> **TODO (user-flagged):** the rename/title UI has rough touches — some weird
+> behaviour/bugs to follow up on. Specifics will be provided in a later
+> session; don't infer the fixes from this doc.
 
 Two floating chrome pills along the top edge of the canvas, plus a
 dropdown menu that hangs off the left bar.
 
 - **`TopBar`** (left, `top-bar-left`) — Avlo logo · board name
-  ("Untitled" hardcoded) · main-menu trigger · divider · undo/redo. The
+  (`RoomTitle` — live server title, owner-editable in place) · main-menu
+  trigger · divider · undo/redo. The
   hamburger sidebar toggle used to be the first item here but was
   removed in favor of making the logo itself clickable; it is now a
   TanStack `<Link to="/home" preload="intent">` → the dashboard (see
@@ -33,7 +38,8 @@ The dropdown sits at `z-index: 401` so it paints over its own host pill.
 
 | File | Responsibility |
 |---|---|
-| `TopBar.tsx` | Left-bar shell — orders logo / name / `MainMenuTrigger` / divider / `HistoryButtons`. |
+| `TopBar.tsx` | Left-bar shell — orders logo / `RoomTitle` / `MainMenuTrigger` / divider / `HistoryButtons`. |
+| `RoomTitle.tsx` | Board name + tab title. Subscribes to `room-session-store` (`title`, `isOwner`). Read mode: span (`.top-bar-name`, plus `.top-bar-name-editable` cursor/hover affordance for owners). Edit mode (owner click): auto-sizing input via the CSS inline-grid mirror (`.top-bar-name-edit[data-value]` + `::after`), `maxLength=ROOM_TITLE_MAX_LEN`, Enter/blur commit through one blur path, Esc cancels via ref flag; empty/unchanged reverts. Commits via `useRenameRoom()` (`query/room-rename.ts`). Also owns `document.title = "<name> - Avlo"` (cleanup restores `Avlo`). |
 | `TopBarRight.tsx` | Right-bar shell — `UserAvatarCluster` / divider / Share button. Share copies `window.location.href` to clipboard (placeholder for a real share modal). |
 | `TopBar.css` | The only stylesheet for this folder. Holds the shared `.top-bar` pill, every button variant, the main-menu container + items + divider + open animation, and the Share button. |
 | `HistoryButtons.tsx` | `memo`'d. Undo/Redo buttons, subscribed to `history-store` (`selectCanUndo` / `selectCanRedo`). Clicks call `undo()` / `redo()` from `room-runtime`. |
@@ -137,9 +143,8 @@ right-bar variant overrides to `0 8px`. (The base rule's
 balanced text mass on its right; left intact for the day a non-history
 divider returns, but currently dead code.)
 
-### Board name (`.top-bar-name`)
-A `<span>` today (placeholder); will become a text input wired to
-rename. Cursor is `text` to advertise editability.
+### Board name (`.top-bar-name` — `RoomTitle`)
+A span at rest; an auto-sizing input while the owner edits.
 - Visible height **32px**, matching the icon-button siblings (chevron,
   undo, redo). Built from `line-height: 28px` + `2px` transparent
   border each side — no explicit `height`.
@@ -147,12 +152,18 @@ rename. Cursor is `text` to advertise editability.
 - `margin-left: 6px` is a compensation knob, not a chrome margin: when
   the inner padding was tightened (12 → 6), this margin restored the
   visible logo↔title gap so the pill chrome didn't shift.
-- Hover paints the border in `#818f9c` at the same `2px` width (no
-  layout shift). Text color does **not** change on hover — the border
-  alone is the affordance.
+- **Owner-gated affordance:** the base class is `cursor: default` with no
+  hover; `.top-bar-name-editable` (owners only) adds `cursor: text` + the
+  `#818f9c` hover border at the same `2px` width (no layout shift). Text
+  color never changes on hover — the border alone is the affordance.
 - No `min-width` — the slot hugs `content + padding`. `max-width: 160px`
-  with `text-overflow: ellipsis` caps long names. The pill will grow
-  rightward as the name does.
+  with `text-overflow: ellipsis` caps long names. The pill grows
+  rightward as the name does, then truncates.
+- **Edit mode** (`.top-bar-name-edit`): inline-grid mirror — a hidden
+  `::after { content: attr(data-value) ' ' }` and the borderless input
+  share grid cell 1/1, so the track (and pill) grows with typing under
+  the same 160px cap. The `#818f9c` border stays painted for the whole
+  edit (it IS the focus ring).
 
 ### Main menu popover
 - `min-width: 210px`, padding `6px`, radius `12px`, gap `2px` between items.
@@ -321,7 +332,7 @@ comes from CSS, never the SVG itself — pass `width` / `height` through
 RoomPage.tsx
 ├── <TopBar />
 │   ├── <Link to=/home preload=intent> › AvloLogo   → /home dashboard
-│   ├── .top-bar-name        ("Untitled" — hardcoded; future text input)
+│   ├── <RoomTitle />        ← memo'd, subscribes to room-session-store; owner edit-in-place + document.title
 │   ├── MainMenuTrigger      ← owns the dropdown
 │   │   └── MainMenu (open ? rendered : null)
 │   │       ├── MainMenuItem × 5
@@ -335,7 +346,8 @@ RoomPage.tsx
     └── .top-bar-share       (clipboard placeholder)
 ```
 
-The board name is a **placeholder** — it will be wired to a text input on
-rename. The AvloLogo is now the app's one cross-route link (→ `/home`
-dashboard); see **Navigation precedent** below. The Share button works
-(copies URL) but is also a placeholder for a real share flow.
+The board name is live — `RoomTitle` renders the server-pushed title and
+lets the owner rename in place (`query/room-rename.ts` mutation; `title:`
+rebroadcast keeps peers in sync). The AvloLogo is the app's one cross-route
+link (→ `/home` dashboard); see **Navigation precedent** below. The Share
+button works (copies URL) but is a placeholder for a real share flow.
