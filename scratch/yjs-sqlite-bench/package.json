@@ -1,0 +1,16 @@
+{
+  "name": "yjs-sqlite-bench",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Throwaway scratch: measure Yjs V2 + SQLite-update-log overhead vs R2 compacted-snapshot persistence for a DO whiteboard.",
+  "scripts": {
+    "bench": "node --expose-gc --no-warnings run.mjs"
+  },
+  "dependencies": {
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "wrangler": "^4.99.0"
+  }
+}
