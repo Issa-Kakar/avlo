@@ -23,12 +23,18 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
-/** Resolved identity — structurally the `/me` response (`query/me.ts`). */
+/** Resolved identity — structurally the `/me` response (`query/me.ts`). `email`/
+ *  `avatarHash` exist only on an account session (Google sign-in); both clear on
+ *  sign-out because `setIdentity` writes them unconditionally. They are UI-only —
+ *  `getUserProfile()` deliberately excludes them (it feeds awareness, and email must
+ *  never broadcast to peers; `avatarHash` joins awareness only in a later phase). */
 export interface Identity {
   userId: UserId;
   isAnon: boolean;
   name: string;
   color: string;
+  email?: string;
+  avatarHash?: string;
 }
 
 interface AuthActions {
@@ -56,12 +62,15 @@ export const useAuthStore = create<AuthStore>()(
           s.isAnon = identity.isAnon;
           s.name = identity.name;
           s.color = identity.color;
+          // Unconditional: an anon /me carries neither, which clears them on sign-out.
+          s.email = identity.email;
+          s.avatarHash = identity.avatarHash;
         }),
     })),
     {
       name: 'avlo.auth.v1',
       storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({ userId: s.userId, isAnon: s.isAnon, name: s.name, color: s.color }),
+      partialize: (s) => ({ userId: s.userId, isAnon: s.isAnon, name: s.name, color: s.color, email: s.email, avatarHash: s.avatarHash }),
     },
   ),
 );

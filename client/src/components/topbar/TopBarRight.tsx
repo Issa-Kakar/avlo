@@ -1,4 +1,5 @@
 import type { MouseEvent } from 'react';
+import { SignInButton } from '../auth/SignInButton';
 import { UserAvatarCluster } from '../UserAvatarCluster';
 import { ShareIcon } from './icons/ShareIcon';
 import './TopBar.css';
@@ -17,12 +18,14 @@ const handleShare = async () => {
  *  keeps focus on the canvas (same pattern as HistoryButtons). */
 const preventFocus = (e: MouseEvent) => e.preventDefault();
 
-/** Right-side counterpart to TopBar — collaborator avatars + the Share CTA,
- *  in a pill that reuses the shared `.top-bar` chrome. */
+/** Right-side counterpart to TopBar — collaborator avatars + sign-in/out + the Share
+ *  CTA, in a pill that reuses the shared `.top-bar` chrome. */
 export function TopBarRight() {
   return (
     <div className="top-bar top-bar-right">
       <UserAvatarCluster />
+      <div className="top-bar-divider" />
+      <SignInButton variant="canvas" />
       <div className="top-bar-divider" />
       <button
         type="button"

@@ -1,5 +1,5 @@
 import { extractDomain, isSvg, parseImageDimensions, validateImage } from '@avlo/shared';
-import { syntheticCacheUrl } from '@avlo/worker-shared';
+import { fetchBytesCapped, sha256Hex, syntheticCacheUrl } from '@avlo/worker-shared';
 import type { Context } from 'hono';
 import type { UnfurlResponseBody } from './app-type';
 import type { UnfurlEnv } from './env';
@@ -12,52 +12,10 @@ const FETCH_TIMEOUT = 5000;
 const UA = 'AvloBot/1.0 (+https://avlo.io/bot)';
 
 // --- Helpers ---
+// sha256Hex / fetchBytesCapped come from @avlo/worker-shared (silent — H10); the
+// grandfathered `[unfurl]` URL warns live at the call sites below.
 
-async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = new Uint8Array(hashBuffer);
-  let hex = '';
-  for (let i = 0; i < hashArray.length; i++) {
-    hex += hashArray[i].toString(16).padStart(2, '0');
-  }
-  return hex;
-}
-
-async function fetchBytesCapped(url: string, maxBytes: number): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT),
-  });
-  if (!res.ok || !res.body) {
-    console.warn('[unfurl] fetch failed:', url, res.status);
-    return null;
-  }
-
-  const contentType = res.headers.get('content-type') ?? '';
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      console.warn('[unfurl] too large:', url, total);
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  return { bytes, contentType };
-}
+const fetchCapped = (url: string, maxBytes: number) => fetchBytesCapped(url, maxBytes, { timeoutMs: FETCH_TIMEOUT, userAgent: UA });
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -82,8 +40,11 @@ async function fetchAndStoreImage(
   maxBytes: number,
 ): Promise<{ assetId: string; width: number; height: number } | null> {
   try {
-    const fetched = await fetchBytesCapped(imageUrl, maxBytes);
-    if (!fetched) return null;
+    const fetched = await fetchCapped(imageUrl, maxBytes);
+    if (!fetched) {
+      console.warn('[unfurl] image fetch failed or too large:', imageUrl);
+      return null;
+    }
     const { bytes } = fetched;
 
     const { valid, mimeType } = validateImage(bytes);
@@ -106,8 +67,11 @@ type FaviconResult = { kind: 'raster'; assetId: string } | { kind: 'svg'; base64
 
 async function fetchFavicon(assets: R2Bucket, faviconUrl: string, maxBytes: number): Promise<FaviconResult | null> {
   try {
-    const fetched = await fetchBytesCapped(faviconUrl, maxBytes);
-    if (!fetched) return null;
+    const fetched = await fetchCapped(faviconUrl, maxBytes);
+    if (!fetched) {
+      console.warn('[unfurl] favicon fetch failed or too large:', faviconUrl);
+      return null;
+    }
     const { bytes, contentType } = fetched;
 
     if (contentType.startsWith('image/svg+xml') || isSvg(bytes)) {

@@ -5,10 +5,35 @@
   "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
   "compatibility_flags": ["nodejs_compat"],
 
-  // Bindings land per implementation step (kept minimal until a route needs them):
-  //   step 2 — secret ANON_SECRET (workers/auth/.dev.vars; signs the avlo_anon HMAC cookie) [active]
-  //   step 3 — ratelimit RL_AUTH (cloudflareRateLimiter tier-1)
-  //   deferred (OAuth) — KV SESSIONS, secrets GOOGLE_CLIENT_SECRET / OAUTH_PKCE_SECRET, service USERS
+  // Secrets (workers/auth/.dev.vars locally; `wrangler secret put` in prod — deploy-gated):
+  //   ANON_SECRET         — signs the `avlo_anon` HMAC cookie (§2/§11)
+  //   GOOGLE_CLIENT_SECRET — OAuth code exchange (server-side flow only)
+  //   OAUTH_PKCE_SECRET   — signs the single-use `avlo_oauth` flow cookie
+
+  // Opaque-session store: `sess:<sha256hex(token)>` → SessionRecord JSON, 30 d expirationTtl.
+  // Placeholder id (deploy-gated) — local dev keys on the binding name + shared --persist-to.
+  "kv_namespaces": [{ "binding": "SESSIONS", "id": "00000000000000000000000000000001" }],
+
+  // IP-keyed limiter for the pre-auth OAuth routes (/login/google, /callback, /logout).
+  // namespace_id 1003 (1001 images, 1002 unfurl, 1004 users). /me is NOT limited — it is
+  // every client's identity boot and an IP key would 429 whole NATs.
+  "ratelimits": [{ "name": "RL_AUTH", "namespace_id": "1003", "simple": { "limit": 10, "period": 60 } }],
+
+  // The OAuth callback's two RPC hops: linkAccount (D1 promote-or-adopt) + ingestAvatar
+  // (R2 snapshot). Mutual users↔auth binding is the intended seam; the dev registry
+  // resolves it when both run under `npm run dev`.
+  "services": [
+    { "binding": "USERS", "service": "avlo-users", "entrypoint": "UsersRpc" },
+    { "binding": "IMAGES", "service": "avlo-images", "entrypoint": "ImagesRpc" }
+  ],
+
+  // Public by nature (the client_id rides every browser redirect URL; the origins are the
+  // app's own). Dev overrides live in .dev.vars (localhost origin + :8792 redirect URI).
+  "vars": {
+    "GOOGLE_CLIENT_ID": "647380257731-thpq9dgsh4quje6mb9adieh7q8b5urq6.apps.googleusercontent.com",
+    "APP_ORIGIN": "https://avlo.io",
+    "OAUTH_REDIRECT_URI": "https://auth.avlo.io/callback"
+  },
 
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [{ "pattern": "auth.avlo.io", "custom_domain": true }],

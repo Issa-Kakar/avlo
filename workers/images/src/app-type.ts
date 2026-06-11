@@ -15,12 +15,14 @@ import { Hono } from 'hono';
 import { z } from 'zod/v4';
 
 const keyParam = z.object({ key: z.string() });
+const hashParam = z.object({ hash: z.string() });
 const contentLengthHeader = z.object({ 'content-length': z.string() });
 
 const app = new Hono()
   .put('/:key', zValidator('param', keyParam), zValidator('header', contentLengthHeader), (c) =>
     c.json({} as { key: string; status: 'created' | 'exists' } | { error: string }),
   )
-  .get('/:key', zValidator('param', keyParam), (c) => c.body(null));
+  .get('/:key', zValidator('param', keyParam), (c) => c.body(null))
+  .get('/avatars/:hash', zValidator('param', hashParam), (c) => c.body(null));
 
 export type ImagesApp = typeof app;

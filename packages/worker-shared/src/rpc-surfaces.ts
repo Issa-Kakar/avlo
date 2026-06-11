@@ -19,6 +19,32 @@ export interface AuthRpcSurface {
 }
 
 /**
+ * users worker's `UsersRpc` — called only by the auth worker's OAuth callback (§9).
+ * Promote-or-adopt, one atomic D1 upsert: new `googleSub` → promote `currentUserId` into
+ * the account row; existing → adopt that account's userId (+ refresh email/name; ingest's
+ * `avatarHash` is coalesced so a failed snapshot never clobbers a stored avatar — the
+ * RETURNED `avatarHash` is the post-coalesce truth). `bookmark` is the D1 Sessions
+ * read-your-writes token. Throws on D1 failure after retries — the callback fails closed.
+ */
+export interface UsersRpcSurface {
+  linkAccount(
+    currentUserId: UserId,
+    googleSub: string,
+    profile: { email: string; name: string; avatarHash: string | null },
+  ): Promise<{ userId: UserId; avatarHash: string | null; bookmark: string }>;
+}
+
+/**
+ * images worker's `ImagesRpc` — snapshot a Google avatar into R2 under the write-once
+ * `avatars/<hash32>` key (§9). Returns the 32-hex truncated content hash or `null` on ANY
+ * failure; NEVER throws — the OAuth callback awaits it inline and a missing avatar must
+ * not fail sign-in.
+ */
+export interface ImagesRpcSurface {
+  ingestAvatar(pictureUrl: string): Promise<string | null>;
+}
+
+/**
  * main worker's `RoomDurableObject` cross-script surface — owner-only meta mutations (§8).
  *
  * `roomId` MUST be the id the stub was derived from. Raw native RPC cannot resolve

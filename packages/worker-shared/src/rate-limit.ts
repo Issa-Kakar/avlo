@@ -15,3 +15,12 @@ import type { Context, Env as HonoEnv, MiddlewareHandler } from 'hono';
 export const userRateLimiter = <E extends HonoEnv & { Variables: { userId: UserId } }>(
   binding: (c: Context<E>) => RateLimit,
 ): MiddlewareHandler<E> => cloudflareRateLimiter<E>({ rateLimitBinding: binding, keyGenerator: (c) => c.get('userId') });
+
+/**
+ * Pre-auth IP rate limiter — keys on `cf-connecting-ip` (stamped by Cloudflare's edge on
+ * every prod request; absent only in local dev, where all requests share the `'dev'`
+ * bucket and the binding may not enforce anyway). For routes that run BEFORE identity
+ * exists (OAuth /login /callback /logout); authed routes use `userRateLimiter`.
+ */
+export const ipRateLimiter = <E extends HonoEnv>(binding: (c: Context<E>) => RateLimit): MiddlewareHandler<E> =>
+  cloudflareRateLimiter<E>({ rateLimitBinding: binding, keyGenerator: (c) => c.req.header('cf-connecting-ip') ?? 'dev' });

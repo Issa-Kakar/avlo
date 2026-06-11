@@ -183,6 +183,47 @@
     flex: 1;
   }
 
+  /* ----- auth (sign in / out — placeholder affordance) ----- */
+  .dash-auth {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .dash-auth-name {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-chrome-ink-tier);
+  }
+
+  .dash-auth-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 44px;
+    padding: 0 16px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--color-chrome-ink-engaged);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition: background 120ms ease;
+  }
+
+  .dash-auth-btn:hover {
+    background: var(--color-chrome-hover);
+  }
+
   .dash-new-canvas {
     display: inline-flex;
     align-items: center;

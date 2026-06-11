@@ -27,7 +27,7 @@ sort / open their canvases. Mounted by `routes/home.tsx`; `/` redirects here
 Dashboard            shell — owns view ('home'|'recent'|'starred') + Home filter/sort + renamingId + useRenameRoom
 ├── Sidebar          AvloLogo (reused from topbar/icons) + 3 nav buttons; active = matches view
 └── main
-    ├── TopHeader    search field + New Canvas (focus/press are CSS, render-free)
+    ├── TopHeader    search field + SignInButton (auth) + New Canvas (focus/press are CSS, render-free)
     └── scroll › content › spine(max-width 1280)
         └── HomeView / RecentView / StarredView   useMemo'd filter→sort→group → CanvasTable
             └── CanvasTable   column-driven header + grouped rows + empty state (threads renamingId → per-row boolean)
@@ -75,7 +75,7 @@ cap, so the New Canvas button lines up with the table's right edge.
 |------|----------------|
 | `Dashboard.tsx` | Shell + state (view / filter / sort / renamingId) + `useRenameRoom` commit + the three view components + column templates. The only importer of `Dashboard.css`. |
 | `Sidebar.tsx` | Logo + nav. |
-| `TopHeader.tsx` | Search field (visual-only) + New Canvas (mint id + facts + navigate). |
+| `TopHeader.tsx` | Search field (visual-only) + `<SignInButton variant="dashboard"/>` (`components/auth/` — Google sign-in/out placeholder) + New Canvas (mint id + facts + navigate). |
 | `SortFilterDropdown.tsx` | Generic Filter/Sort dropdown. |
 | `CanvasTable.tsx` | Column-driven header + grouped body + empty state. Owns the `Column` contract (`CanvasRow.tsx`); derives each row's `renaming` boolean from `renamingId`. |
 | `CanvasRow.tsx` | `memo`'d row + `Cell` renderer + `Column`/`RowRenameProps` types + `KebabMenuCell` (owner-only Rename menu) + `NameCell` (inline rename input). |

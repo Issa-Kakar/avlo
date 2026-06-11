@@ -43,11 +43,12 @@ export function cookieOpts(req: Request, maxAgeSec: number) {
 /** Name of the signed anonymous-identity cookie. */
 export const ANON_COOKIE = 'avlo_anon';
 
-// Hono signs `value` (raw) → `${value}.${base64(HMAC-SHA256(value))}` →
-// `encodeURIComponent(...)` → cookie. This verifier replicates that scheme exactly
-// (utils/cookie.js: serializeSigned / parseSigned), so it validates whatever
-// `setSignedCookie('avlo_anon', ...)` produced in the `/me` handler.
-function parseCookieHeader(header: string, name: string): string | null {
+/**
+ * Minimal `Cookie:`-header value extractor for paths with no Hono context — the RPC
+ * verifiers (`verifyAnonToken` here, `readSession` in the auth worker). Returns the raw
+ * (still URI-encoded, untrusted) value of `name`, or null. Callers verify/shape-gate it.
+ */
+export function parseCookieHeader(header: string, name: string): string | null {
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
     if (eq < 0) continue;
@@ -71,9 +72,13 @@ async function verifyHmac(signedValue: string, base64Signature: string, secret: 
 
 /**
  * Verify the `avlo_anon` signed cookie out of a raw `Cookie` header (the RPC path,
- * no Hono context). Raw HMAC-SHA256 verify + Zod-parse `{userId, iat, nonce}`.
- * Returns the resolved anon identity or null. The account (`avlo_session` KV) branch
- * is the OAuth seam — added later.
+ * no Hono context). Raw HMAC-SHA256 verify + Zod-parse `{userId, iat, nonce}`. Hono
+ * signs `value` → `${value}.${base64(HMAC-SHA256(value))}` → `encodeURIComponent` →
+ * cookie (utils/cookie.js serializeSigned/parseSigned) — this replicates that scheme
+ * exactly, so it validates whatever `setSignedCookie('avlo_anon', …)` produced in `/me`.
+ * Returns the resolved anon identity or null. The account branch (`avlo_session` → KV)
+ * lives in the auth worker's `src/session.ts`; `AuthRpc.verifySession` tries it first
+ * and falls back here.
  */
 export async function verifyAnonToken(cookieHeader: string | null, secret: string): Promise<AuthCtx | null> {
   if (!cookieHeader) return null;

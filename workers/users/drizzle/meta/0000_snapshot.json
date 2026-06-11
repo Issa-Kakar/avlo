@@ -152,8 +152,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "picture": {
-          "name": "picture",
+        "avatar_hash": {
+          "name": "avatar_hash",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

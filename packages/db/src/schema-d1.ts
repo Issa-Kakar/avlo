@@ -21,7 +21,7 @@ export const users = sqliteTable('users', {
   googleSub: text('google_sub').notNull().unique(), // UNIQUE → race-free promote/adopt (§9)
   email: text('email').notNull(),
   name: text('name').notNull(),
-  picture: text('picture'), // nullable — Google may omit
+  avatarHash: text('avatar_hash'), // nullable — 32-hex `avatars/` R2 key suffix (content hash), NOT a URL; null when ingest failed or Google omitted the picture
   createdAt: integer('created_at').notNull(),
 });
 

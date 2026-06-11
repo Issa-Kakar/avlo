@@ -274,7 +274,7 @@ chrome must not vanish it, so clears come only from genuine window exit / blur.
   - `> 128KB` → reschedule at 100ms (10Hz)
   - Normal → proceed
 - **Mobile:** `isMobile()` from camera-store → sends `undefined` cursor (no cursor visual on touch devices)
-- **Sends:** `currentAwareness.setLocalStateField('cursor', {x, y})` — only cursor field, y-protocols merges with existing local state internally
+- **Sends:** `currentAwareness.setLocalStateField('cursor', {x, y})` — the field merge is LOCAL-only; the wire still carries the full state JSON (see Wire Format)
 
 ### sendFullState()
 
@@ -411,7 +411,7 @@ awareness.setLocalStateField('cursor', undefined)
 awareness.setLocalState(null)
 ```
 
-`setLocalStateField` only sends the cursor field — y-protocols internally merges with the existing local state. This avoids re-broadcasting identity on every mouse move.
+`setLocalStateField` merges the field into LOCAL state only — it does NOT keep identity off the wire. y-protocols' `encodeAwarenessUpdate` serializes the FULL state JSON for every changed client on every flush, so identity re-broadcasts with each cursor packet (~20 Hz while moving). Keep this object small: it's exactly why the deferred presence `avatarHash` field will be a 32-hex content hash, never a URL — it rides every cursor flush.
 
 ---
 

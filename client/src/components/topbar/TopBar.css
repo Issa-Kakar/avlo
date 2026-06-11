@@ -389,6 +389,49 @@
   margin: 0 8px;
 }
 
+/* Sign in / out (placeholder affordance) — quiet text buttons in the standard
+   32px chrome geometry; name truncates so a long Google display name can't
+   stretch the pill. Same ink + hover-wash tokens as the tool buttons. */
+.top-bar-auth {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.top-bar-auth-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  color: #282e34;
+}
+
+.top-bar-auth-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #1b1f22;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.top-bar-auth-btn:hover {
+  background: rgba(42, 82, 121, 0.08);
+}
+
 /* Share button — the app's primary action: a vivid coral (#ef4e3a), a warm
    foil to the toolbar's cool electric blue. Text + icon share white via
    currentColor (~3.6:1 — readable for a bold label, under strict AA). Flat,

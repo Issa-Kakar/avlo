@@ -1,5 +1,5 @@
 import { validateImage } from '@avlo/shared';
-import { assetKeyParam, contentLengthBound, MAX_UPLOAD_BYTES } from '@avlo/worker-shared';
+import { assetKeyParam, contentLengthBound, MAX_UPLOAD_BYTES, sha256Hex } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { createFactory } from 'hono/factory';
 import type { ImagesEnv } from './env';
@@ -37,11 +37,3 @@ export const handleUpload = factory.createHandlers(
     return new Response(JSON.stringify({ key, status: 'created' }), { status: 201, headers });
   },
 );
-
-async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
-  const arr = new Uint8Array(digest);
-  let hex = '';
-  for (let i = 0; i < arr.length; i++) hex += arr[i].toString(16).padStart(2, '0');
-  return hex;
-}

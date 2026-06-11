@@ -1,8 +1,9 @@
+import { SignInButton } from '../auth/SignInButton';
 import { PlusAltIcon } from './icons/PlusAltIcon';
 import { SearchIcon } from './icons/SearchIcon';
 
-// Search field (visual-only placeholder — focus state is CSS) + New Canvas. The only
-// behavior is New Canvas → onNewCanvas (mint a room id + navigate).
+// Search field (visual-only placeholder — focus state is CSS) + sign-in/out + New Canvas.
+// The only behavior here is New Canvas → onNewCanvas (mint a room id + navigate).
 export function TopHeader({ onNewCanvas }: { onNewCanvas: () => void }) {
   return (
     <header className="dash-topbar">
@@ -13,6 +14,8 @@ export function TopHeader({ onNewCanvas }: { onNewCanvas: () => void }) {
         </div>
 
         <div className="dash-topbar-spacer" />
+
+        <SignInButton variant="dashboard" />
 
         <button type="button" className="dash-new-canvas" onClick={onNewCanvas}>
           <PlusAltIcon width={21} height={21} />

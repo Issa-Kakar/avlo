@@ -23,10 +23,10 @@ workers/main               workers/images           workers/unfurl
 | **main** | `workers/main/` | `avlo` | 8787 | `avlo.io`, `www.avlo.io` | `ASSETS` (Static Assets), `rooms` (DO/SQLite), `DOCS` (R2), `AUTH` (service), `ROOM_VISITS`/`ROOM_META` (queue producers) |
 | **images** | `workers/images/` | `avlo-images` | 8790 | `images.avlo.io` | `IMAGES` (R2 `avlo-assets`), `AUTH` (service), `RL_UPLOAD` |
 | **unfurl** | `workers/unfurl/` | `avlo-unfurl` | 8791 | `unfurl.avlo.io` | `IMAGES` (R2 `avlo-assets`, shared), `AUTH` (service), `RL_UPLOAD` |
-| **auth** | `workers/auth/` | `avlo-auth` | 8792 | `auth.avlo.io` | secret `ANON_SECRET` |
+| **auth** | `workers/auth/` | `avlo-auth` | 8792 | `auth.avlo.io` | `SESSIONS` (KV), `RL_AUTH`, services `USERS`/`IMAGES`, secrets `ANON_SECRET`/`GOOGLE_CLIENT_SECRET`/`OAUTH_PKCE_SECRET`, public vars `GOOGLE_CLIENT_ID`/`APP_ORIGIN`/`OAUTH_REDIRECT_URI` |
 | **users** | `workers/users/` | `avlo-users` | 8793 | `users.avlo.io` | `DB` (D1 `avlo-db`), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), queue consumers `avlo-room-visits`/`avlo-room-meta` (+DLQs) |
 
-> Beyond the three public R2/SPA edge workers above, **auth** (`auth.avlo.io` — `GET /me`, the signed `avlo_anon` cookie, `AuthRpc.verifySession`) and **users** (`users.avlo.io` — `GET /rooms`, `PATCH /rooms/:id/{permission,title}`, the queue→D1 consumer) form the identity + dashboard-data vertical. `@avlo/db` owns the D1 + DO-SQLite schemas they (and main) share.
+> Beyond the three public R2/SPA edge workers above, **auth** (`auth.avlo.io` — `GET /me`, the signed `avlo_anon` cookie, the Google OAuth flow `GET /login/google` → `GET /callback` + `POST /logout`, opaque KV sessions, `AuthRpc.verifySession`) and **users** (`users.avlo.io` — `GET /rooms`, `PATCH /rooms/:id/{permission,title}`, `UsersRpc.linkAccount`, the queue→D1 consumer) form the identity + dashboard-data vertical. `@avlo/db` owns the D1 + DO-SQLite schemas they (and main) share.
 
 **Naming rule (load-bearing):** Sibling workers use `workers/<short>/` = wrangler `name` `avlo-<short>` = subdomain stem `<short>.avlo.io`. The main worker is asymmetric on every axis — wrangler `name: "avlo"` (bare, preserves the `rooms` DO namespace), subdomain `avlo.io` (bare, canonical app identity). The `avlo-` prefix is for things *attached to* the app; the app itself is just `avlo`. **Do not rename main.**
 
@@ -47,15 +47,17 @@ Same-origin SPA + WSS — SPA on `avlo.io` opens `wss://avlo.io/parties/rooms/<i
 
 **Dev mode caveat.** `wrangler dev` for main needs `../../client/dist` to exist (Assets binding fails to start otherwise). One-time setup: `npm run build -w client` before the first `npm run dev`. Subsequent dev sessions don't need to rebuild — Vite serves the SPA, and the main worker is only hit on `/parties/*`. Never visit `http://localhost:8787` directly in dev; visit `http://localhost:3000` (Vite).
 
-### `workers/images/` — image upload + GET
+### `workers/images/` — image upload + GET + avatar snapshot
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | per-worker `createCors({ methods: ['GET','PUT'], … })`, route-scoped `cspHeaders` (`asset-body` GET / `api-json` PUT) + `csrf` on PUT, `app.onError` CSP stamp, drift-guard, default export. |
+| `src/index.ts` | per-worker `createCors({ methods: ['GET','PUT'], … })`, route-scoped `cspHeaders` (`asset-body` GETs / `api-json` PUT) + `csrf` on PUT, `app.onError` CSP stamp, drift-guard, default export + `ImagesRpc`. |
 | `src/upload.ts` | `handleUpload` (H1 zod param + H2 content-length-bound + dedup + magic-byte + hash-verify + R2 put). CSP via the route's `cspHeaders('api-json')`. |
 | `src/get.ts` | `handleGetAsset` (H1 zod param, Range bypasses `caches.default`, R2 conditional + range read, `Accept-Ranges` advertised). CSP via the route's `cspHeaders('asset-body')` — covers 200/206 + the 304/404 early returns. |
+| `src/avatar.ts` | `handleGetAvatar` — `GET /avatars/:hash` (32-hex zod param), mirror of `get.ts` minus Range. Write-once content key ⇒ `Cache-Control: public, max-age=31536000, immutable` is CORRECT end-to-end (edge + browser + the SW's cache-first images origin). Public read; capability = the unguessable hash. |
+| `src/rpc.ts` | `ImagesRpc.ingestAvatar(pictureUrl) → 32-hex \| null`, called only by auth's OAuth callback (H11). https + `googleusercontent.com` host allowlist (belt & braces over the verified claim) → `=s<N>(-c)` → `=s256-c` rewrite → ONE capped fetch (5 s, 1 MiB, no retry) → magic-byte sniff → `sha256[0..32)` → head-then-put `avatars/<hash>` (put in `retryTransient`). NEVER throws; redacted warns (H10). `assertRpcMatch` pins `ImagesRpcSurface`. |
 | `src/app-type.ts` | Public mock app — wire shape for `hc<ImagesApp>(...)`. Ambient-free. |
 
-Path is bare `/:key`. Dev uses `/api/images/:key` via Vite proxy with `rewrite` stripping the prefix.
+Paths are bare `/:key` + `/avatars/:hash` (disjoint — two segments vs one). Dev uses `/api/images/*` via Vite proxy with `rewrite` stripping the prefix. The `avatars/` key prefix keeps avatar objects disjoint from bare 64-hex board keys in the shared `avlo-assets` bucket (different reference roots: D1/session vs Y.Doc; R2 lifecycle rules can filter by prefix). Old avatar blobs are never pruned — stale session references keep rendering; orphans are tiny + unguessable.
 
 ### `workers/unfurl/` — bookmark unfurl
 | File | Responsibility |
@@ -68,15 +70,22 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 
 **Unfurl writes R2 directly.** It binds the same `avlo-assets` bucket as the images worker. An inter-worker round-trip to call `images.put(key, body)` would do the same hash + put — one less hop to do it inline. `validateImage` stays single-sourced via `@avlo/shared`.
 
-### `workers/auth/` — anonymous identity (§2)
+### `workers/auth/` — identity (anon + Google OAuth, §2/§9)
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | `createCors({ methods: ['GET'] })` + `cspHeaders('api-json')`, `GET /me`, drift-guard, default export + `AuthRpc`. |
-| `src/handlers/me.ts` | `GET /me` — verify + slide the signed `avlo_anon` cookie, else mint a fresh `userId`; `name`/`color` deterministic from id (`@avlo/shared`). 400-day sliding Max-Age. |
-| `src/rpc.ts` | `AuthRpc extends WorkerEntrypoint` — `verifySession(cookieHeader)` (anon-only today; OAuth/KV is the seam). |
-| `src/app-type.ts` | Public mock — `MeResponse` wire shape for `hc<AuthApp>`. |
+| `src/index.ts` | `createCors({ methods: ['GET','POST'] })` → `cspHeaders('api-json')` → local `noStore` (every response `Cache-Control: no-store` — identity bodies + OAuth redirects) → `csrf` (origin allowlist; guards POST /logout, skips GET so the cross-site callback is unaffected) → routes; `RL_AUTH` `ipRateLimiter` on the three OAuth routes (NOT `/me` — identity boot, an IP key would 429 whole NATs); `app.onError(cspError)`; drift-guard; default export + `AuthRpc`. |
+| `src/handlers/me.ts` | `GET /me` — session branch FIRST (valid KV record → account body with `email` + `avatarHash`, cookie re-set every hit, KV re-put only when < 25 d remain; KV outage degrades to anon), else the anon path: verify + slide the signed `avlo_anon` cookie, else mint a fresh `userId`. Exports `ANON_MAX_AGE_SEC` (400-day sliding ceiling). |
+| `src/handlers/login.ts` | `GET /login/google` — `sanitizeReturnTo` → PKCE S256 + state + nonce (Arctic) → ONE signed single-use `avlo_oauth` flow cookie (`{state, codeVerifier, nonce, returnTo, iat}`, HttpOnly, **Lax** — Strict would drop it on Google's cross-site GET back, host-only, Max-Age 600) → 302 Google (`prompt=select_account`, scopes `openid email profile`, **no** `access_type=offline` — Google tokens never stored). |
+| `src/handlers/callback.ts` | `GET /callback` — the strictly-ordered trust pipeline: flow cookie read → **deleted unconditionally** (single-use; replay dies here) → shape parse + re-`sanitizeReturnTo` → provider error split (`denied`/`error`) → iat ≤ 10 min + state equality → Arctic code exchange (**never retried** — single-use code) → jose `jwtVerify` (RS256 pinned, iss/aud/exp vs Google JWKS) + Zod claim narrowing (`email_verified === true` hard-required) + nonce match → inline best-effort `IMAGES.ingestAvatar` → `USERS.linkAccount` + KV session put as ONE **fail-closed** unit (failure ⇒ no session cookie, `?auth=error`) → `avlo_session` cookie → `waitUntil` replaced-session delete → **promote-only anon rotation** (iff this sign-in consumed the device's anon id, re-issue a fresh one — sign-out can't be bypassed via the leftover 400-day cookie; adopt keeps it, its id was never linked). Every exit 302s `${APP_ORIGIN}${returnTo}?auth=ok\|denied\|error`. Reason-code-only logging (H10 — the request URL carries `code`/`state`). |
+| `src/handlers/logout.ts` | `POST /logout` — retried KV delete (TTL backstop on persistent failure) + attribute-matched cookie clear → 204 always. |
+| `src/oauth.ts` | `makeGoogle` (client id/secret/redirect from env — **exact-redirect baseline**, never request-derived), `flowCookieOpts` (host-only Lax variant), module-scope `JWKS = createRemoteJWKSet(…)` (lazy I/O, per-isolate key cache), `verifyGoogleIdToken` (jwtVerify + claims + nonce → claims \| null). |
+| `src/session.ts` | Opaque KV sessions: 256-bit base64url token in `avlo_session`; KV record at `sess:<sha256hex(token)>` (a KV dump yields no usable tokens), `expirationTtl` 30 d + app-side `exp`. `readSession` (shape-gates the token before any I/O; KV `cacheTtl: 60` ⇒ documented ≤60 s revocation lag), `putSession`/`slideSession`/`deleteSession` (all `retryTransient` — critical writes), `mintSessionToken`. |
+| `src/zod/oauth.ts` | `sanitizeReturnTo` (path-only, no `//`, no `\`, no control bytes, ≤256 — applied at /login AND re-applied at /callback), `loginQuery`, `callbackQuery`, `OAuthFlowToken`, `GoogleClaims`. |
+| `src/zod/session.ts` | `SessionRecord` — parsed on EVERY read; `userId` format-gated + branded (the `AnonToken` discipline). |
+| `src/rpc.ts` | `AuthRpc.verifySession(cookieHeader)` — KV session branch first, anon HMAC fallback. **Signature unchanged** ⇒ images/unfurl/users gates + main's WS `on-before-connect` inherit Google sessions with zero changes. KV outage degrades signed-in → anon (availability over fail-closed; flip = remove the fallthrough). |
+| `src/app-type.ts` | Public mock — `MeResponse` (+ optional `email`/`avatarHash`) + the three OAuth routes for `hc<AuthApp>`. |
 
-`/me` is the ONLY identity resolver — no client-side `userId` mint. Dev: Vite `/api/auth/*` proxy.
+`/me` is the ONLY identity resolver — no client-side `userId` mint. Dev: Vite `/api/auth/*` proxy; the OAuth nav routes work through it too (localhost cookies are host-only + port-agnostic, so the flow cookie set via `:3000` is readable at the registered `:8792/callback`). **`dev:p` (PORT_OFFSET) cannot complete OAuth** — Google only redirects to the registered `:8792` URI; everything else about the offset session works. Secrets live in `workers/auth/.dev.vars` (gitignored) locally, `wrangler secret put` in prod; a stale dev session started before a `.dev.vars` edit serves `undefined` secrets — restart `npm run dev` after editing it (the 500 signature is `setSignedCookie → getCryptoKey` TypeError). `RL_AUTH` is rate-limit namespace **1003** (1001 images, 1002 unfurl, 1004 users).
 
 ### `workers/users/` — dashboard data + projections (§4–§8)
 | File | Responsibility |
@@ -84,7 +93,7 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 | `src/index.ts` | `createCors({methods:['GET','PATCH'],…})` → `cspHeaders('api-json')` → `csrf` → `requireAuth` → `userRateLimiter(RL_ROOMS)` → routes; `app.onError` CSP stamp; default export `{ fetch, queue }` + `UsersRpc`. |
 | `src/handlers/rooms.ts` | `GET /rooms` (D1 Sessions read, `x-d1-bookmark`, `isOwner` derived) + `PATCH /rooms/:id/{permission,title}` (→ cross-script DO `setPermission`/`setTitle` via `roomDoStub` — stub + first RPC argument from the one validated id; `metaRpcFailure` maps the DO's thrown message: `forbidden`→403, `invalid-title`→400, anything else→500 logged + client-retryable). Both PATCHes then run `projectMetaRYW` — the returned snapshot direct-written to D1 via the shared rev-guarded upsert on a `first-primary` session, bookmark out in body + `x-d1-bookmark` (read-your-writes for instant nav home); a failed direct write returns `''`, never an error (the queue converges). |
 | `src/queue.ts` | `consume` — both queues (`switch(batch.queue)`); `safeParse` → ack-drop poison; coalesce by the DO's per-room `rev`, then ONE `db.batch` of chunked multi-row upserts (≤96 bound params/statement — D1 caps 100). Meta rows go through `upsertRoomsFromMeta` (@avlo/db — the same statement the PATCH handlers direct-write with). LWW guarded by `excluded.rev >`; owner/createdAt first-write-wins. |
-| `src/rpc.ts` | `UsersRpc extends WorkerEntrypoint` — `linkAccount` OAuth-deferred stub. |
+| `src/rpc.ts` | `UsersRpc.linkAccount(currentUserId, googleSub, {email, name, avatarHash})` — called only by auth's OAuth callback (§9). ONE atomic upsert on a `first-primary` session: `INSERT … ON CONFLICT(google_sub) DO UPDATE` (email/name refresh; `avatar_hash = coalesce(excluded, existing)` so a failed ingest never clobbers) `RETURNING` — new sub **promotes** the device id, existing sub **adopts** the account's userId. `user_id` PK conflict (device id already linked to a different account) is deterministic → caught → retried once with a fresh ulid; a same-account repeat sign-in dual-conflicts on the SAME row and resolves through the conflict target (verified). `withRetry` covers transient D1 failures; returns the post-coalesce `avatarHash` + RYW bookmark. `assertRpcMatch` pins `UsersRpcSurface`. |
 | `src/env.ts` | `UsersEnv = { Bindings: Env; Variables: { userId: UserId } }`, threaded through every handler (Hono `Context` is invariant in `Variables`). |
 | `src/zod/rooms.ts` | `roomIdParam`/`permissionBody`/`titleBody` validators for the PATCH routes (`titleBody` normalizes via the shared `normalizeRoomTitle`). |
 | `src/app-type.ts` | Public mock — `RoomListEntry`/`RoomListResponse` wire shapes for `hc<UsersApp>`. |
@@ -131,7 +140,7 @@ When adding a new worker (`code-exec`, `auth`, `ai`, …):
 9. Add a `deploy:<name>` script to root `package.json`.
 10. Add a row to the Worker Inventory table above.
 
-For inter-worker calls (none today), use `WorkerEntrypoint` + `[[services]] entrypoint` — binary RPC via service bindings, not public-internet `fetch()` or `hc<App>` over a service-binding fetcher. The two are different layers; don't conflate.
+For inter-worker calls (today: `AUTH.verifySession` from images/unfurl/users/main, `USERS.linkAccount` + `IMAGES.ingestAvatar` from auth, users' cross-script `rooms` DO), use `WorkerEntrypoint` + `[[services]] entrypoint` — binary RPC via service bindings, not public-internet `fetch()` or `hc<App>` over a service-binding fetcher. The two are different layers; don't conflate.
 
 ## Hardening Invariants (H1–H12)
 
@@ -161,7 +170,7 @@ The identity + authz vertical layers these on top of H1–H12 (the formal H13–
 - **The DO is the authority.** Room permission/ownership decisions read the room DO (never D1); `setPermission` is owner-only and re-pushes/evicts live connections. D1 is a display projection only; producers tie payloads to the event schemas (`satisfies z.input<…>`), the consumer `safeParse`s + upserts idempotently. Meta RPCs carry their own identity: the users worker passes the validated room id with the call (raw cross-script RPC can't resolve partyserver's `this.name` on a cold DO) and the DO rejects any id that doesn't `idFromName(…)`-hash to its own `ctx.id`. The blind RPC casts (`RoomDoStub`, `AuthRpcSurface`) are pinned by `assertRpcMatch` drift guards at the implementing classes.
 - **CSP is middleware, not per-handler.** `cspHeaders(profile)` (worker-shared) stamps the profile on egress, so every returned response — auth `/me`, users `/rooms` + PATCH, the `requireAuth` 401, images' 304/404 — carries it with nothing to forget. `applyCsp` remains for hand-built `Headers` + the `onError` path (csrf's thrown 403).
 - **CORS is per-worker.** `createCors({ methods, allowHeaders?, exposeHeaders? })` advertises only what each worker serves (auth `GET`; users `GET`+`PATCH` + `x-d1-bookmark`; images `GET`+`PUT` + range/etag/accept-ranges; unfurl `GET`). The shared `isAllowedOrigin`/`isDevHost` predicate reflects the origin allowlist and gates `http://localhost:*` to dev (by request `Host`), so prod never reflects a localhost origin against the credentialed `.avlo.io` cookie.
-- **CSRF on mutating routes.** `hono/csrf` guards users `PATCH` + images `PUT`, reusing the CORS origin allowlist (one source of truth). It engages only on form content-types — `application/json` and binary uploads bypass, so `hc` traffic is unaffected — and never on GET/HEAD; service-binding RPC bypasses HTTP middleware entirely. **Tripwire:** revisit csrf coverage and the `SameSite=Lax` cookie if the session goes `SameSite=None`/OAuth, or any subdomain begins serving first-party HTML.
+- **CSRF on mutating routes.** `hono/csrf` guards users `PATCH` + images `PUT` + auth `POST /logout`, reusing the CORS origin allowlist (one source of truth). It engages on form content-types AND content-type-less requests (a bare `$post()` defaults to `text/plain` in the check) — `application/json` and binary uploads bypass, so `hc` traffic is unaffected — and never on GET/HEAD; service-binding RPC bypasses HTTP middleware entirely. **OAuth tripwire resolved:** sessions stay `SameSite=Lax` (the server-side code flow needs no cross-site cookie sends — Google's redirect back is a top-level GET to auth's own `/callback`, which Lax permits) and csrf now covers the auth worker. Residual tripwire: revisit if any subdomain begins serving first-party HTML.
 
 ## Dev Orchestration
 

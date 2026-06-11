@@ -23,7 +23,7 @@ CREATE TABLE `users` (
 	`google_sub` text NOT NULL,
 	`email` text NOT NULL,
 	`name` text NOT NULL,
-	`picture` text,
+	`avatar_hash` text,
 	`created_at` integer NOT NULL
 ) WITHOUT ROWID;
 --> statement-breakpoint

@@ -40,7 +40,7 @@ The dropdown sits at `z-index: 401` so it paints over its own host pill.
 |---|---|
 | `TopBar.tsx` | Left-bar shell — orders logo / `RoomTitle` / `MainMenuTrigger` / divider / `HistoryButtons`. |
 | `RoomTitle.tsx` | Board name + tab title. Subscribes to `room-session-store` (`title`, `isOwner`). Read mode: span (`.top-bar-name`, plus `.top-bar-name-editable` cursor/hover affordance for owners). Edit mode (owner click): auto-sizing input via the CSS inline-grid mirror (`.top-bar-name-edit[data-value]` + `::after`), `maxLength=ROOM_TITLE_MAX_LEN`, Enter/blur commit through one blur path, Esc cancels via ref flag; empty/unchanged reverts. Commits via `useRenameRoom()` (`query/room-rename.ts`). Also owns `document.title = "<name> - Avlo"` (cleanup restores `Avlo`). |
-| `TopBarRight.tsx` | Right-bar shell — `UserAvatarCluster` / divider / Share button. Share copies `window.location.href` to clipboard (placeholder for a real share modal). |
+| `TopBarRight.tsx` | Right-bar shell — `UserAvatarCluster` / divider / `<SignInButton variant="canvas"/>` (`components/auth/` — Google sign-in/out placeholder, `.top-bar-auth*` styles) / divider / Share button. Share copies `window.location.href` to clipboard (placeholder for a real share modal). |
 | `TopBar.css` | The only stylesheet for this folder. Holds the shared `.top-bar` pill, every button variant, the main-menu container + items + divider + open animation, and the Share button. |
 | `HistoryButtons.tsx` | `memo`'d. Undo/Redo buttons, subscribed to `history-store` (`selectCanUndo` / `selectCanRedo`). Clicks call `undo()` / `redo()` from `room-runtime`. |
 | `MainMenuTrigger.tsx` | The chevron-down button that replaces the kebab + the menu's open/close state + outside-click dismiss. |
@@ -342,6 +342,8 @@ RoomPage.tsx
 │
 └── <TopBarRight />
     ├── UserAvatarCluster
+    ├── .top-bar-divider
+    ├── SignInButton (variant="canvas")
     ├── .top-bar-divider
     └── .top-bar-share       (clipboard placeholder)
 ```
