@@ -1,5 +1,5 @@
 import { getSessionDB, rooms, roomVisits, upsertRoomsFromMeta, withRetry } from '@avlo/db';
-import type { MetaEvent, RoomDoStub } from '@avlo/worker-shared';
+import { type MetaEvent, roomDoStub } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
 import { createFactory } from 'hono/factory';
@@ -68,16 +68,30 @@ async function projectMetaRYW(DB: D1Database, snapshot: MetaEvent): Promise<stri
   }
 }
 
-/** Cross-script DO stub is untyped across wrangler configs (§5.1) — cast to the shared surface. */
-const roomStub = (c: { env: Env }, id: string): RoomDoStub => c.env.rooms.get(c.env.rooms.idFromName(id)) as unknown as RoomDoStub;
+/**
+ * Map a meta-RPC failure to its HTTP shape. The DO's thrown `Error.message` IS the wire
+ * contract (`RoomDoStub`): `forbidden` → 403 (caller isn't the owner), `invalid-title` →
+ * 400 (failed the shared normalize — only reachable by a caller bypassing `titleBody`).
+ * Everything else — transport failure, identity-proof mismatch — is internal: log it
+ * (no body/url, H10) and 500, which the client treats as transient/retryable.
+ */
+function metaRpcFailure(err: unknown): { error: 'forbidden' | 'invalid-title' | 'internal'; status: 400 | 403 | 500 } {
+  const msg = err instanceof Error ? err.message : '';
+  if (msg === 'forbidden') return { error: 'forbidden', status: 403 };
+  if (msg === 'invalid-title') return { error: 'invalid-title', status: 400 };
+  console.error('room meta RPC failed', err);
+  return { error: 'internal', status: 500 };
+}
 
 /**
  * `PATCH /rooms/:id/permission` (§8) — the server-side permission seam (no client UI
  * calls it yet). Validates the id + body, then defers the entire authority decision to
- * the room DO cross-script: the DO is the source of truth and throws `forbidden` if the
- * caller isn't the owner. A thrown error → 403; success → the DO has updated SQLite +
- * `this.meta` + re-pushed/closed live connections + projected, and the snapshot is
- * mirrored into D1 here for the read-your-writes bookmark.
+ * the room DO cross-script: the DO is the source of truth, and the branded `id` rides
+ * along as the RPC's first argument (stub + argument from the one validated value —
+ * `this.name` is unresolvable on a cold raw-RPC wake, and the DO proves the pair cohere).
+ * Failures map via `metaRpcFailure`; success → the DO has updated SQLite + `this.meta` +
+ * re-pushed/closed live connections + projected, and the snapshot is mirrored into D1
+ * here for the read-your-writes bookmark.
  */
 export const handleSetPermission = factory.createHandlers(
   zValidator('param', roomIdParam),
@@ -89,9 +103,10 @@ export const handleSetPermission = factory.createHandlers(
 
     let snapshot: MetaEvent;
     try {
-      snapshot = await roomStub(c, id).setPermission(userId, permission);
-    } catch {
-      return c.json({ error: 'forbidden' }, 403);
+      snapshot = await roomDoStub(c.env.rooms, id).setPermission(id, userId, permission);
+    } catch (err) {
+      const { error, status } = metaRpcFailure(err);
+      return c.json({ error }, status);
     }
     const bookmark = await projectMetaRYW(c.env.DB, snapshot);
     c.header('x-d1-bookmark', bookmark);
@@ -100,11 +115,12 @@ export const handleSetPermission = factory.createHandlers(
 );
 
 /**
- * `PATCH /rooms/:id/title` (§8) — owner-only rename. Body is normalized by `titleBody`
- * (shared `normalizeRoomTitle`); the DO re-guards at the authority boundary, broadcasts
- * `title:` to live connections, projects to the meta queue, and returns the snapshot —
- * mirrored into D1 here for the read-your-writes bookmark. The canonical (normalized)
- * title rides back so the client can confirm its optimistic value.
+ * `PATCH /rooms/:id/title` (§8) — owner-only rename, same RPC shape as the permission
+ * seam above. Body is normalized by `titleBody` (shared `normalizeRoomTitle`); the DO
+ * re-guards at the authority boundary, broadcasts `title:` to live connections, projects
+ * to the meta queue, and returns the snapshot — mirrored into D1 here for the
+ * read-your-writes bookmark. The canonical (normalized) title rides back so the client
+ * can confirm its optimistic value.
  */
 export const handleSetTitle = factory.createHandlers(zValidator('param', roomIdParam), zValidator('json', titleBody), async (c) => {
   const { id } = c.req.valid('param');
@@ -113,9 +129,10 @@ export const handleSetTitle = factory.createHandlers(zValidator('param', roomIdP
 
   let snapshot: MetaEvent;
   try {
-    snapshot = await roomStub(c, id).setTitle(userId, title);
-  } catch {
-    return c.json({ error: 'forbidden' }, 403);
+    snapshot = await roomDoStub(c.env.rooms, id).setTitle(id, userId, title);
+  } catch (err) {
+    const { error, status } = metaRpcFailure(err);
+    return c.json({ error }, status);
   }
   const bookmark = await projectMetaRYW(c.env.DB, snapshot);
   c.header('x-d1-bookmark', bookmark);

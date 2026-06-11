@@ -1,5 +1,5 @@
-import { type AuthCtx, verifyAnonToken } from '@avlo/worker-shared';
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { type AuthCtx, type AuthRpcSurface, assertRpcMatch, verifyAnonToken } from '@avlo/worker-shared';
 
 // Binary RPC surface for sibling workers: verify a cookie header → resolved identity
 // (`AuthCtx`, branded userId), pure (no Set-Cookie — issuance lives on direct browser
@@ -11,3 +11,7 @@ export class AuthRpc extends WorkerEntrypoint<Env> {
     return verifyAnonToken(cookieHeader, this.env.ANON_SECRET);
   }
 }
+
+// Drift guard — `AuthRpcSurface` (the blind service-binding cast target in
+// @avlo/worker-shared) must stay mutually assignable with the real RPC surface.
+assertRpcMatch<Pick<AuthRpc, keyof AuthRpcSurface>, AuthRpcSurface>(true);

@@ -45,7 +45,9 @@ interface RenameRoomCtx {
   prevFactsTitle?: string;
 }
 
-/** Deterministic server rejection (403 non-owner, 400 invalid) — never retried. */
+/** HTTP-level rejection. 4xx is deterministic (403 non-owner, 400 invalid) — never
+ *  retried; 5xx is transient (DO transport hiccup, failed RPC) — retried like a network
+ *  failure. The status split is the server's meta-RPC error contract (`metaRpcFailure`). */
 class RenameHttpError extends Error {
   constructor(readonly status: number) {
     super(`PATCH /rooms/:id/title ${status}`);
@@ -68,9 +70,9 @@ function patchRoomsCache(roomId: string, title: string, bookmark?: string): void
 
 queryClient.setMutationDefaults(RENAME_ROOM_KEY, {
   scope: { id: 'rename-room' },
-  // Network/transient failures retry (and pause offline without consuming attempts);
-  // HTTP-level rejections are deterministic — surface immediately and roll back.
-  retry: (failureCount, error) => !(error instanceof RenameHttpError) && failureCount < 3,
+  // Network/transient failures (thrown fetch + 5xx) retry (and pause offline without
+  // consuming attempts); deterministic 4xx rejections surface immediately and roll back.
+  retry: (failureCount, error) => (error instanceof RenameHttpError ? error.status >= 500 : true) && failureCount < 3,
   mutationFn: async ({ roomId, title }: RenameRoomVars): Promise<RenameRoomResult> => {
     const res = await usersClient.rooms[':id'].title.$patch({ param: { id: roomId }, json: { title } });
     if (!res.ok) throw new RenameHttpError(res.status);

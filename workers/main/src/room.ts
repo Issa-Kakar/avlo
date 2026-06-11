@@ -5,12 +5,14 @@ import {
   maxZLength,
   normalizeRoomTitle,
   Permission,
+  ROOM_ID_RE,
+  type RoomId,
   renormalizeZ,
   type UserId,
   Z_RENORM_MAX_KEY_LEN,
   Z_RENORM_ORIGIN,
 } from '@avlo/shared';
-import type { MetaEvent, VisitEvent } from '@avlo/worker-shared';
+import { assertRpcMatch, type MetaEvent, type RoomDoStub, type VisitEvent } from '@avlo/worker-shared';
 import { eq } from 'drizzle-orm';
 import { type DrizzleSqliteDODatabase, drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
@@ -30,21 +32,16 @@ interface ConnState {
   userId: UserId;
 }
 
-/** The room DO's authoritative meta (one `room_meta` row, minus the roomId PK = this.name).
- *  `Permission` (imported from @avlo/shared) is both the Zod enum value and its inferred type.
- *  `rev` is the per-room monotonic counter: bumped + persisted BEFORE every queue send (both
- *  queues share it), so the D1 consumer resolves ordering with a plain `excluded.rev >` guard
- *  and at-least-once redelivery is a no-op. `deleted` is the persistent tombstone (no delete
- *  flow yet — column + type prep only). */
-interface RoomMeta {
-  ownerId: UserId;
-  permission: Permission;
-  createdAt: number;
-  updatedAt: number;
-  title: string;
-  rev: number;
-  deleted: boolean;
-}
+/** The room DO's authoritative meta — the one `room_meta` row, shape-identical to the
+ *  `MetaEvent` projection it emits. `roomId` (the PK) doubles as the DO's durable
+ *  self-identity: raw cross-script RPC can't resolve partyserver's `this.name` on a cold
+ *  wake (native RPC bypasses the fetch/webSocket init that hydrates it), so identity on
+ *  that path comes from this row — or, pre-mint, from the `#verifyRoomId`-proven argument.
+ *  `rev` is the per-room monotonic counter: bumped + persisted BEFORE every queue send
+ *  (both queues share it), so the D1 consumer resolves ordering with a plain
+ *  `excluded.rev >` guard and at-least-once redelivery is a no-op. `deleted` is the
+ *  persistent tombstone (no delete flow yet — column + type prep only). */
+type RoomMeta = MetaEvent;
 
 // --- Tier-3 WS message limiter (§10/H25) — generous abuse backstop, not an editing throttle.
 const SYNC_BUDGET = 200;
@@ -63,7 +60,15 @@ class RateState {
 // YServer lifecycle: awaits onStart(), then onLoad(), installs debounced onSave(), then
 // accepts sockets — so hydration always completes before the first sync step. The DO
 // constructor loads this.meta (NOT onLoad) so it is present on EVERY entry point including
-// raw cross-script RPC (setPermission), which bypasses onStart/onLoad (§5).
+// raw cross-script RPC (setPermission/setTitle), which bypasses onStart/onLoad (§5).
+//
+// Identity scaffold — who knows the room id, where:
+//   • partyserver-routed entries (WSS connect → onConnect, and the onLoad/onSave lifecycle
+//     beneath it): `this.name` is valid — the router bootstraps it before forwarding.
+//   • raw cross-script RPC (setPermission/setTitle): `this.name` is UNAVAILABLE on a cold
+//     wake (partyserver's __ps_name fallback only hydrates on fetch/webSocket entry), so
+//     the caller passes the room id and `#verifyRoomId` PROVES it addresses this object.
+//   • everything after mint: `this.meta.roomId` — the durable, constructor-loaded truth.
 export class RoomDurableObject extends YServer<Env> {
   // R2-friendly cadence: fewer, bigger writes
   static override callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
@@ -84,8 +89,8 @@ export class RoomDurableObject extends YServer<Env> {
     super(ctx, env);
     this.db = drizzle(ctx.storage, { schema: schemaDo });
     // ★ Load meta in the CONSTRUCTOR (runs on every entry point + hibernation wake), not
-    // onLoad — raw cross-script RPC (setPermission) never triggers onStart/onLoad (§5).
-    // blockConcurrencyWhile gates delivery until migrate + load resolve.
+    // onLoad — raw cross-script RPC (setPermission/setTitle) never triggers onStart/onLoad
+    // (§5). blockConcurrencyWhile gates delivery until migrate + load resolve.
     ctx.blockConcurrencyWhile(async () => {
       await migrate(this.db, migrations);
       this.meta = this.db.select().from(roomMeta).get() ?? null;
@@ -134,7 +139,7 @@ export class RoomDurableObject extends YServer<Env> {
     // Connect proceeds even if the projection enqueue fails — DO meta is already durable
     // on disk; a missed send only loses the D1 row until the next meta event (§6).
     if (!this.meta) {
-      this.meta = this.#mintMeta(userId, 'Untitled');
+      this.meta = this.#mintMeta(asRoomId(this.name), userId, 'Untitled');
       await this.#projectMeta(this.meta);
     }
     if (this.meta.permission === 'private' && this.meta.ownerId !== userId) {
@@ -157,13 +162,9 @@ export class RoomDurableObject extends YServer<Env> {
     // DO, §6). The rev bump is made durable BEFORE the send so a DO restart can never
     // reissue a lower rev — the consumer's ordering guard rides on monotonicity.
     const rev = ++this.meta.rev;
-    this.db
-      .update(roomMeta)
-      .set({ rev })
-      .where(eq(roomMeta.roomId, asRoomId(this.name)))
-      .run();
-    this.env.ROOM_VISITS.send({ userId, roomId: this.name, visitedAt: Date.now(), rev } satisfies z.input<typeof VisitEvent>).catch((err) =>
-      console.error('visit projection failed', err),
+    this.db.update(roomMeta).set({ rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
+    this.env.ROOM_VISITS.send({ userId, roomId: this.meta.roomId, visitedAt: Date.now(), rev } satisfies z.input<typeof VisitEvent>).catch(
+      (err) => console.error('visit projection failed', err),
     );
   }
 
@@ -173,54 +174,65 @@ export class RoomDurableObject extends YServer<Env> {
   }
 
   /**
-   * First-write mint — the authenticated first toucher owns the room (single-threaded DO).
-   * Builds + persists the row and RETURNS it; the caller assigns `this.meta` inline so TS
-   * narrowing survives at the call site.
+   * RPC authority guard (§14a): prove a caller-supplied room id addresses THIS object —
+   * `idFromName(id)` must equal our own `ctx.id`. Raw cross-script RPC can't lean on
+   * partyserver's `this.name` (a cold native-RPC wake bypasses the fetch/webSocket init
+   * that hydrates it and throws), so the users worker passes the id it derived the stub
+   * from, and this equality makes the pair tamper-evident — a forged or drifted id can't
+   * hash to our identity. The format re-test keeps the `RoomId` brand honest even if a
+   * future caller skips Zod.
    */
-  #mintMeta(ownerId: UserId, title: string): RoomMeta {
+  #verifyRoomId(roomId: RoomId): void {
+    if (!ROOM_ID_RE.test(roomId) || !this.env.rooms.idFromName(roomId).equals(this.ctx.id)) throw new Error('room-mismatch');
+  }
+
+  /**
+   * First-write mint — the authenticated first toucher owns the room (single-threaded DO).
+   * `roomId` is the verified self-identity: `asRoomId(this.name)` on the partyserver-routed
+   * connect path, the `#verifyRoomId`-proven argument on the raw-RPC path. Builds +
+   * persists the row and RETURNS it; the caller assigns `this.meta` inline so TS narrowing
+   * survives at the call site.
+   */
+  #mintMeta(roomId: RoomId, ownerId: UserId, title: string): RoomMeta {
     const now = Date.now();
-    const meta: RoomMeta = { ownerId, permission: 'public', createdAt: now, updatedAt: now, title, rev: 1, deleted: false };
-    this.db
-      .insert(roomMeta)
-      .values({ roomId: asRoomId(this.name), ...meta })
-      .run(); // authoritative SQLite
+    const meta: RoomMeta = { roomId, ownerId, permission: 'public', createdAt: now, updatedAt: now, title, rev: 1, deleted: false };
+    this.db.insert(roomMeta).values(meta).run(); // authoritative SQLite
     return meta;
   }
 
   /**
-   * Snapshot + enqueue the meta projection, returning the snapshot (§6). The enqueue is
-   * try/caught: the SQLite write already committed, so a failed send must never fail the
-   * caller — the users worker's direct D1 write and/or the next meta event converge the
-   * projection. Durable fix when warranted: an alarm-based transactional outbox.
+   * Enqueue the meta projection and return the emitted snapshot (§6) — `RoomMeta` IS the
+   * `MetaEvent` shape, roomId included. The enqueue is try/caught: the SQLite write
+   * already committed, so a failed send must never fail the caller — the users worker's
+   * direct D1 write and/or the next meta event converge the projection. Durable fix when
+   * warranted: an alarm-based transactional outbox.
    */
   async #projectMeta(meta: RoomMeta): Promise<MetaEvent> {
-    const snapshot: MetaEvent = { roomId: asRoomId(this.name), ...meta };
     try {
-      await this.env.ROOM_META.send(snapshot satisfies z.input<typeof MetaEvent>);
+      await this.env.ROOM_META.send(meta satisfies z.input<typeof MetaEvent>);
     } catch (err) {
       console.error('meta projection enqueue failed', err);
     }
-    return snapshot;
+    return meta;
   }
 
   /**
-   * Owner-only permission flip, reached by cross-script raw RPC from `users` (§8). Works
-   * even on a cold/evicted DO because meta loads in the constructor. Updates SQLite +
+   * Owner-only permission flip, reached by cross-script raw RPC from `users` (§8). Cold-DO
+   * safe: meta loads in the constructor, and self-identity is the proven `roomId` argument
+   * + the meta row — never `this.name` (see the identity scaffold above). Updates SQLite +
    * mutates this.meta in memory (★ warm-cache fix — warm DOs don't re-run onStart/onLoad,
    * so the SQLite write alone leaves isReadOnly stale on the live connections that matter)
    * + re-pushes/evicts live non-owner connections + projects, returning the snapshot for
-   * the users worker's read-your-writes D1 write.
+   * the users worker's read-your-writes D1 write. Thrown messages are the wire contract
+   * (`RoomDoStub`): 'room-mismatch' | 'forbidden'.
    */
-  async setPermission(caller: UserId, next: Permission): Promise<MetaEvent> {
+  async setPermission(roomId: RoomId, caller: UserId, next: Permission): Promise<MetaEvent> {
+    this.#verifyRoomId(roomId);
     Permission.parse(next); // authority-boundary guard (§14a)
     if (!this.meta || this.meta.ownerId !== caller) throw new Error('forbidden');
     const now = Date.now();
     const rev = this.meta.rev + 1;
-    this.db
-      .update(roomMeta)
-      .set({ permission: next, updatedAt: now, rev })
-      .where(eq(roomMeta.roomId, asRoomId(this.name)))
-      .run();
+    this.db.update(roomMeta).set({ permission: next, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
     this.meta = { ...this.meta, permission: next, updatedAt: now, rev }; // ★ warm-cache fix
 
     for (const c of this.getConnections<ConnState>()) {
@@ -235,26 +247,24 @@ export class RoomDurableObject extends YServer<Env> {
 
   /**
    * Owner-only rename, reached by cross-script raw RPC from `users` (§8) — same shape as
-   * setPermission: authority-boundary guard → SQLite + warm-cache → live push → project +
-   * return the snapshot. The new title is broadcast to EVERY connection (the renamer's own
-   * tabs included — idempotent there). If meta doesn't exist yet (offline-created room
-   * renamed from the dashboard before its first connect, replayed on reconnect), mint it
-   * exactly like onConnect would — the authenticated renamer IS the creator.
+   * setPermission: identity proof → authority-boundary guard → SQLite + warm-cache → live
+   * push → project + return the snapshot. The new title is broadcast to EVERY connection
+   * (the renamer's own tabs included — idempotent there). If meta doesn't exist yet
+   * (offline-created room renamed from the dashboard before its first connect, replayed on
+   * reconnect), mint it exactly like onConnect would — the authenticated renamer IS the
+   * creator, and the proven `roomId` argument supplies the identity `this.name` can't.
    */
-  async setTitle(caller: UserId, raw: string): Promise<MetaEvent> {
+  async setTitle(roomId: RoomId, caller: UserId, raw: string): Promise<MetaEvent> {
+    this.#verifyRoomId(roomId);
     const title = normalizeRoomTitle(raw);
-    if (title === null) throw new Error('invalid'); // authority-boundary guard (§14a)
+    if (title === null) throw new Error('invalid-title'); // authority-boundary guard (§14a)
     if (!this.meta) {
-      this.meta = this.#mintMeta(caller, title);
+      this.meta = this.#mintMeta(roomId, caller, title);
     } else {
       if (this.meta.ownerId !== caller) throw new Error('forbidden');
       const now = Date.now();
       const rev = this.meta.rev + 1;
-      this.db
-        .update(roomMeta)
-        .set({ title, updatedAt: now, rev })
-        .where(eq(roomMeta.roomId, asRoomId(this.name)))
-        .run();
+      this.db.update(roomMeta).set({ title, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
       this.meta = { ...this.meta, title, updatedAt: now, rev }; // ★ warm-cache fix
     }
 
@@ -328,3 +338,7 @@ export class RoomDurableObject extends YServer<Env> {
     }
   }
 }
+
+// Drift guard — `RoomDoStub` (the blind cross-script cast target in @avlo/worker-shared)
+// must stay mutually assignable with the real RPC surface. Mirrors assertSurfaceMatch.
+assertRpcMatch<Pick<RoomDurableObject, keyof RoomDoStub>, RoomDoStub>(true);

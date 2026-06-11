@@ -4,9 +4,9 @@ export { type CorsOptions, createCors, isAllowedOrigin, isDevHost } from './cors
 export { applyCsp, type CspProfile, cspError, cspHeaders } from './csp';
 export { userRateLimiter } from './rate-limit';
 export { requireAuth } from './require-auth';
-export type { AuthRpcSurface, RoomDoStub } from './rpc-surfaces';
+export { type AuthRpcSurface, type RoomDoStub, roomDoStub } from './rpc-surfaces';
 export { isPrivateHost } from './ssrf';
-export { type AssertEqual, assertSurfaceMatch, type HonoRouteSurface } from './surface-drift';
+export { type AssertEqual, assertRpcMatch, assertSurfaceMatch, type HonoRouteSurface } from './surface-drift';
 export { AnonToken } from './zod/anon-token';
 export { assetKeyParam } from './zod/asset-key';
 export { contentLengthBound, MAX_UPLOAD_BYTES } from './zod/content-length';
