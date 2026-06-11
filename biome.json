@@ -12,6 +12,7 @@
       "!**/test-results",
       "!**/.cache",
       "!**/.turbo",
+      "!**/scratch",
       "!client/src/routeTree.gen.ts",
       "!workers/**/worker-configuration.d.ts",
       "!package-lock.json"
