@@ -1,0 +1,10 @@
+{
+  "name": "yjs-do-bench",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2025-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "BENCH", "class_name": "BenchDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BenchDO"] }]
+}
