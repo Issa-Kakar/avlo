@@ -28,11 +28,12 @@
 
 import type * as Y from 'yjs';
 import { getActiveRoomDoc, getObjects } from '@/runtime/room-runtime';
-import { getEnd, getEndCap, getStart, getStartCap, getWidth } from '../accessors';
+import { getConnectorType, getEnd, getEndCap, getStart, getStartCap, getWidth } from '../accessors';
 import { computeConnectorBBoxFromPointsInto } from '../geometry/bbox';
 import type { BBoxTuple, Point } from '../types/geometry';
-import type { ConnectorEndpoint, StoredAnchor } from '../types/objects';
+import type { ConnectorEndpoint, StoredAnchor, StoredStraightAnchor } from '../types/objects';
 import { bakeCanonicalEndpoint, buildRouteContext, type Pipeline } from './reroute-connector';
+import { remapAnchorBetweenShapeTypes } from './shape-geometry';
 
 function endpointShapeId(ep: ConnectorEndpoint | undefined): string | null {
   if (!ep || Array.isArray(ep)) return null;
@@ -276,5 +277,59 @@ export function detachConnectorFromShape(connectorId: string, shapeId: string): 
   }
   if (end && !Array.isArray(end) && (end as StoredAnchor).id === shapeId) {
     y.set('end', [route[route.length - 1][0], route[route.length - 1][1]]);
+  }
+}
+
+// ============================================================
+// Anchor renormalization on shapeType change
+// ============================================================
+
+const ANCHOR_REMAP_EPS = 1e-9; // matches MIDPOINT_EPS; skips identity writes
+
+/**
+ * Rewrite one endpoint of `y` if bound to `shapeId`. Fresh record + fresh anchor
+ * array (stored records are plain values — never mutated/reused). Skips the write
+ * when the remap is identity within eps (cardinal midpoints, center, rect↔roundedRect).
+ */
+function remapBoundEndpoint(
+  y: Y.Map<unknown>,
+  key: 'start' | 'end',
+  shapeId: string,
+  fromShapeType: string,
+  toShapeType: string,
+  isStraight: boolean,
+): void {
+  const ep = y.get(key) as ConnectorEndpoint | undefined;
+  if (!ep || Array.isArray(ep) || ep.id !== shapeId) return;
+  const interior = isStraight && ((ep as StoredStraightAnchor).interior ?? false);
+  const next = remapAnchorBetweenShapeTypes(ep.anchor, fromShapeType, toShapeType, interior);
+  if (Math.abs(next[0] - ep.anchor[0]) < ANCHOR_REMAP_EPS && Math.abs(next[1] - ep.anchor[1]) < ANCHOR_REMAP_EPS) return;
+  y.set(key, isStraight ? { id: shapeId, interior, anchor: next } : { id: shapeId, anchor: next });
+}
+
+/**
+ * Remap every anchor bound to `shapeId` so its position relative to the shape
+ * outline carries over across a shapeType change (center-ray remap — see
+ * `remapAnchorBetweenShapeTypes`). Endpoints bound to other shapes and free
+ * Points are skipped; self-loops remap both endpoints in one pass.
+ *
+ * MUST run inside the same `transact()` as the shapeType write, at the call
+ * site — never from an observer (observer-driven writes would re-enter routing
+ * scratches and make every remote peer remap → write storms). Sharing the
+ * transaction means one observer fire: start/end keychanges and the shapeType
+ * keychange dedupe into one reroute via `_rerouteQueue`, and undo restores
+ * shapeType + anchors as a single step.
+ */
+export function renormalizeAttachedAnchors(shapeId: string, fromShapeType: string, toShapeType: string): void {
+  if (fromShapeType === toShapeType) return;
+  const attached = getAttachedConnectors(shapeId);
+  if (!attached) return;
+  const objects = getObjects();
+  for (const connectorId of attached) {
+    const y = objects.get(connectorId);
+    if (!y) continue;
+    const isStraight = getConnectorType(y) === 'straight';
+    remapBoundEndpoint(y, 'start', shapeId, fromShapeType, toShapeType, isStraight);
+    remapBoundEndpoint(y, 'end', shapeId, fromShapeType, toShapeType, isStraight);
   }
 }

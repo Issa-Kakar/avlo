@@ -369,19 +369,37 @@ export function rayShapeExitPoint(origin: Point, direction: Point, frame: FrameT
   if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return false;
   const [x, y, w, h] = frame;
 
-  const t =
-    shapeType === 'ellipse'
-      ? rayEllipseExitT(ox, oy, dx, dy, x, y, w, h)
-      : shapeType === 'diamond'
-        ? rayDiamondExitT(ox, oy, dx, dy, x, y, w, h)
-        : shapeType === 'triangle'
-          ? rayTriangleExitT(ox, oy, dx, dy, x, y, w, h)
-          : rayRectExitT(ox, oy, dx, dy, x, y, w, h);
+  const t = rayShapeExitT(ox, oy, dx, dy, x, y, w, h, shapeType);
   if (Number.isNaN(t)) return false;
 
   outPoint[0] = ox + t * dx;
   outPoint[1] = oy + t * dy;
   return true;
+}
+
+/**
+ * Scalar core of `rayShapeExitPoint`: forward exit `t` of `(ox, oy) + t·(dx, dy)`
+ * vs the shape inscribed in `(x, y, w, h)`. `NaN` on miss. No degenerate-input
+ * guards — callers own them.
+ */
+function rayShapeExitT(
+  ox: number,
+  oy: number,
+  dx: number,
+  dy: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  shapeType: string,
+): number {
+  return shapeType === 'ellipse'
+    ? rayEllipseExitT(ox, oy, dx, dy, x, y, w, h)
+    : shapeType === 'diamond'
+      ? rayDiamondExitT(ox, oy, dx, dy, x, y, w, h)
+      : shapeType === 'triangle'
+        ? rayTriangleExitT(ox, oy, dx, dy, x, y, w, h)
+        : rayRectExitT(ox, oy, dx, dy, x, y, w, h);
 }
 
 /** Where a ray exits a 1D `[near, far]` slab. `Infinity` if the ray is parallel. */
@@ -476,4 +494,45 @@ function raySegmentT(
   const u = ((p1x - ox) * dy - (p1y - oy) * dx) / denom;
   if (t > 1e-9 && t < bestT && u >= -0.001 && u <= 1.001) return t;
   return bestT;
+}
+
+// ============================================================================
+// ANCHOR REMAP ACROSS SHAPE TYPES
+// ============================================================================
+
+/**
+ * Remap a normalized [0-1, 0-1] anchor from one shape outline to another so its
+ * position **relative to the outline** carries over when `shapeType` changes —
+ * the connector keeps pointing at the same place on the shape.
+ *
+ * Center-ray model, evaluated in the unit frame: cast `C + t·d` (C = (0.5, 0.5),
+ * d = anchor − C) against both outlines via `rayShapeExitT`. Ray parameters are
+ * affine-invariant, so unit-frame results are exact for every world frame/aspect.
+ *
+ * - On-outline anchors (elbow; straight `interior: false`): `C + tTo·d` — lands
+ *   exactly on the new outline along the preserved center-direction. Legacy
+ *   off-outline anchors self-heal onto the outline.
+ * - `preserveInteriorFraction` (straight `interior: true`): preserve the radial
+ *   fraction — `C + tTo·min(1, 1/tFrom)·d`. Strictly-interior stays strictly
+ *   interior; the `min` clamps legacy anchors found outside the old outline
+ *   onto the new one.
+ * - Anchor at center returns unchanged (straight center snap stays center).
+ *
+ * NaN-free by construction: the unit center is strictly interior to all five
+ * outlines, so both exit t's are finite. `clamp01` per axis is insurance,
+ * matching the `normalizedFromEdge` convention. Always returns a **fresh
+ * Point** — never the input reference — safe to embed in a new endpoint
+ * record. Cold path; allocates.
+ */
+export function remapAnchorBetweenShapeTypes(anchor: Point, fromType: string, toType: string, preserveInteriorFraction: boolean): Point {
+  const dx = anchor[0] - 0.5;
+  const dy = anchor[1] - 0.5;
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return [anchor[0], anchor[1]];
+  const tTo = rayShapeExitT(0.5, 0.5, dx, dy, 0, 0, 1, 1, toType);
+  let scale = tTo;
+  if (preserveInteriorFraction) {
+    const tFrom = rayShapeExitT(0.5, 0.5, dx, dy, 0, 0, 1, 1, fromType);
+    scale = tTo * Math.min(1, 1 / tFrom);
+  }
+  return [clamp01(0.5 + scale * dx), clamp01(0.5 + scale * dy)];
 }

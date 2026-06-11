@@ -160,4 +160,9 @@ export function redo(): void {
 // ============================================
 
 // Re-export router accessors for imperative access (EraserTool, selection-actions, topology)
-export { detachConnectorFromShape, getAttachedConnectors, getConnectorRoute } from '@/core/connectors/connector-router';
+export {
+  detachConnectorFromShape,
+  getAttachedConnectors,
+  getConnectorRoute,
+  renormalizeAttachedAnchors,
+} from '@/core/connectors/connector-router';
