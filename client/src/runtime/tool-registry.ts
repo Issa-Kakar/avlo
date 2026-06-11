@@ -106,8 +106,8 @@ export function canStartMMBPan(): boolean {
 // DIRECT EXPORTS
 // ===========================================
 
-/** Export panTool for direct MMB access, textTool for direct access */
-export { codeTool, panTool, selectTool, textTool };
+/** Export panTool for direct MMB access, drawingTool/textTool for direct access (toolbar drag-place) */
+export { codeTool, drawingTool, panTool, selectTool, textTool };
 
 /** Export all tools for testing/debugging */
 export const allTools = {

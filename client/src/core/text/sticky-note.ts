@@ -524,7 +524,7 @@ function drawNoteShadow(ctx: CanvasRenderingContext2D, x: number, y: number): vo
 // BODY RENDERER
 // =============================================================================
 
-function renderNoteBody(ctx: CanvasRenderingContext2D, x: number, y: number, fillColor: string): void {
+export function renderNoteBody(ctx: CanvasRenderingContext2D, x: number, y: number, fillColor: string): void {
   drawNoteShadow(ctx, x, y);
 
   ctx.fillStyle = fillColor;

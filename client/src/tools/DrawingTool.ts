@@ -7,9 +7,9 @@ import { computeBboxCenterExtents, recognizePerfectShapePointCloud } from '@/cor
 import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
-import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { getUserId } from '@/stores/auth-store';
-import { isStrokeTool, resolveStrokeStyle, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
+import { isStrokeTool, resolveStrokeStyle, type ShapeVariant, setCursorOverride, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { PointerTool, PreviewData, ShapeType } from './types';
 
 /** Toolbar shape variant → stored shapeType. */
@@ -26,10 +26,13 @@ const CLICK_TO_PLACE_SIZE = 180;
 const CLICK_TO_PLACE_MAX_MS = 200;
 const CLICK_TO_PLACE_MAX_DIST = 5;
 
+/** Toolbar drag-place: release within this screen distance of pointerdown = plain click, create nothing. */
+const PLACE_CLICK_MAX_PX = 5;
+
 /** Minimum refDist below which snap-scale freezes at s=1 (WYSIWYG locked). */
 const SNAP_MIN_REF_DIST = 0.5;
 
-type DrawingMode = 'stroke' | 'shape' | 'line';
+type DrawingMode = 'stroke' | 'shape' | 'line' | 'place';
 
 /**
  * DrawingTool — pen, highlighter, and shape drawing.
@@ -51,6 +54,12 @@ type DrawingMode = 'stroke' | 'shape' | 'line';
  *   - `'line'`   — hold-recognized straight line. `anchor` pinned to the first stroke
  *                  point, `cursor` tracks live. Previewed via direct `ctx.moveTo/lineTo`,
  *                  committed as a 2-point stroke (no `line` kind in Y.Doc).
+ *   - `'place'`  — toolbar drag-place (entered via `beginPlace`, not `begin`; the
+ *                  pointerdown happened on an inspector button and the canvas holds
+ *                  pointer capture). `anchor` = pointerdown point (click-vs-drag
+ *                  threshold reference), `cursor` = live (null until first move, which
+ *                  is what hides the preview). Commits a CLICK_TO_PLACE_SIZE shape
+ *                  centered at the drop point; sub-threshold release creates nothing.
  */
 export class DrawingTool implements PointerTool {
   // Gesture state
@@ -125,6 +134,23 @@ export class DrawingTool implements PointerTool {
     invalidateOverlay();
   }
 
+  /** Toolbar drag-place gesture — see the `'place'` mode doc above. */
+  beginPlace(pointerId: number, worldX: number, worldY: number): void {
+    const ui = useDeviceUIStore.getState();
+    this.drawing = true;
+    this.pointerId = pointerId;
+    this.mode = 'place';
+    this.anchor = [worldX, worldY];
+    this.cursor = null;
+    this.toolType = 'pen';
+    this.shapeType = SHAPE_VARIANT_TO_TYPE[ui.shape.variant];
+    this.color = ui.shape.color;
+    this.size = ui.shape.width;
+    this.opacity = 1;
+    this.fillColor = ui.shape.fillColor;
+    this.points = [];
+  }
+
   move(worldX: number, worldY: number): void {
     if (!this.drawing) return;
     const c: Point = [worldX, worldY];
@@ -142,6 +168,26 @@ export class DrawingTool implements PointerTool {
 
   end(worldX?: number, worldY?: number): void {
     this.hold.cancel();
+
+    // Place mode handles its own coords — `cursor` is legitimately null on a
+    // never-moved press, which the generic guard below would misread as a dead gesture.
+    if (this.mode === 'place') {
+      setCursorOverride(null);
+      const a = this.anchor!;
+      const x = worldX ?? this.cursor?.[0];
+      const y = worldY ?? this.cursor?.[1];
+      const scale = useCameraStore.getState().scale;
+      if (x === undefined || y === undefined || Math.hypot(x - a[0], y - a[1]) * scale < PLACE_CLICK_MAX_PX) {
+        this.cancelDrawing(); // plain click — variant already applied at pointerdown
+        return;
+      }
+      const half = CLICK_TO_PLACE_SIZE / 2;
+      this.anchor = [x - half, y - half];
+      this.cursor = [x + half, y + half];
+      this.commitShape(); // computeShapeFrame → cornerFrame = 180×180 centered at drop
+      return;
+    }
+
     if (!this.drawing || !this.anchor || !this.cursor) {
       this.cancelDrawing();
       return;
@@ -203,6 +249,19 @@ export class DrawingTool implements PointerTool {
       };
     }
 
+    if (this.mode === 'place' && this.shapeType && this.shapeType !== 'line') {
+      const half = CLICK_TO_PLACE_SIZE / 2;
+      return {
+        kind: 'shape',
+        shapeType: this.shapeType,
+        frame: [this.cursor[0] - half, this.cursor[1] - half, CLICK_TO_PLACE_SIZE, CLICK_TO_PLACE_SIZE],
+        color: this.color,
+        width: this.size,
+        opacity: this.opacity,
+        fillColor: this.fillColor,
+      };
+    }
+
     if (this.mode === 'shape' && this.shapeType && this.shapeType !== 'line') {
       const frame = this.computeShapeFrame();
       if (!frame || frame[2] < 1 || frame[3] < 1) return null;
@@ -256,6 +315,8 @@ export class DrawingTool implements PointerTool {
   }
 
   private cancelDrawing(): void {
+    // Escape / pointercancel / lostpointercapture mid-place — restore the cursor.
+    if (this.mode === 'place') setCursorOverride(null);
     invalidateOverlay();
     this.resetGesture();
   }

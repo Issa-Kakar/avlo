@@ -5,6 +5,7 @@
  * @module renderer/layers/tool-preview
  */
 
+import { renderNoteBody } from '@/core/text/sticky-note';
 import { getActivePreview } from '@/runtime/tool-registry';
 import { drawConnectorPreview } from './connector-preview';
 import { drawDimmedStrokes } from './eraser-dim';
@@ -35,6 +36,9 @@ export function drawToolPreview(ctx: CanvasRenderingContext2D): void {
       break;
     case 'connector':
       drawConnectorPreview(ctx, preview);
+      break;
+    case 'note':
+      renderNoteBody(ctx, preview.x, preview.y, preview.fillColor);
       break;
   }
 }

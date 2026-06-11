@@ -618,7 +618,7 @@ The cache uses an **asymmetric pad** — top/sides hold a tight halo, bottom hol
 
 Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punch matches the body's `roundRect` **exactly** — because the cached canvas is sized at the body's exact dimensions, the punched silhouette aligns 1:1 with the body fill drawn next by `renderNoteBody`. No corner wedge possible.
 
-**`renderNoteBody(ctx, x, y, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `NOTE_CORNER_R`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge. Module-private — not shared with bookmarks.
+**`renderNoteBody(ctx, x, y, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `NOTE_CORNER_R`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge. Exported — `renderer/layers/tool-preview.ts` reuses it for the toolbar drag-place note preview (empty note at scale 1 = exact WYSIWYG). Not shared with bookmarks.
 
 ### Alignment System
 

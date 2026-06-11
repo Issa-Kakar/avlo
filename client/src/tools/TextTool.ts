@@ -53,12 +53,15 @@ import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
-import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId } from '@/stores/auth-store';
-import { closeStickyPanel, useDeviceUIStore } from '@/stores/device-ui-store';
+import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
+import { closeStickyPanel, setCursorOverride, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import type { PointerTool, PreviewData } from './types';
+
+/** Toolbar drag-place: release within this screen distance of pointerdown = plain click, create nothing. */
+const PLACE_CLICK_MAX_PX = 5;
 
 /** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
 function syncInlineStylesToStore(editor: Editor): void {
@@ -75,6 +78,12 @@ export class TextTool implements PointerTool {
   private pointerId: number | null = null;
   private downWorld: [number, number] | null = null;
   private hitTextId: string | null = null;
+
+  // Toolbar drag-place state (entered via beginPlace; pointerdown was on a palette
+  // swatch and the canvas holds pointer capture). placePos null until first move.
+  private placing = false;
+  private placePos: [number, number] | null = null;
+  private placeFill = '';
 
   // Editor state
   private container: HTMLDivElement | null = null;
@@ -112,11 +121,33 @@ export class TextTool implements PointerTool {
     this.hitTextId = pickTopmostOfKind([worldX, worldY], { px: 8 }, tool === 'note' ? 'note' : 'text');
   }
 
-  move(_worldX: number, _worldY: number): void {
-    // Text tool doesn't track movement during gesture
+  /** Toolbar drag-place gesture — sticky-note preview follows the cursor, drop creates + edits. */
+  beginPlace(pointerId: number, worldX: number, worldY: number): void {
+    this.gestureActive = true;
+    this.placing = true;
+    this.pointerId = pointerId;
+    this.downWorld = [worldX, worldY];
+    this.placePos = null;
+    this.placeFill = useDeviceUIStore.getState().note.fillColor; // caller set it just before
   }
 
-  end(_worldX?: number, _worldY?: number): void {
+  move(worldX: number, worldY: number): void {
+    if (!this.placing) return;
+    if (this.placePos) {
+      this.placePos[0] = worldX;
+      this.placePos[1] = worldY;
+    } else {
+      this.placePos = [worldX, worldY];
+    }
+    invalidateOverlay();
+  }
+
+  end(worldX?: number, worldY?: number): void {
+    if (this.placing) {
+      this.endPlace(worldX, worldY);
+      return;
+    }
+
     if (!this.gestureActive || !this.downWorld) {
       this.resetGesture();
       return;
@@ -141,7 +172,31 @@ export class TextTool implements PointerTool {
     invalidateWorldAll();
   }
 
+  private endPlace(worldX?: number, worldY?: number): void {
+    setCursorOverride(null);
+    closeStickyPanel(); // click AND drop both dismiss (parity with pickColor / begin())
+    const down = this.downWorld!;
+    const scale = useCameraStore.getState().scale;
+    if (worldX === undefined || worldY === undefined || Math.hypot(worldX - down[0], worldY - down[1]) * scale < PLACE_CLICK_MAX_PX) {
+      this.resetGesture(); // plain click — color already applied at pointerdown
+      invalidateOverlay();
+      return;
+    }
+
+    const objectId = this.createTextObject(worldX - NOTE_WIDTH / 2, worldY - NOTE_WIDTH / 2);
+    useSelectionStore.getState().beginTextEditing(objectId);
+    this.mountEditor(objectId, true); // same create+edit flow as click-create
+
+    this.resetGesture();
+    invalidateOverlay();
+    invalidateWorldAll();
+  }
+
   cancel(): void {
+    if (this.placing) {
+      setCursorOverride(null);
+      closeStickyPanel();
+    }
     this.resetGesture();
     invalidateOverlay();
   }
@@ -155,6 +210,9 @@ export class TextTool implements PointerTool {
   }
 
   getPreview(): PreviewData | null {
+    if (this.placing && this.placePos) {
+      return { kind: 'note', x: this.placePos[0] - NOTE_WIDTH / 2, y: this.placePos[1] - NOTE_WIDTH / 2, fillColor: this.placeFill };
+    }
     return null;
   }
 
@@ -767,6 +825,8 @@ export class TextTool implements PointerTool {
     this.pointerId = null;
     this.downWorld = null;
     this.hitTextId = null;
+    this.placing = false;
+    this.placePos = null;
   }
 }
 

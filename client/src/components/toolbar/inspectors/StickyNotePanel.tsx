@@ -1,4 +1,5 @@
 import { type CSSProperties, useEffect } from 'react';
+import { beginNotePlace } from '@/runtime/toolbar-place';
 import { closeStickyPanel, NOTE_COLOR_PALETTE, setNoteFillColor } from '@/stores/device-ui-store';
 import { isDark } from '../color/palette';
 import './StickyNotePanel.css';
@@ -50,6 +51,7 @@ export function StickyNotePanel() {
             aria-label={`${c.name} sticky note`}
             tabIndex={-1}
             onClick={() => pickColor(c.fill)}
+            onPointerDown={(e) => beginNotePlace(e, c.fill)}
           />
         ))}
       </div>

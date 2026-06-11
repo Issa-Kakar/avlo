@@ -1,4 +1,5 @@
-import { type FC, type SVGProps, useCallback, useState } from 'react';
+import { type FC, type PointerEvent, type SVGProps, useCallback, useState } from 'react';
+import { beginShapePlace } from '@/runtime/toolbar-place';
 import { type ShapeVariant, selectShape, setShapeVariant, setShapeWidth, useDeviceUIStore } from '@/stores/device-ui-store';
 import { IconShapeDiamond, IconShapeEllipse, IconShapeRect, IconShapeRoundedRect, IconShapeTriangle } from '../icons/ShapeVariantIcons';
 import { SHAPE_WEIGHTS } from '../weights';
@@ -38,6 +39,17 @@ const VARIANT_HANDLERS: Record<ShapeVariant, () => void> = {
   roundedRect: () => setShapeVariant('roundedRect'),
 };
 
+// Drag-place entry — pointerdown applies the variant and starts a capture-retargeted
+// placing gesture (runtime/toolbar-place.ts). The onClick above survives as the
+// fallback for guard-refused presses (the captured click never reaches the button).
+const VARIANT_DOWN_HANDLERS: Record<ShapeVariant, (e: PointerEvent<HTMLButtonElement>) => void> = {
+  rectangle: (e) => beginShapePlace(e, 'rectangle'),
+  ellipse: (e) => beginShapePlace(e, 'ellipse'),
+  diamond: (e) => beginShapePlace(e, 'diamond'),
+  triangle: (e) => beginShapePlace(e, 'triangle'),
+  roundedRect: (e) => beginShapePlace(e, 'roundedRect'),
+};
+
 export function ShapeInspector() {
   // Single popout — boolean is enough (pen inspector pattern, not the
   // discriminated `OpenPicker` connector uses for its weight/color pair).
@@ -58,7 +70,13 @@ export function ShapeInspector() {
       {SHAPE_VARIANT_IDS.map((id) => {
         const Icon = VARIANT_ICONS[id];
         return (
-          <InspectorButton key={id} isActive={id === variant} ariaLabel={VARIANT_LABELS[id]} onClick={VARIANT_HANDLERS[id]}>
+          <InspectorButton
+            key={id}
+            isActive={id === variant}
+            ariaLabel={VARIANT_LABELS[id]}
+            onClick={VARIANT_HANDLERS[id]}
+            onPointerDown={VARIANT_DOWN_HANDLERS[id]}
+          >
             <Icon className="insp-icon" />
           </InspectorButton>
         );

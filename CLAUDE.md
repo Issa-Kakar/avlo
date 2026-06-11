@@ -52,6 +52,7 @@ All paths relative to `client/src/` unless noted.
 | `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
 | `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
+| `toolbar-place.ts` | Drag-place entry from inspector buttons — applies the selection, `beginPlace` on the tool singleton, pointer capture to canvas + grabbing cursor; move/up then flow through the normal dispatch |
 | `cursor-tracking.ts` | Last cursor world position (for paste placement) |
 | `presence/presence.ts` | Awareness lifecycle, cursor send (throttle + backpressure), receive dispatch. Delegates peer state to the renderer. |
 | `presence/presence-renderer.ts` | `PresenceCursorRenderer` — SoA peer state, slot pool, self-driven rAF, DOM `<img>` cursors (host at z:4, above editor overlay) |
@@ -92,9 +93,9 @@ All paths relative to `client/src/` unless noted.
 | `selection/selection-actions.ts` | Mutation wrappers — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` |
 | `selection/selection-field-table.ts` | `FieldDescriptor<V>` table + `foldField`/`applyField`/`toggleField`/`adjustByPresets` primitives |
 | `selection/connector-topology.ts` | `buildTopology` — graph of attached connectors per selected shape |
-| `DrawingTool.ts` | Pen, highlighter, shape drawing. `hold-detector.ts` (550ms) fires the $P recognizer on dwell |
+| `DrawingTool.ts` | Pen, highlighter, shape drawing. `hold-detector.ts` (550ms) fires the $P recognizer on dwell. `'place'` mode (toolbar drag-place via `beginPlace`) — 180wu preview follows cursor, commits on drop |
 | `EraserTool.ts` | Geometry-aware hit testing + deletion |
-| `TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay (`core/text/`) |
+| `TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay (`core/text/`). Note drag-place mode (`beginPlace`) — `NotePreview` follows cursor, drop creates + opens editor |
 | `PanTool.ts` | Viewport panning (dedicated + MMB + spacebar) |
 | `ConnectorTool.ts` | Elbow + straight connectors + snapping (`core/connectors/`) |
 | `CodeTool.ts` | Code blocks, CodeMirror overlay (`core/code/`) |

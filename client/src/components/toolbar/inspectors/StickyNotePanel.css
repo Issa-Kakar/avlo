@@ -57,6 +57,7 @@
   border-radius: 3px;
   background: none;
   cursor: pointer;
+  touch-action: none; /* drag-place: keep touch pointers from being stolen by scroll gestures */
   /* transparent twin of the hover bloom so the bloom interpolates in smoothly */
   box-shadow:
     0 0 11px -1px transparent,
