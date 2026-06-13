@@ -8,14 +8,16 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -k -n vite,main,images,unfurl,auth,users \"npm:dev:client\" \"npm:dev:main\" \"npm:dev:images\" \"npm:dev:unfurl\" \"npm:dev:auth\" \"npm:dev:users\"",
+    "dev": "concurrently -k -n vite,workers \"npm:dev:client\" \"npm:dev:workers\"",
     "dev:client": "npm run dev -w client",
+    "dev:workers": "node scripts/dev-miniflare.mjs",
     "dev:main": "node scripts/dev-worker.mjs main",
     "dev:images": "node scripts/dev-worker.mjs images",
     "dev:unfurl": "node scripts/dev-worker.mjs unfurl",
     "dev:auth": "node scripts/dev-worker.mjs auth",
     "dev:users": "node scripts/dev-worker.mjs users",
     "dev:p": "PORT_OFFSET=10 VITE_PORT=5180 npm run dev",
+    "dev:legacy": "concurrently -k -n vite,main,images,unfurl,auth,users \"npm:dev:client\" \"npm:dev:main\" \"npm:dev:images\" \"npm:dev:unfurl\" \"npm:dev:auth\" \"npm:dev:users\"",
     "build": "npm run build -w client",
     "preview": "concurrently -k -n vite,main,images,unfurl,auth,users \"npm run preview -w client\" \"npm:dev:main\" \"npm:dev:images\" \"npm:dev:unfurl\" \"npm:dev:auth\" \"npm:dev:users\"",
     "deploy:main": "wrangler deploy -c workers/main/wrangler.jsonc",
@@ -45,10 +47,12 @@
     "@types/node": "^22.13.4",
     "@typescript/native-preview": "beta",
     "concurrently": "^8.2.2",
+    "esbuild": "0.27.3",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.5",
+    "miniflare": "4.20260515.0",
     "typescript": "^6.0.3",
-    "wrangler": "^4.85.0"
+    "wrangler": "~4.92.0"
   },
   "overrides": {
     "react": "^19.0.0",

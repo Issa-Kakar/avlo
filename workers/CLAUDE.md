@@ -45,7 +45,7 @@ Same-origin SPA + WSS — SPA on `avlo.io` opens `wss://avlo.io/parties/rooms/<i
 
 **No `app-type.ts` mock here** — main's only HTTP route is the Assets-binding catch-all (browser doesn't typed-RPC into it) and `/parties/*` is WSS via `y-partyserver` directly. Skip until a client-facing HTTP route is added.
 
-**Dev mode caveat.** `wrangler dev` for main needs `../../client/dist` to exist (Assets binding fails to start otherwise). One-time setup: `npm run build -w client` before the first `npm run dev`. Subsequent dev sessions don't need to rebuild — Vite serves the SPA, and the main worker is only hit on `/parties/*`. Never visit `http://localhost:8787` directly in dev; visit `http://localhost:3000` (Vite).
+**Dev mode caveat.** Under `npm run dev` (the single-instance orchestrator), main's **Static Assets are dropped** — Vite serves the SPA and main is hit only on `/parties/*`, so `client/dist` is **not** needed and the `ASSETS` binding is stubbed (a 404 the defensive `c.env.ASSETS.fetch` fallback never reaches in practice). Consequently `run_worker_first` + the `not_found_handling` SPA fallback are exercised only by `dev:legacy`, `preview`, and prod — those serve the real Assets binding and need `../../client/dist` to exist (run `npm run build -w client` first, else the binding fails to start). Either way, never visit `http://localhost:8787` directly in dev; visit `http://localhost:3000` (Vite). See *Dev Orchestration* below for the one-instance topology.
 
 ### `workers/images/` — image upload + GET + avatar snapshot
 | File | Responsibility |
@@ -134,8 +134,8 @@ When adding a new worker (`code-exec`, `auth`, `ai`, …):
 3. Add the drift-guard `assertSurfaceMatch<typeof app, PublicSurface>(true)` call in `src/index.ts`.
 4. Create `packages/api-client/src/<name>.ts` (`hc<FooApp>(FOO_ORIGIN)`) and re-export from `packages/api-client/src/index.ts`.
 5. Add a Vite proxy entry in `client/vite.config.ts`.
-6. Add a dev port to `scripts/dev-ports.json` (heed the `_comment`: `PORT_OFFSET` is already `10`; keep it ≥ the port-span).
-7. Add `dev:<name>` to root `package.json` and to the `dev` concurrently chain.
+6. Add a dev port to `scripts/dev-ports.json` (heed the `_comment`: `PORT_OFFSET` is already `10`; keep it ≥ the port-span). The orchestrator reads this JSON for its worker list.
+7. Add the dir→wrangler-`name` entry to the `NAME` map in `scripts/dev-miniflare.mjs` (else the pre-flight assert fails the new cross-worker edges). For `dev:legacy` rollback parity, also add `dev:<name>` to root `package.json` + the `dev:legacy` chain.
 8. Add the typecheck workspace to the root `typecheck` and `typecheck:tsc` scripts.
 9. Add a `deploy:<name>` script to root `package.json`.
 10. Add a row to the Worker Inventory table above.
@@ -174,18 +174,29 @@ The identity + authz vertical layers these on top of H1–H12 (the formal H13–
 
 ## Dev Orchestration
 
-Single source of truth for base ports: `scripts/dev-ports.json`. `scripts/dev-worker.mjs` reads it + applies `PORT_OFFSET`. Vite imports the same JSON for proxy targets.
+`npm run dev` runs Vite + **one** Miniflare instance holding **all five workers** (`scripts/dev-miniflare.mjs`). One instance is non-negotiable: Cloudflare Queues only deliver when producer (`main` → `ROOM_VISITS`/`ROOM_META`) and consumer (`users`) share a single Miniflare (cross-process *service bindings* work since Sept 2025; cross-process *queues* do not — workers-sdk #9795). The old per-worker `wrangler dev` chain gave each worker its own Miniflare, so locally the queue → D1 projection never ran. Single source of truth for base ports stays `scripts/dev-ports.json`; Vite imports the same JSON for proxy targets, **unchanged** — that's the whole point.
 
 ```bash
-npm run dev                                # all six (Vite + main + images + unfurl + auth + users)
-PORT_OFFSET=10 VITE_PORT=5180 npm run dev   # parallel session (dev:p alias)
-npm run dev:images                         # single worker, useful with separate Vite
+npm run dev                                # Vite + ONE Miniflare (all 5 workers; queues + cross-script DO + service RPC live)
+PORT_OFFSET=10 VITE_PORT=5180 npm run dev   # parallel session (dev:p alias — orchestrator reads PORT_OFFSET)
+npm run dev:workers                        # just the orchestrator (no Vite)
+npm run dev:legacy                         # ROLLBACK: the old five-process wrangler-dev chain (no queues across workers)
 (cd workers/<name> && npm run types)       # regenerate worker-configuration.d.ts
 ```
 
-**`PORT_OFFSET` is `10`** (in `dev-ports.json`'s `_comment` + the `dev:p` alias). Base ports span 8787…8793, so the offset must stay ≥ 7; 10 leaves headroom and keeps inspector ports (base+1000+offset) collision-free. `dev:p` also uses `VITE_PORT=5180` (3001 is reserved on some WSL2/Windows hosts).
+**Topology inside the one instance.** `main` (wrangler `avlo`) is `workers[0]` — the **entry worker** on Miniflare's top-level `port` (8787+offset). This is the same entry path `wrangler dev` serves partyserver WS on, so the `/parties/*` upgrade + DO stay on proven ground (not an unsafe socket). `images`/`unfurl`/`auth`/`users` each pin `unsafeDirectSockets: [{ port: <existing dev port>+offset, entrypoint: 'default', proxy: false }]` → each listens on its **exact current port**, so the Vite proxy reaches every worker unchanged. Confirm at startup: each logs `[mf] <name> -> <url>` on the expected port (8787/8790-8793, +offset).
 
-**Shared Miniflare state.** `dev-worker.mjs` passes `--persist-to=<repoRoot>/.wrangler/state` (absolute) to every `wrangler dev`. Without this, wrangler v4 resolves the default `.wrangler/` *relative to the config file's directory*, so each `workers/<name>/.wrangler/state/v3/r2/avlo-assets/` becomes a separate physical bucket — unfurl writes an OG image, the images worker's bucket stays empty, and the browser's GET 404s in dev. The path must be absolute (relative paths re-resolve against the config dir in some wrangler versions). Sharing requires *both* a shared persist root *and* matching `bucket_name` in every config — `r2_buckets[].bucket_name = "avlo-assets"` is identical in `workers/{images,unfurl}/wrangler.jsonc`. Same constraint applies if KV (`id`), D1 (`database_id`), DOs, or Queues are ever shared across workers. `.wrangler/` is gitignored at the repo root.
+**No config fork.** `unstable_getMiniflareWorkerOptions(wrangler.jsonc)` (wrangler, experimental — pinned `~4.92.0`) translates each config into Miniflare options faithfully: services→entrypoints, cross-script DO, queues, D1/KV/R2, **rate limits**, and it **auto-folds `workers/auth/.dev.vars`** (the orchestrator keeps a defensive merge if a wrangler bump ever stops folding). The one thing it doesn't do is bundle TypeScript — esbuild does that here (`node:*`/`cloudflare:*` external; `.sql` → text inlines main's drizzle migrations). A **pre-flight assert** fails loudly if any `services[].name` / DO `scriptName` doesn't resolve to an assembled worker (the `NAME` dir→wrangler-name map is load-bearing). Two source-confirmed fix-ups: `users`' cross-script `rooms` DO is forced `useSQLite=true` (the translator derives it from the binding worker's own migrations, which `users` lacks), and `main`'s Static Assets are **dropped in dev** (see main's *Dev mode caveat*).
+
+**Hot reload.** esbuild watches each worker's resolved graph **including `packages/*/src`** — a save rebuilds (sub-100 ms) and calls `mf.setOptions(...)`, which reloads in place: persisted state, DO storage, and the listening ports/direct sockets all survive, so the Vite proxy never blips. Build/reload errors are non-fatal (logged; last good bundle stays live). **`wrangler.jsonc` edits are NOT watched** — restart `npm run dev` (same partial behavior as `wrangler dev`).
+
+**`PORT_OFFSET` is `10`** (in `dev-ports.json`'s `_comment` + the `dev:p` alias). Base ports span 8787…8793, so the offset must stay ≥ 7; 10 leaves headroom. There is now **ONE inspector** for all isolates at `9229`+offset (the per-worker base+1000+offset scheme was a per-process artifact). `dev:p` also uses `VITE_PORT=5180` (3001 is reserved on some WSL2/Windows hosts); note `dev:p` still can't complete Google OAuth (Google only redirects to the registered `:8792`).
+
+**Shared Miniflare state.** The orchestrator sets `defaultPersistRoot` to `<repoRoot>/.wrangler/state/v3` — **the `v3` segment is load-bearing.** `wrangler dev --persist-to <X>` (and `wrangler d1 migrations apply --persist-to <X>`) store under `<X>/v3/{d1,r2,kv,do,cache}`, but Miniflare's `defaultPersistRoot` does NOT add `v3`; pointing it at the bare `.wrangler/state` opens a brand-new EMPTY tree beside the real one (D1 with no tables → "no such table: room_visits", empty R2 buckets, lost KV sessions + DO room data). Appending `v3` makes the orchestrator read the exact same SQLite/R2 tree the legacy `wrangler dev` wrote (same DB keys), so it's a drop-in. Like the legacy `dev-worker.mjs`, ONE tree regardless of `PORT_OFFSET` (each git checkout/worktree has its own `.wrangler/`, so two checkouts never contend; the `avlo-parallel` worktree gets its own `…/.wrangler/state/v3`). One instance means one process opening the tree serially, so the cross-process `SQLITE_BUSY` create-race the old `dev-worker.mjs` guarded with retry-and-jitter is **gone** — a real startup error now surfaces immediately. Shared R2 still needs matching `bucket_name` across configs — `r2_buckets[].bucket_name = "avlo-assets"` is identical in `workers/{images,unfurl}/wrangler.jsonc` — but co-location now also gives genuine cross-worker queues, cross-script DO RPC, and service-binding RPC (incl. the mutual `auth↔users`/`auth↔images` cycle). `.wrangler/` is gitignored at the repo root.
+
+**D1 migrations are not auto-applied** (not by the orchestrator, not by `wrangler dev`) — a one-time manual step, same as before. On a fresh state tree the `users` D1 has no tables and `GET /rooms` 500s with `no such table: room_visits`; the orchestrator detects this at startup and prints the fix: `npx wrangler d1 migrations apply avlo-db --local --persist-to .wrangler/state -c workers/users/wrangler.jsonc` (note `--persist-to .wrangler/state`, NOT `…/v3` — wrangler appends `v3` itself). DO-SQLite migrations (main's `rooms`) self-apply in the DO constructor via drizzle `migrate()`, so only the D1 ones are manual.
+
+**`dev:legacy` escape hatch.** `scripts/dev-worker.mjs` + the `dev:main`…`dev:users` scripts are retained **verbatim**, reachable only via `dev:legacy`. It restores the exact five-`wrangler dev` behavior (separate Miniflare each → no cross-worker queues) for rollback, and is the only `dev` path (besides `preview`/prod) that exercises main's real Static-Assets binding + SPA fallback — so it needs `client/dist` (run `npm run build -w client` first).
 
 ## CI
 
