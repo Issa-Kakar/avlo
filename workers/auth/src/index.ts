@@ -1,4 +1,13 @@
-import { assertSurfaceMatch, createCors, cspError, cspHeaders, ipRateLimiter, isAllowedOrigin, isDevHost } from '@avlo/worker-shared';
+import {
+  assertSurfaceMatch,
+  createCors,
+  cspError,
+  cspHeaders,
+  devRequestLogger,
+  ipRateLimiter,
+  isAllowedOrigin,
+  isDevHost,
+} from '@avlo/worker-shared';
 import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
@@ -23,6 +32,7 @@ const rl = ipRateLimiter<{ Bindings: Env }>((c) => c.env.RL_AUTH);
 
 const app = new Hono<{ Bindings: Env }>()
   .use('*', createCors({ methods: ['GET', 'POST'] }))
+  .use('*', devRequestLogger()) // dev-only request lines (/me, /login, /callback, /logout); dormant in prod
   .use('*', cspHeaders('api-json'))
   .use('*', noStore)
   // Skips GET/HEAD (the cross-site callback is unaffected); guards POST /logout against

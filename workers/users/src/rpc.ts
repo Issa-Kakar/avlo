@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { getSessionDB, users, withRetry } from '@avlo/db';
 import { generateUserId, type UserId } from '@avlo/shared';
-import { assertRpcMatch, type UsersRpcSurface } from '@avlo/worker-shared';
+import { assertRpcMatch, devDrizzleLogger, traceRpc, type UsersRpcSurface } from '@avlo/worker-shared';
 import { sql } from 'drizzle-orm';
 
 // `withRetry`'s transient regex deliberately does NOT match UNIQUE errors — they are
@@ -38,8 +38,21 @@ export class UsersRpc extends WorkerEntrypoint<Env> {
     googleSub: string,
     profile: { email: string; name: string; avatarHash: string | null },
   ): Promise<{ userId: UserId; avatarHash: string | null; bookmark: string }> {
+    return traceRpc(
+      this.env,
+      'users.linkAccount',
+      () => this.#linkAccount(currentUserId, googleSub, profile),
+      (r) => (r.avatarHash ? 'ok+avatar' : 'ok'),
+    );
+  }
+
+  async #linkAccount(
+    currentUserId: UserId,
+    googleSub: string,
+    profile: { email: string; name: string; avatarHash: string | null },
+  ): Promise<{ userId: UserId; avatarHash: string | null; bookmark: string }> {
     const { email, name, avatarHash } = profile;
-    const { db, session } = getSessionDB(this.env.DB, 'first-primary');
+    const { db, session } = getSessionDB(this.env.DB, 'first-primary', devDrizzleLogger(this.env, '[d1]'));
 
     const upsert = (uid: UserId) =>
       withRetry(() =>

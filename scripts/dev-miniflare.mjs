@@ -30,7 +30,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
-import { Miniflare } from 'miniflare';
+import { Log, LogLevel, Miniflare } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions } from 'wrangler';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +45,22 @@ const workerNames = Object.entries(PORTS)
 
 const HOST = '127.0.0.1';
 const INSPECTOR_PORT = 9229 + offset;
+
+// Miniflare's `[mf:*]` log — the per-request lines + lifecycle/reload notices that
+// `wrangler dev` shows but the programmatic Miniflare API suppresses by default (no `log`
+// option ⇒ a no-op log). INFO restores request lines for the ENTRY worker (main) + reload
+// notices; this is the `--verbose` knob (a wrangler-CLI flag, inapplicable to this script):
+// `MF_LOG_LEVEL=debug|verbose npm run dev` for binding/options detail or workerd internals.
+// Per-worker request lines for the direct-socket workers come from `devRequestLogger` instead.
+const LOG_LEVELS = {
+  none: LogLevel.NONE,
+  error: LogLevel.ERROR,
+  warn: LogLevel.WARN,
+  info: LogLevel.INFO,
+  debug: LogLevel.DEBUG,
+  verbose: LogLevel.VERBOSE,
+};
+const logLevel = LOG_LEVELS[(process.env.MF_LOG_LEVEL ?? 'info').toLowerCase()] ?? LogLevel.INFO;
 
 // dir name → wrangler `name`. LOAD-BEARING: services + cross-script DO resolve by
 // wrangler NAME, not dir. A mismatch silently breaks every cross-worker edge
@@ -156,24 +172,23 @@ function buildWorkerEntries() {
       modules: [{ type: 'ESModule', path: main, contents: code }],
     };
 
+    // Dev-only logging gate (worker-shared/dev-logs.ts reads it). Merge into a FRESH bindings
+    // object — never mutate translated[].workerOptions.bindings (re-read on every hot reload,
+    // and ensureAuthDevVars already wrote the auth secrets there). Absent from every
+    // wrangler.jsonc ⇒ prod never sets it ⇒ request/RPC/Drizzle/hibernation logs stay dormant.
+    entry.bindings = { ...workerOptions.bindings, DEV_LOGS: '1' };
+
     // users' cross-script `rooms` DO: the translator derives useSQLite from the
     // BINDING worker's own migrations, which `users` lacks (main owns them). Storage
     // semantics actually come from the defining worker (`avlo`), but set it
     // explicitly so Miniflare doesn't object to the cross-script SQLite class.
     if (dir === 'users') entry.durableObjects.rooms.useSQLite = true;
 
-    // main's Static Assets: drop in dev so a missing/stale client/dist can't crash
-    // the whole instance, and because Vite serves the SPA (main is hit only on
-    // /parties/* in dev). Stub the ASSETS binding the Env type expects so main's
-    // defensive `c.env.ASSETS.fetch` fallback still resolves.
-    // (run_worker_first/SPA-fallback are then exercised only by dev:legacy/preview/prod.)
-    if (dir === 'main') {
-      delete entry.assets;
-      entry.serviceBindings = {
-        ...entry.serviceBindings,
-        ASSETS: () => new Response('dev: assets served by Vite at :3000', { status: 404 }),
-      };
-    }
+    // main's Static Assets: drop in dev so a missing/stale client/dist can't crash the whole
+    // instance, and because Vite serves the SPA (main is hit only on /parties/* in dev). main's
+    // worker code no longer references c.env.ASSETS (the defensive catch-all was removed), so no
+    // ASSETS stub is needed. (run_worker_first/SPA-fallback are exercised only by dev:legacy/preview/prod.)
+    if (dir === 'main') delete entry.assets;
 
     // Non-entry workers each listen on their existing dev port via an unsafe direct
     // socket (proxy:false = a normal HTTP entry to the worker's default `fetch`),
@@ -188,6 +203,7 @@ function buildWorkerEntries() {
 
 function miniflareOptions() {
   return {
+    log: new Log(logLevel), // [mf:*] request + lifecycle lines (suppressed by default via the API)
     defaultPersistRoot: persistRoot,
     host: HOST,
     port: PORTS.main + offset, // entry worker = main → its existing port (WS /parties/*)
@@ -335,6 +351,9 @@ async function main() {
   console.error(`[mf] inspector -> http://${HOST}:${INSPECTOR_PORT}`);
   console.error('[mf] ready — one instance, all five workers (queues + cross-script DO + service RPC live)');
   console.error('[mf] watching src + packages/*/src for changes (wrangler.jsonc edits need a restart)');
+  console.error(
+    `[mf] dev logs ON (DEV_LOGS=1): request lines + RPC + Drizzle + DO hibernation · mf log level=${(process.env.MF_LOG_LEVEL ?? 'info').toLowerCase()} (MF_LOG_LEVEL=verbose for more)`,
+  );
 
   // D1 migrations are NOT auto-applied (not by us, not by `wrangler dev`). On a fresh
   // state tree the users D1 has no tables and GET /rooms 500s with "no such table:

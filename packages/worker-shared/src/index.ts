@@ -2,6 +2,7 @@ export { syntheticCacheUrl } from './cache-keys';
 export { ANON_COOKIE, type AuthCtx, cookieOpts, mintAnonToken, parseCookieHeader, verifyAnonToken } from './cookies';
 export { type CorsOptions, createCors, isAllowedOrigin, isDevHost } from './cors';
 export { applyCsp, type CspProfile, cspError, cspHeaders } from './csp';
+export { devDrizzleLogger, devRequestLogger, isDevLogs, traceRpc } from './dev-logs';
 export { fetchBytesCapped, sha256Hex } from './fetch-bytes';
 export { ipRateLimiter, userRateLimiter } from './rate-limit';
 export { requireAuth } from './require-auth';

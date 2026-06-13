@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { type Logger, sql } from 'drizzle-orm';
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema-d1';
 
@@ -20,9 +20,9 @@ import * as schema from './schema-d1';
  * which is NOT structurally a `D1Database`, so drizzle's `drizzle(session, …)` needs a
  * cast — runtime is fine, drizzle only calls `prepare`/`batch` (handoff §9.2).
  */
-export function getSessionDB(DB: D1Database, bookmark?: string | null) {
+export function getSessionDB(DB: D1Database, bookmark?: string | null, logger?: boolean | Logger) {
   const session = DB.withSession(bookmark ?? 'first-unconstrained');
-  return { db: drizzle(session as unknown as D1Database, { schema }), session };
+  return { db: drizzle(session as unknown as D1Database, { schema, logger }), session };
 }
 
 /** Escape hatch only — CLI scripts with no request context. Not used on any request path. */

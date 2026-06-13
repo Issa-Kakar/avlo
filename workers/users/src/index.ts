@@ -3,6 +3,7 @@ import {
   createCors,
   cspError,
   cspHeaders,
+  devRequestLogger,
   isAllowedOrigin,
   isDevHost,
   requireAuth,
@@ -21,6 +22,7 @@ import { UsersRpc } from './rpc';
 // before we spend an AUTH RPC → verify the session into c.get('userId') → tier-1 RL_ROOMS → routes.
 const app = new Hono<UsersEnv>()
   .use('*', createCors({ methods: ['GET', 'PATCH'], allowHeaders: ['Content-Type', 'x-d1-bookmark'], exposeHeaders: ['x-d1-bookmark'] }))
+  .use('*', devRequestLogger()) // dev-only request lines (/rooms, PATCH); dormant in prod
   .use('*', cspHeaders('api-json'))
   .use('*', csrf({ origin: (o, c) => isAllowedOrigin(o, isDevHost(c.req.header('host'))) !== null }))
   .use('*', requireAuth<UsersEnv>())

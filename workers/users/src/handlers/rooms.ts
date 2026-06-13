@@ -1,5 +1,5 @@
 import { getSessionDB, rooms, roomVisits, upsertRoomsFromMeta, users, withRetry } from '@avlo/db';
-import { type MetaEvent, roomDoStub } from '@avlo/worker-shared';
+import { devDrizzleLogger, type MetaEvent, roomDoStub } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
 import { createFactory } from 'hono/factory';
@@ -22,7 +22,7 @@ const factory = createFactory<UsersEnv>();
  */
 export const handleGetRooms = factory.createHandlers(async (c) => {
   const userId = c.get('userId');
-  const { db, session } = getSessionDB(c.env.DB, c.req.header('x-d1-bookmark') ?? null);
+  const { db, session } = getSessionDB(c.env.DB, c.req.header('x-d1-bookmark') ?? null, devDrizzleLogger(c.env, '[d1]'));
 
   const list = await withRetry(() =>
     db
@@ -69,9 +69,9 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
  * try/catch → `''`: the DO already committed and the queue converges D1, so a failed
  * direct write must never fail the response (the client just keeps its prior bookmark).
  */
-async function projectMetaRYW(DB: D1Database, snapshot: MetaEvent): Promise<string> {
+async function projectMetaRYW(env: Env, snapshot: MetaEvent): Promise<string> {
   try {
-    const { db, session } = getSessionDB(DB, 'first-primary');
+    const { db, session } = getSessionDB(env.DB, 'first-primary', devDrizzleLogger(env, '[d1]'));
     await withRetry(() => upsertRoomsFromMeta(db, [snapshot]));
     return session.getBookmark() ?? '';
   } catch (err) {
@@ -120,7 +120,7 @@ export const handleSetPermission = factory.createHandlers(
       const { error, status } = metaRpcFailure(err);
       return c.json({ error }, status);
     }
-    const bookmark = await projectMetaRYW(c.env.DB, snapshot);
+    const bookmark = await projectMetaRYW(c.env, snapshot);
     c.header('x-d1-bookmark', bookmark);
     return c.json({ ok: true, bookmark });
   },
@@ -146,7 +146,7 @@ export const handleSetTitle = factory.createHandlers(zValidator('param', roomIdP
     const { error, status } = metaRpcFailure(err);
     return c.json({ error }, status);
   }
-  const bookmark = await projectMetaRYW(c.env.DB, snapshot);
+  const bookmark = await projectMetaRYW(c.env, snapshot);
   c.header('x-d1-bookmark', bookmark);
   return c.json({ ok: true, title: snapshot.title, bookmark });
 });

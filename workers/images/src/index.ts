@@ -3,6 +3,7 @@ import {
   createCors,
   cspError,
   cspHeaders,
+  devRequestLogger,
   isAllowedOrigin,
   isDevHost,
   requireAuth,
@@ -26,6 +27,7 @@ const app = new Hono<ImagesEnv>()
       exposeHeaders: ['ETag', 'Content-Range', 'Accept-Ranges'],
     }),
   )
+  .use('*', devRequestLogger()) // dev-only request lines (GET/PUT/avatars); dormant in prod
   // PUT writes to R2 → api-json CSP on every return + csrf gate (reusing the CORS origin allowlist)
   // + H13 gate (verified session) + tier-1 userId limiter (RL_UPLOAD). requireAuth runs before the
   // limiter so it has a userId to key on.

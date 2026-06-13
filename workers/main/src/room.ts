@@ -12,7 +12,15 @@ import {
   Z_RENORM_MAX_KEY_LEN,
   Z_RENORM_ORIGIN,
 } from '@avlo/shared';
-import { assertRpcMatch, type MetaEvent, type RoomDoStub, type VisitEvent } from '@avlo/worker-shared';
+import {
+  assertRpcMatch,
+  devDrizzleLogger,
+  isDevLogs,
+  type MetaEvent,
+  type RoomDoStub,
+  traceRpc,
+  type VisitEvent,
+} from '@avlo/worker-shared';
 import { eq } from 'drizzle-orm';
 import { type DrizzleSqliteDODatabase, drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
@@ -87,7 +95,14 @@ export class RoomDurableObject extends YServer<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.db = drizzle(ctx.storage, { schema: schemaDo });
+    this.db = drizzle(ctx.storage, { schema: schemaDo, logger: devDrizzleLogger(env, '[room-do]') });
+    // Hibernation observability: the constructor runs on EVERY entry incl. a hibernation wake —
+    // retained hibernatable sockets ⇒ woke with live connections, zero ⇒ a cold start (first
+    // touch / cross-script RPC). Dev-only (dormant in prod).
+    if (isDevLogs(env)) {
+      const retained = ctx.getWebSockets().length;
+      console.warn(`[room] DO instantiated — ${retained > 0 ? `hibernation wake (${retained} ws retained)` : 'cold start'}`);
+    }
     // ★ Load meta in the CONSTRUCTOR (runs on every entry point + hibernation wake), not
     // onLoad — raw cross-script RPC (setPermission/setTitle) never triggers onStart/onLoad
     // (§5). blockConcurrencyWhile gates delivery until migrate + load resolve.
@@ -232,6 +247,15 @@ export class RoomDurableObject extends YServer<Env> {
    * 'forbidden'.
    */
   async setPermission(roomId: RoomId, caller: UserId, next: Permission): Promise<MetaEvent> {
+    return traceRpc(
+      this.env,
+      'room.setPermission',
+      () => this.#setPermission(roomId, caller, next),
+      (r) => r.permission,
+    );
+  }
+
+  async #setPermission(roomId: RoomId, caller: UserId, next: Permission): Promise<MetaEvent> {
     this.#verifyRoomId(roomId);
     Permission.parse(next); // authority-boundary guard (§14a)
     if (!this.meta) {
@@ -274,6 +298,15 @@ export class RoomDurableObject extends YServer<Env> {
    * creator, and the proven `roomId` argument supplies the identity `this.name` can't.
    */
   async setTitle(roomId: RoomId, caller: UserId, raw: string): Promise<MetaEvent> {
+    return traceRpc(
+      this.env,
+      'room.setTitle',
+      () => this.#setTitle(roomId, caller, raw),
+      () => 'ok',
+    );
+  }
+
+  async #setTitle(roomId: RoomId, caller: UserId, raw: string): Promise<MetaEvent> {
     this.#verifyRoomId(roomId);
     const title = normalizeRoomTitle(raw);
     if (title === null) throw new Error('invalid-title'); // authority-boundary guard (§14a)
@@ -339,6 +372,13 @@ export class RoomDurableObject extends YServer<Env> {
     // behavior) — tracking whether an authorized editor attached, just to skip one R2 write on a
     // forbidden-only isolate, isn't worth the state to keep correct across hibernation.
     if (this.getConnections()[Symbol.iterator]().next().done) {
+      // Hibernation observability: last socket gone ⇒ the DO is idle and eligible to hibernate
+      // shortly. uptime = lifetime of THIS instance (since construct/wake). Dev-only.
+      if (isDevLogs(this.env)) {
+        console.warn(
+          `[room] last connection closed — idle after ${((Date.now() - this.#boot) / 1000).toFixed(1)}s uptime (eligible for hibernation)`,
+        );
+      }
       // One microturn in case a final Yjs update just landed
       await Promise.resolve();
       try {

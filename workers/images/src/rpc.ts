@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { validateImage } from '@avlo/shared';
-import { assertRpcMatch, fetchBytesCapped, type ImagesRpcSurface, retryTransient, sha256Hex } from '@avlo/worker-shared';
+import { assertRpcMatch, fetchBytesCapped, type ImagesRpcSurface, retryTransient, sha256Hex, traceRpc } from '@avlo/worker-shared';
 
 const AVATAR_MAX_BYTES = 1024 * 1024; // 1 MiB — avatars are small; the cap bounds the SSRF/abuse blast radius
 const AVATAR_FETCH_TIMEOUT_MS = 5000;
@@ -30,6 +30,15 @@ function isAllowedAvatarHost(hostname: string): boolean {
  */
 export class ImagesRpc extends WorkerEntrypoint<Env> {
   async ingestAvatar(pictureUrl: string): Promise<string | null> {
+    return traceRpc(
+      this.env,
+      'images.ingestAvatar',
+      () => this.#ingestAvatar(pictureUrl),
+      (r) => (r ? 'hash' : 'null'),
+    );
+  }
+
+  async #ingestAvatar(pictureUrl: string): Promise<string | null> {
     try {
       const url = new URL(pictureUrl);
       if (url.protocol !== 'https:' || !isAllowedAvatarHost(url.hostname)) {
