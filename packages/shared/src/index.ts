@@ -1,6 +1,7 @@
 export * from './types/identifiers';
 export { Permission } from './types/permission';
 export type { YObjects } from './types/y-doc';
+export { bytesToHex, hexToBytes, hexToBytesInto } from './utils/hex';
 export { isSvg, parseImageDimensions, validateImage } from './utils/image-validation';
 export { asRoomId, generateRoomId, normalizeRoomId, ROOM_ID_RE } from './utils/room-id';
 export { normalizeRoomTitle, ROOM_TITLE_MAX_LEN } from './utils/room-title';

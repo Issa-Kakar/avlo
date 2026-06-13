@@ -1,27 +1,29 @@
 /**
  * ImageManager — Thin main-thread coordinator for image assets.
  *
- * All heavy work (IDB, CDN fetch, hashing, upload, decode) runs in two image-worker instances.
- * Worker 0 (primary): upload queue + ingest + decode. Worker 1 (decoder): decode only.
- * Decode requests are hash-routed by assetId for consistent per-asset worker affinity.
+ * All heavy work (IDB, CDN fetch, hashing, upload, decode) runs in a hardware-
+ * scaled pool of identical image-worker instances. Decode COMMANDS travel through
+ * a SharedArrayBuffer control plane (`image-sab.ts`) — this thread writes desired
+ * `{gen, level, w, h}` into a slot and pushes the slot onto a work-stealing ring;
+ * any idle worker grabs it. There is no per-decode message and no static routing:
+ *   - Cancel/evict  = write `needLevel = -1` + bump the slot's gen. The worker sees
+ *                     it at its next `Atomics.load` — instant, lock-free, no message.
+ *   - Clear (room)  = bump the global epoch. In-flight decodes abandon at a checkpoint.
+ *   - Staleness     = the slot table IS the pending set (`needGen`/`needLevel`); a
+ *                     decode is in-flight while `doneGen !== needGen`.
+ * Only the decoded ImageBitmap crosses back, by `postMessage` + Transferable
+ * (GPU-backed — can't live in a SAB). Worker 0 also handles ingest / upload /
+ * unfurl / prefetch (rare, ordered, carry Blobs).
  *
- * Per-frame loop (`manageImageViewport`): zero Y.Map reads, zero steady-state allocations.
- *   - The per-object asset digest lives in subsystem caches owned elsewhere: image
- *     assetId + natural dims in `image-cache.ts`, bookmark og/favicon ids in
- *     `bookmarkCache`'s layout. Both populated by the `computeBBoxFor` dispatch.
- *   - `_assetInfo` lives across frames; entries mark/sweep via `_frameMark` instead of
- *     clear/repopulate. Steady-state allocations: zero.
- *   - During translate/scale, the selected images' transform-output bbox is layered into
- *     the visibility pass (still gated on the padded viewport — Ctrl+A doesn't
- *     force-decode every image in the room). Fixes the edge-scroll eviction bug.
- *   - Decodes dispatched in priority order: New (no bitmap) > Upgrade (worse cached) >
- *     Downgrade (2-level hysteresis, cached + 2 ≤ needed). New-in-view bitmaps land
- *     before downgrades of already-rendered images.
- *
- * Generation-based staleness: when mip level changes, a new decode supersedes the old
- * immediately. Workers discard stale results.
+ * Per-frame loop (`manageImageViewport`): zero Y.Map reads, zero steady-state
+ * allocations. Per-object asset digests live in subsystem caches owned elsewhere
+ * (`image-cache.ts`, `bookmarkCache`); `_assetInfo` persists across frames via
+ * mark/sweep with `_frameMark`. In steady state (everything cached at the right
+ * level) nothing is classified, pushed, or allocated.
  */
 
+import { hexToBytesInto } from '@avlo/shared';
+import { assertCrossOriginIsolated } from '@/core/sab';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getHandle, getSpatialIndex, hasActiveRoom } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
@@ -32,48 +34,133 @@ import { bookmarkCache } from '../bookmark/bookmark-render';
 import { handleUnfurlFailed, handleUnfurlResult } from '../bookmark/bookmark-unfurl';
 import type { BBoxTuple } from '../types/geometry';
 import { forEachImageMeta, getImageMeta } from './image-cache';
+import {
+  allocImageSab,
+  bumpEpoch,
+  EVICTED,
+  F_DONE_GEN,
+  F_NEED_GEN,
+  F_NEED_H,
+  F_NEED_LEVEL,
+  F_NEED_W,
+  type ImageSab,
+  SLOT_COUNT,
+} from './image-sab';
 import type { WorkerInbound, WorkerOutbound } from './image-worker';
 
 // ============================================================
-// Workers
+// Workers + SAB control plane
 // ============================================================
 
-// Two image-worker instances: worker[0] primary (ingest + upload + decode), worker[1] decoder.
-// Created lazily via ensureImageWorkers() (called from RoomDocManager construction) so importing
-// this module — e.g. from a future landing/dashboard entry that transitively pulls it in —
-// spawns NO workers. Once created they persist for the session (they drain the IDB upload queue
-// across rooms) and are never terminated on room leave.
-let workers!: [Worker, Worker];
+// A hardware-scaled pool of identical image-worker instances (loop-spawned from one URL —
+// Vite bundles it once). Created lazily via ensureImageWorkers() (from RoomDocManager
+// construction) so a bare module import spawns NO workers. Worker 0 is also "primary"
+// (ingest + upload + unfurl + prefetch). Workers persist for the session and drain the IDB
+// upload queue across rooms.
+let workers: Worker[] = [];
 let workersReady = false;
+
+/** The shared command/cancel/staleness plane. Allocated once in ensureImageWorkers(). */
+let imageSab!: ImageSab;
+
+/** assetId → slot index. The slot table holds each asset's desired gen/level/dims + hash. */
+const registry = new Map<string, number>();
+/** Free slot indices (stack). Initialized in ensureImageWorkers(), reset on clear(). */
+const freeSlots: number[] = [];
+/** Per-slot last gen pushed to a ring — dedups duplicate ring entries within/across frames. */
+let queuedGen!: Int32Array;
 
 /**
  * Spawn the image worker pool if not already up. Idempotent + session-scoped. Called from
  * RoomDocManager construction (synchronously, in parallel with its async init) so the first
- * image bitmap is ready ASAP. The `online` listener and clear() guard on `workersReady` so they
- * no-op before any room has constructed the pool.
+ * image bitmap is ready ASAP. Asserts cross-origin isolation (the SAB + Atomics.waitAsync
+ * contract) — the isolation headers are set in both dev and prod, so a throw here means a
+ * misconfiguration, not a runtime fallback.
  */
 export function ensureImageWorkers(): void {
   if (workersReady) return;
+
+  // Assert BEFORE marking ready: a missing-isolation throw then leaves workersReady=false, so it
+  // re-throws in every RoomDocManager ctor (clean abort — hasActiveRoom stays false) instead of
+  // poisoning the module (later rooms would early-return with imageSab still undefined).
+  assertCrossOriginIsolated();
   workersReady = true;
-  workers = [
-    new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
-    new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
-  ];
-  for (const w of workers) w.onmessage = handleWorkerMessage;
-  workers[0].postMessage({ type: 'init', role: 'primary' } satisfies WorkerInbound);
-  workers[1].postMessage({ type: 'init', role: 'decoder' } satisfies WorkerInbound);
+  imageSab = allocImageSab();
+  queuedGen = new Int32Array(SLOT_COUNT);
+  resetFreeList();
+
+  // N = cores − 1, clamped to [2, 4]. Identical decode workers; whoever is idle steals the
+  // next slot off the ring — no static hash routing, no imbalance on hydration.
+  const N = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+  workers = [];
+  for (let i = 0; i < N; i++) {
+    const w = new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' });
+    w.onmessage = handleWorkerMessage;
+    w.onerror = (ev) => console.error('[image-worker] onerror', i, ev.message);
+    w.onmessageerror = (ev) => console.error('[image-worker] onmessageerror', i, ev);
+    // SAB is shared by reference (not transferred / neutered) — every worker maps the same memory.
+    w.postMessage({ type: 'init', index: i, sab: imageSab.sab } satisfies WorkerInbound);
+    workers.push(w);
+  }
   // Drain uploads queued in a prior session, now that a room exists.
   workers[0].postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);
 }
 
-/** Hash-route by assetId first char for consistent per-asset worker affinity. */
-function workerFor(assetId: string): Worker {
-  return workers[assetId.charCodeAt(0) & 1];
-}
-
-/** Post a message to the primary worker. Used by bookmark-unfurl for unfurl commands. */
+/** Post a message to the primary worker (worker 0). Used by bookmark-unfurl for unfurl commands. */
 export function postToPrimary(msg: WorkerInbound): void {
   workers[0].postMessage(msg);
+}
+
+function resetFreeList(): void {
+  freeSlots.length = 0;
+  for (let i = SLOT_COUNT - 1; i >= 0; i--) freeSlots.push(i); // pop → 0,1,2,…
+}
+
+// Reused scratch for the assetId-hex → 32 SHA-256 bytes conversion on slot alloc (zero per-call alloc).
+const _hashScratch = new Uint8Array(32);
+
+/** Allocate a slot for a new asset and write its 32 hash bytes once. Returns -1 if exhausted. */
+function allocSlot(assetId: string): number {
+  const slot = freeSlots.pop();
+  if (slot === undefined) return -1;
+  registry.set(assetId, slot);
+  hexToBytesInto(assetId, _hashScratch);
+  imageSab.slots.setHash(slot, _hashScratch);
+  return slot;
+}
+
+function freeSlot(assetId: string, slot: number): void {
+  registry.delete(assetId);
+  freeSlots.push(slot);
+}
+
+/** A decode is in flight at `level` while we've asked for it and no worker has stamped done yet. */
+function isSlotInFlight(slot: number, level: number): boolean {
+  return (
+    imageSab.slots.load(slot, F_NEED_LEVEL) === level && imageSab.slots.load(slot, F_DONE_GEN) !== imageSab.slots.load(slot, F_NEED_GEN)
+  );
+}
+
+// Reused [slot, gen] record so ring pushes allocate nothing.
+const _pushRec = new Int32Array(2);
+function pushDecode(slot: number, gen: number, high: boolean): boolean {
+  _pushRec[0] = slot;
+  _pushRec[1] = gen;
+  return (high ? imageSab.highRing : imageSab.lowRing).tryPush(_pushRec);
+}
+
+let _warnedExhaustion = false;
+function warnSlotExhaustion(): void {
+  if (_warnedExhaustion) return;
+  _warnedExhaustion = true;
+  console.warn('[image-manager] slot table exhausted (>512 visible assets) — overflow retries next frame');
+}
+
+let _warnedRingFull = false;
+function warnRingFull(): void {
+  if (_warnedRingFull) return;
+  _warnedRingFull = true;
+  console.warn('[image-manager] decode ring full — overflow retries next frame');
 }
 
 // ============================================================
@@ -89,10 +176,6 @@ export interface IngestResult {
 
 /** Decoded bitmaps at current mip level. One bitmap per assetId in memory at a time. */
 const bitmaps = new Map<string, { bitmap: ImageBitmap; level: number }>();
-
-/** In-flight decode requests with generation tracking for staleness. */
-const pending = new Map<string, { gen: number; level: number }>();
-let genCounter = 0;
 
 /**
  * AssetIds that failed to decode/fetch, with timestamp of last error.
@@ -139,6 +222,14 @@ function bboxIntersects(a: Readonly<BBoxTuple>, b: Readonly<BBoxTuple>): boolean
   return a[2] >= b[0] && a[0] <= b[2] && a[3] >= b[1] && a[1] <= b[3];
 }
 
+/** Write a slot's desired level + decode dims for `level`, derived from natural dims. */
+function writeNeed(slot: number, level: 0 | 1 | 2, nw: number, nh: number): void {
+  const div = levelDivisor(level);
+  imageSab.slots.store(slot, F_NEED_LEVEL, level);
+  imageSab.slots.store(slot, F_NEED_W, level === 0 ? 0 : mipDim(nw, div));
+  imageSab.slots.store(slot, F_NEED_H, level === 0 ? 0 : mipDim(nh, div));
+}
+
 // ============================================================
 // Worker Message Handler
 // ============================================================
@@ -178,9 +269,9 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
         return;
       }
 
-      // Staleness check: discard if gen doesn't match current pending request
-      const p = pending.get(msg.assetId);
-      if (!p || p.gen !== msg.gen) {
+      // Staleness: the slot's gen is the current intent. No slot (evicted) or a moved-on gen ⇒ stale.
+      const slot = registry.get(msg.assetId);
+      if (slot === undefined || imageSab.slots.load(slot, F_NEED_GEN) !== msg.gen) {
         msg.bitmap.close();
         return;
       }
@@ -188,7 +279,6 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
       const old = bitmaps.get(msg.assetId);
       if (old) old.bitmap.close();
       bitmaps.set(msg.assetId, { bitmap: msg.bitmap, level: msg.level });
-      pending.delete(msg.assetId);
       errors.delete(msg.assetId); // Clear error on success (self-healing)
 
       invalidateBitmapRegion(msg.assetId);
@@ -222,12 +312,14 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
 
       // Mark asset as errored with timestamp for cooldown-based retry
       if (msg.assetId) {
-        // Only process if gen matches (don't set cooldown for superseded requests)
+        const slot = registry.get(msg.assetId);
         if (msg.gen != null) {
-          const p = pending.get(msg.assetId);
-          if (!p || p.gen !== msg.gen) return; // stale error
+          // Only process if gen matches (don't set cooldown for superseded requests)
+          if (slot === undefined || imageSab.slots.load(slot, F_NEED_GEN) !== msg.gen) return; // stale error
+          // Stamp doneGen so the failed request is no longer "in flight" — the cooldown gates
+          // retry; without this the slot would look perpetually pending and never re-dispatch.
+          imageSab.slots.store(slot, F_DONE_GEN, msg.gen);
         }
-        pending.delete(msg.assetId);
         errors.set(msg.assetId, Date.now());
       }
       break;
@@ -277,7 +369,7 @@ export function getBitmap(assetId: string): ImageBitmap | null {
 /**
  * Per-asset info that persists across frames. Mark/sweep via `markedAtFrame`:
  * each frame bumps `_frameMark`; visible assets get `markedAtFrame = _frameMark`;
- * the sweep deletes any entry whose mark is stale (and evicts its bitmap).
+ * the sweep deletes any entry whose mark is stale (and evicts its bitmap + slot).
  * `ppsp` is max-aggregated across all objects sharing an assetId; `bbox` is unioned.
  */
 interface AssetInfo {
@@ -350,13 +442,15 @@ function markAsset(assetId: string, ppsp: number, nw: number, nh: number, x0: nu
  *    Ctrl+A → scale doesn't force decode of off-screen images. Fixes edge-scroll
  *    bitmap-eviction bug (stored bbox can leave the padded zone while the transformed
  *    bbox is still on screen).
- * 3. Sweep: delete unmarked entries; evict their bitmaps; cancel their in-flight decodes.
+ * 3. Sweep: delete unmarked entries; evict their bitmaps; free their slots (writes
+ *    needLevel = -1 + bumps gen so any in-flight decode abandons — replaces the cancel message).
  * 4. Dispatch: classify each marked asset (New / Upgrade / Downgrade-with-hysteresis),
- *    sort by priority asc, send decode messages in that order. Worker processes FIFO →
- *    new-in-view bitmaps arrive before downgrades of already-rendered images.
+ *    sort by priority asc, then write each slot's desired level/dims, bump its gen, and
+ *    push it onto the high (New) or low (Upgrade/Downgrade) ring. ONE futex signal for the
+ *    whole batch wakes the idle workers.
  *
  * Complexity: O(visible images) per frame. Zero Y.Map reads. Zero allocations in
- * steady state (entries reuse, scratch arrays length-reset).
+ * steady state (entries reuse; scratch arrays length-reset; nothing classified/pushed).
  */
 export function manageImageViewport(): void {
   if (!hasActiveRoom()) return;
@@ -421,13 +515,15 @@ export function manageImageViewport(): void {
       bm.bitmap.close();
       bitmaps.delete(assetId);
     }
-    if (pending.has(assetId)) {
-      workerFor(assetId).postMessage({ type: 'cancel', assetId } satisfies WorkerInbound);
-      pending.delete(assetId);
+    const slot = registry.get(assetId);
+    if (slot !== undefined) {
+      imageSab.slots.store(slot, F_NEED_LEVEL, EVICTED);
+      imageSab.slots.bump(slot, F_NEED_GEN); // supersede any in-flight decode
+      freeSlot(assetId, slot);
     }
   }
 
-  // === DISPATCH: priority-sorted decode requests ===
+  // === CLASSIFY: priority per marked asset ===
   _decodeQueue.length = 0;
   const now = Date.now();
   for (const [assetId, info] of _assetInfo) {
@@ -437,7 +533,7 @@ export function manageImageViewport(): void {
 
     const neededLevel = ppspToLevel(info.ppsp);
     const cached = bitmaps.get(assetId);
-    const p = pending.get(assetId);
+    const slot = registry.get(assetId);
 
     let priority: Priority;
     if (!cached) {
@@ -451,28 +547,39 @@ export function manageImageViewport(): void {
       continue;
     }
 
-    if (p && p.level === neededLevel) continue; // already in flight at correct level
+    // Already requested at this exact level and no worker has finished it → leave it.
+    if (slot !== undefined && isSlotInFlight(slot, neededLevel)) continue;
 
     _decodeQueue.push({ assetId, level: neededLevel, nw: info.nw, nh: info.nh, priority });
   }
 
   _decodeQueue.sort((a, b) => a.priority - b.priority);
 
+  // === DISPATCH: write intent + push to lane, then ONE signal for the batch ===
+  let signal = false;
   for (const req of _decodeQueue) {
-    const div = levelDivisor(req.level);
-    const width = req.level === 0 ? 0 : mipDim(req.nw, div);
-    const height = req.level === 0 ? 0 : mipDim(req.nh, div);
-    const gen = ++genCounter;
-    pending.set(req.assetId, { gen, level: req.level });
-    workerFor(req.assetId).postMessage({
-      type: 'decode',
-      assetId: req.assetId,
-      level: req.level,
-      width,
-      height,
-      gen,
-    } satisfies WorkerInbound);
+    let slot = registry.get(req.assetId);
+    if (slot === undefined) {
+      slot = allocSlot(req.assetId);
+      if (slot < 0) {
+        warnSlotExhaustion();
+        continue; // overflow asset retries next frame as slots free
+      }
+    }
+    writeNeed(slot, req.level, req.nw, req.nh);
+    const gen = imageSab.slots.bump(slot, F_NEED_GEN);
+    if (queuedGen[slot] === gen) continue; // already queued this exact request
+    if (pushDecode(slot, gen, req.priority === Priority.New)) {
+      queuedGen[slot] = gen;
+      signal = true;
+    } else {
+      // Ring full: clear the in-flight marker so next frame re-dispatches (else doneGen
+      // stays behind needGen and the slot looks perpetually pending).
+      imageSab.slots.store(slot, F_DONE_GEN, gen);
+      warnRingFull();
+    }
   }
+  if (signal) imageSab.futex.signal();
 
   // Reposition bookmark loading placeholders to follow camera
   repositionAllPlaceholders();
@@ -493,8 +600,9 @@ export function ingest(file: Blob): Promise<IngestResult> {
 
 /**
  * Hydrate images on room join. Reads `imageCache` + `bookmarkCache` (RoomDocManager's
- * `computeBBoxFor` hydrate pass populates both before calling this).
- * Splits visible vs offscreen via handle.bbox, distributes across workers by hash routing.
+ * `computeBBoxFor` hydrate pass populates both before calling this). Visible assets get a
+ * slot + a push to the high lane (work-stealing distributes them across the pool — no by-hash
+ * split). Offscreen assets are cache-warmed via a single prefetch message to worker 0.
  */
 export function hydrateImages(): void {
   const { scale } = useCameraStore.getState();
@@ -525,48 +633,32 @@ export function hydrateImages(): void {
 
   if (assetMap.size === 0) return;
 
-  const byWorker: [
-    {
-      visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number; gen: number }[];
-      prefetch: string[];
-    },
-    {
-      visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number; gen: number }[];
-      prefetch: string[];
-    },
-  ] = [
-    { visible: [], prefetch: [] },
-    { visible: [], prefetch: [] },
-  ];
-
+  let signal = false;
+  let prefetch: string[] | null = null;
   for (const [assetId, { bbox, level, nw, nh }] of assetMap) {
-    const idx = assetId.charCodeAt(0) & 1;
-    const isVisible = bboxIntersects(bbox, vb);
-    if (isVisible) {
-      const div = levelDivisor(level);
-      const gen = ++genCounter;
-      byWorker[idx].visible.push({
-        assetId,
-        level,
-        width: level === 0 ? 0 : mipDim(nw, div),
-        height: level === 0 ? 0 : mipDim(nh, div),
-        gen,
-      });
-      pending.set(assetId, { gen, level });
+    if (bboxIntersects(bbox, vb)) {
+      let slot = registry.get(assetId);
+      if (slot === undefined) slot = allocSlot(assetId);
+      if (slot < 0) {
+        warnSlotExhaustion();
+        continue;
+      }
+      writeNeed(slot, level, nw, nh);
+      const gen = imageSab.slots.bump(slot, F_NEED_GEN);
+      if (queuedGen[slot] === gen) continue;
+      if (pushDecode(slot, gen, true)) {
+        queuedGen[slot] = gen;
+        signal = true;
+      } else {
+        // Ring full → clear the in-flight marker so manageImageViewport re-dispatches next tick.
+        imageSab.slots.store(slot, F_DONE_GEN, gen);
+      }
     } else {
-      byWorker[idx].prefetch.push(assetId);
+      (prefetch ??= []).push(assetId);
     }
   }
-
-  for (let i = 0; i < 2; i++) {
-    if (byWorker[i].visible.length > 0 || byWorker[i].prefetch.length > 0) {
-      workers[i].postMessage({
-        type: 'hydrate',
-        visible: byWorker[i].visible,
-        prefetch: byWorker[i].prefetch,
-      } satisfies WorkerInbound);
-    }
-  }
+  if (signal) imageSab.futex.signal();
+  if (prefetch) workers[0].postMessage({ type: 'prefetch', assetIds: prefetch } satisfies WorkerInbound);
 }
 
 /** Enqueue asset for upload. Fire-and-forget. */
@@ -574,18 +666,29 @@ export function enqueue(assetId: string): void {
   workers[0].postMessage({ type: 'enqueue-upload', assetId } satisfies WorkerInbound);
 }
 
-/** Room teardown: close all bitmaps, clear all state, notify workers. */
+/**
+ * Room teardown: close all bitmaps, clear all state, abandon in-flight decodes.
+ * Bumping the global epoch makes every worker mid-decode bail at its next checkpoint;
+ * resetting the rings + registry + free-list readies the plane for the next room.
+ */
 export function clear(): void {
   for (const entry of bitmaps.values()) {
     entry.bitmap.close();
   }
   bitmaps.clear();
-  pending.clear();
   errors.clear();
   inflightIngests.clear();
   _assetInfo.clear();
   _decodeQueue.length = 0;
-  if (workersReady) for (const w of workers) w.postMessage({ type: 'clear' } satisfies WorkerInbound);
+  registry.clear();
+  if (workersReady) {
+    resetFreeList();
+    queuedGen.fill(0);
+    imageSab.highRing.reset();
+    imageSab.lowRing.reset();
+    bumpEpoch(imageSab.ctrl); // in-flight decodes abandon at their next checkpoint
+    imageSab.futex.signal(); // wake any parked worker so it re-checks (now-empty) rings
+  }
 }
 
 // ============================================================

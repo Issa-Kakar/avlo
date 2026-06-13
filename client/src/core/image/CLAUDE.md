@@ -2,41 +2,38 @@
 
 > **Maintenance:** Architectural overview, not a changelog. Match surrounding detail level when updating — don't inflate coverage of one change at the expense of the big picture.
 
-Offline-first image objects with content-addressed asset storage, Service Worker for app shell + asset caching, two web worker instances for parallel decode (hash, decode, upload), persistent upload queue, generation-based staleness for instant mip superseding, and viewport-driven memory management. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
+Offline-first image objects with content-addressed asset storage, Service Worker for app shell + asset caching, a hardware-scaled work-stealing pool of web workers for parallel decode (hash, decode, upload), persistent upload queue, a **SharedArrayBuffer control plane** for instant lock-free decode commands / cancellation / mip superseding, and viewport-driven memory management. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
 
 ---
 
 ## Architecture Overview
 
 ```
-Main Thread (image-manager.ts)
-├── pending: Map<assetId, {gen, level}>    ← generation-based staleness
-├── genCounter: number                      ← monotonic, global
-│
-├── decode(A) → hash(A) → workers[0]       ← consistent routing by assetId
-├── decode(B) → hash(B) → workers[1]
-├── ingest/upload → always workers[0]       ← primary only
-│
-├── workers[0].onmessage → bitmap/ingested/uploaded/unfurled/error
-└── workers[1].onmessage → bitmap/error
-
-Worker 0 (primary)                 Worker 1 (decoder)              Service Worker
-┌─────────────────────────┐       ┌──────────────────────┐       ┌─────────────────────┐
-│ latestGen: Map<id,gen>  │       │ latestGen: Map<id,gen>│       │ sw.ts               │
-│ fetchPromises (dedup)   │       │ fetchPromises (dedup) │       │                     │
-│ readAssetBlob (cache)   │       │ readAssetBlob (cache) │       │ Cache-first:        │
-│ decodeAndSend           │       │ decodeAndSend         │       │  /api/assets/*      │
-│ ─── primary only ───    │       │                      │       │ App shell:          │
-│ ingest (hash+decode)    │       └──────────────────────┘       │  /assets/*.js/css   │
-│ upload queue (IDB+PUT)  │                                       │  /fonts/*.woff2     │
-│ unfurl (direct fetch)   │                                       │  HTML (net-first)   │
-│ sha256Hex, validateImage│                                       └─────────────────────┘
-└─────────────────────────┘
+Main Thread (image-manager.ts)              SharedArrayBuffer control plane (image-sab.ts, ≈36 KB)
+├── registry: Map<assetId, slot>            ┌────────────────────────────────────────────┐
+├── freeSlots[] · queuedGen: Int32Array     │ HEADER  epoch · high/low ring cursors · seq  │
+│                                           │ SLOTS   512 × {needGen,needLevel,needW,needH,│
+├── manageImageViewport()  (per frame):     │              doneGen,doneLevel}              │
+│     mark → sweep → classify → DISPATCH     │ HIGH RING / LOW RING   [slot, gen] records   │
+│       write slot intent + bump gen ───────▶│ HASHES  512 × 32  raw SHA-256 per slot       │
+│       push [slot,gen] high/low lane ──────▶└────────────────────────────────────────────┘
+│       ONE futex.signal() for the batch          │ read intent + hash (workers)
+├── clear(): bump epoch + reset rings/lists       ▼
+└── worker.onmessage → bitmap/ingested/...   Worker pool (image-worker.ts × N)      Service Worker
+       (results via postMessage+Transferable)┌──────────────────────────────────┐   ┌──────────────┐
+                                             │ decodeLoop: tryPop high→low,     │   │ sw.ts        │
+                                             │   decodeSlot (3 Atomics          │   │ Cache-first: │
+                                             │   checkpoints), else futex.wait  │   │  /api/assets │
+                                             │ fetchPromises (dedup) · Cache API│   │ App shell    │
+                                             │ ─── worker 0 also "primary" ───  │   │ HTML net-1st │
+                                             │ ingest · upload queue · unfurl · │   └──────────────┘
+                                             │ prefetch · sha256Hex             │
+                                             └──────────────────────────────────┘
 ```
 
 **Key principles:**
-- **Two workers, one file.** Both instances of `image-worker.ts`. Primary handles ingest + upload + decode + bookmark unfurl; decoder handles decode only. Decode requests hash-routed by `assetId.charCodeAt(0) & 1` for consistent per-asset affinity and decode parallelism.
-- **Generation-based staleness.** `pending` is `Map<assetId, {gen, level}>`. When mip level changes during zoom, a new decode supersedes the old one immediately — no waiting. Workers track `latestGen` per assetId with 3 check points (before fetch, after fetch, after decode) to discard stale work.
+- **Hardware-scaled work-stealing pool.** `N = clamp(hardwareConcurrency − 1, 2, 4)` identical instances of `image-worker.ts` (loop-spawned from one URL — Vite bundles it once). Decode commands are NOT messages: the main thread writes desired `{gen, level, w, h}` into a SAB slot and pushes the slot onto a shared priority ring; whichever worker is idle `tryPop`s it. No static hash routing → no imbalance on hydration or skewed viewports. Worker 0 is also "primary" (ingest + upload + unfurl + prefetch).
+- **SAB control plane, instant lock-free cancellation.** Command / cancel / staleness live in one SharedArrayBuffer (`image-sab.ts` over the `core/sab/` toolkit), re-read at every checkpoint. Eviction = `needLevel = −1` + bump the slot's gen; superseding mip = new level + bump gen; room teardown = bump the global `epoch`. The worker sees the latest intent at its next `Atomics.load`, so a burst of would-be cancels collapses into **one read** — no `cancel`/`clear` messages. Three staleness checkpoints (before fetch, after fetch, after decode) discard superseded work. The decoded ImageBitmap (GPU-backed, can't live in a SAB) still returns by `postMessage` + Transferable — already zero-copy. See `core/sab/CLAUDE.md` for the toolkit + memory-ordering rules.
 - **SW owns fetch/cache.** Intercepts all GET `/api/assets/*`. Cache-first for reads (immutable, content-addressed). Also caches app shell for offline.
 - **Workers are self-sufficient.** `readAssetBlob()` checks Cache API directly first, then falls back to `fetch()` (SW intercepts in prod; direct to server in dev). Works with or without SW — critical for dev mode where SW isn't built.
 - **Workers write to cache:** local ingest blobs and network fetch responses. One cache key per asset. Both workers share the `avlo-assets` Cache API store.
@@ -64,7 +61,7 @@ Render path (synchronous, every frame):
 
 Remote peer adds image:
    Y.Doc sync → deep observer fires for new object
-   → Next render tick: manageImageViewport() → if visible, sends 'decode' → Worker → bitmap
+   → Next render tick: manageImageViewport() → if visible, SAB push → idle worker decodes → bitmap
 
 Viewport management (every frame in RenderLoop.tick()):
    manageImageViewport()
@@ -153,9 +150,11 @@ Images use stored `frame` (like shapes), not derived frames (unlike text/code). 
 | File | Responsibility |
 |------|----------------|
 | `image-actions.ts` | Entry points: `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization (`<img>` + canvas, 2048–4096px) |
-| `image-manager.ts` | Thin main-thread coordinator: bitmap cache, viewport management, two-worker routing, generation tracking |
+| `image-manager.ts` | Thin main-thread coordinator: bitmap cache, viewport management, SAB dispatch (slot registry + work-stealing rings), generation tracking |
+| `image-sab.ts` | The concrete SAB layout (header / slot fields / two rings / hash region) over the `core/sab/` toolkit. `allocImageSab` (main) / `mapImageSab` (worker) + epoch helpers — `import`ed by both sides, the single source of truth for the memory layout |
 | `image-cache.ts` | Per-object-id `imageMeta` digest (assetId + natural dims). Populated insert-only by `computeBBoxForInto`, evicted by `removeObjectCaches` |
-| `image-worker.ts` | Web Worker (2 instances): Cache API reads/writes, SHA-256 hashing, dynamic resize decode, upload queue (primary), staleness tracking |
+| `image-worker.ts` | Web Worker (N instances, work-stealing): SAB decode loop (`decodeLoop`/`decodeSlot`), Cache API reads/writes, SHA-256 hashing, dynamic resize decode; worker 0 also ingest + upload queue + unfurl + prefetch |
+| `../sab/` | Worker-agnostic SAB control-plane toolkit (`Futex`, `SpmcRing`, `SlotTable`, `allocControlSab`). See `core/sab/CLAUDE.md` |
 | `../../sw.ts` | Service Worker: cache-first asset serving, app shell caching, offline support |
 
 ### Shared Package
@@ -202,11 +201,11 @@ All entry points converge to `createImageFromBlob(blob, worldX, worldY, opts?)`.
 
 Three entry paths, all converge to viewport-gated decode:
 
-| Entry | Observer/action | Worker message | Decodes? |
+| Entry | Observer/action | Decode command | Decodes? |
 |-------|----------------|----------------|----------|
-| **Local drop/paste** | `ingest(blob)` | `ingest` | Yes (user expects instant) |
-| **Room join (hydrate)** | `hydrateImages()` | `hydrate` | Only viewport-visible |
-| **Scroll/zoom** | `manageImageViewport()` | `decode` | Only viewport-visible |
+| **Local drop/paste** | `ingest(blob)` | `ingest` message → worker 0 | Yes (user expects instant) |
+| **Room join (hydrate)** | `hydrateImages()` | SAB push to high lane (+ `prefetch` msg for offscreen) | Only viewport-visible |
+| **Scroll/zoom** | `manageImageViewport()` | SAB push (high = New / low = Upgrade·Downgrade) | Only viewport-visible |
 
 **Never decode off-viewport images.** The only exception is local ingest (user just dropped/pasted it, it's at their cursor position, it IS in the viewport).
 
@@ -237,16 +236,19 @@ Multiple objects sharing an assetId: use MAX ppsp → highest quality level.
 ## Main Thread State (image-manager.ts)
 
 ```typescript
-let workers!: [Worker, Worker]   // created lazily by ensureImageWorkers() (RDM construction)
+let workers: Worker[]             // N = clamp(hardwareConcurrency-1, 2, 4); ensureImageWorkers() (RDM ctor)
 let workersReady = false
-// workers[0] = primary (ingest + upload + decode), workers[1] = decoder only
-// Hash-routed: workerFor(assetId) = workers[assetId.charCodeAt(0) & 1]
+let imageSab: ImageSab            // the shared command/cancel/staleness plane (image-sab.ts)
+// worker 0 is also "primary" (ingest + upload + unfurl + prefetch); all N steal decodes off the rings
 
-// Bitmap + decode state
+// SAB registry (replaces the old `pending` map + global genCounter)
+registry:          Map<assetId, slot>    // which slot-table row holds this asset's gen/level/dims/hash
+freeSlots:         number[]              // free slot indices (stack); reset on clear()
+queuedGen:         Int32Array            // per-slot last gen pushed to a ring (dedups ring pushes)
+
+// Bitmap state — ImageBitmap can't be shared, so it stays main-thread
 bitmaps:           Map<assetId, { bitmap: ImageBitmap; level: number }>  // One bitmap per assetId
-pending:           Map<assetId, { gen: number; level: number }>          // In-flight decode with generation
-genCounter:        number                                                 // Monotonic generation counter
-errors:            Map<assetId, timestamp>                                // Failed assets, 15s cooldown
+errors:            Map<assetId, timestamp>                                // Failed assets, 15s cooldown (main-thread)
 inflightIngests:   Map<id, { resolve, reject }>                          // Ingest promise tracking
 
 // Per-frame mark/sweep state
@@ -255,18 +257,20 @@ _frameMark:        number                                                 // Bum
 _decodeQueue:      DecodeRequest[]                                        // Scratch, length-reset each frame
 ```
 
+The slot table IS the pending set: a decode is in flight at a level while `doneGen !== needGen`. Per-slot `needGen` (bumped on every (re)dispatch) tags staleness — no global counter. The 32-byte hash in shared memory makes each slot self-describing, so there's no per-asset registration message.
+
 **No `tracked` map, no `assetFrames` map.** Spatial index + the subsystem caches are the source of truth for visibility — `imageCache` (`image-cache.ts`) holds the per-image asset digest, `bookmarkCache`'s layout holds og/favicon ids; the spatial query gives us bboxes. The per-frame loop reads Y.Map zero times. Ref counting is implicit: multiple objects sharing an assetId all appear in the spatial query, max-aggregate ppsp and union-aggregate bbox into one `_assetInfo` entry.
 
-### Generation-Based Mip Superseding
+### Generation-Based Mip Superseding (SAB)
 
-When zoom changes the needed mip level, a new decode request is sent immediately with a higher gen — no waiting for the old decode. Workers discard stale results via `latestGen` map.
+Each slot owns a `needGen`. When zoom changes the needed level, the dispatch writes the new `needLevel`/dims and **bumps the slot's gen** — no message, no waiting. The worker tags its in-flight decode with the gen from the ring record and re-reads `needGen` (+ the global `epoch`) at each checkpoint; a moved-on gen ⇒ abandon. A decode is "in flight" while `doneGen !== needGen` (the worker stamps `doneGen` after posting) — the SAB-resident analog of the old `pending.level`.
 
 ```
-Frame 1: Asset A needs level 0 → gen=1, send decode(A, gen=1, level=0)
-Frame 5: Zoom out, needs level 2 → gen=2, send decode(A, gen=2, level=2)
-Worker: gen=2 decode finishes first (quarter res, fast) → post bitmap
-Worker: gen=1 decode finishes later → latestGen=2 ≠ 1 → bitmap.close(), skip
-Main: bitmap(A, gen=2) → pending.gen=2 → accept. bitmap(A, gen=1) → gen mismatch → close.
+Frame 1: Asset A slot S needs level 0 → writeNeed(0); bump → needGen=1; push [S,1] high
+Frame 5: Zoom out, needs level 2 → writeNeed(2); bump → needGen=2; push [S,2] low
+Worker: pops [S,2] → decodes quarter-res → stamp doneGen=2 → post bitmap(gen=2)
+Worker: pops [S,1] → load needGen=2 ≠ 1 → abandon at first Atomics.load (no fetch, no decode)
+Main:   bitmap(A,gen=2) → slot S needGen==2 → accept. bitmap(A,gen=1) → needGen≠1 → close.
 ```
 
 ### Exports
@@ -283,7 +287,7 @@ clear(): void                                        // Room teardown: close all
 
 ### Worker creation (lazy) + module-level init
 
-Workers are NOT created at import. `ensureImageWorkers()` (idempotent) spawns the pool, wires `onmessage`, posts `init` to both workers + `drain-uploads` to primary. It is called from `RoomDocManager`'s constructor (synchronously, in parallel with its async init), so a bare module import — e.g. a future landing/dashboard entry that transitively pulls this file — spawns nothing. Workers persist for the session (they drain the IDB upload queue across rooms); never terminated on room leave.
+Workers are NOT created at import. `ensureImageWorkers()` (idempotent) **asserts `crossOriginIsolated`** (the SAB + `Atomics.waitAsync` contract — a throw means the isolation headers are missing, not a runtime fallback), allocates the control SAB, builds the free-list + `queuedGen`, loop-spawns `N = clamp(hardwareConcurrency-1, 2, 4)` workers from the one URL, wires `onmessage`/`onerror`, posts `init` (carrying `{index, sab}` — the SAB is shared by reference, not transferred) to each, and `drain-uploads` to worker 0. It is called from `RoomDocManager`'s constructor (synchronously, in parallel with its async init), so a bare module import — e.g. a future landing/dashboard entry that transitively pulls this file — spawns nothing. Workers persist for the session (they drain the IDB upload queue across rooms); never terminated on room leave.
 
 The only module-scope side effect is the `online` listener, guarded on `workersReady` so it no-ops until a room has built the pool:
 ```typescript
@@ -299,14 +303,13 @@ No CanvasRuntime coupling for upload queue or invalidation — self-managed.
 ## Worker State (image-worker.ts)
 
 ```typescript
-role: 'primary' | 'decoder'                         // Set by 'init' message
-latestGen: Map<assetId, number>                      // Worker-side staleness tracking
+workerIndex: number                                  // 0 ⇒ also "primary" (ingest+upload+unfurl+prefetch); set by 'init'
 fetchPromises: Map<assetId, Promise<Blob | null>>    // Fetch dedup (concurrent calls coalesce)
-uploading: boolean                                    // Guard against concurrent drain loops (primary only)
-resetBackoff: boolean                                 // Skip backoff delays on 'online' event (primary only)
+uploading: boolean                                    // Guard against concurrent drain loops (worker 0)
+resetBackoff: boolean                                 // Skip backoff delays on 'online' event (worker 0)
 ```
 
-`fetchPromises` is transient (cleared in `finally` after fetch completes). `latestGen` is cleared on `'clear'` message (room teardown), deleted per-asset on `'cancel'`. IDB is durable state for upload queue only (primary).
+**No worker-side staleness map.** Intent (gen / level / dims / epoch) is read live from the SAB, so superseding / cancel / clear need zero per-worker bookkeeping. The decode loop (`decodeLoop`) steals slots off the high then low ring, runs `decodeSlot`, and parks on the futex (non-blocking — `postMessage` + `createImageBitmap` keep running) when both are empty. `fetchPromises` is transient (cleared in `finally`). IDB is durable state for the upload queue only (worker 0).
 
 ### readAssetBlob(assetId) — Core Read Path
 
@@ -322,16 +325,16 @@ This makes the worker self-sufficient regardless of SW presence (critical for `v
 
 Wraps `readAssetBlob` with `fetchPromises` map for dedup. Concurrent calls for the same assetId coalesce on the same promise. Cleaned up in `finally`.
 
-### decodeAndSend(assetId, level, width, height, gen) — Dynamic Resize Decode with Staleness
+### decodeSlot(slot, gen) — Dynamic Resize Decode with SAB Staleness
 
-Three staleness checkpoints via `latestGen` — each `await` is a point where a cancel or superseding request could arrive:
+The work-stealing unit (popped as `[slot, gen]` off a ring). Reads `needGen`/`needLevel`/`needW`/`needH` + the 32 hash bytes (→ hex `assetId`) straight from the slot, then three checkpoints — each a plain `Atomics.load` comparing the slot's `needGen` against the popped `gen` AND the global `epoch` against the value captured at start:
 
-1. `latestGen.set(assetId, max(gen, current))` — update + check before fetch → return if stale
-2. `getAssetBlob(assetId)` → fetch full-res blob (deduped)
-3. Check after fetch → return if stale
-4. Level 0: `createImageBitmap(blob)` — full resolution. Level 1/2: `createImageBitmap(blob, { resizeWidth, resizeHeight, resizeQuality: 'medium' })` — hardware-accelerated downscale
-5. Check after decode → `bitmap.close()` + return if stale
-6. Transfer bitmap to main thread via `Transferable[]`
+1. Confirm `needGen === gen` and `needLevel !== EVICTED`; checkpoint **before fetch** → return if stale.
+2. `getAssetBlob(assetId)` → fetch full-res blob (deduped). Checkpoint **after fetch** → return if stale; if no blob, post gen-tagged `error`.
+3. Level 0: `createImageBitmap(blob)` — full resolution. Level 1/2: `createImageBitmap(blob, { resizeWidth, resizeHeight, resizeQuality: 'medium' })` — hardware-accelerated downscale. Checkpoint **after decode** → `bitmap.close()` + return if stale.
+4. Stamp `doneGen`/`doneLevel`, then transfer the bitmap to the main thread via `Transferable[]`.
+
+A superseding mip (bump gen), eviction (`needLevel = -1` + bump gen), or room teardown (bump epoch) is seen at the next checkpoint as a single read — no queued cancel.
 
 ### IDB Schema
 
@@ -354,15 +357,15 @@ Global across rooms (content-addressed dedup).
 | CDN 5xx (server error) | Worker fetch | `errors.set(assetId, now)` if gen matches | Retry after 15s cooldown |
 | Network error (offline) | Worker fetch | `errors.set(assetId, now)` if gen matches | Retry after 15s cooldown |
 | Corrupt image (decode fails) | Worker createImageBitmap | `errors.set(assetId, now)` if gen matches | Retry after 15s cooldown |
-| Stale bitmap (gen mismatch) | Worker decode | `bitmap.close()`, discard | Worker-side + main-side gen check |
-| Stale error (gen mismatch) | Worker decode | Ignored — no cooldown set | Gen check prevents stale error pollution |
+| Stale bitmap (gen mismatch) | Worker decode | `bitmap.close()`, discard | Worker checkpoint (slot `needGen`/`epoch`) + main-side (slot `needGen`) gen check |
+| Stale error (gen mismatch) | Worker decode | Ignored — no cooldown set | Slot `needGen` check prevents stale error pollution |
 | Bitmap arrives after room teardown | Worker decode | `bitmap.close()`, discard | `hasActiveRoom()` guard |
 | Upload 4xx (permanent) | Worker upload | Entry removed from queue | No retry |
 | Upload 5xx / network error | Worker upload | Exponential backoff (1s-60s) | Retries forever (offline-first) |
 | Stale bitmap after delete | Spatial index | Auto-evicted next tick | Implicit via viewport mgmt |
 | Cache API unavailable | Worker cache ops | Error propagates | 15s cooldown retry |
-| Asset scrolls out (eviction) | Main viewport mgmt | `cancel` to worker + `pending.delete` | Worker `latestGen.delete` → in-flight discarded |
-| Room teardown | Main `clear()` | `clear` to both workers | `latestGen.clear()` → all in-flight discarded |
+| Asset scrolls out (eviction) | Main viewport mgmt | `needLevel = -1` + bump slot gen + free slot | Worker abandons at next `Atomics.load` checkpoint |
+| Room teardown | Main `clear()` | bump `epoch` + reset rings/registry/free-list | Worker abandons in-flight at next checkpoint (epoch changed) |
 
 **Self-healing:** Errors cleared on successful bitmap receipt. If a peer uploads an asset that was previously 404, the next retry after cooldown succeeds and the error is cleared.
 
@@ -379,8 +382,8 @@ Called every frame from `RenderLoop.tick()`. Reads camera store + spatial index.
 1. Guard: `hasActiveRoom()` early-return. Bump `_frameMark`.
 2. **Mark Phase A (spatial):** Query spatial index with 5.5× padded viewport (2.25× per side). For each `ObjectHandle` of kind `image`/`bookmark` (rbush items are handles directly), look up `imageCache` / `bookmarkCache` → `markAsset(...)`. Marking sets `markedAtFrame = _frameMark`, max-aggregates ppsp, union-aggregates bbox. Bookmarks pass `ppsp = Infinity, nw=1, nh=1` (level 0 unaffected by nw/nh).
 3. **Mark Phase B (transform overlay):** If `getTransformMode() ∈ {'scale','translate'}` and any image is selected, iterate `selectedIdSet`. For each image: read its live `getScaleEntry('image', id).out.bbox`, **intersect against the padded viewport (gates Ctrl+A from force-decoding off-screen)**, then `markAsset(...)`. Scale forces `ppsp = Infinity` for crisp preview; translate uses the live transformed width. This re-marks images whose stored bbox drifted out of the padded viewport during edge-scroll while their transform output is still on screen — fixes the bitmap-disappear bug.
-4. **Sweep:** Iterate `_assetInfo`; entries with stale `markedAtFrame` get deleted along with their bitmap (`bm.bitmap.close()`) and pending decode (cancel sent + `pending.delete`).
-5. **Dispatch:** Classify each marked asset by priority — `New` (no cached), `Upgrade` (`cached.level > neededLevel`), `Downgrade` (`neededLevel ≥ cached.level + 2`, hysteresis). Skip if pending decode already at correct level. Sort `_decodeQueue` ascending by priority, then post decode messages — worker FIFO order means new-in-view bitmaps land before downgrades.
+4. **Sweep:** Iterate `_assetInfo`; entries with stale `markedAtFrame` get deleted along with their bitmap (`bm.bitmap.close()`); their slot is evicted (`needLevel = -1` + bump gen, so any in-flight decode abandons) and returned to the free-list.
+5. **Classify + Dispatch:** Classify each marked asset by priority — `New` (no cached), `Upgrade` (`cached.level > neededLevel`), `Downgrade` (`neededLevel ≥ cached.level + 2`, hysteresis). Skip if the slot is already in flight at that level (`needLevel === neededLevel && doneGen !== needGen`). Sort `_decodeQueue` ascending; for each, write the slot's level/dims, bump its gen, and push `[slot, gen]` to the **high** lane (New) or **low** lane (Upgrade/Downgrade). **One** `futex.signal()` for the whole batch. Workers drain high before low, so new-in-view bitmaps land before downgrades. Slot-table or ring overflow (>512 either) logs once and retries next frame.
 6. **Placeholders:** `repositionAllPlaceholders()` — reposition bookmark HTML loading placeholders to follow camera.
 
 ### Hydration (hydrateImages)
@@ -390,12 +393,8 @@ Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join. Takes
 1. `forEachImageMeta` → for each image, `getHandle(id)` once for the current bbox, compute ppsp from `handle.bbox[2] - handle.bbox[0]` + camera state → mip level. Deduped by assetId (min level = highest quality).
 2. `bookmarkCache.forEachLayout` → contribute `ogImageAssetId` + `faviconAssetId` at level 0 (nw/nh unused at level 0).
 3. Manager splits visible vs offscreen via inline bbox-vs-`getVisibleBoundsTuple()` check.
-4. Group items by worker via hash routing (`assetId.charCodeAt(0) & 1`).
-5. Assign gen per visible item, pre-add to `pending` (prevents duplicate decode on first `manageImageViewport` tick).
-6. Send `'hydrate'` message to each worker with its assigned items.
-7. Each worker handles:
-   - **Visible (fire-and-forget):** `decodeAndSend` per item — results stream as each decode completes (no batching, no concurrency limiting)
-   - **Prefetch (fire-and-forget):** `getAssetBlob` — cache-warm for scroll-in
+4. **Visible:** alloc a slot (write hash), write level/dims, bump gen, push `[slot, gen]` to the **high** lane — work-stealing distributes them across the pool (no by-hash split). One `futex.signal()` after the loop. The in-flight marker (`doneGen ≠ needGen`) keeps the first `manageImageViewport` tick from re-dispatching them.
+5. **Offscreen:** collected into one `prefetch` message to worker 0 → `getAssetBlob` cache-warm (no decode), so a scroll-in decodes from cache.
 
 An empty `assetMap` early-returns: a room of bookmarks that haven't unfurled yet has bookmark handles but no asset IDs.
 
@@ -411,18 +410,17 @@ On `'ingested'` message: same targeted invalidation. The ingest resolve also tri
 
 Main → Worker:
 ```typescript
-| { type: 'init', role: 'primary' | 'decoder' }
-| { type: 'ingest', id: string, blob: Blob }                                          // primary only
-| { type: 'hydrate', visible: { assetId, level, width, height, gen }[], prefetch: string[] }
-| { type: 'decode', assetId: string, level: 0 | 1 | 2, width, height, gen: number }
-| { type: 'enqueue-upload', assetId: string }                                          // primary only
-| { type: 'unfurl', objectId: string, url: string }                                   // primary only
-| { type: 'delete-asset', assetId: string }                                            // primary only
-| { type: 'online' }                                                                   // primary only
-| { type: 'drain-uploads' }                                                            // primary only
-| { type: 'cancel', assetId: string }                 // eviction: invalidate in-flight decode
-| { type: 'clear' }                                   // room teardown: invalidate all in-flight
+| { type: 'init', index: number, sab: SharedArrayBuffer }                              // all workers
+| { type: 'ingest', id: string, blob: Blob }                                           // worker 0
+| { type: 'prefetch', assetIds: string[] }                                             // worker 0 — cache-warm offscreen
+| { type: 'enqueue-upload', assetId: string }                                          // worker 0
+| { type: 'unfurl', objectId: string, url: string }                                    // worker 0
+| { type: 'delete-asset', assetId: string }                                            // worker 0
+| { type: 'online' }                                                                   // worker 0
+| { type: 'drain-uploads' }                                                            // worker 0
 ```
+
+> **Decode / cancel / clear / hydrate-visible are GONE as messages** — they're SAB writes: dispatch writes slot intent + pushes `[slot, gen]` to a ring + one `futex.signal()`; eviction writes `needLevel = -1` + bumps the slot gen; teardown bumps `epoch`. The decoded bitmap still returns by `postMessage` + Transferable. See `image-sab.ts` + `core/sab/CLAUDE.md`.
 
 Worker → Main:
 ```typescript

@@ -18,7 +18,9 @@ Cross-runtime utilities and types used by client and Cloudflare Workers.
   from `userId`; `PRESENCE_COLORS`).
 - `utils/` — ULID, image validation, URL helpers (`normalizeUrl`/`isValidHttpUrl`/`extractDomain`/`prettifyDomain`),
   room titles (`utils/room-title.ts` — `ROOM_TITLE_MAX_LEN` + `normalizeRoomTitle`, the single rename validity rule
-  shared by the client input, the users worker Zod body, and the room DO's authority guard).
+  shared by the client input, the users worker Zod body, and the room DO's authority guard),
+  hex (`utils/hex.ts` — `bytesToHex`/`hexToBytes`/`hexToBytesInto`; the image SAB plane writes a 32-byte SHA-256
+  into shared memory on slot alloc and the decode worker reads it back to a hex `assetId`, plus the worker's `sha256Hex`).
 
 ## Invariants
 

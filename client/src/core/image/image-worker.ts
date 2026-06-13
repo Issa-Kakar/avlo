@@ -1,53 +1,52 @@
 /**
  * Image Worker — handles ALL heavy image operations off the main thread.
  *
- * Two instances run: primary (upload queue + ingest + decode) and decoder (decode only).
- * Decode requests hash-routed by assetId from main thread. Each worker tracks latestGen
- * per assetId for staleness — superseded decodes are discarded immediately.
+ * N identical instances form a hardware-scaled, work-stealing decode pool. Decode
+ * COMMANDS arrive through a SharedArrayBuffer control plane (`image-sab.ts`), not
+ * postMessage: each worker `tryPop`s the next slot from a shared priority ring
+ * (high lane = New, low lane = Upgrade/Downgrade), reads the desired
+ * gen/level/dims + hash straight from shared memory, and re-reads intent at every
+ * `await` checkpoint — so a superseding mip change or eviction is seen as a single
+ * `Atomics.load`, never a queued cancel message. Only the decoded ImageBitmap
+ * crosses back, by `postMessage` + Transferable (GPU-backed, can't live in a SAB).
  *
- * Responsibilities:
- * - Cache API writes (local ingest blobs)
- * - Magic byte validation + SHA-256 hashing (primary only)
- * - Bitmap decode (createImageBitmap with dynamic resize for mip levels)
- * - Server upload (PUT /api/assets/:key, primary only, sequential queue with exponential backoff)
- * - IDB for upload queue metadata only (primary only)
+ * Worker 0 is also "primary": ingest (hash + validate + decode), the R2 upload
+ * queue, bookmark unfurl, and cache prefetch. Those stay on postMessage (rare,
+ * ordered, carry Blobs).
  *
- * Reads via Cache API first, then fetch() as fallback (network or SW-intercepted).
- * This makes the worker self-sufficient regardless of SW presence (critical for dev mode).
- * Only ImageBitmaps cross back to main thread via Transferable (zero-copy).
+ * Reads via Cache API first, then `fetch()` (network or SW-intercepted) — self-
+ * sufficient regardless of SW presence (critical for dev mode).
  */
 
 import { imagesClient } from '@avlo/api-client/images';
 import { unfurlClient } from '@avlo/api-client/unfurl';
-import { validateImage } from '@avlo/shared';
+import { bytesToHex, validateImage } from '@avlo/shared';
+import {
+  EVICTED,
+  F_DONE_GEN,
+  F_DONE_LEVEL,
+  F_NEED_GEN,
+  F_NEED_H,
+  F_NEED_LEVEL,
+  F_NEED_W,
+  type ImageSab,
+  loadEpoch,
+  mapImageSab,
+} from './image-sab';
 
 // ============================================================
 // Message Types
 // ============================================================
 
 export type WorkerInbound =
-  | { type: 'init'; role: 'primary' | 'decoder' }
-  | { type: 'ingest'; id: string; blob: Blob }
-  | {
-      type: 'hydrate';
-      visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number; gen: number }[];
-      prefetch: string[];
-    }
-  | {
-      type: 'decode';
-      assetId: string;
-      level: 0 | 1 | 2;
-      width: number;
-      height: number;
-      gen: number;
-    }
-  | { type: 'enqueue-upload'; assetId: string }
-  | { type: 'delete-asset'; assetId: string }
-  | { type: 'online' }
-  | { type: 'drain-uploads' }
-  | { type: 'cancel'; assetId: string }
-  | { type: 'clear' }
-  | { type: 'unfurl'; objectId: string; url: string };
+  | { type: 'init'; index: number; sab: SharedArrayBuffer }
+  | { type: 'ingest'; id: string; blob: Blob } // worker 0
+  | { type: 'prefetch'; assetIds: string[] } // worker 0 — cache-warm offscreen assets (no decode)
+  | { type: 'enqueue-upload'; assetId: string } // worker 0
+  | { type: 'delete-asset'; assetId: string } // worker 0
+  | { type: 'online' } // worker 0
+  | { type: 'drain-uploads' } // worker 0
+  | { type: 'unfurl'; objectId: string; url: string }; // worker 0
 
 export type WorkerOutbound =
   | {
@@ -208,11 +207,10 @@ async function getAssetBlob(assetId: string): Promise<Blob | null> {
 }
 
 // ============================================================
-// Role & Staleness
+// Identity
 // ============================================================
 
-let role: 'primary' | 'decoder' = 'decoder';
-const latestGen = new Map<string, number>();
+let workerIndex = -1; // 0 ⇒ also "primary" (ingest + upload + unfurl + prefetch)
 
 // ============================================================
 // Helpers
@@ -226,53 +224,89 @@ function errorMsg(message: string, id?: string, assetId?: string, gen?: number):
   post({ type: 'error', id, assetId, message, gen });
 }
 
-const HEX_LUT = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
-
 async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
   const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-  const bytes = new Uint8Array(hashBuffer);
-  let hex = '';
-  for (let i = 0; i < bytes.length; i++) hex += HEX_LUT[bytes[i]];
-  return hex;
+  return bytesToHex(new Uint8Array(hashBuffer));
 }
 
 // ============================================================
-// Decode
+// SAB Decode Loop (work-stealing)
 // ============================================================
 
+/** A decode is superseded once its slot's gen has moved on or the epoch was bumped (room teardown). */
+function isStale(s: ImageSab, slot: number, gen: number, startEpoch: number): boolean {
+  return s.slots.load(slot, F_NEED_GEN) !== gen || loadEpoch(s.ctrl) !== startEpoch;
+}
+
 /**
- * Decode a blob at the requested mip level using dynamic resize and send bitmap to main thread.
- * Level 0: full-res decode. Level 1/2: createImageBitmap with resizeWidth/resizeHeight.
- * Three staleness checks (before fetch, after fetch, after decode) to discard superseded requests.
+ * Decode one slot at its CURRENT desired level and post the bitmap. The three
+ * staleness checkpoints (before fetch, after fetch, after decode) are plain
+ * `Atomics.load` comparisons against the slot's gen + the global epoch — whichever
+ * superseding request or eviction landed most recently is seen in one read.
  */
-async function decodeAndSend(assetId: string, level: 0 | 1 | 2, width: number, height: number, gen: number): Promise<void> {
-  latestGen.set(assetId, Math.max(gen, latestGen.get(assetId) ?? -1));
-  if (latestGen.get(assetId) !== gen) return;
+async function decodeSlot(s: ImageSab, slot: number, gen: number): Promise<void> {
+  const startEpoch = loadEpoch(s.ctrl);
+  if (s.slots.load(slot, F_NEED_GEN) !== gen) return; // a fresher record for this slot exists / will be popped
+  const level = s.slots.load(slot, F_NEED_LEVEL);
+  if (level === EVICTED) return;
+  const width = s.slots.load(slot, F_NEED_W);
+  const height = s.slots.load(slot, F_NEED_H);
+  const assetId = bytesToHex(s.slots.hashView(slot));
 
+  if (isStale(s, slot, gen, startEpoch)) return; // checkpoint 1 — before fetch
   const blob = await getAssetBlob(assetId);
-  if (!blob) throw new Error('asset not available');
-
-  if (latestGen.get(assetId) !== gen) return;
-
-  const bitmap =
-    level === 0
-      ? await createImageBitmap(blob)
-      : await createImageBitmap(blob, {
-          resizeWidth: width,
-          resizeHeight: height,
-          resizeQuality: 'medium',
-        });
-
-  if (latestGen.get(assetId) !== gen) {
-    bitmap.close();
+  if (isStale(s, slot, gen, startEpoch)) return; // checkpoint 2 — after fetch
+  if (!blob) {
+    errorMsg('asset not available', undefined, assetId, gen);
     return;
   }
 
-  post({ type: 'bitmap', assetId, bitmap, level, gen }, [bitmap]);
+  let bitmap: ImageBitmap;
+  try {
+    bitmap =
+      level === 0
+        ? await createImageBitmap(blob)
+        : await createImageBitmap(blob, { resizeWidth: width, resizeHeight: height, resizeQuality: 'medium' });
+  } catch (err) {
+    if (!isStale(s, slot, gen, startEpoch)) errorMsg(err instanceof Error ? err.message : 'decode failed', undefined, assetId, gen);
+    return;
+  }
+
+  if (isStale(s, slot, gen, startEpoch)) {
+    // checkpoint 3 — after decode
+    bitmap.close();
+    return;
+  }
+  s.slots.store(slot, F_DONE_GEN, gen);
+  s.slots.store(slot, F_DONE_LEVEL, level);
+  post({ type: 'bitmap', assetId, bitmap, level: level as 0 | 1 | 2, gen }, [bitmap]);
+}
+
+/**
+ * Steal work forever: drain the high lane then the low lane; when both are empty,
+ * park on the futex (non-blocking — `postMessage` and `createImageBitmap` keep
+ * running) until the producer signals. The seq snapshot + empty re-check before
+ * waiting closes the lost-wakeup gap.
+ */
+async function decodeLoop(s: ImageSab): Promise<void> {
+  const rec = new Int32Array(2); // reused [slot, gen]
+  for (;;) {
+    if (s.highRing.tryPop(rec) || s.lowRing.tryPop(rec)) {
+      try {
+        await decodeSlot(s, rec[0], rec[1]);
+      } catch (err) {
+        console.error('[image-worker] decode error', err);
+      }
+      continue;
+    }
+    const seq = s.futex.loadSeq();
+    if (!s.highRing.isEmpty() || !s.lowRing.isEmpty()) continue;
+    await s.futex.wait(seq);
+  }
 }
 
 // ============================================================
-// Upload Queue (fully in-worker, primary only)
+// Upload Queue (fully in-worker, worker 0 only)
 // ============================================================
 
 const BASE_DELAY_MS = 1000;
@@ -348,7 +382,7 @@ async function drainUploads(): Promise<void> {
 }
 
 // ============================================================
-// Unfurl (primary only, direct fetch — no IDB queue)
+// Unfurl (worker 0 only, direct fetch — no IDB queue)
 // ============================================================
 
 type UnfurlData = Extract<WorkerOutbound, { type: 'unfurled' }>['data'];
@@ -379,25 +413,15 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
 
   switch (msg.type) {
     case 'init': {
-      role = msg.role;
-      if (role === 'primary') {
-        setInterval(drainUploads, SAFETY_INTERVAL_MS);
-      }
-      break;
-    }
-
-    case 'cancel': {
-      latestGen.delete(msg.assetId);
-      break;
-    }
-
-    case 'clear': {
-      latestGen.clear();
+      workerIndex = msg.index;
+      const sab = mapImageSab(msg.sab);
+      if (workerIndex === 0) setInterval(drainUploads, SAFETY_INTERVAL_MS);
+      void decodeLoop(sab); // steal decodes forever
       break;
     }
 
     case 'ingest': {
-      if (role !== 'primary') break;
+      if (workerIndex !== 0) break;
       const { id, blob } = msg;
       try {
         const buffer = await blob.arrayBuffer();
@@ -452,30 +476,14 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
       break;
     }
 
-    case 'hydrate': {
-      const { visible, prefetch } = msg;
-      // Fire-and-forget per item — results stream as each decode completes
-      for (const { assetId, level, width, height, gen } of visible) {
-        decodeAndSend(assetId, level, width, height, gen).catch((err) =>
-          errorMsg(err instanceof Error ? err.message : 'hydrate failed', undefined, assetId, gen),
-        );
-      }
-      // Offscreen: just fetch blob into cache (fire-and-forget)
-      for (const assetId of prefetch) {
-        getAssetBlob(assetId).catch(() => {});
-      }
-      break;
-    }
-
-    case 'decode': {
-      decodeAndSend(msg.assetId, msg.level, msg.width, msg.height, msg.gen).catch((err) =>
-        errorMsg(err instanceof Error ? err.message : 'decode failed', undefined, msg.assetId, msg.gen),
-      );
+    case 'prefetch': {
+      // Offscreen hydrate assets: warm the cache so a scroll-in decodes instantly. No bitmap.
+      for (const assetId of msg.assetIds) getAssetBlob(assetId).catch(() => {});
       break;
     }
 
     case 'enqueue-upload': {
-      if (role !== 'primary') break;
+      if (workerIndex !== 0) break;
       try {
         const existing = await getUploadEntry(msg.assetId);
         if (existing) return; // Idempotent
@@ -488,27 +496,27 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
     }
 
     case 'delete-asset': {
-      if (role !== 'primary') break;
+      if (workerIndex !== 0) break;
       await deleteCachedAsset(msg.assetId).catch(() => {});
       await removeUploadEntry(msg.assetId).catch(() => {});
       break;
     }
 
     case 'online': {
-      if (role !== 'primary') break;
+      if (workerIndex !== 0) break;
       resetBackoff = true;
       drainUploads();
       break;
     }
 
     case 'drain-uploads': {
-      if (role !== 'primary') break;
+      if (workerIndex !== 0) break;
       drainUploads();
       break;
     }
 
     case 'unfurl': {
-      if (role !== 'primary') break;
+      if (workerIndex !== 0) break;
       unfurlDirect(msg.objectId, msg.url);
       break;
     }
