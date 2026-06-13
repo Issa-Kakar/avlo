@@ -3,6 +3,7 @@ import type { ConnectorCap } from '@/core/types/objects';
 import { detachConnectorFromShape, getAttachedConnectors, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
 import { TEXT_FONT_SIZE_PRESETS, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
+import { convertObjectsTo, convertObjectsToShape } from './convert-kind';
 import {
   adjustByPresets,
   applyField,
@@ -95,6 +96,14 @@ export const setSelectedHighlight = (color: string | null): void =>
     },
     () => applyField(getTextSelectionIds(), HIGHLIGHT, color),
   );
+
+// === Cross-Kind Conversion (text ↔ note ↔ shape) ===
+//
+// getTextSelectionIds' editing fallback makes convert-while-editing work.
+// No device-ui persist — conversion is a structural op, not a style default.
+
+export const convertSelectionTo = (target: 'text' | 'note'): void => convertObjectsTo(getTextSelectionIds(), target);
+export const convertSelectionToShape = (shapeType: string): void => convertObjectsToShape(getTextSelectionIds(), shapeType);
 
 // === Code Block Actions ===
 

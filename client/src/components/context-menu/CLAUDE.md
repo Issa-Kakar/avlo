@@ -51,10 +51,11 @@
 > is the rightmost slot on shape/text/note bars — Mural `switchType` glyph
 > trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, engaged-dark on open) + a 4×2
 > icon-only grid (Sticky · Text · Rect · Circle · Diamond · Triangle ·
-> Rounded, one trailing empty cell); shape-variant clicks call
-> `setSelectedShapeType`, Sticky/Text rows are no-op until TextTool-side
-> conversion lands. (The text slice still has tweaks pending — values are
-> current, not final.)
+> Rounded, one trailing empty cell); every cell is live — same-kind shape
+> variants route to `setSelectedShapeType`, cross-kind cells to
+> `convertSelectionTo` / `convertSelectionToShape` (in-place kind mutation,
+> `tools/selection/convert-kind.ts`). (The text slice still has tweaks
+> pending — values are current, not final.)
 >
 > **Tailwind v4 migration (landed):** every per-control CSS file has been
 > deleted; per-control variations (submenu sizing, row geometry, cell layout,
@@ -249,7 +250,7 @@ Shapes include the full text formatting suite for shape labels:
 - **Fill** — `FillColorControl`: filled square-glyph trigger (`IconColorFill`, reflects the current fill / mixed split / engaged-dark on open). Same shared `ColorGrid` with a no-fill slot. `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
 - **Border** — `BorderColorControl`: hollow frame-glyph trigger (`IconColorBorder`, reflects the current border color / mixed state) → shared `ColorGrid` 6-col palette with a no-stroke slot (the `NoFillIcon` swatch). Calls `setSelectedColor` (with `null` for no stroke).
 - **Width** — border width. `StrokeWidthControl` on the outline scale `2 / 4 / 6 / 8` — shapes and connectors share this scale (not the pen `4 / 7 / 10 / 13`).
-- **SwitchType** — rightmost. `IconSwitchType` (Mural `switchType` glyph) inside `.ctx-btn-sq` + `.ctx-btn-engaged` (32×32 button, 20×20 SVG, engaged-dark fill flip on open). Popout: icon-only 4×2 grid — Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell. 36×36 cells, 24×24 icons, right-anchored (Tailwind `left-auto right-0 translate-x-0`). Active cell = live `shapeType` filled `--ctx-engaged` with a white icon, no checkmark (the active state IS the cell). Shape-variant clicks call `setSelectedShapeType(key)`; Sticky/Text rows are non-destructive no-ops pending TextTool-side cross-type conversion (origin remap on alignment + `color`↔`labelColor` key remap).
+- **SwitchType** — rightmost. `IconSwitchType` (Mural `switchType` glyph) inside `.ctx-btn-sq` + `.ctx-btn-engaged` (32×32 button, 20×20 SVG, engaged-dark fill flip on open). Popout: icon-only 4×2 grid — Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell. 36×36 cells, 24×24 icons, right-anchored (Tailwind `left-auto right-0 translate-x-0`). Active cell = live `shapeType` filled `--ctx-engaged` with a white icon, no checkmark (the active state IS the cell). Shape-variant clicks call `setSelectedShapeType(key)`; Sticky/Text cells call `convertSelectionTo('note'|'text')` — in-place kind mutation on the same Y.Map (`tools/selection/convert-kind.ts`).
 
 **Device-UI-store fallback for unlabeled shapes:** When a shape has no label, `computeStyles` returns `null` for `fontSize`/`labelColor`. `ShapeStyleGroup` reads `deviceTextSize` and `deviceTextColor` from `device-ui-store` as fallback values. This ensures the menu shows the values that would be used if the user starts typing to create a label — matching the "what you see is what you'd get" principle.
 
@@ -266,7 +267,7 @@ Shapes include the full text formatting suite for shape labels:
 - **TextColor** — "A" icon with colored bar. Falls back to `'#262626'` when `labelColor` is null.
 - **Highlight** — same as shapesOnly.
 - **Fill** — `FillColorControl`, identical pattern to shape fill (square fill-glyph trigger → shared `ColorGrid` with the no-fill slot). No border/stroke controls (text objects don't have stroke).
-- **SwitchType** — rightmost. Same component as shapesOnly's `SwitchType`, mounted with `mode='text'` — the `Text` row is the always-active cell regardless of selection state. Every cell is a no-op in this mode (cross-type conversion lands separately).
+- **SwitchType** — rightmost. Same component as shapesOnly's `SwitchType`, mounted with `mode='text'` — the `Text` row is the always-active cell. Sticky → `convertSelectionTo('note')`; shape variants → `convertSelectionToShape(key)`; the active `Text` cell is the only no-op.
 
 ### `notesOnly`
 
@@ -274,14 +275,14 @@ Shapes include the full text formatting suite for shape labels:
 [Typeface] | [B] [I] [NoteAlign] [Highlight] | [Fill filled-circle] | [SwitchType]
 ```
 
-Sticky notes have a dedicated bar with no text color control (note text is hardcoded `#1a1a1a`) and no font size stepper (font size is derived from scale):
+Sticky notes have a dedicated bar with no text color control (note text color is contrast-derived from fill via `getStickyNoteTextColor`) and no font size stepper (font size is derived from scale):
 
 - **Typeface** — same self-subscribing `TypefaceButton`. Persists to `device-ui-store.noteFontFamily` (not `textFontFamily`).
 - **Bold** / **Italic** — same self-subscribing components. Uses TipTap chain when editor active, `formatFragment()` when not.
 - **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Trigger: current H-align icon, no chevron (`.ctx-btn-fmt`, `#1b1f22` when open). Submenu: one flat row — H-align (left/center/right) · vertical divider · V-align (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Notes use top-left origin so no anchor math needed for H-align (just sets `align` key). V-align sets `alignV` key. Persists to `device-ui-store.noteAlign`/`noteAlignV`.
 - **Highlight** — same as other kinds.
 - **Fill** — `NoteFillControl`: square fill-glyph trigger → light-surface palette (no no-fill slot — notes always have a fill). Default color `'#FEF3AC'` (warm sticky yellow). Device-ui persist is skipped (note fill is per-object, not a device default).
-- **SwitchType** — rightmost. Same component as shapesOnly's `SwitchType`, mounted with `mode='note'` — the `Sticky note` row is the always-active cell. Every cell is a no-op in this mode.
+- **SwitchType** — rightmost. Same component as shapesOnly's `SwitchType`, mounted with `mode='note'` — the `Sticky note` row is the always-active cell. Text → `convertSelectionTo('text')`; shape variants → `convertSelectionToShape(key)`; the active `Sticky note` cell is the only no-op.
 
 **Note-specific device-ui persistence:** Font family and alignment actions detect `selectionKind === 'notesOnly'` and persist to note-specific device-ui fields (`noteFontFamily`, `noteAlign`, `noteAlignV`) rather than the text defaults.
 
@@ -350,7 +351,7 @@ ContextMenu                  <- gate on menuOpen, renders null when closed
 | `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Chevron-less `.ctx-btn-fmt` trigger → horizontal 3-icon submenu. |
 | `NoteAlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign` + `textAlignV`. Chevron-less `.ctx-btn-fmt` trigger → one flat submenu row: H-align · vertical divider · V-align. |
 | `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. Trigger = font name (no chevron); 4-item dropdown, active row `#1b1f22`. |
-| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. Rightmost slot on shape/text/note bars — `IconSwitchType` trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, engaged-dark on open) → icon-only 4×2 grid (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell), right-anchored via `left-auto right-0 translate-x-0`. Active cell = current `shapeType` (shape mode) or fixed `text`/`note` row (text/note modes), filled `--ctx-engaged` with white icon — same state-ternary `className` pattern as `ConnectorCapControl` so the active bg doesn't collide with the base. Shape-variant clicks call `setSelectedShapeType`; Sticky/Text rows no-op pending TextTool-side cross-type conversion. |
+| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. Rightmost slot on shape/text/note bars — `IconSwitchType` trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, engaged-dark on open) → icon-only 4×2 grid (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded, trailing empty cell), right-anchored via `left-auto right-0 translate-x-0`. Active cell = current `shapeType` (shape mode) or fixed `text`/`note` row (text/note modes), filled `--ctx-engaged` with white icon — same state-ternary `className` pattern as `ConnectorCapControl` so the active bg doesn't collide with the base. Same-kind shape variants call `setSelectedShapeType`; cross-kind cells call `convertSelectionTo` / `convertSelectionToShape` (in-place kind mutation). |
 | `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block, Sticky Note). |
 | `LanguageDropdown` | (no props) | Self-subscribes to `selectedStyles.codeLanguage`. 3-item language picker. |
 | `BoldButton` | `FormatButtons.tsx` | Self-subscribes to `selectInlineBold`. `.ctx-btn-fmt` button, 20×20 Mural icon, active fills `#1b1f22`. |
@@ -467,7 +468,7 @@ selectIsTextEditing    = s => s.textEditingId !== null
 
 ## Selection Actions (`selection-actions.ts`)
 
-Free mutation functions called by context menu buttons. Pattern: read IDs from store -> `getActiveRoomDoc().mutate()` -> persist to device-ui-store -> `refreshStyles()`.
+Free mutation functions called by context menu buttons. Pattern: read IDs from store -> one `transact()` (via the field-table primitives `applyField`/`toggleField`) -> persist to device-ui-store -> `refreshStyles()`.
 
 All text actions use the text-editing fallback: `ids = textEditingId ? [textEditingId] : selectedIds`. Code actions use an analogous pattern: `ids = codeEditingId ? [codeEditingId] : selectedIds` — this ensures language/fontSize/lineNumbers changes work during active CodeTool editing (not just via SelectTool selection).
 
@@ -490,6 +491,7 @@ All text actions use the text-editing fallback: `ids = textEditingId ? [textEdit
 | `toggleSelectedBold()` | Text + Notes + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
 | `toggleSelectedItalic()` | Text + Notes + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
 | `setSelectedHighlight(color\|null)` | Text + Notes + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
+| `convertSelectionTo(target)` / `convertSelectionToShape(shapeType)` | Text + Notes + Shapes | -- | Cross-kind conversion — delegates to `convert-kind.ts`; text-editing fallback makes convert-while-editing work |
 | `setSelectedCodeLanguage(lang)` | Code blocks | -- | Sets `language` key. Uses `getCodeIds()` fallback |
 | `setSelectedCodeFontSize(size)` | Code blocks | -- | Proportionally scales width (`width * newFs/oldFs`). Uses `getCodeIds()` fallback |
 | `incrementCodeFontSize()` | Code blocks | -- | Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144 |
@@ -507,6 +509,7 @@ The deep observer on `objects` Y.Map classifies mutations into `touchedIds` and 
 | Selected/editing object deleted | `clearSelection()` or `endTextEditing()` | Menu closes |
 | Selected/editing object touched | `refreshStyles()` | Style controls update |
 | Selected/editing object bbox changed | `boundsVersion++` | Controller repositions menu |
+| Selected/editing object kind changed (cross-kind conversion) | `onObjectsKindChanged` -> `setSelection` re-derive (+ editor re-skin) | Bar swaps to the new kind's menu |
 
 All property mutations (including style-only changes like color, fill, opacity) push dirty rects unconditionally, so the base canvas always repaints.
 
@@ -524,7 +527,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `room-doc-manager.ts` | Observer bridge: refreshStyles + boundsVersion for selected/editing objects |
 | `selection-store.ts` | `menuOpen`, `selectedStyles`, `inlineStyles`, `boundsVersion`, `selectionKind`, `kindCounts`, `computeSelectionBounds()` |
 | `selection-utils.ts` | Pure functions: `computeStyles`, `computeUniformInlineStyles` |
-| `selection-actions.ts` | 21 mutation functions called by menu buttons |
+| `selection-actions.ts` | Mutation functions called by menu buttons (incl. the cross-kind conversion delegations) |
 
 ---
 
@@ -556,7 +559,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `AlignDropdown.tsx` | Self-subscribing alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; 3 H-align icons in a horizontal submenu. |
 | `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Chevron-less `.ctx-btn-fmt` trigger; one flat submenu row: H-align · vertical divider · V-align. |
 | `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families). Trigger = font name only (no chevron); active dropdown row `#1b1f22`. |
-| `ShapeTypeDropdown.tsx` | Rightmost trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, `IconSwitchType`) + 4×2 icon-only grid popout (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded). Modes: `'shapes'` / `'text'` / `'note'`. Shape-variant clicks mutate via `setSelectedShapeType`; Sticky/Text rows no-op until TextTool-side conversion lands. |
+| `ShapeTypeDropdown.tsx` | Rightmost trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, `IconSwitchType`) + 4×2 icon-only grid popout (Sticky · Text · Rect · Circle · Diamond · Triangle · Rounded). Modes: `'shapes'` / `'text'` / `'note'`. Same-kind shape variants mutate via `setSelectedShapeType`; cross-kind cells via `convertSelectionTo` / `convertSelectionToShape` (`tools/selection/convert-kind.ts`). |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts. Eight kinds: Stroke, Shape, Text, Connector, Code Block, Sticky Note, Image, Link. Link = bookmark; icon sourced from `toolbar/icons/IconLink`. |
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |

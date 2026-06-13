@@ -34,6 +34,7 @@ import {
   getNoteProps,
   getShapeType,
   getTextProps,
+  getTextWidth,
   hasLabel,
 } from '@/core/accessors';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
@@ -258,6 +259,52 @@ export class TextTool implements PointerTool {
     useSelectionStore.getState().beginTextEditing(objectId);
     invalidateWorldAll();
     this.mountEditor(objectId, isNewLabel);
+  }
+
+  /**
+   * Re-skin the mounted editor after the edited object's kind flipped in place
+   * (cross-kind conversion). Called by selection-store's observer bridge AFTER
+   * the deep observer rebuilt the subsystem caches — reads fresh state,
+   * idempotent. The editor, fragment binding, caret, and undo session all
+   * survive: same Y.XmlFragment instance, no remount. onTransaction's closure
+   * `handle` self-corrects (kind was mutated in place on the same object).
+   */
+  onEditingKindChanged(): void {
+    if (!this.container || !this.objectId) return;
+    const handle = getHandle(this.objectId);
+    if (!handle) return;
+    const c = this.container;
+
+    // Reset cross-mode residue — each target mode rewrites only its own subset.
+    // (--text-anchor-tx / --text-align are rewritten by every target path.)
+    c.style.width = '';
+    c.style.maxWidth = '';
+    c.style.maxHeight = '';
+    c.style.backgroundColor = '';
+    c.style.setProperty('--text-anchor-ty', '0%');
+
+    if (handle.kind === 'shape') {
+      c.dataset.widthMode = 'label';
+      c.style.setProperty('--text-color', getLabelColor(handle.y));
+    } else if (handle.kind === 'note') {
+      c.dataset.widthMode = 'note';
+      const props = getNoteProps(handle.y);
+      if (props) {
+        getNoteLayout(this.objectId, props.content, props.fontFamily); // defensive — cheap tier-1 hit
+        c.style.setProperty('--text-color', getStickyNoteTextColor(props.fillColor));
+      }
+    } else {
+      c.dataset.widthMode = typeof getTextWidth(handle.y) === 'number' ? 'fixed' : 'auto';
+      c.style.setProperty('--text-color', getColor(handle.y));
+      applyAlignCSS(c, getAlign(handle.y));
+      const fillColor = getFillColor(handle.y);
+      if (fillColor) c.style.backgroundColor = fillColor;
+    }
+
+    // Covers position / fontSize / lineHeight / fontFamily / --hl-pad / per-mode
+    // dims (note branch reads derived·scale automatically).
+    this.positionEditor();
+    invalidateOverlay(); // handle-visibility rules differ per kind while editing
   }
 
   isEditorMounted(): boolean {
@@ -761,6 +808,12 @@ export class TextTool implements PointerTool {
 
     const handle = getHandle(this.objectId);
     if (!handle) return;
+
+    // Kind conversion in flight: this extension observer fires BEFORE the deep
+    // observer's kind branch, so `handle.kind` is still the OLD kind and every
+    // branch below would mis-dispatch. Bail — the store bridge calls
+    // onEditingKindChanged() after caches + the handle mirror are rebuilt.
+    if (keys.has('kind')) return;
 
     if (handle.kind === 'shape') {
       if (keys.has('labelColor')) this.container.style.setProperty('--text-color', getLabelColor(handle.y));

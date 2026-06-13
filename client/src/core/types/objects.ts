@@ -16,6 +16,8 @@ export type ObjectKind = (typeof OBJECT_KINDS)[number];
 // `toBBox(item) = item`, so passing the handle directly satisfies its item shape.
 export interface ObjectHandle {
   id: string;
+  // Mirror of `y.get('kind')`. Mutated ONLY by the deep observer's kind-keychange
+  // branch (in-place cross-kind conversion: text ↔ note ↔ shape).
   kind: ObjectKind;
   y: Y.Map<unknown>; // Direct Y.Map reference
   bbox: BBoxTuple; // Computed locally, NOT stored in Y.Map
