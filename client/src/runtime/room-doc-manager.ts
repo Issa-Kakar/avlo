@@ -3,7 +3,6 @@
  */
 
 import { getZ, isZKey, type RoomId, type UserId, type YObjects, type ZKey } from '@avlo/shared';
-import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -140,8 +139,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       return;
     }
 
+    // ySyncPluginKey is added lazily by TextCollaboration.onCreate (editor mount) —
+    // editor text edits tagged with it stay room-level undoable without pulling
+    // @tiptap/y-tiptap into the eager bundle. No ySync transactions exist before the
+    // first edit, so room-connect tracking only userId is behaviorally identical.
     this.undoManager = new Y.UndoManager([this.objects], {
-      trackedOrigins: new Set([this.userId, ySyncPluginKey]),
+      trackedOrigins: new Set([this.userId]),
       captureTimeout: 500,
     });
     this.unbindHistory = bindUndoManagerToHistoryStore(this.undoManager);

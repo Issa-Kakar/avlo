@@ -186,6 +186,12 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
 
     // Begin atomic session on main UndoManager — merge entire editing session into one item
     if (mainUndoManager) {
+      // Track the ySync origin lazily here (was eager in room-doc-manager) so editor
+      // text edits — tagged with ySyncPluginKey — remain room-level undoable. Editor
+      // edits only occur while mounted (after the lazy chunk loaded), so room-connect
+      // never needed it. Never removed: the constant key produces no transactions
+      // outside editing, so leaving it tracked is harmless and avoids add/remove churn.
+      mainUndoManager.addTrackedOrigin(ySyncPluginKey);
       mainUndoManager.stopCapturing();
       mainUndoManager.captureTimeout = 600_000; // 10 min
     }

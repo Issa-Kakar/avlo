@@ -8,7 +8,7 @@
 
 WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rendering** (custom layout engine). Three text-bearing object types: text objects, shape labels, sticky notes.
 
-- **Editing:** Tiptap editor in absolute-positioned div, synced to Y.XmlFragment via TextCollaboration extension
+- **Editing:** Tiptap editor (lazy chunk — loaded on text/note tool select; see Lazy Mount) in absolute-positioned div, synced to Y.XmlFragment via TextCollaboration extension
 - **Rendering:** Canvas layout engine (tokenizer → measurement → flow) matching CSS `pre-wrap` + `break-word`
 - **Positioning:** Measured font metrics (`fontBoundingBox*`) ensure DOM ↔ canvas baseline alignment
 - **Collaboration:** Y.XmlFragment CRDT, two-tier UndoManager (per-session + room-level atomic session merging)
@@ -23,10 +23,14 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 | `core/text/text-measure.ts` | Measure context, font-string builders, measured font metrics, measurement caches — shared boundary (code-system, bookmark-render, transform, TextTool, sticky-note) |
 | `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + `renderShapeLabel` + `layoutIntoLabelScratch` |
 | `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
-| `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
+| `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging, lazy ySync-origin registration. Lives in the lazy editor chunk (sole importer is `tiptap-editor.ts`) |
+| `core/text/tiptap-loader.ts` | **Eager** — cached `loadTiptapEditor()`/`loadTiptapBase()` (only dynamic `import()`s, zero `@tiptap` value import) + tool-select preload subscription |
+| `core/text/tiptap-editor.ts` | **Lazy** editor chunk — `import './tiptap.css'` + re-exported `Editor` + `buildTextExtensions()` (Placeholder + base defs + TextCollaboration) |
+| `core/text/tiptap-base.ts` | **Lazy** shared chunk — `generateJSON` + 6 base extension re-exports (pm-model only; shared by the editor and the clipboard's external-HTML paste) |
+| `core/text/tiptap.css` | `.tiptap*` rules — ship with the editor chunk (relocated from the eager `index.css`) |
 | `core/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
 | `core/text/font-loader.ts` | `ensureFontsLoaded()` / `areFontsLoaded()` |
-| `tools/TextTool.ts` | Editor mounting, positioning, lifecycle — 3-way branch (text/label/note) |
+| `tools/TextTool.ts` | Editor mounting (async six-phase lazy mount), positioning, lifecycle — 3-way branch (text/label/note) |
 
 **Fonts:** Grandstander, Inter, Lora, JetBrains Mono. All variable `wght 450-700`, Latin subset, ligatures (`liga`/`calt`/`dlig`) stripped at font level (canvas has no `font-variant-ligatures: none` — stripping is the only cross-browser WYSIWYG fix).
 
@@ -270,14 +274,14 @@ Frame consumer pattern: `handle.kind === 'text' || 'note' ? getTextFrame(handle.
 
 **Per-session** (TextCollaboration extension): Created on editor mount. Scope: `[Y.XmlFragment, Y.Map]` — tracks content edits AND property changes (fontSize, color, align, etc.). Origins: `{ySyncPluginKey, userId}`. Cmd+Z while editing can undo font changes made via context menu.
 
-**Main** (RoomDocManager): Tracks all objects map changes. Origins: `{userId, ySyncPluginKey}` — `ySyncPluginKey` critical so text content edits (which use that origin) are visible to main undo.
+**Main** (RoomDocManager): Tracks all objects map changes. Origins: `{userId}` at room-connect; `ySyncPluginKey` is added **lazily** by `TextCollaboration.onCreate` (first editor mount) and never removed — text content edits use that origin and must be room-level undoable, but no ySync transactions exist before the first edit, so deferring the registration is behaviorally identical and keeps `@tiptap/y-tiptap` out of the eager bundle.
 
 ### Session Merging
 
 Extension manipulates main UndoManager on lifecycle:
 ```
-onCreate():   mainUM.stopCapturing() + captureTimeout = 600_000  -> new group, merge all
-onDestroy():  mainUM.stopCapturing() + captureTimeout = 500      -> seal group, restore
+onCreate():   mainUM.addTrackedOrigin(ySyncPluginKey) + stopCapturing() + captureTimeout = 600_000  -> register origin (1st mount) + new group
+onDestroy():  mainUM.stopCapturing() + captureTimeout = 500                                          -> seal group, restore
 ```
 Effect: Room-level Cmd+Z undoes entire editing session atomically.
 
@@ -324,9 +328,24 @@ SelectTool reads `store.textEditingId`:
 - `onViewChange()` forwarded to `textTool.onViewChange()` for DOM repositioning on zoom/pan
 - Exception: `isEditingLabel()` allows handle hit-testing/rendering during label editing (label containers don't occlude handles)
 
-### mountEditor Per-Mode
+### Lazy Mount (async, atomic — mirrors CodeTool)
 
-Editor configured with `TextCollaboration.configure({ fragment, yObj: handle.y, userId, mainUndoManager, onPropsSync })`.
+Tiptap is a lazy chunk (`tiptap-editor.ts`, fetched via `tiptap-loader.ts`'s cached `loadTiptapEditor()`; warmed by a `tool.active → 'text'|'note'` preload subscription). `mountEditor(objectId, isNew)` is therefore **async**, six-phase:
+
+1. **Pre-await:** resolve host + handle; capture the click world point (callers run `resetGesture()` during the await, nulling `downWorld`); defensively `commitAndClose()` any open editor; set `pendingMountId = objectId`.
+2. **Await** `loadTiptapEditor()` (cached — instant once warm/preloaded).
+3. **Race fence:** bail if `pendingMountId` changed (a newer edit/create superseded this one) or the object was deleted / changed to a non-editable kind during the wait.
+4. **Build off-DOM:** `container` + `applyEditorSkin()` (skin statics only) + `new Editor({ extensions: buildTextExtensions({ isLabel, fragment, yObj, userId, mainUndoManager, onPropsSync }) })` (both from the awaited chunk).
+5. **Atomic swap** (one synchronous tick, no paint between): `appendChild` → store refs → `pendingMountId = null` → `positionEditor()` → `beginTextEditing(id)` → `invalidateOverlay()` + `invalidateWorldAll()`.
+6. **Post-swap:** cursor placement maps the world click through a **live** `worldToClient` inside a rAF (camera may have moved during the import); then `setupEditorHandlers()`.
+
+**Timing contract (no glyph flicker):** `beginTextEditing` + invalidations are deferred from the callers (`end`/`endPlace`/`startEditing`) into the swap. Through phases 2–4 `textEditingId` stays unset, so the canvas keeps painting the real glyphs across the whole import window; it stops only in the same tick the positioned DOM editor appears — one frame, no gap.
+
+**Race-window defenses:** `pendingMountId` (set pre-await, cleared in the swap and in `commitAndClose`'s `finally`) is the re-entrancy fence — first mount to reach the swap wins, others bail at phase 3. `deleteIfEmptyCreated(id)` cleans up an object a NEW mount created before the await but never edited (shape → drop the 6 label fields; text → delete; note → keep — reuses `commitAndClose`'s empty policy). `positionEditor()` is the **single geometry authority** (swap calls it once, then every `onViewChange`); mount no longer duplicates positioning.
+
+### Per-Mode Geometry (applyEditorSkin + positionEditor)
+
+`applyEditorSkin()` sets per-kind skin statics (`data-width-mode`, `--text-color`, text-mode `applyAlignCSS` + background fill) — shared with `onEditingKindChanged`. `positionEditor()` owns all geometry (left/top/dims/fontSize/anchors):
 
 **Text:** Position at `origin[0], origin[1] - fontSize * baselineToTopRatio`. Width: fixed -> explicit px, auto -> CSS `max-content`. `data-width-mode='auto'|'fixed'`.
 
@@ -351,6 +370,7 @@ Public; called by `selection-store.onObjectsKindChanged` when the edited object'
 - Empty text: delete entire object
 - Empty notes: preserved (valid visual elements)
 - `(editor as any).editorState = null` — Tiptap doesn't null this; release EditorState + plugin states
+- Clears `pendingMountId` in the `finally` — any in-flight async mount then bails at its phase-3 fence (mirrors CodeTool)
 
 **Re-entrancy guard (`closing` flag).** Empty-text deletion via `transact(getObjects().delete(...))` fires the deep observer synchronously → `selection-store.onObjectsDeleted` → recursive `textTool.commitAndClose()`. Without the guard, the inner call destroys the editor + nulls fields, outer's `editor.destroy()` throws on null, the click-outside handler exits before its `e.stopPropagation()` runs, and the same pointerdown spawns a fresh text object via the canvas handler. Outer owns teardown; inner is a no-op. The standalone observer-driven path (remote peer deletes my edited text) is a single call — guard lets it through.
 
@@ -369,6 +389,8 @@ After `commitAndClose()`, `e.stopPropagation()` fires **only when `activeTool ==
 ---
 
 ## CSS Architecture
+
+The `.tiptap*` rules live in `core/text/tiptap.css`, imported by `tiptap-editor.ts` so they ship with the **lazy editor chunk** (relocated from the eager global `index.css`). FOUC-safe: Vite's dynamic-import preload helper inserts + awaits the chunk's `<style>` before `import()` resolves, and the `.tiptap` node is built off-DOM and appended only in the atomic swap (see Lazy Mount) — so it never hits the DOM unstyled.
 
 ```css
 .tiptap {
@@ -675,7 +697,7 @@ Frame = body (square, no shadow). BBox = body + shadow. Alignment doesn't affect
 
 **Creation:** `kind: 'note', scale: 1, fontFamily: store.noteFontFamily, align: store.noteAlign, alignV: store.noteAlignV, fillColor: store.note.fillColor`. Text color is **not stored** — derived per-render from `fillColor` via `getStickyNoteTextColor()` (Map-cached luminance pick: `#1a1a1a` for light fills, `#ffffff` for the near-black sticky). Both the canvas draw and Tiptap's `--text-color` CSS var read through it.
 
-**mountEditor:** Populates cache via `getNoteLayout()`, sets `fontSize = derivedFontSize * noteScale`. Generic CSS block computes `scaledFontSize = fontSize * cameraScale` -> correct screen-space size.
+**mountEditor:** `applyEditorSkin()` populates the note cache via `getNoteLayout()` + sets the contrast `--text-color`; `positionEditor()` sets `fontSize = derivedFontSize · noteScale · cameraScale` (screen-space).
 
 **positionEditor:** Reads fresh `getNoteProps`, recomputes alignment anchors + clamp values + CSS.
 

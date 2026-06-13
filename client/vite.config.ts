@@ -97,6 +97,19 @@ export default defineConfig({
       },
       output: {
         entryFileNames: (chunk) => (chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js'),
+        // Split the EAGER big vendors out of `main` for cross-deploy cache stability —
+        // otherwise any app-code edit re-hashes all ~359 KB gzip. Lazy editor libs
+        // (@tiptap/@codemirror/@lezer/prosemirror/y-prosemirror/y-codemirror) MUST stay
+        // auto so Rollup keeps them in their async chunks — the early return is
+        // belt-and-suspenders against a future regex collision. Everything else falls
+        // through to `undefined` → Rollup auto (small vendors + lazy libs placed right).
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (/[\\/](@tiptap|@codemirror|@lezer|prosemirror-|y-prosemirror|y-codemirror)[\\/]/.test(id)) return;
+          if (/[\\/](react-dom|react|scheduler)[\\/]/.test(id)) return 'vendor-react';
+          if (/[\\/](yjs|lib0|y-protocols|y-indexeddb|y-partyserver)[\\/]/.test(id)) return 'vendor-yjs';
+          if (/[\\/]@tanstack[\\/]/.test(id)) return 'vendor-tanstack';
+        },
       },
     },
   },

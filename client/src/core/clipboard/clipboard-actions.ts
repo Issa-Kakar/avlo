@@ -9,13 +9,6 @@
  */
 
 import { generateNZAtTop, generateZAtTop, normalizeUrl } from '@avlo/shared';
-import { generateJSON } from '@tiptap/core';
-import Bold from '@tiptap/extension-bold';
-import Document from '@tiptap/extension-document';
-import Highlight from '@tiptap/extension-highlight';
-import Italic from '@tiptap/extension-italic';
-import Paragraph from '@tiptap/extension-paragraph';
-import Text from '@tiptap/extension-text';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -23,8 +16,8 @@ import { getLastCursorWorld } from '@/runtime/cursor-tracking';
 import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { animateToFit } from '@/runtime/viewport/zoom';
-import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { getUserId } from '@/stores/auth-store';
+import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { deleteSelected } from '@/tools/selection/selection-actions';
@@ -33,6 +26,7 @@ import { bboxCenter, bboxSize, translateBBox, translateFrame, translatePoint, tr
 import { createImageFromBlob } from '../image/image-actions';
 import { enqueue } from '../image/image-manager';
 import { anchorFactor } from '../text/text-system';
+import { loadTiptapBase } from '../text/tiptap-loader';
 import { type BBoxTuple, bboxTupleToWorldBounds, type FrameTuple, type Point } from '../types/geometry';
 import type { ConnectorEndpoint, StoredAnchor } from '../types/objects';
 import {
@@ -48,7 +42,6 @@ import {
 // === Constants ===
 
 const PASTE_CHAR_LIMIT = 50_000;
-const PASTE_EXTENSIONS = [Document, Paragraph, Text, Bold, Italic, Highlight.configure({ multicolor: true })];
 
 // === ProseMirror JSON shape (from @tiptap/core generateJSON) ===
 
@@ -133,7 +126,7 @@ export async function pasteFromClipboard(): Promise<void> {
         clipboardNonce = null;
         clipboardPayload = null;
 
-        pasteExternalHtml(html);
+        await pasteExternalHtml(html);
         return;
       }
 
@@ -298,7 +291,7 @@ function remapAnchor(anchor: StoredAnchor, idMap: Map<string, string>): StoredAn
 
 // === External HTML Paste ===
 
-function pasteExternalHtml(html: string): void {
+async function pasteExternalHtml(html: string): Promise<void> {
   // Strip avlo nonce comment if present
   const cleaned = html.replace(/<!-- avlo:[a-f0-9-]+ -->/, '');
 
@@ -322,10 +315,16 @@ function pasteExternalHtml(html: string): void {
     return;
   }
 
+  // Lazy-load the shared Tiptap base chunk — reached only for genuine rich-HTML
+  // paste (not URL / over-limit / internal-nonce / plain-text / image paths).
+  // generateJSON needs pm-model only, so this pulls tiptap-base, not the editor.
+  const { generateJSON, Document, Paragraph, Text, Bold, Italic, Highlight } = await loadTiptapBase();
+  const pasteExtensions = [Document, Paragraph, Text, Bold, Italic, Highlight.configure({ multicolor: true })];
+
   // Parse HTML to ProseMirror JSON
   let doc: PMDoc;
   try {
-    doc = generateJSON(cleaned, PASTE_EXTENSIONS) as PMDoc;
+    doc = generateJSON(cleaned, pasteExtensions) as PMDoc;
   } catch {
     // Parse failure — fall back to plain text
     pasteExternalText(plainText);
