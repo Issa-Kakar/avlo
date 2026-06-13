@@ -38,9 +38,11 @@ interface RenameRoomResult {
   bookmark: string; // '' when the direct write failed (queue converges; keep the prior bookmark)
 }
 
-/** JSON-serializable — persisted inside the dehydrated paused mutation. */
+/** JSON-serializable — persisted inside the dehydrated paused mutation. PER-ROW only:
+ *  a whole-cache snapshot restored from a persisted context can resurrect the previous
+ *  account's entire rooms list after a sign-out/sign-in replay. */
 interface RenameRoomCtx {
-  prev?: RoomsQueryData;
+  prevTitle?: string; // the one cache row's prior title (undefined = row absent)
   prevSessionTitle: string | null;
   prevFactsTitle?: string;
 }
@@ -83,7 +85,7 @@ queryClient.setMutationDefaults(RENAME_ROOM_KEY, {
   onMutate: async ({ roomId, title }: RenameRoomVars): Promise<RenameRoomCtx> => {
     await queryClient.cancelQueries({ queryKey: ROOMS_QUERY_KEY });
     const ctx: RenameRoomCtx = {
-      prev: queryClient.getQueryData<RoomsQueryData>(ROOMS_QUERY_KEY),
+      prevTitle: queryClient.getQueryData<RoomsQueryData>(ROOMS_QUERY_KEY)?.rooms.find((r) => r.roomId === roomId)?.title,
       prevSessionTitle: useRoomSessionStore.getState().title,
       prevFactsTitle: useRoomListStore.getState().rooms[roomId]?.title,
     };
@@ -96,7 +98,7 @@ queryClient.setMutationDefaults(RENAME_ROOM_KEY, {
     // ctx survives persistence (dehydrated with the paused mutation) but guard anyway —
     // a corrupt restore rolls forward via the onSettled invalidate instead.
     if (!ctx) return;
-    if (ctx.prev) queryClient.setQueryData(ROOMS_QUERY_KEY, ctx.prev);
+    if (ctx.prevTitle !== undefined) patchRoomsCache(roomId, ctx.prevTitle);
     if (isActiveRoom(roomId)) setRoomTitle(ctx.prevSessionTitle);
     setRoomTitleFact(roomId, ctx.prevFactsTitle);
   },

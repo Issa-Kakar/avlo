@@ -7,11 +7,16 @@ export function useDropdown() {
 
   useEffect(() => {
     if (!open) return;
-    const handle = (e: MouseEvent) => {
+    // `pointerdown`, not `mousedown` (the MainMenuTrigger/ZoomControls pattern): the
+    // canvas preventDefault()s pointerdown, which suppresses the synthesized mousedown,
+    // and a sibling trigger's stopPropagation'd mousedown never reaches the document —
+    // pointerdown fires first and bubbles regardless, so any outside press dismisses.
+    // Triggers toggle on mousedown, which fires AFTER this — ordering is preserved.
+    const handle = (e: PointerEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
+    document.addEventListener('pointerdown', handle);
+    return () => document.removeEventListener('pointerdown', handle);
   }, [open]);
 
   const toggle = useCallback((e: React.MouseEvent) => {

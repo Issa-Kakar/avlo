@@ -10,12 +10,15 @@
  *     optimistically by the rename mutation and seeded from the dashboard cache).
  *   • `owner:1|0` → `isOwner` (per-connection; gates the rename affordance — enforcement
  *     stays server-side in the DO).
+ *   • `perm:<p>` → `permission` (room-wide; drives the Share modal's current value — also
+ *     set optimistically by the permission mutation and seeded from the dashboard cache).
  *   • `connection-close` 4401/4403 → `access` `unauthenticated`/`forbidden` (the manager
  *     also `disconnect()`s the provider so the stock auto-reconnect loop stops).
  *
  * Ephemeral by design — `resetRoomSession()` on room switch / teardown; no persist
  * (offline reload re-seeds title from the persisted rooms query cache).
  */
+import type { Permission } from '@avlo/shared';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 
@@ -27,6 +30,7 @@ interface RoomSessionState {
   access: RoomAccess;
   title: string | null; // null = not yet known (renders as 'Untitled')
   isOwner: boolean;
+  permission: Permission | null; // null = not yet known
 }
 
 interface RoomSessionActions {
@@ -38,11 +42,13 @@ interface RoomSessionActions {
   setRoomTitle(title: string | null): void;
   /** Apply an `owner:` push / cache seed. */
   setRoomIsOwner(isOwner: boolean): void;
+  /** Apply a `perm:` push / cache seed / optimistic permission flip. */
+  setRoomPermission(permission: Permission | null): void;
   /** Reset to the connecting baseline on room switch / teardown. */
   resetRoomSession(): void;
 }
 
-const INITIAL: RoomSessionState = { mode: 'editor', access: 'connecting', title: null, isOwner: false };
+const INITIAL: RoomSessionState = { mode: 'editor', access: 'connecting', title: null, isOwner: false, permission: null };
 
 export const useRoomSessionStore = create<RoomSessionState & RoomSessionActions>()(
   immer((set) => ({
@@ -64,10 +70,15 @@ export const useRoomSessionStore = create<RoomSessionState & RoomSessionActions>
       set((s) => {
         s.isOwner = isOwner;
       }),
+    setRoomPermission: (permission) =>
+      set((s) => {
+        s.permission = permission;
+      }),
     resetRoomSession: () => set(INITIAL),
   })),
 );
 
 // Stable action refs — defined once inside create(), so destructuring yields references
 // that never change (mirrors room-list-store). Import these directly at call sites.
-export const { setRoomMode, setRoomAccess, setRoomTitle, setRoomIsOwner, resetRoomSession } = useRoomSessionStore.getState();
+export const { setRoomMode, setRoomAccess, setRoomTitle, setRoomIsOwner, setRoomPermission, resetRoomSession } =
+  useRoomSessionStore.getState();

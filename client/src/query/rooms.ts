@@ -12,6 +12,9 @@
  */
 import { type RoomListEntry, usersClient } from '@avlo/api-client';
 import { queryOptions } from '@tanstack/react-query';
+import { getActiveRoomId, hasActiveRoom } from '@/runtime/room-runtime';
+import { absorbServerRooms } from '@/stores/room-list-store';
+import { deleteRoomDocDB } from '@/utils/room-local-data';
 import { queryClient } from './client';
 import { ensureIdentity } from './me';
 
@@ -35,6 +38,16 @@ export function roomsQueryOptions() {
       const res = await usersClient.rooms.$get({}, prev?.bookmark ? { headers: { 'x-d1-bookmark': prev.bookmark } } : undefined);
       if (!res.ok) throw new Error(`GET /rooms ${res.status}`);
       const body = await res.json();
+      // Absorb the server facts into the persisted local mirror (precedent: the me
+      // queryFn writes auth-store). Pruned = private rooms we don't own — drop their
+      // local doc DBs too, EXCEPT the active room's: its open y-indexeddb connection
+      // would block deleteDatabase forever, and its own 4403 close path handles cleanup.
+      // (Known accepted race: an in-flight absorb can briefly overwrite an optimistic
+      // permission fact; the mutation's onSettled invalidate converges.)
+      for (const id of absorbServerRooms(body.rooms)) {
+        if (hasActiveRoom() && getActiveRoomId() === id) continue;
+        deleteRoomDocDB(id);
+      }
       return { rooms: body.rooms, bookmark: body.bookmark };
     },
   });

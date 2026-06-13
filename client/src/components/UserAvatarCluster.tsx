@@ -12,9 +12,10 @@ export function UserAvatarCluster() {
     }));
   }, [peerIdentities]);
 
-  const totalCount = usersWithIds.length + 1; // +1 for self
-  const displayCount = Math.min(4, usersWithIds.length);
-  const overflow = totalCount > 5;
+  // Peers only — self has the profile menu / sign-in affordance instead of a chip.
+  const totalCount = usersWithIds.length;
+  const displayCount = Math.min(4, totalCount);
+  const overflow = totalCount > 4;
 
   const getInitials = (name: string): string => {
     if (!name) return '?';
@@ -33,13 +34,9 @@ export function UserAvatarCluster() {
         </div>
       ))}
 
-      <div className="micro-avatar micro-avatar-me" title="You">
-        <span className="micro-avatar-initials">ME</span>
-      </div>
-
       {overflow && (
-        <span className="user-overflow" title={`${totalCount - 5} more users`}>
-          +{totalCount - 5}
+        <span className="user-overflow" title={`${totalCount - 4} more users`}>
+          +{totalCount - 4}
         </span>
       )}
     </div>

@@ -29,9 +29,10 @@ export type DashboardView = 'home' | 'recent' | 'starred';
 const RECENT_COLUMNS: readonly Column[] = [
   { key: 'star', header: 'Starred', width: '132px' },
   { key: 'name', header: 'Canvas name', width: 'minmax(260px, 1.4fr)' },
-  { key: 'date', header: 'Last opened', width: 'minmax(140px, 0.9fr)', dateField: 'openedTs' },
-  { key: 'date', header: 'Created', width: 'minmax(140px, 0.9fr)', dateField: 'createdTs' },
-  { key: 'owner', header: 'Owner', width: 'minmax(200px, 1.05fr)' },
+  { key: 'date', header: 'Last opened', width: 'minmax(130px, 0.85fr)', dateField: 'openedTs' },
+  { key: 'date', header: 'Created', width: 'minmax(130px, 0.85fr)', dateField: 'createdTs' },
+  { key: 'type', header: 'Type', width: 'minmax(110px, 0.6fr)' },
+  { key: 'owner', header: 'Owner', width: 'minmax(160px, 0.9fr)' },
   { key: 'kebab', header: '', width: '56px' },
 ];
 
@@ -41,9 +42,10 @@ function homeColumns(sort: SortOption): Column[] {
     { key: 'star', header: 'Starred', width: '132px' },
     { key: 'name', header: 'Canvas name', width: 'minmax(280px, 1.4fr)' },
     showCreated
-      ? { key: 'date', header: 'Created', width: 'minmax(150px, 0.95fr)', dateField: 'createdTs' }
-      : { key: 'date', header: 'Last opened', width: 'minmax(150px, 0.95fr)', dateField: 'openedTs' },
-    { key: 'owner', header: 'Owner', width: 'minmax(220px, 1.1fr)' },
+      ? { key: 'date', header: 'Created', width: 'minmax(140px, 0.9fr)', dateField: 'createdTs' }
+      : { key: 'date', header: 'Last opened', width: 'minmax(140px, 0.9fr)', dateField: 'openedTs' },
+    { key: 'type', header: 'Type', width: 'minmax(110px, 0.6fr)' },
+    { key: 'owner', header: 'Owner', width: 'minmax(170px, 0.95fr)' },
     { key: 'kebab', header: '', width: '56px' },
   ];
 }

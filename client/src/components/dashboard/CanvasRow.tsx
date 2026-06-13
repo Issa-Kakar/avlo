@@ -1,13 +1,14 @@
 import { normalizeRoomTitle, ROOM_TITLE_MAX_LEN } from '@avlo/shared';
 import { memo, useRef } from 'react';
 import { useDropdown } from '../context-menu/useDropdown';
-import { type Canvas, formatDate, OWNER_SELF } from './data';
+import { EyeIcon } from '../icons/EyeIcon';
+import { EditIcon } from '../topbar/icons/EditIcon';
+import { type Canvas, formatDate, permissionLabel } from './data';
 import { KebabIcon } from './icons/KebabIcon';
 import { StarIcon } from './icons/StarIcon';
-import { OwnerAvatar } from './OwnerAvatar';
 
 export interface Column {
-  key: 'star' | 'name' | 'date' | 'owner' | 'kebab';
+  key: 'star' | 'name' | 'date' | 'type' | 'owner' | 'kebab';
   header: string;
   width: string;
   dateField?: 'openedTs' | 'createdTs'; // required for `date` columns
@@ -33,8 +34,9 @@ interface CanvasRowProps extends RowRenameProps {
 /**
  * Kebab cell for OWNED rows — `useDropdown` (the SortFilterDropdown pattern) with a
  * right-anchored popover. The trigger toggles on mousedown (outside-dismiss is a
- * document mousedown — same-target toggles never race it); the item acts on click so
- * the menu is still mounted at mouseup, and both stopPropagation so the row never opens.
+ * document POINTERDOWN, which fires first — so pressing another kebab closes this one
+ * before that one's mousedown toggles it open); the item acts on click so the menu is
+ * still mounted at mouseup, and both stopPropagation so the row never opens.
  */
 function KebabMenuCell({ canvasId, onRenameStart }: { canvasId: string; onRenameStart: (id: string) => void }) {
   const { open, containerRef, toggle, close } = useDropdown();
@@ -58,7 +60,7 @@ function KebabMenuCell({ canvasId, onRenameStart }: { canvasId: string; onRename
           <button
             type="button"
             role="menuitem"
-            className="dash-dd-item"
+            className="dash-dd-item dash-row-menu-item"
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
@@ -66,6 +68,7 @@ function KebabMenuCell({ canvasId, onRenameStart }: { canvasId: string; onRename
               onRenameStart(canvasId);
             }}
           >
+            <EditIcon width={20} height={20} />
             Rename
           </button>
         </div>
@@ -148,22 +151,28 @@ function Cell({
       return <NameCell canvas={canvas} renaming={renaming} onRenameCommit={onRenameCommit} onRenameEnd={onRenameEnd} />;
     case 'date':
       return <div className="dash-cell-date">{formatDate(canvas[column.dateField ?? 'openedTs'])}</div>;
+    case 'type':
+      // "View only" rows carry the eye glyph; the owner additionally gets a tooltip
+      // explaining why their own row reads view-only.
+      return (
+        <div
+          className="dash-cell-type"
+          title={canvas.permission === 'readonly' && canvas.isOwner ? "Viewers can't edit — you own this canvas" : undefined}
+        >
+          {canvas.permission === 'readonly' && <EyeIcon width={17} height={17} />}
+          <span>{permissionLabel(canvas.permission)}</span>
+        </div>
+      );
     case 'owner':
-      // Self → "Me" + self avatar; anyone else → "Anonymous", no avatar (no account names until OAuth).
       return (
         <div className="dash-cell-owner">
-          {canvas.owner === OWNER_SELF && <OwnerAvatar name={canvas.owner} />}
           <span>{canvas.owner}</span>
         </div>
       );
     case 'kebab':
       // Rename is owner-only, so non-owned rows get an empty cell (an inert button next
       // to working ones would read as broken); the grid column keeps its footprint.
-      return canvas.owner === OWNER_SELF ? (
-        <KebabMenuCell canvasId={canvas.id} onRenameStart={onRenameStart} />
-      ) : (
-        <div className="dash-kebab-cell" />
-      );
+      return canvas.isOwner ? <KebabMenuCell canvasId={canvas.id} onRenameStart={onRenameStart} /> : <div className="dash-kebab-cell" />;
   }
 }
 

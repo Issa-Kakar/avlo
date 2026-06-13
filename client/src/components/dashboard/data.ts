@@ -3,25 +3,27 @@
  *
  * Live data is the read-time merge in `query/room-list.ts` (`useRoomList()`): the D1
  * server projection (TanStack Query) unioned with the local facts store. This file
- * owns the `Canvas` display shape, the owner labels, and the pure
+ * owns the `Canvas` display shape, the permission → Type-column labels, and the pure
  * filter/sort/group/format helpers — all written against real epoch-ms timestamps,
  * so they carry over to merged rooms unchanged.
  */
+import type { Permission } from '@avlo/shared';
 
 export interface Canvas {
   id: string;
   name: string;
-  owner: string; // OWNER_SELF | OWNER_OTHER — display label; avatar derived from initials + name-hash tint
+  owner: string; // display name — "Me" (anon self) / account name / "Anonymous" (anon other)
+  isOwner: boolean; // drives the kebab gate + the "Owned by me" filter
+  permission: Permission; // the Type column (`permissionLabel`)
   starred: boolean;
   openedTs: number; // last-opened, epoch ms (max of local + server)
   createdTs: number; // created, epoch ms
 }
 
-// Owner labels — no account names until OAuth, so ownership renders as a binary: you
-// (self avatar) vs. someone else (no avatar). The merge resolves the server `isOwner`
-// flag to one of these; `applyFilter`'s "Owned by me" pivots on OWNER_SELF.
-export const OWNER_SELF = 'Me';
-export const OWNER_OTHER = 'Anonymous';
+/** The Type column's permission → label mapping ("can view"/"can edit" live in the Share modal). */
+export function permissionLabel(p: Permission): 'Open' | 'View only' | 'Private' {
+  return p === 'public' ? 'Open' : p === 'readonly' ? 'View only' : 'Private';
+}
 
 export type FilterOption = 'Owned by anyone' | 'Owned by me' | 'Not owned by me';
 export type SortOption = 'Last opened' | 'Last created' | 'Oldest' | 'Alphabetically';
@@ -35,27 +37,6 @@ export interface CanvasGroup {
 export const FILTER_OPTIONS: readonly FilterOption[] = ['Owned by anyone', 'Owned by me', 'Not owned by me'];
 export const SORT_OPTIONS: readonly SortOption[] = ['Last opened', 'Last created', 'Oldest', 'Alphabetically'];
 export const RECENCY_ORDER: readonly Recency[] = ['Today', 'Yesterday', 'Earlier this week', 'Older'];
-
-/* ----- owner avatar derivation ----- */
-
-// Muted tints, deliberately cooler/softer than the random presence palette —
-// picked deterministically from the owner name so an owner reads the same everywhere.
-const AVATAR_TINTS = ['#7fb3c9', '#a0b6c4', '#8aa1ad', '#9fb8a6', '#b3a6bf', '#c0a99a'] as const;
-
-export function tintFor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % AVATAR_TINTS.length;
-  return AVATAR_TINTS[h];
-}
-
-export function initials(name: string): string {
-  return name
-    .split(' ')
-    .map((w) => w[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
-}
 
 /* ----- date formatting + recency ----- */
 
@@ -86,8 +67,8 @@ export function recencyBucket(ts: number, now: number = Date.now()): Recency {
 /* ----- filter / sort / group ----- */
 
 export function applyFilter(list: readonly Canvas[], filter: FilterOption): Canvas[] {
-  if (filter === 'Owned by me') return list.filter((c) => c.owner === OWNER_SELF);
-  if (filter === 'Not owned by me') return list.filter((c) => c.owner !== OWNER_SELF);
+  if (filter === 'Owned by me') return list.filter((c) => c.isOwner);
+  if (filter === 'Not owned by me') return list.filter((c) => !c.isOwner);
   return [...list];
 }
 

@@ -153,10 +153,12 @@ export class RoomDurableObject extends YServer<Env> {
     await super.onConnect(conn, ctx); // YServer: syncStep1 + awareness merge
 
     // 4. PUSH EFFECTIVE MODE + ROOM META — out-of-band __YPS: strings (never parsed by the
-    // Yjs decoder). `title` is room-wide (re-pushed on rename); `owner` is per-connection.
+    // Yjs decoder). `title`/`perm` are room-wide (re-pushed on rename / permission flip);
+    // `owner` is per-connection.
     this.sendCustomMessage(conn, `mode:${this.isReadOnly(conn) ? 'viewer' : 'editor'}`);
     this.sendCustomMessage(conn, `title:${this.meta.title}`);
     this.sendCustomMessage(conn, `owner:${this.meta.ownerId === userId ? '1' : '0'}`);
+    this.sendCustomMessage(conn, `perm:${this.meta.permission}`);
 
     // 5. PROJECT THE VISIT — fire-and-forget send, error-handled (waitUntil is a no-op in a
     // DO, §6). The rev bump is made durable BEFORE the send so a DO restart can never
@@ -193,9 +195,9 @@ export class RoomDurableObject extends YServer<Env> {
    * persists the row and RETURNS it; the caller assigns `this.meta` inline so TS narrowing
    * survives at the call site.
    */
-  #mintMeta(roomId: RoomId, ownerId: UserId, title: string): RoomMeta {
+  #mintMeta(roomId: RoomId, ownerId: UserId, title: string, permission: Permission = 'public'): RoomMeta {
     const now = Date.now();
-    const meta: RoomMeta = { roomId, ownerId, permission: 'public', createdAt: now, updatedAt: now, title, rev: 1, deleted: false };
+    const meta: RoomMeta = { roomId, ownerId, permission, createdAt: now, updatedAt: now, title, rev: 1, deleted: false };
     this.db.insert(roomMeta).values(meta).run(); // authoritative SQLite
     return meta;
   }
@@ -219,27 +221,44 @@ export class RoomDurableObject extends YServer<Env> {
   /**
    * Owner-only permission flip, reached by cross-script raw RPC from `users` (§8). Cold-DO
    * safe: meta loads in the constructor, and self-identity is the proven `roomId` argument
-   * + the meta row — never `this.name` (see the identity scaffold above). Updates SQLite +
-   * mutates this.meta in memory (★ warm-cache fix — warm DOs don't re-run onStart/onLoad,
-   * so the SQLite write alone leaves isReadOnly stale on the live connections that matter)
-   * + re-pushes/evicts live non-owner connections + projects, returning the snapshot for
-   * the users worker's read-your-writes D1 write. Thrown messages are the wire contract
-   * (`RoomDoStub`): 'room-mismatch' | 'forbidden'.
+   * + the meta row — never `this.name` (see the identity scaffold above). Meta absent →
+   * mint exactly like setTitle (offline-created room shared from the dashboard pre-first-
+   * connect; the authenticated caller IS the creator). Otherwise updates SQLite + mutates
+   * this.meta in memory (★ warm-cache fix — warm DOs don't re-run onStart/onLoad, so the
+   * SQLite write alone leaves isReadOnly stale on the live connections that matter), then
+   * one pass over live connections (`perm:` to the caller's tabs; evict-or-re-push for
+   * non-owners) + projects, returning the snapshot for the users worker's read-your-writes
+   * D1 write. Thrown messages are the wire contract (`RoomDoStub`): 'room-mismatch' |
+   * 'forbidden'.
    */
   async setPermission(roomId: RoomId, caller: UserId, next: Permission): Promise<MetaEvent> {
     this.#verifyRoomId(roomId);
     Permission.parse(next); // authority-boundary guard (§14a)
-    if (!this.meta || this.meta.ownerId !== caller) throw new Error('forbidden');
-    const now = Date.now();
-    const rev = this.meta.rev + 1;
-    this.db.update(roomMeta).set({ permission: next, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-    this.meta = { ...this.meta, permission: next, updatedAt: now, rev }; // ★ warm-cache fix
+    if (!this.meta) {
+      // Mint-on-absent, mirroring setTitle: an offline-created room shared from the
+      // dashboard before its first connect. The mint IS rev 1 — no extra bump.
+      this.meta = this.#mintMeta(roomId, caller, 'Untitled', next);
+    } else {
+      if (this.meta.ownerId !== caller) throw new Error('forbidden');
+      const now = Date.now();
+      const rev = this.meta.rev + 1;
+      this.db.update(roomMeta).set({ permission: next, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
+      this.meta = { ...this.meta, permission: next, updatedAt: now, rev }; // ★ warm-cache fix
+    }
 
+    // Single pass over live connections (the mint path has zero by construction —
+    // onConnect would have minted). Caller's own tabs: `perm:` only. Non-owners:
+    // evicted on private (close XOR send — never message a just-closed socket),
+    // otherwise the `mode:` re-push AND the new `perm:`.
     for (const c of this.getConnections<ConnState>()) {
-      if (c.state?.userId === caller) continue;
-      if (next === 'private')
+      if (c.state?.userId === caller) {
+        this.sendCustomMessage(c, `perm:${next}`);
+      } else if (next === 'private') {
         c.close(4403, 'forbidden'); // evict — a viewer state can't express "gone"
-      else this.sendCustomMessage(c, `mode:${this.isReadOnly(c) ? 'viewer' : 'editor'}`); // re-push, no reconnect
+      } else {
+        this.sendCustomMessage(c, `mode:${this.isReadOnly(c) ? 'viewer' : 'editor'}`); // re-push, no reconnect
+        this.sendCustomMessage(c, `perm:${next}`);
+      }
     }
 
     return this.#projectMeta(this.meta);

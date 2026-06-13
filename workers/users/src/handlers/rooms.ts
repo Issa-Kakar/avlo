@@ -1,4 +1,4 @@
-import { getSessionDB, rooms, roomVisits, upsertRoomsFromMeta, withRetry } from '@avlo/db';
+import { getSessionDB, rooms, roomVisits, upsertRoomsFromMeta, users, withRetry } from '@avlo/db';
 import { type MetaEvent, roomDoStub } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
@@ -14,6 +14,11 @@ const factory = createFactory<UsersEnv>();
  * `x-d1-bookmark` (monotonic reads), wrapped in transient-only `withRetry` (user-facing).
  * `isOwner` is derived (`ownerId === me`); `permission`/`title` are display-only — the
  * access decision reads the DO, never D1 (§0). The advanced bookmark rides back out.
+ * `ownerName` left-joins the account directory — null for anon owners (no `users` row by
+ * design). Private rooms the caller doesn't own stay in the response as the client's
+ * prune signal (roomId + permission + isOwner is all the prune needs), but `title`/
+ * `ownerName` are redacted so a denied past visitor can't read post-privatization
+ * renames or the owner via DevTools.
  */
 export const handleGetRooms = factory.createHandlers(async (c) => {
   const userId = c.get('userId');
@@ -26,22 +31,29 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
         title: rooms.title,
         permission: rooms.permission,
         ownerId: rooms.ownerId,
+        ownerName: users.name,
         lastVisitedAt: roomVisits.lastVisitedAt,
       })
       .from(roomVisits)
       .innerJoin(rooms, eq(rooms.roomId, roomVisits.roomId))
+      .leftJoin(users, eq(users.userId, rooms.ownerId))
       .where(and(eq(roomVisits.userId, userId), eq(rooms.deleted, false))) // tombstoned rooms never listed
       .orderBy(desc(roomVisits.lastVisitedAt))
       .all(),
   );
 
-  const entries: RoomListEntry[] = list.map((r) => ({
-    roomId: r.roomId,
-    title: r.title,
-    permission: r.permission,
-    isOwner: r.ownerId === userId,
-    lastVisitedAt: r.lastVisitedAt,
-  }));
+  const entries: RoomListEntry[] = list.map((r) => {
+    const isOwner = r.ownerId === userId;
+    const redact = r.permission === 'private' && !isOwner;
+    return {
+      roomId: r.roomId,
+      title: redact ? '' : r.title,
+      permission: r.permission,
+      isOwner,
+      ownerName: redact ? null : r.ownerName,
+      lastVisitedAt: r.lastVisitedAt,
+    };
+  });
 
   const bookmark = session.getBookmark() ?? '';
   c.header('x-d1-bookmark', bookmark);

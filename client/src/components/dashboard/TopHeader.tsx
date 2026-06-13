@@ -1,9 +1,12 @@
 import { SignInButton } from '../auth/SignInButton';
+import { UserProfileMenu } from '../auth/UserProfileMenu';
 import { PlusAltIcon } from './icons/PlusAltIcon';
 import { SearchIcon } from './icons/SearchIcon';
 
-// Search field (visual-only placeholder — focus state is CSS) + sign-in/out + New Canvas.
-// The only behavior here is New Canvas → onNewCanvas (mint a room id + navigate).
+// Search field (visual-only placeholder — focus state is CSS) + auth affordance + New
+// Canvas. Anon shows the sign-in CTA before New Canvas; signed-in shows the profile
+// menu furthest right (each renders null in the other state). The only behavior here
+// is New Canvas → onNewCanvas (mint a room id + navigate).
 export function TopHeader({ onNewCanvas }: { onNewCanvas: () => void }) {
   return (
     <header className="dash-topbar">
@@ -21,6 +24,8 @@ export function TopHeader({ onNewCanvas }: { onNewCanvas: () => void }) {
           <PlusAltIcon width={21} height={21} />
           New Canvas
         </button>
+
+        <UserProfileMenu variant="dashboard" />
       </div>
     </header>
   );

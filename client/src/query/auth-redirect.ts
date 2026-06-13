@@ -5,6 +5,8 @@
  * marker synchronously and, for the identity-changing markers, forces one clean `/me`
  * round-trip before anything renders or connects.
  */
+import { clearAllRooms, useRoomListStore } from '@/stores/room-list-store';
+import { purgeAllRoomDocDBs } from '@/utils/room-local-data';
 import { queryClient } from './client';
 import { ME_QUERY_KEY, meQueryOptions } from './me';
 import { ROOMS_QUERY_KEY } from './rooms';
@@ -28,6 +30,24 @@ export function consumeAuthMarker(): AuthMarker | null {
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`);
   if (marker === 'denied' || marker === 'error') console.warn(`[auth] sign-in ${marker}`);
   return marker;
+}
+
+/**
+ * The `?auth=out` purge — every local room trace goes (pre-mount, so no y-indexeddb
+ * connection is open to block a delete). Deliberately unconditional even when the
+ * network logout failed: privacy on a shared device beats data retention. Order is
+ * load-bearing: the mutation cache clears FIRST (a pre-logout offline rename replayed
+ * under the next identity would 403 and its persisted onError context would resurrect
+ * a purged facts row), then facts keys are captured BEFORE `clearAllRooms()` wipes
+ * them, so the IDB sweep still knows every room this device touched. `?auth=ok` does
+ * NOT purge — local rooms merge with the account list (ownership fan-out is a later
+ * pass; the rooms queryFn's absorb stamps account facts locally).
+ */
+export async function purgeLocalRoomDataForSignOut(): Promise<void> {
+  queryClient.getMutationCache().clear();
+  const knownIds = Object.keys(useRoomListStore.getState().rooms);
+  clearAllRooms();
+  await purgeAllRoomDocDBs(knownIds);
 }
 
 /**

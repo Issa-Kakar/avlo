@@ -13,8 +13,13 @@ sort / open their canvases. Mounted by `routes/home.tsx`; `/` redirects here
 > keep this route's `beforeLoad`/loader **side-effect-free**.
 > Interactive today: **row click → open room**, **New Canvas** (mint id + local
 > facts + navigate), **star toggle**, the Home **Filter/Sort** dropdowns, and
-> the **kebab → Rename** flow (owner rows only; inline input in the name cell,
-> committed through `useRenameRoom()` — `query/room-rename.ts`). Search is
+> the **kebab → Rename** flow (owner rows only — gated on `canvas.isOwner`;
+> inline input in the name cell, committed through `useRenameRoom()` —
+> `query/room-rename.ts`). The **Type** column (left of Owner) shows each
+> room's permission via `permissionLabel`: "Open" / "View only" (+ eye icon;
+> owners get a tooltip explaining their own view-only row) / "Private". The
+> **Owner** column is plain text — "Me" (anon self), the account name
+> (signed-in self / other accounts), "Anonymous" (anon others). Search is
 > visual-only.
 >
 > **TODO (user-flagged):** the rename UI has rough touches — some weird
@@ -27,11 +32,11 @@ sort / open their canvases. Mounted by `routes/home.tsx`; `/` redirects here
 Dashboard            shell — owns view ('home'|'recent'|'starred') + Home filter/sort + renamingId + useRenameRoom
 ├── Sidebar          AvloLogo (reused from topbar/icons) + 3 nav buttons; active = matches view
 └── main
-    ├── TopHeader    search field + SignInButton (auth) + New Canvas (focus/press are CSS, render-free)
+    ├── TopHeader    search field + SignInButton (anon-only) + New Canvas + UserProfileMenu (signed-in only, furthest right)
     └── scroll › content › spine(max-width 1280)
         └── HomeView / RecentView / StarredView   useMemo'd filter→sort→group → CanvasTable
             └── CanvasTable   column-driven header + grouped rows + empty state (threads renamingId → per-row boolean)
-                └── CanvasRow (memo) → Cell      OwnerAvatar in the owner cell; KebabMenuCell (owner rows) + NameCell input while renaming
+                └── CanvasRow (memo) → Cell      Type cell (permissionLabel + EyeIcon); KebabMenuCell (isOwner rows) + NameCell input while renaming
 ```
 
 The `spine` (max-width 1280, left-aligned) shares the top bar row's left edge + right
@@ -45,12 +50,17 @@ cap, so the New Canvas button lines up with the table's right edge.
   Set/id). The kebab is persistently visible (not hover-revealed) on OWNED rows only — rename is
   owner-only and an inert button next to working ones reads as broken, so non-owned rows get an
   empty cell with the same grid footprint.
-- **Rename flow.** Kebab (`useDropdown`, right-anchored `.dash-row-menu`) → "Rename" swaps the
-  name cell to an uncontrolled `.dash-rename-input` (Enter/blur commit, Esc cancels via ref
-  flag; empty/unchanged reverts). `Dashboard` owns `renamingId` + commits pre-normalized
+- **Rename flow.** Kebab (`useDropdown`, right-anchored `.dash-row-menu`; the trigger goes
+  engaged-dark while open, the standard chrome pattern) → "Rename" (the topbar `EditIcon` +
+  label on one `--color-chrome-ink-body` ink via `.dash-row-menu-item`) swaps the name cell to
+  an uncontrolled `.dash-rename-input` (Enter/blur commit, Esc cancels via ref flag;
+  empty/unchanged reverts). `Dashboard` owns `renamingId` + commits pre-normalized
   (`normalizeRoomTitle`) text through `useRenameRoom()`; optimistic update + offline queueing
   live in the mutation defaults (`query/room-rename.ts`). Kebab/menu/input all stopPropagation
-  and the row ignores clicks while renaming, so editing never opens the room.
+  and the row ignores clicks while renaming, so editing never opens the room. `useDropdown`'s
+  outside dismiss is a document **pointerdown** (fires before any mousedown, immune to
+  stopPropagation'd mousedowns and the canvas's preventDefault), so opening a second kebab
+  closes the first.
 - **One generic dropdown** (`SortFilterDropdown`, used for both Filter + Sort) built on the
   context-menu's shared `useDropdown` hook. Open fill + selected row are CSS, keyed off
   `[aria-expanded]` + `.dash-dd-item-selected`. The menu enter is a fade + 8px downward glide on the
@@ -73,13 +83,12 @@ cap, so the New Canvas button lines up with the table's right edge.
 
 | File | Responsibility |
 |------|----------------|
-| `Dashboard.tsx` | Shell + state (view / filter / sort / renamingId) + `useRenameRoom` commit + the three view components + column templates. The only importer of `Dashboard.css`. |
+| `Dashboard.tsx` | Shell + state (view / filter / sort / renamingId) + `useRenameRoom` commit + the three view components + column templates (star · name · date(s) · type · owner · kebab). The only importer of `Dashboard.css`. |
 | `Sidebar.tsx` | Logo + nav. |
-| `TopHeader.tsx` | Search field (visual-only) + `<SignInButton variant="dashboard"/>` (`components/auth/` — Google sign-in/out placeholder) + New Canvas (mint id + facts + navigate). |
+| `TopHeader.tsx` | Search field (visual-only) + `<SignInButton variant="dashboard"/>` (anon-only Google CTA) + New Canvas (mint id + facts + navigate) + `<UserProfileMenu variant="dashboard"/>` (signed-in avatar dropdown — name + Log out; `components/auth/`). |
 | `SortFilterDropdown.tsx` | Generic Filter/Sort dropdown. |
 | `CanvasTable.tsx` | Column-driven header + grouped body + empty state. Owns the `Column` contract (`CanvasRow.tsx`); derives each row's `renaming` boolean from `renamingId`. |
-| `CanvasRow.tsx` | `memo`'d row + `Cell` renderer + `Column`/`RowRenameProps` types + `KebabMenuCell` (owner-only Rename menu) + `NameCell` (inline rename input). |
-| `OwnerAvatar.tsx` | 25×25 initials circle, tint by name. |
-| `data.ts` | Types + placeholder `CANVASES` + filter/sort/group + `tintFor`/`initials`/`formatDate`/`recencyBucket`. **The backend seam.** |
+| `CanvasRow.tsx` | `memo`'d row + `Cell` renderer + `Column`/`RowRenameProps` types + `KebabMenuCell` (isOwner-only Rename menu) + `NameCell` (inline rename input) + the Type cell (`permissionLabel` + `EyeIcon` on readonly). |
+| `data.ts` | `Canvas` display shape (`isOwner`/`permission` carried for the filter + kebab gate + Type column) + `permissionLabel` + filter/sort/group + `formatDate`/`recencyBucket`. **The backend seam.** |
 | `Dashboard.css` | All styles (`@layer components`, `dash-*` classes). |
-| `icons/*.tsx` | Home, Recent, Star, Search, PlusAlt, Kebab. (Chevron + check reused — see above.) |
+| `icons/*.tsx` | Home, Recent, Star, Search, PlusAlt, Kebab. (Chevron + check reused — see above; the Type column's `EyeIcon` and the rename `EditIcon` come from `components/icons/` + `topbar/icons/`.) |

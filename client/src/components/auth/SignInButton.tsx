@@ -15,54 +15,38 @@ function signIn() {
   window.location.assign(url.toString());
 }
 
-async function signOut() {
+/** Sign out, then reload through the `?auth=out` marker boot — ALWAYS onto /home (the
+ *  active room may be one the next identity can't access; the dashboard is the only
+ *  identity-neutral surface). The boot path purges all local room data + re-resolves
+ *  identity before anything renders. Exported for `UserProfileMenu`'s Log out row. */
+export async function signOut() {
   try {
     await authClient.logout.$post();
   } catch (err) {
     console.warn('[auth] logout request failed:', err);
   }
-  // Reload through the marker boot path — /me is the identity truth either way.
-  window.location.assign(`${window.location.pathname}?auth=out`);
+  window.location.assign('/home?auth=out');
 }
 
 /**
- * Placeholder sign-in/out affordance (real account UI is a later phase). Anon → the
- * Google CTA; signed-in → name (email on hover) + Sign out. Reads the synchronous
+ * Anon-only Google sign-in CTA — renders nothing for a signed-in user (the profile
+ * menu, `UserProfileMenu`, is the signed-in affordance). Reads the synchronous
  * auth-store mirror, so it flips the moment the marker boot's `/me` resolves.
  */
 export function SignInButton({ variant }: { variant: 'dashboard' | 'canvas' }) {
   const isAnon = useAuthStore((s) => s.isAnon);
-  const name = useAuthStore((s) => s.name);
-  const email = useAuthStore((s) => s.email);
+  if (!isAnon) return null;
 
   const canvas = variant === 'canvas';
-  const btnClass = canvas ? 'top-bar-auth-btn' : 'dash-auth-btn';
-
-  if (isAnon) {
-    return (
-      <button
-        type="button"
-        className={btnClass}
-        tabIndex={canvas ? -1 : undefined}
-        onMouseDown={canvas ? preventFocus : undefined}
-        onClick={signIn}
-      >
-        Sign in with Google
-      </button>
-    );
-  }
   return (
-    <div className={canvas ? 'top-bar-auth' : 'dash-auth'} title={email}>
-      <span className={canvas ? 'top-bar-auth-name' : 'dash-auth-name'}>{name}</span>
-      <button
-        type="button"
-        className={btnClass}
-        tabIndex={canvas ? -1 : undefined}
-        onMouseDown={canvas ? preventFocus : undefined}
-        onClick={signOut}
-      >
-        Sign out
-      </button>
-    </div>
+    <button
+      type="button"
+      className={canvas ? 'top-bar-auth-btn' : 'dash-auth-btn'}
+      tabIndex={canvas ? -1 : undefined}
+      onMouseDown={canvas ? preventFocus : undefined}
+      onClick={signIn}
+    >
+      Sign in with Google
+    </button>
   );
 }

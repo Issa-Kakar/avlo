@@ -23,8 +23,9 @@ dropdown menu that hangs off the left bar.
   TanStack `<Link to="/home" preload="intent">` → the dashboard (see
   **Navigation precedent** below). `SidebarIcon.tsx` is preserved in case
   the decision reverses.
-- **`TopBarRight`** (right, `top-bar-right`) — collaborator avatars ·
-  divider · Share button.
+- **`TopBarRight`** (right, `top-bar-right`) — collaborator avatars (peers
+  only — no self chip) · divider · anon-only sign-in CTA (+ its divider) ·
+  Share button (opens `ShareModal`) · signed-in profile menu.
 - **`MainMenu`** (popover) — drops out from the trigger to the right of
   the board name. Scaffold only today (no actions wired); the trigger and
   five rows are styled, the rest is placeholder.
@@ -40,8 +41,9 @@ The dropdown sits at `z-index: 401` so it paints over its own host pill.
 |---|---|
 | `TopBar.tsx` | Left-bar shell — orders logo / `RoomTitle` / `MainMenuTrigger` / divider / `HistoryButtons`. |
 | `RoomTitle.tsx` | Board name + tab title. Subscribes to `room-session-store` (`title`, `isOwner`). Read mode: span (`.top-bar-name`, plus `.top-bar-name-editable` cursor/hover affordance for owners). Edit mode (owner click): auto-sizing input via the CSS inline-grid mirror (`.top-bar-name-edit[data-value]` + `::after`), `maxLength=ROOM_TITLE_MAX_LEN`, Enter/blur commit through one blur path, Esc cancels via ref flag; empty/unchanged reverts. Commits via `useRenameRoom()` (`query/room-rename.ts`). Also owns `document.title = "<name> - Avlo"` (cleanup restores `Avlo`). |
-| `TopBarRight.tsx` | Right-bar shell — `UserAvatarCluster` / divider / `<SignInButton variant="canvas"/>` (`components/auth/` — Google sign-in/out placeholder, `.top-bar-auth*` styles) / divider / Share button. Share copies `window.location.href` to clipboard (placeholder for a real share modal). |
-| `TopBar.css` | The only stylesheet for this folder. Holds the shared `.top-bar` pill, every button variant, the main-menu container + items + divider + open animation, and the Share button. |
+| `TopBarRight.tsx` | Right-bar shell — `UserAvatarCluster` (peers only) / divider / anon-only `<SignInButton variant="canvas"/>` + its divider (both render only while anon) / Share button (opens the modal; owns `shareOpen` state) / `<UserProfileMenu variant="canvas"/>` (signed-in avatar dropdown — name + Log out; `components/auth/`, own co-located CSS). |
+| `ShareModal.tsx` | Centered share dialog (`.share-overlay` z:500, dismiss on overlay press + Escape): link row (`LinkIcon` + truncated href) with the permission beside it — owner gets a dropdown (`ChevronDownBoldIcon` trigger; "can edit"/"can view"/"no access" → `public`/`readonly`/`private`, current value from `room-session-store.permission`, fires `useSetPermission()` optimistically), non-owner a static label — plus the coral Copy Link CTA, hidden while private. `roomId` via `getRouteApi('/room/$roomId')`. |
+| `TopBar.css` | The only stylesheet for this folder. Holds the shared `.top-bar` pill, every button variant, the main-menu container + items + divider + open animation, the Share button, and the share modal (`.share-*`). |
 | `HistoryButtons.tsx` | `memo`'d. Undo/Redo buttons, subscribed to `history-store` (`selectCanUndo` / `selectCanRedo`). Clicks call `undo()` / `redo()` from `room-runtime`. |
 | `MainMenuTrigger.tsx` | The chevron-down button that replaces the kebab + the menu's open/close state + outside-click dismiss. |
 | `MainMenu.tsx` | Static row composition — three groups divided by hairlines: `Export` · `Board` / `Edit` / `Preferences` · `Keyboard shortcuts`. Every row currently just closes the menu on click. |
@@ -237,15 +239,24 @@ they will eventually open popouts — direction and shape not yet decided.
 
 ## TopBarRight
 
-Minimal today, but shares the same `.top-bar` pill chrome as the left bar.
+Shares the same `.top-bar` pill chrome as the left bar.
 
-- `UserAvatarCluster` — collaborator presence renders here.
+- `UserAvatarCluster` — collaborator presence, PEERS ONLY (the "ME" chip
+  was removed — self is represented by the profile menu / sign-in CTA);
+  overflow math runs off peers (`+N` past 4).
 - `.top-bar-divider` — same 2px blue-tinted hairline as the left bar
   (with a symmetric `0 8px` margin override since there's no text-mass
   asymmetry to balance).
-- Share button — coral CTA, copies `window.location.href` to clipboard
-  on click. Future work: a real share modal with permissions, link
-  expiry, etc.
+- Sign-in CTA + its trailing divider render only while anon (`isAnon`
+  read in the shell — `SignInButton` itself is anon-only, so leaving the
+  divider unconditional would double it up signed-in).
+- Share button — coral CTA, opens `ShareModal` (link + permission
+  dropdown for owners + Copy Link).
+- `UserProfileMenu` — signed-in only, furthest right: avatar trigger
+  (Google snapshot via `imagesClient.avatars[':hash'].$url` when
+  `avatarHash` is set, else an initials circle in the presence color) →
+  dropdown with the name (email tooltip) + Log out (`signOut` → always
+  `/home?auth=out`, which purges all local room data on boot).
 
 ---
 
@@ -341,15 +352,16 @@ RoomPage.tsx
 │   └── HistoryButtons       ← memo'd, subscribes to history-store
 │
 └── <TopBarRight />
-    ├── UserAvatarCluster
+    ├── UserAvatarCluster    (peers only — no self chip)
     ├── .top-bar-divider
-    ├── SignInButton (variant="canvas")
-    ├── .top-bar-divider
-    └── .top-bar-share       (clipboard placeholder)
+    ├── SignInButton (variant="canvas") + .top-bar-divider   (anon only)
+    ├── .top-bar-share       → ShareModal (link + permission + Copy Link)
+    └── UserProfileMenu (variant="canvas")                   (signed-in only)
 ```
 
 The board name is live — `RoomTitle` renders the server-pushed title and
 lets the owner rename in place (`query/room-rename.ts` mutation; `title:`
 rebroadcast keeps peers in sync). The AvloLogo is the app's one cross-route
 link (→ `/home` dashboard); see **Navigation precedent** below. The Share
-button works (copies URL) but is a placeholder for a real share flow.
+button opens `ShareModal` — link + the owner's permission dropdown
+(`useSetPermission`) + Copy Link.

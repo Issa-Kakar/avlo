@@ -380,19 +380,20 @@
     font-size: 13px;
     font-weight: 500;
     color: var(--color-chrome-ink-tier);
+    padding-right: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .dash-avatar {
-    display: inline-flex;
+  /* Type column — permission label; "View only" rows lead with the eye glyph. */
+  .dash-cell-type {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    width: 25px;
-    height: 25px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-chrome-ink-tier);
   }
 
   .dash-kebab-cell {
@@ -408,6 +409,12 @@
     left: auto;
     right: 4px;
     min-width: 150px;
+  }
+
+  /* Kebab menu rows — the main-menu row language: one body ink on the row, the
+     20×20 leading icon + label both inherit via currentColor. */
+  .dash-row-menu-item {
+    color: var(--color-chrome-ink-body);
   }
 
   /* Inline rename input — same type as the static name cell (14/600/-0.01em), framed
@@ -445,6 +452,15 @@
 
   .dash-kebab:hover {
     background: rgba(27, 31, 34, 0.07); /* dark wash, distinct from the blue row hover — single use */
+  }
+
+  /* Open kebab — the established engaged-dark trigger pattern (main-menu trigger,
+     filter/sort dropdowns): full ink fill, glyph flips white, survives hover + press. */
+  .dash-kebab[aria-expanded="true"],
+  .dash-kebab[aria-expanded="true"]:hover,
+  .dash-kebab[aria-expanded="true"]:active {
+    background: var(--color-chrome-ink-engaged);
+    color: #fff;
   }
 
   /* ----- Filter / Sort dropdown ----- */

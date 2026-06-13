@@ -471,6 +471,186 @@
   flex-shrink: 0;
 }
 
+/* ===== Share modal — centered dialog over the whole canvas ===== */
+
+/* Overlay above every chrome pill (top bars 400, their popovers 401). The scrim is the
+   engaged ink at low alpha so the canvas dims into the chrome family. */
+.share-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(27, 31, 34, 0.32); /* engaged-ink scrim — single use */
+}
+
+.share-modal {
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  padding: 18px 20px 20px;
+  background: var(--color-chrome-surface);
+  border: 1px solid var(--color-chrome-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-chrome-popover);
+  font-family: var(--font-ui);
+}
+
+.share-title {
+  margin-bottom: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-chrome-ink-engaged);
+}
+
+/* Link row — leading chain glyph, truncating href, permission affordance pinned right. */
+.share-link-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 8px 0 12px;
+  border: 1px solid var(--color-chrome-border);
+  border-radius: 10px;
+  color: var(--color-chrome-ink-body);
+}
+
+.share-link-row > svg {
+  flex-shrink: 0;
+}
+
+.share-link-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  user-select: text; /* the pill chrome sets user-select:none — the link must stay copyable */
+}
+
+/* Owner-only permission dropdown — engaged-dark trigger (the chrome's open pattern). */
+.share-perm {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.share-perm-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  border: none;
+  border-radius: var(--radius-chrome-btn);
+  background: transparent;
+  color: var(--color-chrome-ink-engaged);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.share-perm-trigger:hover {
+  background: var(--color-chrome-hover);
+}
+
+.share-perm-trigger[aria-expanded="true"],
+.share-perm-trigger[aria-expanded="true"]:hover,
+.share-perm-trigger[aria-expanded="true"]:active {
+  background: var(--color-chrome-ink-engaged);
+  color: var(--color-chrome-surface);
+}
+
+.share-perm-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1;
+  min-width: 130px;
+  padding: 4px;
+  background: var(--color-chrome-surface);
+  border: 1px solid var(--color-chrome-border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-chrome-popover);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.share-perm-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-chrome-ink-body);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.share-perm-item:hover {
+  background: var(--color-chrome-hover);
+}
+
+.share-perm-item-selected,
+.share-perm-item-selected:hover {
+  background: var(--color-chrome-ink-engaged);
+  color: #fff;
+}
+
+/* Non-owner: the permission as a static baked-in label — no affordance to mutate. */
+.share-perm-static {
+  flex-shrink: 0;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-chrome-ink-body);
+}
+
+/* Copy Link — the coral CTA language (.top-bar-share), hidden while private. */
+.share-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 14px;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--radius-chrome-btn);
+  background: #ef4e3a;
+  color: var(--color-chrome-surface);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.share-copy:hover {
+  background: #d74634;
+}
+
+.share-copy:active {
+  background: #bf3e2e;
+  transform: scale(0.97);
+}
+
 /* ===== Responsive ===== */
 
 @media (max-width: 768px) {

@@ -2,7 +2,7 @@
  * RoomDocManager - Central authority for Y.Doc and real-time collaboration
  */
 
-import { getZ, isZKey, type RoomId, type UserId, type YObjects, type ZKey } from '@avlo/shared';
+import { getZ, isZKey, Permission, type RoomId, type UserId, type YObjects, type ZKey } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
@@ -17,14 +17,19 @@ import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { createHandle, isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { ZRankTable } from '@/core/z-order/z-rank-table';
+import { queryClient } from '@/query/client';
+import { ROOMS_QUERY_KEY, type RoomsQueryData } from '@/query/rooms';
 import { evictGeometry } from '@/renderer/geometry-cache';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { router } from '@/router';
 import { getUserId } from '@/stores/auth-store';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
-import { resetRoomSession, setRoomAccess, setRoomIsOwner, setRoomMode, setRoomTitle } from '@/stores/room-session-store';
+import { removeRoom, setRoomOwnerFact, setRoomPermissionFact } from '@/stores/room-list-store';
+import { resetRoomSession, setRoomAccess, setRoomIsOwner, setRoomMode, setRoomPermission, setRoomTitle } from '@/stores/room-session-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
+import { ROOM_DOC_DB_PREFIX } from '@/utils/room-local-data';
 import { bindUndoManagerToHistoryStore } from './history-bridge';
 import { attach, detach } from './presence/presence';
 
@@ -495,8 +500,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private async initializeIndexedDBProvider(): Promise<void> {
     try {
-      const dbName = `avlo.v1.rooms.${this.roomId}`;
-      this.indexeddbProvider = new IndexeddbPersistence(dbName, this.ydoc);
+      this.indexeddbProvider = new IndexeddbPersistence(ROOM_DOC_DB_PREFIX + this.roomId, this.ydoc);
       await Promise.race([this.indexeddbProvider.whenSynced, new Promise<void>((resolve) => setTimeout(resolve, 1000))]).catch(() => {});
     } catch (err) {
       console.error('[RoomDocManager] IDB initialization failed (non-critical):', err);
@@ -532,21 +536,50 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // 4401/4403 are terminal — record the denial + disconnect so the retry loop stops.
       // 1006/1008/transient closes fall through to the provider's auto-reconnect.
       this.websocketProvider.on('connection-close', (event: CloseEvent) => {
-        if (event.code === 4401 || event.code === 4403) {
-          setRoomAccess(event.code === 4401 ? 'unauthenticated' : 'forbidden');
-          this.websocketProvider?.disconnect();
-        }
+        if (event.code !== 4401 && event.code !== 4403) return;
+        setRoomAccess(event.code === 4401 ? 'unauthenticated' : 'forbidden');
+        this.websocketProvider?.disconnect();
+        // 4401 (auth hiccup, possibly transient) gets none of the destructive handling.
+        if (event.code !== 4403) return;
+
+        // 4403 = private + not owner, by definition. Drop every local trace and leave —
+        // with persistence deleted and the WS dead, a still-interactive canvas would
+        // silently discard every further edit.
+        removeRoom(this.roomId);
+        // Patch the stale cached row (e.g. 'public') so the merge hides it before the
+        // next refetch lands.
+        queryClient.setQueryData<RoomsQueryData>(ROOMS_QUERY_KEY, (data) =>
+          data ? { ...data, rooms: data.rooms.map((r) => (r.roomId === this.roomId ? { ...r, permission: 'private' } : r)) } : data,
+        );
+        // y-indexeddb destroy-and-delete: clearData() unhooks the update listener BEFORE
+        // deleting, so the live Y.Doc can't re-persist; the dispose chain's later
+        // destroy() is a harmless no-op on the nulled field.
+        this.indexeddbProvider = dispose(this.indexeddbProvider, (p) => void p.clearData());
+        void router.navigate({ to: '/home' });
       });
 
       // Server-pushed session state arrives out-of-band as prefixed custom messages (the
       // provider already stripped the `__YPS:` prefix). `mode:` — effective editor/viewer
       // (stored only; viewer gating deferred, §17 step 8). `title:` — pushed on connect +
       // rebroadcast on every rename. `owner:` — per-connection ownership flag (gates the
-      // rename affordance; enforcement stays in the DO).
+      // rename affordance; enforcement stays in the DO). `perm:` — room-wide permission
+      // (drives the Share modal + dashboard Type column); the `owner:`/`perm:` values
+      // also mirror into the persisted facts (update-only — a 4403-pruned room's absent
+      // row is never recreated by a late push).
       this.websocketProvider.on('custom-message', (message: string) => {
         if (message.startsWith('mode:')) setRoomMode(message.slice(5) === 'viewer' ? 'viewer' : 'editor');
         else if (message.startsWith('title:')) setRoomTitle(message.slice(6));
-        else if (message.startsWith('owner:')) setRoomIsOwner(message.slice(6) === '1');
+        else if (message.startsWith('owner:')) {
+          const isOwner = message.slice(6) === '1';
+          setRoomIsOwner(isOwner);
+          setRoomOwnerFact(this.roomId, isOwner);
+        } else if (message.startsWith('perm:')) {
+          const parsed = Permission.safeParse(message.slice(5));
+          if (parsed.success) {
+            setRoomPermission(parsed.data);
+            setRoomPermissionFact(this.roomId, parsed.data);
+          }
+        }
       });
     } catch (err: unknown) {
       console.error('[RoomDocManager] WebSocket initialization failed:', err);

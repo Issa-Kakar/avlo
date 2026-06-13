@@ -11,12 +11,15 @@ import { z } from 'zod/v4';
 
 /** One dashboard row — the §4 query projection. `permission`/`title`/`isOwner`
  *  are display-only (the access decision reads the DO, never D1). `permission` is
- *  the shared `Permission` type (a pure literal union). */
+ *  the shared `Permission` type (a pure literal union). Private rooms the caller
+ *  doesn't own arrive with `title: ''` + `ownerName: null` (server-side redaction;
+ *  the row itself is the client's prune signal). */
 export interface RoomListEntry {
   roomId: RoomId;
   title: string; // NOT NULL in D1 (DEFAULT 'Untitled'); renamed via PATCH /rooms/:id/title
   permission: Permission;
   isOwner: boolean;
+  ownerName: string | null; // account directory join — null for anon owners (no `users` row)
   lastVisitedAt: number;
 }
 
