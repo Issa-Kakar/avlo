@@ -256,10 +256,14 @@ function preflight() {
   }
 }
 
-// ─── .dev.vars defensive guard ───────────────────────────────────────────────
+// ─── .dev.vars defensive guard + dev:p OAuth offset ──────────────────────────
 // The translator already folds workers/auth/.dev.vars (via getVarsForDev) — verified.
 // Keep a guard anyway: if the three secrets or the localhost APP_ORIGIN override are
 // absent, parse + merge the file ourselves (.dev.vars wins). NEVER log values.
+// Then, under dev:p (offset > 0), overwrite APP_ORIGIN/OAUTH_REDIRECT_URI with the
+// offset-derived ports (Vite :5180 / auth :8802) so Google's second registered
+// redirect URI completes sign-in — makeGoogle reads them from env (never from the
+// request, a security invariant), so the orchestrator is the only injection point.
 function parseDotEnv(text) {
   const out = {};
   for (const line of text.split('\n')) {
@@ -283,17 +287,32 @@ function ensureAuthDevVars() {
   const required = ['ANON_SECRET', 'GOOGLE_CLIENT_SECRET', 'OAUTH_PKCE_SECRET'];
   const b = auth.workerOptions.bindings ?? {};
   const folded = required.every((k) => b[k]) && typeof b.APP_ORIGIN === 'string' && b.APP_ORIGIN.includes('localhost');
-  if (folded) return; // translator did its job
 
-  const devVarsPath = resolve(repoRoot, 'workers/auth/.dev.vars');
-  if (existsSync(devVarsPath)) {
-    auth.workerOptions.bindings = { ...b, ...parseDotEnv(readFileSync(devVarsPath, 'utf8')) }; // .dev.vars wins
+  // Defensive merge — only when the translator DIDN'T fold .dev.vars. The offset
+  // block below runs unconditionally (it must override even a clean fold).
+  if (!folded) {
+    const devVarsPath = resolve(repoRoot, 'workers/auth/.dev.vars');
+    if (existsSync(devVarsPath)) {
+      auth.workerOptions.bindings = { ...b, ...parseDotEnv(readFileSync(devVarsPath, 'utf8')) }; // .dev.vars wins
+    }
+    const missing = required.filter((k) => !auth.workerOptions.bindings?.[k]);
+    if (missing.length) {
+      console.warn(
+        `[mf] auth secrets missing after .dev.vars merge: ${missing.join(', ')} — Google sign-in will 500. Create workers/auth/.dev.vars.`,
+      );
+    }
   }
-  const missing = required.filter((k) => !auth.workerOptions.bindings?.[k]);
-  if (missing.length) {
-    console.warn(
-      `[mf] auth secrets missing after .dev.vars merge: ${missing.join(', ')} — Google sign-in will 500. Create workers/auth/.dev.vars.`,
-    );
+
+  // dev:p (PORT_OFFSET): base .dev.vars APP_ORIGIN/OAUTH_REDIRECT_URI are locked to
+  // :3000/:8792. Rewrite to the offset ports so Google's registered :8802 redirect +
+  // Vite :5180 complete the round-trip. Same Google client id — both redirect URIs
+  // are registered. makeGoogle stays env-only (no request-derivation). Mutates
+  // bindings in place, which buildWorkerEntries() re-reads on every hot reload — so
+  // this survives reloads exactly like the secret merge above.
+  if (offset > 0) {
+    const bindings = (auth.workerOptions.bindings ??= {});
+    bindings.OAUTH_REDIRECT_URI = `http://localhost:${PORTS.auth + offset}/callback`;
+    bindings.APP_ORIGIN = `http://localhost:${parseInt(process.env.VITE_PORT || '3000', 10)}`;
   }
 }
 

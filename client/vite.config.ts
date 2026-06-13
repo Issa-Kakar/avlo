@@ -47,10 +47,16 @@ const proxyConfig = {
   },
 };
 
-// credentialless (not require-corp) so cross-origin Google Fonts keep loading
-// without needing CORP headers on each asset. Future external CDN assets that
-// need credentials will look like 401s — switch to require-corp + per-asset
-// CORP, or proxy them through /api, if that becomes an issue.
+// COEP credentialless (not require-corp). Both give crossOriginIsolated === true (⇒
+// SAB), and the images asset-body CSP already sets CORP: cross-origin, so require-corp
+// would load every asset too. Tie-breaker: credentialless strips credentials from
+// no-cors cross-origin embeds — the app has exactly one, the account-avatar <img> from
+// images.avlo.io (UserProfileMenu). That origin is same-site, so SameSite=Lax would NOT
+// stop the <img> shipping avlo_anon + the HttpOnly avlo_session; credentialless keeps the
+// bearer token off the image subdomain (which never reads it), for free. CORS calls (/me,
+// /rooms, uploads) stay credentialed in BOTH modes — COEP doesn't touch them. Switch to
+// require-corp only for a CREDENTIALED cross-origin embed (a private per-user CDN); public
+// content-addressed assets never need it.
 const isolationHeaders = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'credentialless',
@@ -70,9 +76,9 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
-      '@avlo/shared': path.resolve(__dirname, '../packages/shared/src'),
-      '@avlo/api-client': path.resolve(__dirname, '../packages/api-client/src'),
+      '@': path.resolve(__dirname_local, './src'),
+      '@avlo/shared': path.resolve(__dirname_local, '../packages/shared/src'),
+      '@avlo/api-client': path.resolve(__dirname_local, '../packages/api-client/src'),
     },
   },
   server: {
@@ -92,8 +98,8 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main: path.resolve(__dirname, 'index.html'),
-        sw: path.resolve(__dirname, 'src/sw.ts'),
+        main: path.resolve(__dirname_local, 'index.html'),
+        sw: path.resolve(__dirname_local, 'src/sw.ts'),
       },
       output: {
         entryFileNames: (chunk) => (chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js'),
