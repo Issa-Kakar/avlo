@@ -8,6 +8,7 @@
   color: var(--icon-muted, #ffffff);
   border: none;
   cursor: pointer;
+  touch-action: none; /* drag-place: keep touch pointers from being stolen by scroll gestures */
   transition:
     background 120ms ease,
     color 120ms ease;

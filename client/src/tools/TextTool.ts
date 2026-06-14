@@ -10,17 +10,10 @@
  */
 
 import { generateZAtTop } from '@avlo/shared';
-import { Editor } from '@tiptap/core';
-import Bold from '@tiptap/extension-bold';
-import Document from '@tiptap/extension-document';
-import Highlight from '@tiptap/extension-highlight';
-import Italic from '@tiptap/extension-italic';
-import Paragraph from '@tiptap/extension-paragraph';
-import Text from '@tiptap/extension-text';
-import { Placeholder } from '@tiptap/extensions';
+import type { Editor } from '@tiptap/core';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
+import type { TextAlign, TextAlignV } from '@/core/accessors';
 import {
   getAlign,
   getAlignV,
@@ -34,10 +27,10 @@ import {
   getNoteProps,
   getShapeType,
   getTextProps,
+  getTextWidth,
   hasLabel,
 } from '@/core/accessors';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
-import { TextCollaboration } from '@/core/text/extensions';
 import { computeLabelTextBox } from '@/core/text/shape-label';
 import {
   getNoteContentWidth,
@@ -49,16 +42,21 @@ import {
 } from '@/core/text/sticky-note';
 import { getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-measure';
 import { anchorFactor, FONT_FAMILIES } from '@/core/text/text-system';
+import { loadTiptapEditor } from '@/core/text/tiptap-loader';
+import type { ObjectHandle } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
-import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId } from '@/stores/auth-store';
-import { closeStickyPanel, useDeviceUIStore } from '@/stores/device-ui-store';
+import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
+import { closeStickyPanel, setCursorOverride, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import type { PointerTool, PreviewData } from './types';
+
+/** Toolbar drag-place: release within this screen distance of pointerdown = plain click, create nothing. */
+const PLACE_CLICK_MAX_PX = 5;
 
 /** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
 function syncInlineStylesToStore(editor: Editor): void {
@@ -76,12 +74,23 @@ export class TextTool implements PointerTool {
   private downWorld: [number, number] | null = null;
   private hitTextId: string | null = null;
 
+  // Toolbar drag-place state (entered via beginPlace; pointerdown was on a palette
+  // swatch and the canvas holds pointer capture). placePos null until first move.
+  private placing = false;
+  private placePos: [number, number] | null = null;
+  private placeFill = '';
+
   // Editor state
   private container: HTMLDivElement | null = null;
   private editor: Editor | null = null;
   objectId: string | null = null; // public — mirrors textEditingId
 
   justClosedLabelId: string | null = null;
+
+  // Tracks the in-flight mount target across the async Tiptap import window. A
+  // second edit/create overwrites this; the older mount's post-await fence then
+  // sees a stale id and bails before touching the DOM or store. (Mirrors CodeTool.)
+  private pendingMountId: string | null = null;
 
   // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
@@ -112,18 +121,42 @@ export class TextTool implements PointerTool {
     this.hitTextId = pickTopmostOfKind([worldX, worldY], { px: 8 }, tool === 'note' ? 'note' : 'text');
   }
 
-  move(_worldX: number, _worldY: number): void {
-    // Text tool doesn't track movement during gesture
+  /** Toolbar drag-place gesture — sticky-note preview follows the cursor, drop creates + edits. */
+  beginPlace(pointerId: number, worldX: number, worldY: number): void {
+    this.gestureActive = true;
+    this.placing = true;
+    this.pointerId = pointerId;
+    this.downWorld = [worldX, worldY];
+    this.placePos = null;
+    this.placeFill = useDeviceUIStore.getState().note.fillColor; // caller set it just before
   }
 
-  end(_worldX?: number, _worldY?: number): void {
+  move(worldX: number, worldY: number): void {
+    if (!this.placing) return;
+    if (this.placePos) {
+      this.placePos[0] = worldX;
+      this.placePos[1] = worldY;
+    } else {
+      this.placePos = [worldX, worldY];
+    }
+    invalidateOverlay();
+  }
+
+  end(worldX?: number, worldY?: number): void {
+    if (this.placing) {
+      this.endPlace(worldX, worldY);
+      return;
+    }
+
     if (!this.gestureActive || !this.downWorld) {
       this.resetGesture();
       return;
     }
 
+    // mountEditor is async (lazy Tiptap import); beginTextEditing + invalidations
+    // are deferred into its atomic swap so the canvas keeps painting the real
+    // glyphs through the import window — no disappearance gap. Fire-and-forget.
     if (this.hitTextId) {
-      useSelectionStore.getState().beginTextEditing(this.hitTextId);
       this.mountEditor(this.hitTextId, false);
     } else {
       let [x, y] = this.downWorld;
@@ -132,16 +165,34 @@ export class TextTool implements PointerTool {
         y -= NOTE_WIDTH / 2;
       }
       const objectId = this.createTextObject(x, y);
-      useSelectionStore.getState().beginTextEditing(objectId);
       this.mountEditor(objectId, true);
     }
 
     this.resetGesture();
-    invalidateOverlay();
-    invalidateWorldAll();
+  }
+
+  private endPlace(worldX?: number, worldY?: number): void {
+    setCursorOverride(null);
+    closeStickyPanel(); // click AND drop both dismiss (parity with pickColor / begin())
+    const down = this.downWorld!;
+    const scale = useCameraStore.getState().scale;
+    if (worldX === undefined || worldY === undefined || Math.hypot(worldX - down[0], worldY - down[1]) * scale < PLACE_CLICK_MAX_PX) {
+      this.resetGesture(); // plain click — color already applied at pointerdown
+      invalidateOverlay();
+      return;
+    }
+
+    const objectId = this.createTextObject(worldX - NOTE_WIDTH / 2, worldY - NOTE_WIDTH / 2);
+    this.mountEditor(objectId, true); // same create+edit flow as click-create (deferred beginTextEditing/invalidate in the swap)
+
+    this.resetGesture();
   }
 
   cancel(): void {
+    if (this.placing) {
+      setCursorOverride(null);
+      closeStickyPanel();
+    }
     this.resetGesture();
     invalidateOverlay();
   }
@@ -155,6 +206,9 @@ export class TextTool implements PointerTool {
   }
 
   getPreview(): PreviewData | null {
+    if (this.placing && this.placePos) {
+      return { kind: 'note', x: this.placePos[0] - NOTE_WIDTH / 2, y: this.placePos[1] - NOTE_WIDTH / 2, fillColor: this.placeFill };
+    }
     return null;
   }
 
@@ -196,10 +250,40 @@ export class TextTool implements PointerTool {
       });
     }
 
+    // beginTextEditing + invalidation are deferred into mountEditor's atomic swap
+    // (label glyphs stay painted through the cold-load window). Fire-and-forget.
     this.downWorld = entryPoint ?? null;
-    useSelectionStore.getState().beginTextEditing(objectId);
-    invalidateWorldAll();
     this.mountEditor(objectId, isNewLabel);
+  }
+
+  /**
+   * Re-skin the mounted editor after the edited object's kind flipped in place
+   * (cross-kind conversion). Called by selection-store's observer bridge AFTER
+   * the deep observer rebuilt the subsystem caches — reads fresh state,
+   * idempotent. The editor, fragment binding, caret, and undo session all
+   * survive: same Y.XmlFragment instance, no remount. onTransaction's closure
+   * `handle` self-corrects (kind was mutated in place on the same object).
+   */
+  onEditingKindChanged(): void {
+    if (!this.container || !this.objectId) return;
+    const handle = getHandle(this.objectId);
+    if (!handle) return;
+    const c = this.container;
+
+    // Reset cross-mode residue — each target mode rewrites only its own subset.
+    // (--text-anchor-tx / --text-align are rewritten by every target path.)
+    c.style.width = '';
+    c.style.maxWidth = '';
+    c.style.maxHeight = '';
+    c.style.backgroundColor = '';
+    c.style.setProperty('--text-anchor-ty', '0%');
+
+    this.applyEditorSkin(c, this.objectId, handle);
+
+    // Covers position / fontSize / lineHeight / fontFamily / --hl-pad / per-mode
+    // dims (note branch reads derived·scale automatically).
+    this.positionEditor();
+    invalidateOverlay(); // handle-visibility rules differ per kind while editing
   }
 
   isEditorMounted(): boolean {
@@ -266,172 +350,78 @@ export class TextTool implements PointerTool {
   // Private: Editor Mounting
   // =========================================================================
 
-  private mountEditor(objectId: string, isNew: boolean): void {
+  private async mountEditor(objectId: string, isNew: boolean): Promise<void> {
+    // ─── PHASE 1: pre-await (synchronous) ──────────────────────────────────
     const host = getEditorHost();
     if (!host) {
       console.error('[TextTool] No editor host available');
       return;
     }
-
     const handle = getHandle(objectId);
     if (!handle) {
       console.error('[TextTool] Object not found:', objectId);
       return;
     }
 
-    const isLabel = handle.kind === 'shape';
+    // Capture the click world point NOW — callers run resetGesture() during the
+    // await, which nulls this.downWorld. New objects focus at end (null). For
+    // existing edits this maps through a LIVE worldToClient in the post-swap rAF.
+    const clickWorld: [number, number] | null = isNew ? null : this.downWorld;
 
-    // Read shared properties
-    let fragment: Y.XmlFragment | null;
-    let fontSize: number;
-    let fontFamily: FontFamily;
+    // Defensive: close any editor already open (normally none — canBegin guards).
+    if (this.editor) this.commitAndClose();
 
-    if (isLabel) {
-      fragment = getContent(handle.y);
-      fontSize = getFontSize(handle.y);
-      fontFamily = getFontFamily(handle.y);
-    } else if (handle.kind === 'note') {
-      const np = getNoteProps(handle.y);
-      if (!np) {
-        console.error('[TextTool] Note missing required properties:', objectId);
-        return;
-      }
-      fragment = np.content;
-      fontFamily = np.fontFamily;
-      getNoteLayout(objectId, np.content, np.fontFamily);
-      fontSize = getNoteDerivedFontSize(objectId) * np.scale;
-    } else {
-      const props = getTextProps(handle.y);
-      if (!props) {
-        console.error('[TextTool] Object missing required properties:', objectId);
-        return;
-      }
-      fragment = props.content;
-      fontSize = props.fontSize;
-      fontFamily = props.fontFamily;
+    // Mark intent. A second edit/create during the import window overwrites this;
+    // the older mount's PHASE 3 fence then sees a stale id and bails.
+    this.pendingMountId = objectId;
+
+    // ─── PHASE 2: lazy Tiptap import (the only async window) ───────────────
+    const M = await loadTiptapEditor(); // cached — instant when warm/preloaded
+
+    // ─── PHASE 3: post-await race fence ────────────────────────────────────
+    // Re-entrancy (a newer mount overwrote pendingMountId), deletion, or kind
+    // change during the wait → drop the half-built mount. Clean up the empty
+    // object this NEW mount created so it isn't stranded (see deleteIfEmptyCreated).
+    if (this.pendingMountId !== objectId) {
+      if (isNew) this.deleteIfEmptyCreated(objectId);
+      return;
     }
-
-    if (!fragment) {
-      console.error('[TextTool] No content fragment:', objectId);
+    const fresh = getHandle(objectId);
+    if (!fresh || (fresh.kind !== 'text' && fresh.kind !== 'note' && fresh.kind !== 'shape')) {
+      this.pendingMountId = null;
+      if (isNew) this.deleteIfEmptyCreated(objectId);
       return;
     }
 
-    const familyConfig = FONT_FAMILIES[fontFamily];
-    const scale = useCameraStore.getState().scale;
-    const scaledFontSize = fontSize * scale;
+    // ─── PHASE 4: build off-DOM (reads fresh state) ────────────────────────
+    const isLabel = fresh.kind === 'shape';
+    const fragment: Y.XmlFragment | null = isLabel
+      ? getContent(fresh.y)
+      : fresh.kind === 'note'
+        ? (getNoteProps(fresh.y)?.content ?? null)
+        : (getTextProps(fresh.y)?.content ?? null);
+    if (!fragment) {
+      console.error('[TextTool] No content fragment:', objectId);
+      this.pendingMountId = null;
+      if (isNew) this.deleteIfEmptyCreated(objectId);
+      return;
+    }
 
-    // Create container div
     const container = document.createElement('div');
     container.className = 'tiptap';
     container.style.position = 'absolute';
-    container.style.fontSize = `${scaledFontSize}px`;
-    container.style.lineHeight = `${scaledFontSize * familyConfig.lineHeightMultiplier}px`;
-    container.style.fontFamily = familyConfig.fallback;
-    container.style.setProperty('--hl-pad', `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`);
+    this.applyEditorSkin(container, objectId, fresh); // skin statics only; positionEditor (swap) owns geometry
 
-    const isNoteObj = !isLabel && handle.kind === 'note';
-
-    if (isLabel) {
-      // Label: alignment-aware positioning within text box
-      const frame = getFrame(handle.y)!;
-      const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
-      const [tbx, tby, tbw, tbh] = textBox;
-      const align = getAlign(handle.y, 'center');
-      const alignV: TextAlignV = getAlignV(handle.y);
-
-      // Horizontal anchor
-      const anchorX = tbx + anchorFactor(align) * tbw;
-      container.style.setProperty('--text-anchor-tx', align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
-      container.style.setProperty('--text-align', align);
-
-      // Vertical anchor + clamp
-      const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
-      const anchorY = tby + vFactor * tbh;
-      const maxTy = vFactor * tbh * scale;
-      container.style.setProperty('--text-anchor-ty', alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`);
-
-      const [sx, sy] = worldToClient(anchorX, anchorY);
-      container.style.left = `${sx}px`;
-      container.style.top = `${sy}px`;
-      container.style.maxWidth = `${tbw * scale}px`;
-      container.style.maxHeight = `${tbh * scale}px`;
-      container.dataset.widthMode = 'label';
-      container.style.setProperty('--text-color', getLabelColor(handle.y));
-    } else if (isNoteObj) {
-      // Sticky note: alignment-aware positioning with vertical clamp
-      // fontSize/lineHeight/fontFamily already correct from the generic block above
-      const props = getNoteProps(handle.y)!;
-      const { origin, scale: noteScale, align, alignV } = props;
-      const padding = getNotePadding(noteScale);
-      const contentWidth = getNoteContentWidth(noteScale);
-      const maxContentH = contentWidth; // square content box
-
-      // Horizontal: position at alignment anchor within content area
-      const anchorX = origin[0] + padding + anchorFactor(align) * contentWidth;
-      container.style.setProperty('--text-anchor-tx', align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
-      container.style.setProperty('--text-align', align);
-
-      // Vertical: position at vFactor anchor, clamp translateY
-      const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
-      const topWorldY = origin[1] + padding + vFactor * maxContentH;
-      const maxTy = vFactor * maxContentH * scale;
-      container.style.setProperty('--text-anchor-ty', alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`);
-
-      const [sx, sy] = worldToClient(anchorX, topWorldY);
-      container.style.left = `${sx}px`;
-      container.style.top = `${sy}px`;
-      container.style.maxWidth = `${contentWidth * scale}px`;
-      container.style.maxHeight = `${maxContentH * scale}px`;
-      container.dataset.widthMode = 'note';
-      container.style.setProperty('--text-color', getStickyNoteTextColor(props.fillColor));
-    } else {
-      // Text object: origin-based positioning
-      const props = getTextProps(handle.y)!;
-      const { origin, align, width } = props;
-      const color = getColor(handle.y);
-      const [screenX, screenY] = worldToClient(origin[0], origin[1]);
-      container.style.left = `${screenX}px`;
-      container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio(fontFamily)}px`;
-      if (typeof width === 'number') {
-        container.style.width = `${width * scale}px`;
-        container.dataset.widthMode = 'fixed';
-      } else {
-        container.dataset.widthMode = 'auto';
-      }
-      container.style.setProperty('--text-color', color);
-      applyAlignCSS(container, align);
-      const fillColor = getFillColor(handle.y);
-      if (fillColor) container.style.backgroundColor = fillColor;
-    }
-
-    host.appendChild(container);
-
-    // Capture click coords for cursor positioning (before resetGesture clears downWorld)
-    const clickWorld = this.downWorld;
-    const clientCoords = !isNew && clickWorld ? worldToClient(clickWorld[0], clickWorld[1]) : null;
-
-    // Build extensions — labels skip Placeholder
-    const extensions = [
-      Document,
-      ...(isLabel ? [] : [Placeholder.configure({ placeholder: 'Type something...' })]),
-      Paragraph,
-      Text,
-      Bold,
-      Italic,
-      Highlight.configure({ multicolor: true }),
-      TextCollaboration.configure({
+    const editor = new M.Editor({
+      element: { mount: container },
+      extensions: M.buildTextExtensions({
+        isLabel,
         fragment,
-        yObj: handle.y,
+        yObj: fresh.y,
         userId: getUserId(),
         mainUndoManager: getActiveRoomDoc().getUndoManager(),
         onPropsSync: (keys) => this.syncProps(keys),
       }),
-    ];
-
-    // Create Tiptap Editor
-    const editor = new Editor({
-      element: { mount: container },
-      extensions,
       autofocus: isNew ? 'end' : false,
       onCreate: ({ editor: ed }) => {
         syncInlineStylesToStore(ed);
@@ -439,28 +429,91 @@ export class TextTool implements PointerTool {
       },
       onTransaction: ({ editor: ed, transaction }) => {
         syncInlineStylesToStore(ed);
-        if (handle.kind === 'note' && transaction.docChanged) {
+        // fresh is the live handle — its .kind self-corrects through in-place conversion.
+        if (fresh.kind === 'note' && transaction.docChanged) {
           this.updateNoteAutoSize();
         }
       },
     });
 
-    // For existing text, place cursor at click position when provided, else at end.
-    // Deferred to next frame — ProseMirror needs a layout pass before posAtCoords works.
-    if (!isNew) {
+    // ─── PHASE 5: ATOMIC SWAP (synchronous, no paint between) ──────────────
+    // appendChild (PM content rendered synchronously on `new Editor`) + the store
+    // flip happen in one tick: the next browser frame composites the canvas (glyphs
+    // now skipped) and the positioned editor together — one frame, no gap. Through
+    // PHASES 2–4 _textEditingId stays unset, so the canvas paints the real glyphs.
+    host.appendChild(container);
+    this.container = container;
+    this.editor = editor;
+    this.objectId = objectId;
+    this.pendingMountId = null;
+    this.positionEditor(); // single geometry authority — reads the LIVE camera + props
+    useSelectionStore.getState().beginTextEditing(objectId); // now the canvas drops the glyphs
+    invalidateOverlay();
+    invalidateWorldAll();
+
+    // ─── PHASE 6: post-swap wiring ─────────────────────────────────────────
+    // For existing text, place the cursor at the click. Map the WORLD click through
+    // a LIVE worldToClient inside the rAF (the camera may have moved during the
+    // import) — strictly more correct than a pre-await snapshot. ProseMirror also
+    // needs a layout pass before posAtCoords resolves, which the rAF provides.
+    if (!isNew && clickWorld) {
       requestAnimationFrame(() => {
         if (!this.editor) return;
-        const hit = clientCoords ? this.editor.view.posAtCoords({ left: clientCoords[0], top: clientCoords[1] }) : null;
+        const [cx, cy] = worldToClient(clickWorld[0], clickWorld[1]);
+        const hit = this.editor.view.posAtCoords({ left: cx, top: cy });
         this.editor.commands.focus(hit ? hit.pos : 'end');
       });
     }
 
-    // Store flat fields
-    this.container = container;
-    this.editor = editor;
-    this.objectId = objectId;
-
     this.setupEditorHandlers();
+  }
+
+  /** Apply the per-kind skin statics (data-width-mode, --text-color, text-mode
+   *  align + fill). Shared by mountEditor's build and onEditingKindChanged's re-skin.
+   *  Reads fresh state; positionEditor() owns position/dims/fontSize and (shape/note)
+   *  the anchor vars afterward. */
+  private applyEditorSkin(container: HTMLDivElement, objectId: string, handle: ObjectHandle): void {
+    if (handle.kind === 'shape') {
+      container.dataset.widthMode = 'label';
+      container.style.setProperty('--text-color', getLabelColor(handle.y));
+    } else if (handle.kind === 'note') {
+      container.dataset.widthMode = 'note';
+      const props = getNoteProps(handle.y);
+      if (props) {
+        getNoteLayout(objectId, props.content, props.fontFamily); // defensive — cheap tier-1 hit (positionEditor reads derivedFontSize)
+        container.style.setProperty('--text-color', getStickyNoteTextColor(props.fillColor));
+      }
+    } else {
+      container.dataset.widthMode = typeof getTextWidth(handle.y) === 'number' ? 'fixed' : 'auto';
+      container.style.setProperty('--text-color', getColor(handle.y));
+      applyAlignCSS(container, getAlign(handle.y));
+      const fillColor = getFillColor(handle.y);
+      if (fillColor) container.style.backgroundColor = fillColor;
+    }
+  }
+
+  /** Phase-3 bail cleanup for a superseded NEW mount: the object was created before
+   *  the async import (same shape as CodeTool.createCodeObject), so an aborted mount
+   *  would strand an empty text/note/label. Mirrors commitAndClose's empty policy —
+   *  shape → drop the 6 label fields (keep shape); text → delete the object; note →
+   *  preserved (empty notes are valid visuals). */
+  private deleteIfEmptyCreated(objectId: string): void {
+    const handle = getHandle(objectId);
+    if (!handle) return;
+    if (handle.kind === 'shape') {
+      transact(() => {
+        handle.y.delete('content');
+        handle.y.delete('fontSize');
+        handle.y.delete('fontFamily');
+        handle.y.delete('labelColor');
+        handle.y.delete('align');
+        handle.y.delete('alignV');
+      });
+    } else if (handle.kind !== 'note') {
+      transact(() => {
+        getObjects().delete(objectId);
+      });
+    }
   }
 
   private setupEditorHandlers(): void {
@@ -691,6 +744,7 @@ export class TextTool implements PointerTool {
       useSelectionStore.getState().endTextEditing();
     } finally {
       this.closing = false;
+      this.pendingMountId = null; // cancel any in-flight mount — its PHASE 3 fence then bails
     }
   }
 
@@ -703,6 +757,12 @@ export class TextTool implements PointerTool {
 
     const handle = getHandle(this.objectId);
     if (!handle) return;
+
+    // Kind conversion in flight: this extension observer fires BEFORE the deep
+    // observer's kind branch, so `handle.kind` is still the OLD kind and every
+    // branch below would mis-dispatch. Bail — the store bridge calls
+    // onEditingKindChanged() after caches + the handle mirror are rebuilt.
+    if (keys.has('kind')) return;
 
     if (handle.kind === 'shape') {
       if (keys.has('labelColor')) this.container.style.setProperty('--text-color', getLabelColor(handle.y));
@@ -767,6 +827,8 @@ export class TextTool implements PointerTool {
     this.pointerId = null;
     this.downWorld = null;
     this.hitTextId = null;
+    this.placing = false;
+    this.placePos = null;
   }
 }
 

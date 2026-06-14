@@ -97,8 +97,11 @@ export type ConnectorPreview = {
   hoverSnap: SnapTarget | null;
 };
 
+/** Toolbar drag-place sticky-note preview. x,y = note top-left origin (world). */
+export type NotePreview = { kind: 'note'; x: number; y: number; fillColor: string };
+
 /** Discriminated union of all preview variants. */
-export type PreviewData = StrokePreview | EraserPreview | ShapePreview | SelectionPreview | ConnectorPreview;
+export type PreviewData = StrokePreview | EraserPreview | ShapePreview | SelectionPreview | ConnectorPreview | NotePreview;
 
 /**
  * PointerTool — interface for tools that handle pointer gestures.

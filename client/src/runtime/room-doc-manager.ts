@@ -3,11 +3,10 @@
  */
 
 import { getZ, isZKey, Permission, type RoomId, type UserId, type YObjects, type ZKey } from '@avlo/shared';
-import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { getCodeProps } from '@/core/accessors';
+import { getCodeProps, getContent, getFontFamily, getFontSize } from '@/core/accessors';
 import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
@@ -91,6 +90,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private readonly _touchedIds = new Set<string>();
   private readonly _deletedIds = new Set<string>();
   private readonly _bboxChangedIds = new Set<string>();
+  private readonly _kindChangedIds = new Set<string>();
   // Scratch bbox reused across every upsert in a single fire. `upsertHandle` copies its
   // values into `handle.bbox` (or seeds a fresh tuple on first insert) — the scratch never
   // leaks into `objectsById`.
@@ -137,8 +137,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private attachUndoManager(): void {
     if (this.undoManager) return;
 
+    // ySyncPluginKey is added lazily by TextCollaboration.onCreate (editor mount) —
+    // editor text edits tagged with it stay room-level undoable without pulling
+    // @tiptap/y-tiptap into the eager bundle. No ySync transactions exist before the
+    // first edit, so room-connect tracking only userId is behaviorally identical.
     this.undoManager = new Y.UndoManager([this.objects], {
-      trackedOrigins: new Set([this.userId, ySyncPluginKey]),
+      trackedOrigins: new Set([this.userId]),
       captureTimeout: 500,
     });
     this.unbindHistory = bindUndoManagerToHistoryStore(this.undoManager);
@@ -216,6 +220,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         router = this.connectorRouter;
       touched.clear();
       deleted.clear();
+      this._kindChangedIds.clear();
 
       for (const ev of events) {
         // Top-level adds/deletes
@@ -243,6 +248,32 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
         if (path.length === 1 && ev instanceof Y.YMapEvent) {
           const kind = yObj.get('kind') as ObjectKind | undefined;
+
+          // In-place kind conversion (text ↔ note ↔ shape). Eviction by the OLD kind
+          // MUST precede Phase B — computeBBoxForInto repopulates the new kind's
+          // subsystem caches and would otherwise read stale entries (Path2D, text
+          // cache incl. note-derived fontSize). removeObjectCaches(old) covers the
+          // union of conversion staleness for kinds {text, note, shape}.
+          if (ev.keysChanged.has('kind')) {
+            const handle = this.objectsById.get(id);
+            if (handle && kind && handle.kind !== kind) {
+              removeObjectCaches(id, handle.kind);
+              handle.kind = kind;
+              this._kindChangedIds.add(id);
+              // Effective outline changed even when the bbox doesn't — Phase B's
+              // bbox-gated propagation can't cover that case. Set-deduped otherwise.
+              router.onBindableChanged(id);
+              // →shape: label layout is lazy (first drawShapeLabel), but the menu
+              // reads getInlineStyles synchronously after the bridge — eagerly
+              // re-tokenize + layout. (invalidateContent would no-op on the
+              // just-evicted entry; getLayout creates a fresh one.)
+              if (kind === 'shape') {
+                const content = getContent(yObj);
+                if (content) textLayoutCache.getLayout(id, content, getFontSize(yObj), getFontFamily(yObj));
+              }
+            }
+          }
+
           if (kind === 'connector') {
             const startEnd = ev.keysChanged.has('start') || ev.keysChanged.has('end');
             if (startEnd || ev.keysChanged.has('connectorType')) {
@@ -356,6 +387,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       touched.add(id);
       if (bboxChanged) changed.add(id);
     }
+
+    // Kind-conversion bridge BEFORE onObjectsChanged — refreshStyles must run
+    // against the recomputed selection composition (selectionKind/kindCounts/mode).
+    if (this._kindChangedIds.size > 0) sel.onObjectsKindChanged(this._kindChangedIds);
 
     sel.onObjectsChanged(touched, changed);
   }

@@ -30,7 +30,7 @@ Two routing modes (elbow + straight), one shared pipeline. Routes are determinis
 core/connectors/
 ├── types.ts              # Dir, SnapTarget, RoutingContext, Grid
 ├── constants.ts          # SNAP_CONFIG, ROUTING_CONFIG, EDGE_CLEARANCE_W + bundle getters
-├── shape-geometry.ts     # projectAnchorToEdge, rayShapeExitPoint, midpointFor, midpointAnchorFor
+├── shape-geometry.ts     # projectAnchorToEdge, rayShapeExitPoint, midpointFor, midpointAnchorFor, remapAnchorBetweenShapeTypes
 ├── anchor-atoms.ts       # anchorFramePoint, elbowAnchorPoint, fillElbowAnchorPointInto, anchorRecordFromSnap, getEndpointEdgePosition
 ├── connector-utils.ts    # Direction primitives, spatialRelation, elbow direction resolution
 ├── snap.ts               # findBestSnapTarget + two pipelines + shared edge probe
@@ -38,7 +38,7 @@ core/connectors/
 ├── routing-astar.ts      # computeAStarRouteInto — typed-array pool + generation counter
 ├── connector-paths.ts    # Path2D builders (polyline + arrows, trim compensation)
 ├── connector-actions.ts  # createConnector / insertConnector — the connector Y.Map builder
-├── connector-router.ts   # Route cache + reverse shape→connector map + detach helper
+├── connector-router.ts   # Route cache + reverse shape→connector map + detach/renormalize helpers
 ├── reroute-connector.ts  # Pipeline<E> + Side helpers + 3 entry points
 └── binary-heap.ts        # MinHeap for A*
 ```
@@ -267,6 +267,7 @@ drainRerouteQueue():                  IterableIterator<string>  // exhaust befor
 getConnectorRoute(id):           Point[] | null              // .length === validCount post-trim
 getAttachedConnectors(shapeId):  ReadonlySet<string> | undefined
 detachConnectorFromShape(connectorId, shapeId):  void        // shape-deletion helper (transact-required)
+renormalizeAttachedAnchors(shapeId, from, to):   void        // anchor remap on shapeType change (transact-required)
 
 // Reroute API
 rerouteCanonical(id, yObj):      BBoxTuple | null            // direct yObj, no getHandle round-trip
@@ -280,6 +281,8 @@ Lifecycle:
 - **Destroy**: `router.clear()` (also clears `_rerouteQueue`).
 
 `detachConnectorFromShape` reads the cached route, replaces any bound endpoint pointing at `shapeId` with the route's first/last point (cloned). No-op when no cached route. Caller must run inside `transact()`.
+
+`renormalizeAttachedAnchors` remaps every anchor bound to `shapeId` across a `shapeType` change so it keeps pointing at the same place on the outline (center-ray remap — `remapAnchorBetweenShapeTypes` in `shape-geometry.ts`). Identity remaps (cardinal midpoints, center, rect↔roundedRect) skip the write. MUST share the shapeType write's `transact()` at the call site — never observer-driven (remote peers would all remap → write storms).
 
 ---
 
@@ -343,6 +346,7 @@ Derived: `computeArrowLength(strokeWidth)`, `computeArrowWidth(strokeWidth)`, `c
 | Find snap target | `findBestSnapTarget(ctx)` |
 | Connectors anchored to a shape | `getAttachedConnectors(shapeId)` |
 | Detach on shape delete | `detachConnectorFromShape(cId, sId)` (inside `transact()`) |
+| Renormalize anchors on shapeType change | `renormalizeAttachedAnchors(shapeId, from, to)` (inside `transact()`) |
 | Side midpoint → normalized anchor | `midpointAnchorFor(shapeType, dir, out)` |
 | Anchor → frame point | `anchorFramePoint(anchor, frame)` |
 | Elbow routing point (with cardinal offset) | `elbowAnchorPoint(anchor, frame, dir)` |

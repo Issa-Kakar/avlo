@@ -37,7 +37,7 @@ import {
 } from '@/core/accessors';
 import { anchorFactor, getInlineStyles, getTextFrame } from '@/core/text/text-system';
 import type { ConnectorCap, ConnectorType, ObjectHandle, ObjectKind } from '@/core/types/objects';
-import { getHandle, transact } from '@/runtime/room-runtime';
+import { getHandle, renormalizeAttachedAnchors, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -332,7 +332,16 @@ export const WIDTH: FieldDescriptor<number> = {
 
 export const SHAPE_TYPE: FieldDescriptor<string> = {
   read: { shape: (h) => getShapeType(h.y) },
-  write: { shape: (h, v) => h.y.set('shapeType', v) },
+  write: {
+    // Anchor remap must share applyField's open transact (one observer fire, one
+    // undo step). The prev guard also skips write/evict/reroute on re-click.
+    shape: (h, v) => {
+      const prev = getShapeType(h.y);
+      if (prev === v) return;
+      h.y.set('shapeType', v);
+      renormalizeAttachedAnchors(h.id, prev, v);
+    },
+  },
 };
 
 export const FILL_COLOR: FieldDescriptor<string | null> = {

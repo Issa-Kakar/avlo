@@ -91,7 +91,7 @@ No character limit on copy. Plain text is space-padded if empty (clipboard API r
 1. **Image type** (`item.types.find(t => t.startsWith('image/'))`) → `pasteImage(blob)`
 2. **HTML** (`text/html`) → check nonce:
    - Matching nonce + stored payload → `pasteInternal(payload)`
-   - Mismatch → clear stored state → `pasteExternalHtml(html)`
+   - Mismatch → clear stored state → `await pasteExternalHtml(html)` (async — lazy-loads Tiptap)
 3. **Plain text** → `pasteExternalText(text)`
 4. **Fallback**: `readText()` if `clipboard.read()` fails
 
@@ -144,13 +144,12 @@ Each property is handled per-key in a switch:
 
 ## External HTML Paste
 
-`pasteExternalHtml(html)`:
+`async pasteExternalHtml(html)` — the **sole `@tiptap` touch in the clipboard**, lazy-loaded so no Tiptap value is eagerly imported here:
 1. Strip any stale avlo nonce comment
 2. Extract plain text (strip HTML tags) for char limit check
 3. **URL detection**: if plain text starts with a URL → `createBookmarkFromUrl()` + paste remainder as text
 4. **Character limit**: > 50,000 chars → fall back to truncated plain text
-5. Parse HTML via `generateJSON()` from `@tiptap/core` with paste extensions:
-   - Document, Paragraph, Text, Bold, Italic, Highlight (multicolor)
+5. **Lazy-load Tiptap**: `await loadTiptapBase()` (`@/core/text/tiptap-loader` → the shared `tiptap-base` chunk: `generateJSON` + Document/Paragraph/Text/Bold/Italic/Highlight, pm-model only — not the editor/y-tiptap). Reached only here, after the empty-text / URL / char-limit early returns. Build the extensions inline, then `generateJSON(cleaned, extensions)`.
 6. Convert ProseMirror JSON → Y.XmlFragment via `prosemirrorJsonToFragment()`
 7. Fallback: plain text paste if parsing fails or produces empty content
 
@@ -287,8 +286,9 @@ For each candidate direction:
 
 ```
 PASTE_CHAR_LIMIT  = 50,000     Max chars for external paste (HTML falls back to truncated text)
-PASTE_EXTENSIONS               Tiptap extensions for HTML parsing: Document, Paragraph, Text, Bold, Italic, Highlight(multicolor)
 ```
+
+Paste extensions (Document/Paragraph/Text/Bold/Italic/Highlight-multicolor) are built inline in `pasteExternalHtml` after the lazy `loadTiptapBase()` import — no longer a module constant, so `@tiptap` stays out of the clipboard's eager graph.
 
 ---
 

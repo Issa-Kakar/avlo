@@ -25,7 +25,7 @@ import {
   type TextLayout,
 } from './text-system';
 
-const LABEL_PADDING = 8;
+export const LABEL_PADDING = 8;
 const SQRT2_OVER_2 = Math.SQRT2 / 2;
 
 // --- Module-scope label-textbox scratch ---

@@ -52,6 +52,7 @@ All paths relative to `client/src/` unless noted.
 | `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
 | `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
+| `toolbar-place.ts` | Drag-place entry from inspector buttons — applies the selection, `beginPlace` on the tool singleton, pointer capture to canvas + grabbing cursor; move/up then flow through the normal dispatch |
 | `cursor-tracking.ts` | Last cursor world position (for paste placement) |
 | `presence/presence.ts` | Awareness lifecycle, cursor send (throttle + backpressure), receive dispatch. Delegates peer state to the renderer. |
 | `presence/presence-renderer.ts` | `PresenceCursorRenderer` — SoA peer state, slot pool, self-driven rAF, DOM `<img>` cursors (host at z:4, above editor overlay) |
@@ -92,9 +93,9 @@ All paths relative to `client/src/` unless noted.
 | `selection/selection-actions.ts` | Mutation wrappers — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` |
 | `selection/selection-field-table.ts` | `FieldDescriptor<V>` table + `foldField`/`applyField`/`toggleField`/`adjustByPresets` primitives |
 | `selection/connector-topology.ts` | `buildTopology` — graph of attached connectors per selected shape |
-| `DrawingTool.ts` | Pen, highlighter, shape drawing. `hold-detector.ts` (550ms) fires the $P recognizer on dwell |
+| `DrawingTool.ts` | Pen, highlighter, shape drawing. `hold-detector.ts` (550ms) fires the $P recognizer on dwell. `'place'` mode (toolbar drag-place via `beginPlace`) — 180wu preview follows cursor, commits on drop |
 | `EraserTool.ts` | Geometry-aware hit testing + deletion |
-| `TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay (`core/text/`) |
+| `TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay (`core/text/`). Note drag-place mode (`beginPlace`) — `NotePreview` follows cursor, drop creates + opens editor |
 | `PanTool.ts` | Viewport panning (dedicated + MMB + spacebar) |
 | `ConnectorTool.ts` | Elbow + straight connectors + snapping (`core/connectors/`) |
 | `CodeTool.ts` | Code blocks, CodeMirror overlay (`core/code/`) |
@@ -266,7 +267,7 @@ All tools implement `PointerTool` (`tools/types.ts`): `canBegin`, `begin(pointer
 
 Module-level room context. `connectRoom(roomId)` from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`/`getZOrder()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`.
+**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`/`getZOrder()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`, `renormalizeAttachedAnchors`.
 
 Prefer `getHandle(id)` over `getObjectsById().get(id)`. Prefer `transact(fn)` over `getActiveRoomDoc().mutate(fn)` — `transact` returns whatever `fn` returns, so callers can elide the `let foo; transact(()=>{ foo = ... })` dance.
 
@@ -298,7 +299,7 @@ All objects share `{ id (ULID), kind, ownerId, createdAt, z: ZKey }`. `id` is cr
 - **Text** — `{ origin: [anchorX, baseline], fontSize, fontFamily, color, align, width: 'auto'|number, fillColor?, content: Y.XmlFragment }`. Frame derived (`getTextFrame(id)`). Delta attrs: bold, italic, highlight (`{color}` or presence → `'#ffd43b'`).
 - **Code** — `{ origin: [topLeftX, topLeftY], fontSize, width: number, language, content: Y.Text, lineNumbers?, title?, headerVisible?, outputVisible?, output? }`. Origin = top-left (unlike text). Frame via `getCodeFrame(id)`.
 - **Connector** — `{ connectorType: 'elbow'|'straight', start: ConnectorEndpoint, end: ConnectorEndpoint, startCap, endCap, color, width }`. **No geometry stored** — endpoints are point/anchor refs; routed polyline lives in `ConnectorRouter` cache (`getConnectorRoute(id)`). Always opacity 1.
-- **Note** — `{ origin: [topLeftX, topLeftY], scale, fontFamily, align, alignV, fillColor, content: Y.XmlFragment }`. No fontSize/width (derived from content + scale). Text color hardcoded `#1a1a1a`; `fillColor` per-instance, default `#FEF3AC`.
+- **Note** — `{ origin: [topLeftX, topLeftY], scale, fontFamily, align, alignV, fillColor, content: Y.XmlFragment }`. No fontSize/width (derived from content + scale). Text color contrast-derived from `fillColor` (`getStickyNoteTextColor`); `fillColor` per-instance, default `#FEF3AC`.
 - **Image** — `{ assetId: 64-hex, frame, naturalWidth, naturalHeight, mimeType, opacity? }`. Content-addressed (same file → same `assetId`).
 - **Bookmark** — `{ url, domain, origin, height, scale?, title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId? }`. Frame derived (`getBookmarkFrame(id)`). State implied by which optional fields are set.
 
@@ -326,7 +327,7 @@ transact(() => {
 ```ts
 interface ObjectHandle {
   id: string;            // ULID
-  kind: ObjectKind;
+  kind: ObjectKind;      // mirror of y.get('kind'); mutated only by the observer's kind-keychange branch (in-place conversion)
   y: Y.Map<unknown>;     // LIVE reference
   bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally, mutated in place by observer
   // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox.
@@ -336,7 +337,7 @@ interface ObjectHandle {
 }
 ```
 
-The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariants:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator for the bbox tuple + envelope mirrors; it writes them atomically. `handle.z` is mutated only by the deep observer's `'z'` key handler (mirror of `y.get('z')`). `handle.slot` is assigned once by `ZRankTable.acquireSlot()` and never reassigned (the slot returns to the free-list on delete and is reusable, but no live handle ever changes its slot). No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
+The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariants:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator for the bbox tuple + envelope mirrors; it writes them atomically. `handle.z` is mutated only by the deep observer's `'z'` key handler (mirror of `y.get('z')`). `handle.kind` is a mirror of `y.get('kind')`, mutated only by the deep observer's kind-keychange branch (in-place cross-kind conversion, `tools/selection/convert-kind.ts`) — the branch evicts caches by the OLD kind before the mutation so Phase B repopulates for the new kind. `handle.slot` is assigned once by `ZRankTable.acquireSlot()` and never reassigned (the slot returns to the free-list on delete and is reusable, but no live handle ever changes its slot). No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
 
 Wrapper persists across observer fires; only `bbox`'s four slots + mirrors (and `z` when the user reorders) change. Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
 
@@ -389,6 +390,9 @@ observeDeep(events):                                // synchronous, non-reentran
     top-level add         → touched += id; if connector → router.onConnectorAdded(id, y)
     top-level delete      → deleted += id; router.onObjectDeleted(id)
     YMap edit on object   → touched += id
+        kind keychange (in-place conversion)            → removeObjectCaches(id, OLD kind) → handle.kind = kind
+                                                          → kindChanged += id → router.onBindableChanged(id)
+                                                          (→shape also eager-getLayout so getInlineStyles is warm)
         connector & (start|end|connectorType keychange) → router.onConnectorEdited(id, y, …)
         connector & (startCap|endCap keychange)         → evictGeometry(id)  // cap bakes into cached Path2D
         shape     & (shapeType keychange)               → router.onBindableChanged(id)
@@ -420,6 +424,7 @@ applyObjectChanges:                                 // _newBBoxScratch reused pe
   for id in router.drainRerouteQueue():
     router.rerouteCanonical(id, y, scratch)         // route + bbox
     upsertHandle(id, 'connector', y, scratch, vp, alwaysEvict=true)
+  if kindChanged nonempty → selection.onObjectsKindChanged(kindChanged)   // re-derive composition BEFORE refreshStyles
   selection.onObjectsChanged(touched, bboxChanged)
 ```
 

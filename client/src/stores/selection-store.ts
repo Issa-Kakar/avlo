@@ -96,6 +96,7 @@ export interface SelectionActions {
   // Doc-observer reactions
   onObjectsDeleted: (deletedIds: ReadonlySet<string>) => void;
   onObjectsChanged: (touched: ReadonlySet<string>, bboxChangedIds: ReadonlySet<string>) => void;
+  onObjectsKindChanged: (kindChangedIds: ReadonlySet<string>) => void;
 }
 
 export type SelectionStore = SelectionState & SelectionActions;
@@ -338,6 +339,38 @@ export const useSelectionStore = create<SelectionStore>()(
       if (reposition) {
         set((s) => ({ boundsVersion: s.boundsVersion + 1 }));
         invalidateOverlay();
+      }
+    },
+
+    // In-place kind conversion (text ↔ note ↔ shape) — `handle.kind` already
+    // mirrors the new kind; recompute everything `setSelection` derives from it.
+    // Runs synchronously inside the deep observer fire — MUST NOT open a
+    // transact() (a re-entrant fire would clobber the manager's reused scratch
+    // sets). Every call below is write-free.
+    onObjectsKindChanged: (kindChangedIds) => {
+      const { selectedIdSet, textEditingId } = get();
+      let inSelection = false;
+      for (const id of kindChangedIds) {
+        if (selectedIdSet.has(id)) {
+          inSelection = true;
+          break;
+        }
+      }
+      if (inSelection) {
+        // Cancel BEFORE setSelection — setSelection resets the discriminant
+        // without getController().cancel(), stranding frozen old-kind entries
+        // that a later pointerup would commit as old-kind fields.
+        if (get().transform.kind !== 'none') get().cancelTransform();
+        get().setSelection(get().selectedIds);
+      } else if (textEditingId !== null && kindChangedIds.has(textEditingId)) {
+        // Standalone edit (text/note tool entry — no selection): promote to the
+        // canonical selected+editing state. The menu bar's standalone fallback
+        // resolves the kind via getHandleKind at render time and has no
+        // re-render signal for an in-place kind flip; selectionKind does.
+        get().setSelection([textEditingId]);
+      }
+      if (textEditingId !== null && kindChangedIds.has(textEditingId)) {
+        textTool.onEditingKindChanged();
       }
     },
   })),

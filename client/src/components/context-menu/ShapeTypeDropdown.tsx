@@ -3,7 +3,7 @@ import { IconStickyNote } from '@/components/toolbar/icons/IconStickyNote';
 import { IconText } from '@/components/toolbar/icons/IconText';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { setSelectedShapeType } from '@/tools/selection/selection-actions';
+import { convertSelectionTo, convertSelectionToShape, setSelectedShapeType } from '@/tools/selection/selection-actions';
 import {
   IconSwitchType,
   IconSwitchTypeCircle,
@@ -20,9 +20,6 @@ const selectShapeType = (s: SelectionStore) => s.selectedStyles.shapeType;
 // Grid flow: 4 columns × 2 rows, one trailing empty cell.
 //   [Sticky] [Text]    [Rect]   [Circle]
 //   [Diamond][Triangle][Rounded][ ]
-// `note` / `text` rows are placeholders for future cross-type conversion —
-// TextTool needs to handle origin remap on alignment + color-key remap
-// (color ↔ labelColor) during DOM editing before those become live actions.
 interface TypeItem {
   key: string;
   label: string;
@@ -38,8 +35,6 @@ const ITEMS: readonly TypeItem[] = [
   { key: 'triangle', label: 'Triangle', Icon: IconSwitchTypeTriangle },
   { key: 'roundedRect', label: 'Rounded', Icon: IconSwitchTypeRoundedRect },
 ];
-
-const SHAPE_VARIANT_KEYS = new Set(['rect', 'ellipse', 'diamond', 'triangle', 'roundedRect']);
 
 interface ShapeTypeDropdownProps {
   mode: 'shapes' | 'text' | 'note';
@@ -82,8 +77,12 @@ export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
                 aria-label={label}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  if (mode === 'shapes' && SHAPE_VARIANT_KEYS.has(key)) {
+                  if (key === 'note' || key === 'text') {
+                    if (key !== activeKey) convertSelectionTo(key);
+                  } else if (mode === 'shapes') {
                     setSelectedShapeType(key);
+                  } else {
+                    convertSelectionToShape(key);
                   }
                   close();
                 }}
