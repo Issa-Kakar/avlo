@@ -1,2 +1,2 @@
-npm run typecheck
-npm run check
+pnpm typecheck
+pnpm check

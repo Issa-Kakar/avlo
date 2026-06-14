@@ -10,15 +10,16 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@avlo/db": "*",
-    "@avlo/shared": "*",
-    "@avlo/worker-shared": "*",
+    "@avlo/db": "workspace:*",
+    "@avlo/shared": "workspace:*",
+    "@avlo/worker-shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.19",
     "hono-party": "^2.1.0",
     "partyserver": "^0.5.6",
     "y-partyserver": "^2.2.0",
-    "yjs": "^13.6.27"
+    "yjs": "^13.6.27",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251106.1",

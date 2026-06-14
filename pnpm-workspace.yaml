@@ -1,0 +1,13 @@
+packages:
+  - client          # → flips to `web` in Stage 2
+  - packages/*
+  - workers/*
+
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
+  - sharp
+
+overrides:
+  react: ^19.0.0
+  react-dom: ^19.0.0

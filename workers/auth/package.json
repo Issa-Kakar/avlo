@@ -10,8 +10,8 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@avlo/shared": "*",
-    "@avlo/worker-shared": "*",
+    "@avlo/shared": "workspace:*",
+    "@avlo/worker-shared": "workspace:*",
     "@hono-rate-limiter/cloudflare": "^0.2.2",
     "@hono/zod-validator": "^0.7.6",
     "arctic": "^3.7.0",

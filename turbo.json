@@ -1,0 +1,47 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "globalDependencies": ["tsconfig.base.json"],
+  "tasks": {
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "inputs": [
+        "src/**",
+        "tsconfig*.json",
+        "worker-configuration.d.ts",
+        "wrangler.jsonc",
+        "drizzle/**",
+        "index.html",
+        "vite.config.ts",
+        "$TURBO_DEFAULT$",
+        "!dist/**"
+      ],
+      "outputs": []
+    },
+    "typecheck:tsc": {
+      "dependsOn": ["^typecheck:tsc"],
+      "inputs": [
+        "src/**",
+        "tsconfig*.json",
+        "worker-configuration.d.ts",
+        "wrangler.jsonc",
+        "drizzle/**",
+        "index.html",
+        "vite.config.ts",
+        "$TURBO_DEFAULT$",
+        "!dist/**"
+      ],
+      "outputs": []
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "public/**", "index.html", "tsconfig*.json", "vite.config.ts", "$TURBO_DEFAULT$", "!dist/**"],
+      "outputs": ["dist/**"]
+    },
+    "test": {
+      "dependsOn": [],
+      "inputs": ["src/**", "tsconfig*.json", "vitest.config.*", "wrangler.jsonc", "$TURBO_DEFAULT$", "!dist/**"],
+      "outputs": []
+    }
+  }
+}

@@ -10,9 +10,9 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@avlo/db": "*",
-    "@avlo/shared": "*",
-    "@avlo/worker-shared": "*",
+    "@avlo/db": "workspace:*",
+    "@avlo/shared": "workspace:*",
+    "@avlo/worker-shared": "workspace:*",
     "@hono-rate-limiter/cloudflare": "^0.2.2",
     "@hono/zod-validator": "^0.7.6",
     "drizzle-orm": "^0.45.2",

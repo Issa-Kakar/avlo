@@ -141,6 +141,10 @@ completed_tasks
 .wrangler/
 */.wrangler/
 
+# Turborepo cache + logs (root + per-workspace)
+.turbo/
+**/.turbo/
+
 # TanStack Router codegen cache
 .tanstack/
 */.tanstack/

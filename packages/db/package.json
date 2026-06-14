@@ -27,7 +27,7 @@
     "db:generate-do": "drizzle-kit generate --config src/drizzle-do.config.ts"
   },
   "dependencies": {
-    "@avlo/shared": "*",
+    "@avlo/shared": "workspace:*",
     "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
