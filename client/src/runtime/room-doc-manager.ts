@@ -55,11 +55,7 @@ export interface IRoomDocManager {
   isConnected(): boolean;
 }
 
-// Options for RoomDocManager (currently empty, but preserved for future use)
-// biome-ignore lint/suspicious/noEmptyInterface: preserved for future use
-export interface RoomDocManagerOptions {}
-
-// Implementation class (exported for registry use)
+// Instantiated by room-runtime; consumers type against IRoomDocManager.
 export class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
@@ -100,7 +96,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // leaks into `objectsById`.
   private readonly _newBBoxScratch: BBoxTuple = [0, 0, 0, 0];
 
-  constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
+  constructor(roomId: RoomId) {
     this.roomId = roomId;
 
     this.userId = getUserId();
@@ -139,10 +135,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
    * CRITICAL: Only call after Y.Doc structures are initialized
    */
   private attachUndoManager(): void {
-    if (this.undoManager) {
-      console.warn('[RoomDocManager] UndoManager already attached');
-      return;
-    }
+    if (this.undoManager) return;
 
     this.undoManager = new Y.UndoManager([this.objects], {
       trackedOrigins: new Set([this.userId, ySyncPluginKey]),
@@ -158,20 +151,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   undo(): void {
     if (this.destroyed) return;
-    if (!this.undoManager) {
-      console.warn('[RoomDocManager] UndoManager not initialized');
-      return;
-    }
-    this.undoManager.undo();
+    this.undoManager?.undo();
   }
 
   redo(): void {
     if (this.destroyed) return;
-    if (!this.undoManager) {
-      console.warn('[RoomDocManager] UndoManager not initialized');
-      return;
-    }
-    this.undoManager.redo();
+    this.undoManager?.redo();
   }
 
   getUndoManager(): Y.UndoManager | null {
@@ -196,13 +181,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.undoManager = dispose(this.undoManager, (m) => m.destroy());
     this.objectsObserver = dispose(this.objectsObserver, (fn) => this.objects.unobserveDeep(fn));
 
-    // Clean up spatial index
     this.spatialIndex.clear();
 
     // Clear connector router state before object-cache teardown.
     this.connectorRouter.clear();
 
-    // Clear z-order rank table
     this.zOrder.clear();
 
     // Drop UI selection so stale selectedIds don't render against the next room's objects.
@@ -218,21 +201,19 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // clearAllObjectCaches() — that also runs on hydrate, which must NOT kill the pool.
     terminateCodeWorkers();
 
-    // Clear object maps
     this.objectsById.clear();
 
-    // Destroy Y.Doc
     this.ydoc.destroy();
   }
 
-  // ============================================================
-  // PART 2: Objects Observers (Deep observer on objects Y.Map)
-  // ============================================================
+  // Objects observer (deep observer on objects Y.Map)
   private setupObjectsObserver(): void {
     if (this.objectsObserver) return; // idempotent
 
     this.objectsObserver = (events) => {
-      const { _touchedIds: touched, _deletedIds: deleted, connectorRouter: router } = this;
+      const touched = this._touchedIds,
+        deleted = this._deletedIds,
+        router = this.connectorRouter;
       touched.clear();
       deleted.clear();
 
@@ -267,10 +248,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             if (startEnd || ev.keysChanged.has('connectorType')) {
               router.onConnectorEdited(id, yObj, startEnd);
             }
-            // Caps bake into the cached Path2D (arrowhead is built geometry, not
-            // paint-time chrome) — pre-evict regardless of bbox so a cap toggle
-            // whose extent doesn't dominate the route bbox still rebuilds. Phase B's
-            // bbox-driven eviction would otherwise leave the old Path2D in place.
+            // Caps bake into the cached Path2D — pre-evict so a cap-only toggle rebuilds it.
             if (ev.keysChanged.has('startCap') || ev.keysChanged.has('endCap')) {
               evictGeometry(id);
             }
@@ -313,13 +291,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   private applyObjectChanges(): void {
-    const {
-      _touchedIds: touched,
-      _deletedIds: deleted,
-      _bboxChangedIds: changed,
-      _newBBoxScratch: scratch,
-      connectorRouter: router,
-    } = this;
+    const touched = this._touchedIds,
+      deleted = this._deletedIds,
+      changed = this._bboxChangedIds,
+      scratch = this._newBBoxScratch,
+      router = this.connectorRouter;
     changed.clear();
     const vp = getVisibleBoundsTuple();
 
@@ -435,10 +411,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     return bboxChanged;
   }
 
-  // ============================================================
-  // PART 3: Rebuild Epoch (Hydrate from Y.Map)
-  // ============================================================
-
+  // Hydrate from Y.Map
   private hydrateObjectsFromY(): void {
     this.objectsById.clear();
     this.spatialIndex.clear();

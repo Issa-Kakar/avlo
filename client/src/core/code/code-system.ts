@@ -778,7 +778,7 @@ class CodeSystemCache {
    */
   getLayoutById(id: string): CodeLayout | null {
     const e = this.entries.get(id);
-    return e && e.layoutValid ? e.layout : null;
+    return e?.layoutValid ? e.layout : null;
   }
 
   evict(id: string): void {

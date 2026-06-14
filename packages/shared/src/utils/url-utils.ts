@@ -74,7 +74,7 @@ export function prettifyDomain(domain: string): string {
   if (parts.length === 1) return capitalize(parts[0]);
   let labelIdx = parts.length - 2;
   if (parts.length >= 3) {
-    const lastTwo = parts[parts.length - 2] + '.' + parts[parts.length - 1];
+    const lastTwo = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
     if (TWO_SEGMENT_TLDS.has(lastTwo)) labelIdx = parts.length - 3;
   }
   if (labelIdx < 0) labelIdx = 0;

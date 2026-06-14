@@ -283,7 +283,7 @@ function wrapText(text: string, maxWidth: number, maxLines: number, font: string
     const glueW = current ? spaceW : 0;
 
     if (currentWidth + glueW + wordW <= maxWidth) {
-      current = current ? current + ' ' + word : word;
+      current = current ? `${current} ${word}` : word;
       currentWidth += glueW + wordW;
       continue;
     }
@@ -291,9 +291,8 @@ function wrapText(text: string, maxWidth: number, maxLines: number, font: string
     // Word doesn't fit on the current line. If committing would exceed
     // maxLines, splice all remaining text into one truncated final line.
     if (lines.length + 1 >= maxLines) {
-      let overflow = current ? current + ' ' + word : word;
-      for (let j = wi + 1; j < words.length; j++) overflow += ' ' + words[j];
-      lines.push(truncateWithEllipsis(overflow, font, maxWidth));
+      const overflow = words.slice(wi).join(' ');
+      lines.push(truncateWithEllipsis(current ? `${current} ${overflow}` : overflow, font, maxWidth));
       return lines;
     }
 
@@ -325,9 +324,8 @@ function wrapText(text: string, maxWidth: number, maxLines: number, font: string
         break;
       }
       if (lines.length + 1 >= maxLines) {
-        let rest = remaining;
-        for (let j = wi + 1; j < words.length; j++) rest += ' ' + words[j];
-        lines.push(truncateWithEllipsis(rest, font, maxWidth));
+        const tail = words.slice(wi + 1).join(' ');
+        lines.push(truncateWithEllipsis(tail ? `${remaining} ${tail}` : remaining, font, maxWidth));
         return lines;
       }
       lines.push(remaining.slice(0, fitLen));

@@ -3,7 +3,7 @@ import { Z_KEY_JITTER_BITS } from './constants';
 
 declare const ZKeyBrand: unique symbol;
 /** Opaque fractional-indexing z-key. Lex-compare for ordering. Never construct by hand. */
-export type ZKey = string & { readonly [ZKeyBrand]: void };
+export type ZKey = string & { readonly [ZKeyBrand]: undefined };
 
 const opts = { jitterBits: Z_KEY_JITTER_BITS } as const;
 
