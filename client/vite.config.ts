@@ -11,15 +11,17 @@ const devPorts = JSON.parse(readFileSync(resolve(__dirname_local, '../scripts/de
 
 const portOffset = parseInt(process.env.PORT_OFFSET || '0', 10);
 const clientPort = parseInt(process.env.VITE_PORT || '3000', 10);
-const MAIN_PORT = devPorts.main + portOffset;
+const SYNC_PORT = devPorts.sync + portOffset;
 const IMAGES_PORT = devPorts.images + portOffset;
 const UNFURL_PORT = devPorts.unfurl + portOffset;
 const AUTH_PORT = devPorts.auth + portOffset;
 const USERS_PORT = devPorts.users + portOffset;
 
 const proxyConfig = {
-  '/parties': {
-    target: `ws://localhost:${MAIN_PORT}`,
+  // match SYNC_WS_PREFIX (@avlo/shared). No `rewrite` — the full /sync/rooms/<id> path must
+  // reach the sync worker (unlike the /api/* proxies, which strip their prefix).
+  '/sync': {
+    target: `ws://localhost:${SYNC_PORT}`,
     ws: true,
     changeOrigin: true,
   },

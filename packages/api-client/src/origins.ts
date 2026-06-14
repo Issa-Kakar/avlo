@@ -22,6 +22,8 @@ export const UNFURL_ORIGIN = import.meta.env.PROD ? 'https://unfurl.avlo.io' : `
 export const AUTH_ORIGIN = import.meta.env.PROD ? 'https://auth.avlo.io' : `${location.origin}/api/auth`;
 export const USERS_ORIGIN = import.meta.env.PROD ? 'https://users.avlo.io' : `${location.origin}/api/users`;
 
-// Sync host: SPA is same-origin with main worker in prod, so `window.location.host`
-// works untouched. Exposed here only so the SW can match WSS by host.
-export const SYNC_HOST_PROD: string | null = import.meta.env.PROD ? 'avlo.io' : null;
+// Sync host: the realtime layer lives on its own subdomain (sync.avlo.io) in prod — the SPA is
+// cross-origin to it (the cookie still rides via Domain=.avlo.io + SameSite=Lax same-site). Drives
+// the client WS provider host AND lets the SW match WSS by host. null in dev → the provider falls
+// back to `window.location.host` so the upgrade reaches the sync worker via the Vite `/sync` proxy.
+export const SYNC_HOST_PROD: string | null = import.meta.env.PROD ? 'sync.avlo.io' : null;

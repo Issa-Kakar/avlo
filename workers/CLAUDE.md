@@ -2,50 +2,58 @@
 
 > Pre-production, solo dev. Routes blocks are **commented out** in every `wrangler.jsonc` — the merge changes nothing in production. Deploy is gated on DNS transfer + additional pre-prod essentials, both out of scope.
 
-Five independently-deployed Workers, one folder each. Shared server primitives live in `@avlo/worker-shared`; D1 + DO-SQLite Drizzle schemas in `@avlo/db`; typed HTTP-RPC clients live in `@avlo/api-client` (browser/SW side).
+Six independently-deployed Workers, one folder each. Shared server primitives live in `@avlo/worker-shared`; D1 + DO-SQLite Drizzle schemas in `@avlo/db`; typed HTTP-RPC clients live in `@avlo/api-client` (browser/SW side).
 
 ## Topology
 
 ```
-avlo.io                    images.avlo.io           unfurl.avlo.io
-─────────────────────────  ────────────────────     ─────────────────
-workers/main               workers/images           workers/unfurl
-• SPA via ASSETS binding   • PUT /:key (upload)     • GET /?url=
-• WSS /parties/*           • GET /:key (serve)      • SSRF guard (Zod)
-• rooms DO (SQLite)        • IMAGES R2 bucket       • IMAGES R2 (shared)
-• DOCS R2 (V2 snapshots)   • caches.default         • caches.default
+avlo.io               sync.avlo.io          images.avlo.io        unfurl.avlo.io
+────────────────────  ────────────────────  ────────────────────  ─────────────────
+workers/main          workers/sync          workers/images        workers/unfurl
+• SPA (Static         • WSS /sync/*         • PUT /:key (upload)   • GET /?url=
+  Assets only)        • AvloDO (SQLite)     • GET /:key (serve)    • SSRF guard (Zod)
+• _headers CSP        • DOCS R2 (V2 snaps)  • IMAGES R2 bucket     • IMAGES R2 (shared)
+• no worker script    • Origin guard + auth • caches.default       • caches.default
 ```
 
 ## Worker Inventory
 
 | Worker | Folder | Wrangler `name` | Dev port | Prod subdomain | Bindings |
 |---|---|---|---|---|---|
-| **main** | `workers/main/` | `avlo` | 8787 | `avlo.io`, `www.avlo.io` | `ASSETS` (Static Assets), `rooms` (DO/SQLite), `DOCS` (R2), `AUTH` (service), `ROOM_VISITS`/`ROOM_META` (queue producers) |
+| **main** | `workers/main/` | `avlo` | — (Vite serves the SPA in dev) | `avlo.io`, `www.avlo.io` | Static Assets only — no worker script, no bindings (the `_headers` CSP rides the Assets layer) |
+| **sync** | `workers/sync/` | `avlo-sync` | 8787 | `sync.avlo.io` | `rooms` (DO/SQLite, class `AvloDO`), `DOCS` (R2), `AUTH` (service), `ROOM_VISITS`/`ROOM_META` (queue producers) |
 | **images** | `workers/images/` | `avlo-images` | 8790 | `images.avlo.io` | `IMAGES` (R2 `avlo-assets`), `AUTH` (service), `RL_UPLOAD` |
 | **unfurl** | `workers/unfurl/` | `avlo-unfurl` | 8791 | `unfurl.avlo.io` | `IMAGES` (R2 `avlo-assets`, shared), `AUTH` (service), `RL_UPLOAD` |
 | **auth** | `workers/auth/` | `avlo-auth` | 8792 | `auth.avlo.io` | `SESSIONS` (KV), `RL_AUTH`, services `USERS`/`IMAGES`, secrets `ANON_SECRET`/`GOOGLE_CLIENT_SECRET`/`OAUTH_PKCE_SECRET`, public vars `GOOGLE_CLIENT_ID`/`APP_ORIGIN`/`OAUTH_REDIRECT_URI` |
 | **users** | `workers/users/` | `avlo-users` | 8793 | `users.avlo.io` | `DB` (D1 `avlo-db`), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), queue consumers `avlo-room-visits`/`avlo-room-meta` (+DLQs) |
 
-> Beyond the three public R2/SPA edge workers above, **auth** (`auth.avlo.io` — `GET /me`, the signed `avlo_anon` cookie, the Google OAuth flow `GET /login/google` → `GET /callback` + `POST /logout`, opaque KV sessions, `AuthRpc.verifySession`) and **users** (`users.avlo.io` — `GET /rooms`, `PATCH /rooms/:id/{permission,title}`, `UsersRpc.linkAccount`, the queue→D1 consumer) form the identity + dashboard-data vertical. `@avlo/db` owns the D1 + DO-SQLite schemas they (and main) share.
+> Beyond the four edge workers above (the `avlo` site host + the `sync` realtime host + images/unfurl), **auth** (`auth.avlo.io` — `GET /me`, the signed `avlo_anon` cookie, the Google OAuth flow `GET /login/google` → `GET /callback` + `POST /logout`, opaque KV sessions, `AuthRpc.verifySession`) and **users** (`users.avlo.io` — `GET /rooms`, `PATCH /rooms/:id/{permission,title}`, `UsersRpc.linkAccount`, the queue→D1 consumer) form the identity + dashboard-data vertical. `@avlo/db` owns the D1 + DO-SQLite schemas they (and `sync`) share.
 
-**Naming rule (load-bearing):** Sibling workers use `workers/<short>/` = wrangler `name` `avlo-<short>` = subdomain stem `<short>.avlo.io`. The main worker is asymmetric on every axis — wrangler `name: "avlo"` (bare, preserves the `rooms` DO namespace), subdomain `avlo.io` (bare, canonical app identity). The `avlo-` prefix is for things *attached to* the app; the app itself is just `avlo`. **Do not rename main.**
+**Naming rule (load-bearing):** Sibling workers use `workers/<short>/` = wrangler `name` `avlo-<short>` = subdomain stem `<short>.avlo.io` — `sync` (`workers/sync` = `avlo-sync` = `sync.avlo.io`) follows it exactly, DO namespace included. The **main** worker is the one asymmetry: wrangler `name: "avlo"` (bare) + subdomain `avlo.io` (bare) — the canonical app identity. The `avlo-` prefix is for things *attached to* the app; the app itself is just `avlo`. **Do not rename main.** (Before the split, main's bare name also pinned the `rooms` DO namespace — that namespace now lives in `avlo-sync`, so the only thing the bare name preserves today is the public domain stem.)
 
-**Binding name `IMAGES`** (R2) on `workers/{images,unfurl}` instead of CF's default `ASSETS`, because `ASSETS` is reserved for Cloudflare's Static Assets binding on `workers/main`. If/when CF Images transformations land on `unfurl`, its binding gets a non-default name (`IMG_TRANSFORM` is the stub in the commented wrangler block) since the R2 binding already owns `IMAGES`.
+**Binding name `IMAGES`** (R2) on `workers/{images,unfurl}` instead of CF's default `ASSETS`, because `ASSETS` is the conventional name for Cloudflare's Static Assets binding (the `workers/main` site worker serves the SPA — as a pure assets-only worker it declares no binding, but the name stays reserved by convention). If/when CF Images transformations land on `unfurl`, its binding gets a non-default name (`IMG_TRANSFORM` is the stub in the commented wrangler block) since the R2 binding already owns `IMAGES`.
 
 ## Per-worker File Map
 
-### `workers/main/` — SPA host + Yjs sync (merged)
+### `workers/main/` — SPA site host (assets-only)
 | File | Responsibility |
 |---|---|
-| `src/index.ts` | `partyserverMiddleware()` on `/parties/*` — the ONLY worker-served path (`run_worker_first` scopes the worker to it; the Assets binding serves every other URL, SPA fallback included, **without invoking the worker** — so there is no in-worker catch-all). Dev-only `devRequestLogger` first. Exports `RoomDurableObject` + `MainApp`. |
-| `src/room.ts` | `RoomDurableObject extends YServer<Env>` — hibernate, debounced V2 snapshot to `env.DOCS`, hard-flush + z-key renorm on empty-room close. Single trigger by design (onLoad scan would be defensive O(N) for a self-healing failure: long keys are perf, not correctness, and the next successful onClose catches up). Never-empty rooms are a documented limitation; if profiling ever surfaces it, add alarm-based periodic renorm. Meta RPCs `setPermission(roomId, caller, …)`/`setTitle(roomId, caller, …)` (owner-only; BOTH mint meta when absent — offline-created room renamed/shared from the dashboard pre-first-connect; `#mintMeta` takes the permission, mint is rev 1 with no extra bump) take the room id as their first argument: partyserver's `this.name` is unresolvable on a cold raw-RPC wake (native RPC bypasses the fetch/webSocket init that hydrates it), so `#verifyRoomId` proves `idFromName(roomId)` equals `ctx.id` and identity thereafter is `this.meta.roomId` (`RoomMeta` = `MetaEvent`, the row PK constructor-loaded). They share `#mintMeta`/`#projectMeta`, return the `MetaEvent` snapshot, push `mode:`/`title:`/`owner:`/`perm:` custom messages (`title:` rebroadcast to every connection on rename; `setPermission` runs ONE pass over live connections — caller's tabs get `perm:` only, non-owners are 4403-evicted on private or get the `mode:` re-push + `perm:`, never a message to a just-closed socket), and throw `forbidden`/`invalid-title`/`room-mismatch` as the wire error contract; `assertRpcMatch` pins the class surface to `RoomDoStub`. The enqueue inside `#projectMeta` is try/caught — SQLite already committed; the users worker's direct write + the next meta event converge D1. |
-| `wrangler.jsonc` | `assets.directory: ../../client/dist`, `binding: ASSETS`, `run_worker_first: ["/parties/*"]`, `migrations: new_sqlite_classes`. |
+| `wrangler.jsonc` | `name: "avlo"`, `assets.directory: ../../client/dist` + `not_found_handling: single-page-application`. NO `main`, NO worker script, NO `ASSETS` binding — Cloudflare's Static Assets layer serves the SPA + the `client/public/_headers` CSP directly. Yjs sync + the DO moved to `avlo-sync`, so SPA deploys (`deploy:main`) never touch the DO worker — the whole point of the split. |
 
-Same-origin SPA + WSS — SPA on `avlo.io` opens `wss://avlo.io/parties/rooms/<id>` via `window.location.host` in `client/src/runtime/room-doc-manager.ts`. No CORS, no preflight.
+A pure assets-only worker. A worker *script* can be re-added later (redirects, etc.) without disturbing sync. Not run in dev (Vite serves the SPA); its real Static-Assets binding is exercised only by `preview` and prod (need `client/dist` — run `npm run build -w client` first).
 
-**No `app-type.ts` mock here** — main's only HTTP route is the Assets-binding catch-all (browser doesn't typed-RPC into it) and `/parties/*` is WSS via `y-partyserver` directly. Skip until a client-facing HTTP route is added.
+### `workers/sync/` — Yjs realtime sync + room DO
+| File | Responsibility |
+|---|---|
+| `src/index.ts` | `partyserverMiddleware()` on `` /`${SYNC_WS_PREFIX}`/* `` (= `/sync/*`) with `options.prefix: SYNC_WS_PREFIX` → partyserver routes `<prefix>/rooms/<id>` where `rooms` is the **kebab-cased DO binding name** (class is `AvloDO`; binding stays `rooms`, so the URL party segment is unchanged). Pure worker: every request hits it, non-`/sync` paths 404. Dev-only `devRequestLogger` first. Exports `AvloDO` + `SyncApp`. |
+| `src/on-before-connect.ts` | Edge guard for the WS upgrade. **CSWSH Origin allowlist FIRST** (`isAllowedOrigin`/`isDevHost` — the SAME shared set as CORS + csrf, no drift) since sync is now cross-origin from the SPA; then the room-id format guard; then the cookie→`x-avlo-user-id` verify/stamp/**delete** invariant (unchanged — never trust an inbound value). |
+| `src/room.ts` | `AvloDO extends YServer<Env>` (was `RoomDurableObject`; binding stays `rooms`) — hibernate, debounced V2 snapshot to `env.DOCS`, hard-flush + z-key renorm on empty-room close. Meta RPCs `setPermission(roomId, caller, …)`/`setTitle(roomId, caller, …)` (owner-only; BOTH mint meta when absent — offline-created room renamed/shared from the dashboard pre-first-connect; `#mintMeta` takes the permission, mint is rev 1 with no extra bump) take the room id first: partyserver's `this.name` is unresolvable on a cold raw-RPC wake, so `#verifyRoomId` proves `idFromName(roomId)` equals `ctx.id` and identity thereafter is `this.meta.roomId`. They share `#mintMeta`/`#projectMeta`, return the `MetaEvent` snapshot, push `mode:`/`title:`/`owner:`/`perm:` custom messages, and throw `forbidden`/`invalid-title`/`room-mismatch` as the wire error contract; `assertRpcMatch` pins the class surface to `RoomDoStub`. The enqueue inside `#projectMeta` is try/caught — SQLite already committed; the users worker's direct write + the next meta event converge D1. |
+| `drizzle/` | DO-SQLite migrations — the constructor's `migrate()` reads them; `migrations.js` imports the `.sql` as a text module (bundled via the wrangler `rules` Text glob). Regenerate target of `@avlo/db`'s `db:generate-do`. |
+| `wrangler.jsonc` | `name: avlo-sync`, `durable_objects: rooms→AvloDO`, `migrations: new_sqlite_classes: ["AvloDO"]`, `DOCS` R2, `AUTH` service, `ROOM_VISITS`/`ROOM_META` queue producers, `rules` Text glob. No `assets`. |
 
-**Dev mode caveat.** Under `npm run dev` (the single-instance orchestrator), main's **Static Assets are dropped** — Vite serves the SPA and main is hit only on `/parties/*`, so `client/dist` is **not** needed and the `ASSETS` binding is simply **absent** in dev (main's worker code no longer references it — the defensive `c.env.ASSETS.fetch` catch-all was removed; the orchestrator drops `entry.assets` with no stub). Consequently `run_worker_first` + the `not_found_handling` SPA fallback are exercised only by `dev:legacy`, `preview`, and prod — those serve the real Assets binding and need `../../client/dist` to exist (run `npm run build -w client` first, else the binding fails to start). Either way, never visit `http://localhost:8787` directly in dev; visit `http://localhost:3000` (Vite). See *Dev Orchestration* below for the one-instance topology.
+Cross-origin SPA → sync — the SPA on `avlo.io` opens `wss://sync.avlo.io/sync/rooms/<id>` (host from `SYNC_HOST_PROD`, prefix from `SYNC_WS_PREFIX`, in `client/src/runtime/room-doc-manager.ts`). `avlo.io → sync.avlo.io` is **same-site** (so `SameSite=Lax` permits the `.avlo.io` cookie on the upgrade) but **cross-origin** (so a true cross-site attacker is blocked by Lax — plus the explicit Origin guard in `on-before-connect`).
+
+**No `app-type.ts` mock here** — sync exposes only WSS (`y-partyserver` directly; the browser doesn't typed-RPC into it), so it's exempt from the App-Type pattern. Skip until a client-facing HTTP route is added.
 
 ### `workers/images/` — image upload + GET + avatar snapshot
 | File | Responsibility |
@@ -102,7 +110,7 @@ Globally auth-gated. D1 is the sole schema owner (`@avlo/db`). Dev: Vite `/api/u
 
 ## App-Type Pattern (Option H)
 
-Each worker that exposes a typed HTTP-RPC client to `@avlo/api-client` (auth, users, images, unfurl — main is exempt) has a **public mock** in `src/app-type.ts` separate from the real handler in `src/index.ts`. The mock encodes the wire shape (paths, methods, validators, response types) ambient-free so client-side typecheck can traverse it without pulling worker ambient types (`Env`, `R2Bucket`, `HTMLRewriter`, `caches.default`).
+Each worker that exposes a typed HTTP-RPC client to `@avlo/api-client` (auth, users, images, unfurl — `main` is assets-only and `sync` is WSS-only, so both are exempt) has a **public mock** in `src/app-type.ts` separate from the real handler in `src/index.ts`. The mock encodes the wire shape (paths, methods, validators, response types) ambient-free so client-side typecheck can traverse it without pulling worker ambient types (`Env`, `R2Bucket`, `HTMLRewriter`, `caches.default`).
 
 **Why a mock?** The cross-tsconfig leak: `@avlo/api-client`'s `import type { ImagesApp } from '../../../workers/images/src/index'` would drag the real index's ambient deps into client compilation (cascading `TS2304` failures). The mock has none of those — it's pure Hono + Zod + inline schemas — so client compilation traverses it cleanly.
 
@@ -134,7 +142,7 @@ When adding a new worker (`code-exec`, `auth`, `ai`, …):
 3. Add the drift-guard `assertSurfaceMatch<typeof app, PublicSurface>(true)` call in `src/index.ts`.
 4. Create `packages/api-client/src/<name>.ts` (`hc<FooApp>(FOO_ORIGIN)`) and re-export from `packages/api-client/src/index.ts`.
 5. Add a Vite proxy entry in `client/vite.config.ts`.
-6. Add a dev port to `scripts/dev-ports.json` (heed the `_comment`: `PORT_OFFSET` is already `10`; keep it ≥ the port-span). The orchestrator reads this JSON for its worker list.
+6. Add a dev port to `scripts/dev-ports.json` (heed the `_comment`: `PORT_OFFSET` is already `10`; keep it ≥ the port-span). The orchestrator reads this JSON for its worker list — the **first** key is the Miniflare entry worker (`sync` today, on the top-level port); **append** new workers, don't prepend.
 7. Add the dir→wrangler-`name` entry to the `NAME` map in `scripts/dev-miniflare.mjs` (else the pre-flight assert fails the new cross-worker edges). For `dev:legacy` rollback parity, also add `dev:<name>` to root `package.json` + the `dev:legacy` chain.
 8. Add the typecheck workspace to the root `typecheck` and `typecheck:tsc` scripts.
 9. Add a `deploy:<name>` script to root `package.json`.
@@ -174,7 +182,7 @@ The identity + authz vertical layers these on top of H1–H12 (the formal H13–
 
 ## Dev Orchestration
 
-`npm run dev` runs Vite + **one** Miniflare instance holding **all five workers** (`scripts/dev-miniflare.mjs`). One instance is non-negotiable: Cloudflare Queues only deliver when producer (`main` → `ROOM_VISITS`/`ROOM_META`) and consumer (`users`) share a single Miniflare (cross-process *service bindings* work since Sept 2025; cross-process *queues* do not — workers-sdk #9795). The old per-worker `wrangler dev` chain gave each worker its own Miniflare, so locally the queue → D1 projection never ran. Single source of truth for base ports stays `scripts/dev-ports.json`; Vite imports the same JSON for proxy targets, **unchanged** — that's the whole point.
+`npm run dev` runs Vite + **one** Miniflare instance holding **all five dev workers** (`scripts/dev-miniflare.mjs`) — `sync` + images/unfurl/auth/users; the `avlo` site worker is NOT run in dev (Vite serves the SPA). One instance is non-negotiable: Cloudflare Queues only deliver when producer (`sync` → `ROOM_VISITS`/`ROOM_META`) and consumer (`users`) share a single Miniflare (cross-process *service bindings* work since Sept 2025; cross-process *queues* do not — workers-sdk #9795). The old per-worker `wrangler dev` chain gave each worker its own Miniflare, so locally the queue → D1 projection never ran. Single source of truth for base ports stays `scripts/dev-ports.json`; Vite imports the same JSON for proxy targets, **unchanged** — that's the whole point.
 
 ```bash
 npm run dev                                # Vite + ONE Miniflare (all 5 workers; queues + cross-script DO + service RPC live)
@@ -184,9 +192,9 @@ npm run dev:legacy                         # ROLLBACK: the old five-process wran
 (cd workers/<name> && npm run types)       # regenerate worker-configuration.d.ts
 ```
 
-**Topology inside the one instance.** `main` (wrangler `avlo`) is `workers[0]` — the **entry worker** on Miniflare's top-level `port` (8787+offset). This is the same entry path `wrangler dev` serves partyserver WS on, so the `/parties/*` upgrade + DO stay on proven ground (not an unsafe socket). `images`/`unfurl`/`auth`/`users` each pin `unsafeDirectSockets: [{ port: <existing dev port>+offset, entrypoint: 'default', proxy: false }]` → each listens on its **exact current port**, so the Vite proxy reaches every worker unchanged. Confirm at startup: each logs `[mf] <name> -> <url>` on the expected port (8787/8790-8793, +offset).
+**Topology inside the one instance.** `sync` (wrangler `avlo-sync`) is `workers[0]` — the **entry worker** on Miniflare's top-level `port` (8787+offset; `const ENTRY = 'sync'` + `sync` first in `dev-ports.json`). This is the same entry path `wrangler dev` serves partyserver WS on, so the `/sync/*` upgrade + DO stay on proven ground (not an unsafe socket). `images`/`unfurl`/`auth`/`users` each pin `unsafeDirectSockets: [{ port: <existing dev port>+offset, entrypoint: 'default', proxy: false }]` → each listens on its **exact current port**, so the Vite proxy reaches every worker unchanged. Confirm at startup: each logs `[mf] <name> -> <url>` on the expected port (8787/8790-8793, +offset).
 
-**No config fork.** `unstable_getMiniflareWorkerOptions(wrangler.jsonc)` (wrangler, experimental — pinned `~4.92.0`) translates each config into Miniflare options faithfully: services→entrypoints, cross-script DO, queues, D1/KV/R2, **rate limits**, and it **auto-folds `workers/auth/.dev.vars`** (the orchestrator keeps a defensive merge if a wrangler bump ever stops folding). The one thing it doesn't do is bundle TypeScript — esbuild does that here (`node:*`/`cloudflare:*` external; `.sql` → text inlines main's drizzle migrations). A **pre-flight assert** fails loudly if any `services[].name` / DO `scriptName` doesn't resolve to an assembled worker (the `NAME` dir→wrangler-name map is load-bearing). Two source-confirmed fix-ups: `users`' cross-script `rooms` DO is forced `useSQLite=true` (the translator derives it from the binding worker's own migrations, which `users` lacks), and `main`'s Static Assets are **dropped in dev** (see main's *Dev mode caveat*).
+**No config fork.** `unstable_getMiniflareWorkerOptions(wrangler.jsonc)` (wrangler, experimental — pinned `~4.92.0`) translates each config into Miniflare options faithfully: services→entrypoints, cross-script DO, queues, D1/KV/R2, **rate limits**, and it **auto-folds `workers/auth/.dev.vars`** (the orchestrator keeps a defensive merge if a wrangler bump ever stops folding). The one thing it doesn't do is bundle TypeScript — esbuild does that here (`node:*`/`cloudflare:*` external; `.sql` → text inlines sync's drizzle migrations). A **pre-flight assert** fails loudly if any `services[].name` / DO `scriptName` doesn't resolve to an assembled worker (the `NAME` dir→wrangler-name map is load-bearing — it must now resolve `users`' `scriptName: avlo-sync`, which it does). One source-confirmed fix-up remains: `users`' cross-script `rooms` DO is forced `useSQLite=true` (the translator derives it from the binding worker's own migrations, which `users` lacks). (No dev worker has an `assets` binding now — `avlo` isn't assembled in dev — so the old "drop main's Static Assets" fix-up is gone.)
 
 **Hot reload.** esbuild watches each worker's resolved graph **including `packages/*/src`** — a save rebuilds (sub-100 ms) and calls `mf.setOptions(...)`, which reloads in place: persisted state, DO storage, and the listening ports/direct sockets all survive, so the Vite proxy never blips. Build/reload errors are non-fatal (logged; last good bundle stays live). **`wrangler.jsonc` edits are NOT watched** — restart `npm run dev` (same partial behavior as `wrangler dev`).
 
@@ -196,9 +204,9 @@ npm run dev:legacy                         # ROLLBACK: the old five-process wran
 
 **Shared Miniflare state.** The orchestrator sets `defaultPersistRoot` to `<repoRoot>/.wrangler/state/v3` — **the `v3` segment is load-bearing.** `wrangler dev --persist-to <X>` (and `wrangler d1 migrations apply --persist-to <X>`) store under `<X>/v3/{d1,r2,kv,do,cache}`, but Miniflare's `defaultPersistRoot` does NOT add `v3`; pointing it at the bare `.wrangler/state` opens a brand-new EMPTY tree beside the real one (D1 with no tables → "no such table: room_visits", empty R2 buckets, lost KV sessions + DO room data). Appending `v3` makes the orchestrator read the exact same SQLite/R2 tree the legacy `wrangler dev` wrote (same DB keys), so it's a drop-in. Like the legacy `dev-worker.mjs`, ONE tree regardless of `PORT_OFFSET` (each git checkout/worktree has its own `.wrangler/`, so two checkouts never contend; the `avlo-parallel` worktree gets its own `…/.wrangler/state/v3`). One instance means one process opening the tree serially, so the cross-process `SQLITE_BUSY` create-race the old `dev-worker.mjs` guarded with retry-and-jitter is **gone** — a real startup error now surfaces immediately. Shared R2 still needs matching `bucket_name` across configs — `r2_buckets[].bucket_name = "avlo-assets"` is identical in `workers/{images,unfurl}/wrangler.jsonc` — but co-location now also gives genuine cross-worker queues, cross-script DO RPC, and service-binding RPC (incl. the mutual `auth↔users`/`auth↔images` cycle). `.wrangler/` is gitignored at the repo root.
 
-**D1 migrations are not auto-applied** (not by the orchestrator, not by `wrangler dev`) — a one-time manual step, same as before. On a fresh state tree the `users` D1 has no tables and `GET /rooms` 500s with `no such table: room_visits`; the orchestrator detects this at startup and prints the fix: `npx wrangler d1 migrations apply avlo-db --local --persist-to .wrangler/state -c workers/users/wrangler.jsonc` (note `--persist-to .wrangler/state`, NOT `…/v3` — wrangler appends `v3` itself). DO-SQLite migrations (main's `rooms`) self-apply in the DO constructor via drizzle `migrate()`, so only the D1 ones are manual.
+**D1 migrations are not auto-applied** (not by the orchestrator, not by `wrangler dev`) — a one-time manual step, same as before. On a fresh state tree the `users` D1 has no tables and `GET /rooms` 500s with `no such table: room_visits`; the orchestrator detects this at startup and prints the fix: `npx wrangler d1 migrations apply avlo-db --local --persist-to .wrangler/state -c workers/users/wrangler.jsonc` (note `--persist-to .wrangler/state`, NOT `…/v3` — wrangler appends `v3` itself). DO-SQLite migrations (sync's `rooms`) self-apply in the DO constructor via drizzle `migrate()`, so only the D1 ones are manual.
 
-**`dev:legacy` escape hatch.** `scripts/dev-worker.mjs` + the `dev:main`…`dev:users` scripts are retained **verbatim**, reachable only via `dev:legacy`. It restores the exact five-`wrangler dev` behavior (separate Miniflare each → no cross-worker queues) for rollback, and is the only `dev` path (besides `preview`/prod) that exercises main's real Static-Assets binding + SPA fallback — so it needs `client/dist` (run `npm run build -w client` first).
+**`dev:legacy` escape hatch.** `scripts/dev-worker.mjs` + the `dev:sync`…`dev:users` scripts are retained **verbatim**, reachable only via `dev:legacy`. It restores the exact five-`wrangler dev` behavior (separate Miniflare each → no cross-worker queues) for rollback. It does NOT run the `avlo` site worker (Vite serves the SPA), so main's real Static-Assets binding is exercised only by prod (or a manual `wrangler dev -c workers/main/wrangler.jsonc`); `preview` also serves the SPA via Vite preview, so it needs `client/dist` (run `npm run build -w client` first).
 
 ## CI
 
@@ -217,16 +225,17 @@ This is the load-bearing check that proves type-only imports of worker AppTypes 
 |---|---|
 | Public-internet `fetch('https://other.avlo.io/...')` between workers | `WorkerEntrypoint` + `[[services]] entrypoint` |
 | `hc<App>('/', { fetch: env.X.fetch.bind(env.X) })` for inter-worker | HTTP serialization in the wrong layer. Use binary RPC |
-| Re-create the "site" worker — split SPA hosting from sync | Main does both (same-origin, no WSS CORS) |
+| Merge sync back into the `avlo` site worker "to avoid cross-origin" | Keep them split — `avlo` is assets-only, `avlo-sync` hosts WSS + the DO. The `Domain=.avlo.io` cookie + the `on-before-connect` Origin guard handle cross-origin; SPA deploys then never touch the DO worker |
 | Inline `createCors` / `applyCsp` / SSRF / asset-key Zod in a new worker | Import from `@avlo/worker-shared`; add a parameter if needed, don't fork |
 | Read `c.req.param/query/header(...)` without Zod | `zValidator(...)` first (H1) |
 | Buffer body before `Content-Length` check | Validate header first (H2) |
 | Trust client-provided content hash | Server `sha256Hex(buffer) === key` (H4) |
 | Inline CSP literals, or a per-handler `applyCsp` you can forget | `cspHeaders(profile)` middleware (H5); `applyCsp` only for hand-built `Headers` / `onError` |
 | Serve cached 200 to a `Range` request | Skip `caches.default.match` when `Range` present |
-| Re-introduce `ASSETS` as binding for the images R2 bucket | Binding is `IMAGES`; `ASSETS` is reserved for Static Assets on main |
-| Rename main's wrangler `name` from `avlo` to `avlo-main` | Asymmetry is load-bearing — preserves DO namespace, signals canonical app identity |
-| Add a route to main that isn't `/parties/*` or the Assets fallback | Make a new worker; main stays minimal |
+| Re-introduce `ASSETS` as binding for the images R2 bucket | Binding is `IMAGES`; `ASSETS` is reserved by convention for Static Assets on the `avlo` site worker |
+| Rename main's wrangler `name` from `avlo` to `avlo-main` | Asymmetry is load-bearing — bare `avlo` is the canonical app identity + public domain stem (the `rooms` DO namespace now lives in `avlo-sync`) |
+| Add a worker script + routes to the `avlo` site host | It's assets-only; put WSS/server logic in `avlo-sync` or a new worker (a main script is fine ONLY for site-level concerns like redirects) |
+| Rename `avlo-sync`'s `rooms` DO binding or change the `/sync` prefix on one side only | The URL party segment = the kebab-cased binding name (`rooms`); the prefix is `SYNC_WS_PREFIX` (shared) on the server + provider, a matching literal in the SW matcher + Vite proxy. Change all four together |
 | Import `@avlo/worker-shared` from any client-side bundle | Server-only. Client uses `@avlo/api-client` (typed `hc`) and `@avlo/shared` (cross-runtime). Missing path entry in `client/tsconfig*.json` makes this a hard typecheck failure |
 | Add `@avlo/worker-shared` to `client/tsconfig.json` paths | The omission IS the guardrail |
 | Import `import type { FooApp } from '…/workers/foo/src/index'` in `@avlo/api-client` | Always import from `.../src/app-type`. The mock exists to prevent the ambient-types leak; bypassing reintroduces it |

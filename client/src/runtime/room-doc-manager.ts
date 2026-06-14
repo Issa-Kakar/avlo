@@ -2,7 +2,8 @@
  * RoomDocManager - Central authority for Y.Doc and real-time collaboration
  */
 
-import { getZ, isZKey, Permission, type RoomId, type UserId, type YObjects, type ZKey } from '@avlo/shared';
+import { SYNC_HOST_PROD } from '@avlo/api-client';
+import { getZ, isZKey, Permission, type RoomId, SYNC_WS_PREFIX, type UserId, type YObjects, type ZKey } from '@avlo/shared';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -517,11 +518,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private initializeWebSocketProvider(): void {
     try {
-      const host = window.location.host;
+      // prod: sync.avlo.io (cross-origin, cookie rides via Domain=.avlo.io); dev: the Vite
+      // host (localhost:<vite>) so the /sync proxy forwards the upgrade to the sync worker.
+      const host = SYNC_HOST_PROD ?? window.location.host;
 
       this.websocketProvider = new YProvider(host, this.roomId, this.ydoc, {
         connect: true,
-        party: 'rooms',
+        // `prefix` (vs `party`) makes the provider use the path verbatim, so we bake the
+        // `rooms` party segment + roomId in: wss://sync.avlo.io/sync/rooms/<id> (prod) /
+        // ws://localhost:<vite>/sync/rooms/<id> (dev via Vite proxy). Must match SYNC_WS_PREFIX.
+        prefix: `/${SYNC_WS_PREFIX}/rooms/${this.roomId}`,
         maxBackoffTime: 10_000,
         resyncInterval: -1,
       });

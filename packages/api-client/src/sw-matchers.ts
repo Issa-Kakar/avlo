@@ -12,6 +12,8 @@ export function isImagesRequest(url: URL, imagesOrigin: string): boolean {
 }
 
 export function isSyncRequest(url: URL, syncHostProd: string | null): boolean {
-  if (syncHostProd && url.host === syncHostProd && url.pathname.startsWith('/parties/')) return true;
-  return url.pathname.startsWith('/parties/'); // dev fallback
+  // '/sync/' must match SYNC_WS_PREFIX (@avlo/shared) — kept a literal so SW-graph code doesn't
+  // pull @avlo/shared into the SW bundle (the CI isolation grep).
+  if (syncHostProd && url.host === syncHostProd && url.pathname.startsWith('/sync/')) return true;
+  return url.pathname.startsWith('/sync/'); // dev fallback
 }

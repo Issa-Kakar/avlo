@@ -8,7 +8,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-mB3L55QrwHlNxgJC8J/yDkEe+Z301KZThyJEOvKEbWw='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io https://auth.avlo.io https://users.avlo.io wss://avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-mB3L55QrwHlNxgJC8J/yDkEe+Z301KZThyJEOvKEbWw='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io https://auth.avlo.io https://users.avlo.io wss://sync.avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

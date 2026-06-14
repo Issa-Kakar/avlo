@@ -49,7 +49,7 @@ All paths relative to `client/src/` unless noted.
 | `InputManager.ts` | DOM event forwarder + modifier state (shift/ctrl/meta) |
 | `tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
 | `room-runtime.ts` | Module-level room context — `connectRoom`/`disconnectRoom` + imperative getters |
-| `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring |
+| `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring. WS provider → `wss://sync.avlo.io/sync/rooms/<id>` (prod; host = `SYNC_HOST_PROD`, prefix = `SYNC_WS_PREFIX`) — cross-origin to the SPA, gated server-side by the CSWSH Origin allowlist in sync's `on-before-connect` |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
 | `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
 | `toolbar-place.ts` | Drag-place entry from inspector buttons — applies the selection, `beginPlace` on the tool singleton, pointer capture to canvas + grabbing cursor; move/up then flow through the normal dispatch |
@@ -157,11 +157,12 @@ All paths relative to `client/src/` unless noted.
 
 ### Server (`workers/`)
 
-Five independently-deployed Cloudflare Workers. Full architecture, hardening invariants, ports, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
+Six independently-deployed Cloudflare Workers. Full architecture, hardening invariants, ports, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
 
 | Worker | Folder | Prod | Bindings | Surface |
 |---|---|---|---|---|
-| **main** | `workers/main/` | `avlo.io` | `ASSETS` (Static Assets), `rooms` (DO/SQLite), `DOCS` (R2), `AUTH` (service), `ROOM_VISITS`/`ROOM_META` (queue producers) | SPA via Assets binding + WSS `/parties/*` (`partyserverMiddleware` + `on-before-connect` identity gate) + `RoomDurableObject` (per-room meta in DO-SQLite, live permissions, tier-3 WS limiter) |
+| **main** | `workers/main/` | `avlo.io`, `www.avlo.io` | Static Assets only (no worker script, no bindings) | Pure site host — serves the SPA + the `_headers` CSP via Cloudflare's Static Assets layer. Sync split out to `avlo-sync`, so SPA deploys (`deploy:main`) never touch the DO worker |
+| **sync** | `workers/sync/` | `sync.avlo.io` | `rooms` (DO/SQLite, class `AvloDO`), `DOCS` (R2), `AUTH` (service), `ROOM_VISITS`/`ROOM_META` (queue producers) | WSS `/sync/*` (`partyserverMiddleware`, prefix `SYNC_WS_PREFIX` → `/sync/rooms/<id>`) + `on-before-connect` (CSWSH Origin guard + identity gate) + `AvloDO` (per-room meta in DO-SQLite, live permissions, tier-3 WS limiter) |
 | **images** | `workers/images/` | `images.avlo.io` | `IMAGES` (R2), `AUTH` (service), `RL_UPLOAD` | `PUT/GET /:key` — `requireAuth` on PUT, Zod param, content-length bound, hash-verify, edge cache, Range, CSP — + `GET /avatars/:hash` (write-once 32-hex key, immutable cache) + `ImagesRpc.ingestAvatar` (Google avatar → R2 snapshot; auth-worker-only) |
 | **unfurl** | `workers/unfurl/` | `unfurl.avlo.io` | `IMAGES` (R2, shared), `AUTH` (service), `RL_UPLOAD` | `GET /?url=` — `requireAuth`, Zod query + SSRF refine, HTMLRewriter OG extraction, image→R2, edge cache 7d |
 | **auth** | `workers/auth/` | `auth.avlo.io` | `SESSIONS` (KV), `RL_AUTH`, services `USERS`/`IMAGES`, secrets `ANON_SECRET`/`GOOGLE_CLIENT_SECRET`/`OAUTH_PKCE_SECRET` | `GET /me` (KV session branch first → signed `avlo_anon` cookie mint/slide) + Google OAuth (`GET /login/google` → PKCE/state/nonce flow cookie → `GET /callback` trust pipeline → promote-or-adopt + KV session + promote-only anon rotation; `POST /logout`) + `AuthRpc.verifySession` (session→anon fallback; signature unchanged — every consumer inherits Google sessions) |

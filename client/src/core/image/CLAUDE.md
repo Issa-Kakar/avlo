@@ -96,7 +96,7 @@ Viewport management (every frame in RenderLoop.tick()):
 
 | Route | Strategy | Details |
 |-------|----------|---------|
-| `/parties/*`, non-GET | Passthrough | No `respondWith` — browser handles directly |
+| `/sync/*`, non-GET | Passthrough | No `respondWith` — browser handles directly |
 | `/api/assets/*` | Cache-first | Cache hit → serve. Miss → fetch CDN → cache on 200 → serve. Try-catch falls through to `fetch()` on cache errors |
 | `/api/*` (non-asset) | Passthrough | No `respondWith` |
 | `/assets/*` | Cache-first | Vite-hashed = immutable |
@@ -170,7 +170,7 @@ Images use stored `frame` (like shapes), not derived frames (unlike text/code). 
 | `workers/images/src/upload.ts` | `handleUpload` (PUT `/:key` on `images.avlo.io`) — Zod param + content-length, dedup, magic-byte validate, hash-verify, R2 put |
 | `workers/images/src/get.ts` | `handleGetAsset` (GET `/:key`) — R2 conditional + Range read, edge cache (Range-bypass), `Accept-Ranges` advertise |
 | `workers/images/src/index.ts` | `createCors('images')`, route table, drift guard, default export |
-| `workers/main/src/index.ts` | `partyserverMiddleware()` on `/parties/*`, Static-Assets-binding fallback for everything else |
+| `workers/sync/src/index.ts` | `partyserverMiddleware()` on `/sync/*` (the `avlo` site worker is assets-only — Static Assets serve everything else) |
 
 Per-worker docs: `workers/CLAUDE.md`. Binding renames: legacy `ASSETS` (R2) → `IMAGES`; `ASSETS` is now Cloudflare's Static Assets binding on main.
 
@@ -448,7 +448,8 @@ Full doctrine, hardening invariants, and the app-type/drift-guard pattern in `wo
 |---|---|---|
 | `workers/images` (prod `images.avlo.io`) | `PUT /:key`, `GET /:key` | `IMAGES` → R2 `avlo-assets` |
 | `workers/unfurl` (prod `unfurl.avlo.io`) | `GET /?url=` (also writes images for OG/favicon) | `IMAGES` → R2 `avlo-assets` (shared with images) |
-| `workers/main` (prod `avlo.io`) | SPA Assets binding + WSS `/parties/*` | `ASSETS` (Static Assets), `DOCS` (R2 `avlo-docs`), `rooms` (DO) |
+| `workers/main` (prod `avlo.io`) | SPA via Static Assets (assets-only, no worker script) | — |
+| `workers/sync` (prod `sync.avlo.io`) | WSS `/sync/*` | `DOCS` (R2 `avlo-docs`), `rooms` (DO, class `AvloDO`) |
 
 CORS comes from `createCors('images')` / `createCors('unfurl')` in `@avlo/worker-shared` (allows `localhost:*` + `https://{www.,}avlo.io`). Main needs no CORS — SPA + WSS are same-origin.
 
@@ -499,7 +500,7 @@ Detailed docs: `client/src/core/bookmark/CLAUDE.md`
 Driven by `scripts/dev-ports.json` (single source of truth) + `PORT_OFFSET`:
 
 ```
-/parties     → ws://localhost:${MAIN}     (PartyServer WebSocket)
+/sync        → ws://localhost:${SYNC}     (PartyServer WebSocket)
 /api/images  → http://localhost:${IMAGES} (strips /api/images prefix → worker sees /:key)
 /api/unfurl  → http://localhost:${UNFURL} (strips /api/unfurl prefix → worker sees /?url=)
 ```

@@ -9,7 +9,7 @@ import type { MetaEvent } from './zod/room-event';
  * untyped `Fetcher`/`Service` — it cannot resolve the target class's methods across
  * separate wrangler configs. So the call site casts the binding to one of these and
  * calls through it. The shapes are kept honest by `assertRpcMatch` drift guards at each
- * implementation site (`workers/main/src/room.ts`, `workers/auth/src/rpc.ts`) — drift
+ * implementation site (`workers/sync/src/room.ts`, `workers/auth/src/rpc.ts`) — drift
  * fails typecheck there, not at runtime here.
  */
 
@@ -45,7 +45,7 @@ export interface ImagesRpcSurface {
 }
 
 /**
- * main worker's `RoomDurableObject` cross-script surface — owner-only meta mutations (§8).
+ * sync worker's `AvloDO` cross-script surface — owner-only meta mutations (§8).
  *
  * `roomId` MUST be the id the stub was derived from. Raw native RPC cannot resolve
  * partyserver's `this.name` on a cold DO (it bypasses the fetch/webSocket init that

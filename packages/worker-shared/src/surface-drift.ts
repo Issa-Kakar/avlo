@@ -40,7 +40,7 @@ export function assertSurfaceMatch<Real, Mock>(_ok: AssertEqual<HonoRouteSurface
  * so each implementing class asserts, next to its definition, that its real methods stay
  * mutually assignable with that surface:
  *
- *   assertRpcMatch<Pick<RoomDurableObject, keyof RoomDoStub>, RoomDoStub>(true);
+ *   assertRpcMatch<Pick<AvloDO, keyof RoomDoStub>, RoomDoStub>(true);
  *
  * A renamed/removed method fails the `Pick` constraint; param or return drift collapses
  * `AssertEqual` to `never` and the `true` argument errors at the call site.

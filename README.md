@@ -44,7 +44,7 @@ npm run check        # Biome lint + format check
 Deploy is per-worker (Cloudflare):
 
 ```bash
-npm run deploy:main      # or deploy:images / deploy:unfurl / deploy (all three)
+npm run deploy:main      # site worker; or deploy:sync / deploy:images / deploy:unfurl / deploy:auth / deploy:users / deploy (all)
 ```
 
 ## Architecture
@@ -67,9 +67,10 @@ avlo/
 
 **Client.** A single `CanvasRuntime` orchestrates everything: a dirty-rect **base canvas** (only the rects published via `invalidateWorld*` repaint), a full-clear **overlay canvas** for tool previews and selection UI, an `InputManager`, and a tool registry of zero-arg singletons (select, draw, eraser, text/note, pan, connector, code). The Yjs document is the single source of truth — a deep observer turns CRDT changes into spatial-index updates, cache eviction, and dirty rects in one synchronous pass. An [RBush](https://github.com/mourner/rbush) R-tree backs viewport queries, hit testing, snap targets, and connector obstacle detection. Hot paths (render frame, observer fire, pointer move, reroute) are zero-allocation and monomorphic, using typed-array scratch buffers.
 
-**Backend.** Three Workers, each on its own subdomain and deploy:
+**Backend.** Workers, each on its own subdomain and deploy:
 
-- **main** — serves the SPA via the Static Assets binding and hosts the realtime layer. `y-partyserver` routes `/parties/*` WebSocket connections to a per-room `RoomDurableObject` that relays Yjs updates, hibernates on idle, and persists Y.Doc snapshots to the `avlo-docs` R2 bucket.
+- **main** — the site host: serves the SPA (and the `_headers` CSP) via Cloudflare's Static Assets layer. Assets-only (no worker script), so SPA deploys never touch the realtime worker.
+- **sync** (`sync.avlo.io`) — the realtime layer. `y-partyserver` routes `/sync/*` WebSocket connections to a per-room `AvloDO` durable object that relays Yjs updates, hibernates on idle, and persists Y.Doc snapshots to the `avlo-docs` R2 bucket. An edge Origin guard + cookie-based identity gate the upgrade.
 - **images** — `PUT`/`GET /:key` against the `avlo-assets` R2 bucket. Zod-validated keys, content-length bounds, server-side hash verification, HTTP Range, and long-lived edge caching (assets are immutable + content-addressed).
 - **unfurl** — `GET /?url=` fetches a page, runs HTMLRewriter to pull OG/Twitter tags, mirrors the preview image + favicon into R2 (content-addressed), and edge-caches for 7 days. SSRF-guarded.
 

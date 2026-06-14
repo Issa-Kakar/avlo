@@ -58,7 +58,7 @@ sw.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Never intercept: party routes (WebSocket), non-GET (PUT uploads, etc.)
+  // Never intercept: sync routes (WebSocket), non-GET (PUT uploads, etc.)
   if (isSyncRequest(url, SYNC_HOST_PROD) || request.method !== 'GET') return;
 
   // Image assets: cache-first from avlo-assets (immutable, content-addressed)

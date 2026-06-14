@@ -19,7 +19,7 @@ const isDevLogs = (env: unknown): boolean => !!(env as { DEV_LOGS?: unknown } | 
 
 /**
  * Dev-only request log (method · path · status · ms, via `hono/logger`). Gated so prod NEVER
- * logs paths — room ids (`/parties/...`) and asset keys (`/:hash`) live there (H10). Register
+ * logs paths — room ids (`/sync/...`) and asset keys (`/:hash`) live there (H10). Register
  * right AFTER `createCors` (H6) so cors stays the first functional middleware:
  *   app.use('*', devRequestLogger())
  * Miniflare's own `Log` covers the entry worker (main); requests to the direct-socket workers

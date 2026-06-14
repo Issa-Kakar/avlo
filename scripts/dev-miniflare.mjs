@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Single-instance Miniflare dev orchestrator.
 //
-// WHY THIS EXISTS: `main` (wrangler name `avlo`) PRODUCES to the queues
+// WHY THIS EXISTS: `sync` (wrangler name `avlo-sync`) PRODUCES to the queues
 // `avlo-room-visits`/`avlo-room-meta`; `users` (`avlo-users`) CONSUMES both.
 // Cloudflare Queues only deliver when producer and consumer share ONE Miniflare
 // instance (cross-process service bindings work since Sept 2025, cross-process
@@ -13,9 +13,9 @@
 // dev port (so `client/vite.config.ts` is untouched).
 //
 // Topology inside the one instance:
-//   • `main` is workers[0] (the ENTRY worker) on the top-level `port` (8787+offset).
+//   • `sync` is workers[0] (the ENTRY worker) on the top-level `port` (8787+offset).
 //     This is Miniflare's normal entry path — the same one `wrangler dev` serves
-//     partyserver WS on today — so the `/parties/*` upgrade stays on proven ground.
+//     partyserver WS on today — so the `/sync/*` upgrade + AvloDO stay on proven ground.
 //   • images/unfurl/auth/users each pin `unsafeDirectSockets:[{port}]` to their
 //     existing port (a normal HTTP entry to `fetch`, addressable via the Vite proxy).
 //
@@ -38,10 +38,14 @@ const repoRoot = resolve(here, '..');
 const PORTS = JSON.parse(readFileSync(resolve(here, 'dev-ports.json'), 'utf8'));
 const offset = parseInt(process.env.PORT_OFFSET || '0', 10);
 // dev-ports.json carries a `_comment` doc key alongside the numbers — keep only
-// numeric entries. Order is load-bearing: `main` is first ⇒ it becomes workers[0].
+// numeric entries. Order is load-bearing: `sync` is first ⇒ it becomes workers[0].
 const workerNames = Object.entries(PORTS)
   .filter(([, v]) => typeof v === 'number')
   .map(([n]) => n);
+
+// The ENTRY worker becomes Miniflare's top-level `port` (the WS /sync/* upgrade + DO stay on
+// the proven entry path); every other worker gets an unsafeDirectSocket on its own dev port.
+const ENTRY = 'sync';
 
 const HOST = '127.0.0.1';
 const INSPECTOR_PORT = 9229 + offset;
@@ -65,7 +69,7 @@ const logLevel = LOG_LEVELS[(process.env.MF_LOG_LEVEL ?? 'info').toLowerCase()] 
 // dir name → wrangler `name`. LOAD-BEARING: services + cross-script DO resolve by
 // wrangler NAME, not dir. A mismatch silently breaks every cross-worker edge
 // (the pre-flight assert below catches it loudly).
-const NAME = { main: 'avlo', images: 'avlo-images', unfurl: 'avlo-unfurl', auth: 'avlo-auth', users: 'avlo-users' };
+const NAME = { sync: 'avlo-sync', images: 'avlo-images', unfurl: 'avlo-unfurl', auth: 'avlo-auth', users: 'avlo-users' };
 
 // CRITICAL: `wrangler dev --persist-to <X>` (and `wrangler d1 migrations apply
 // --persist-to <X>`) store under `<X>/v3/{d1,r2,kv,do,cache}` — Miniflare's
@@ -93,7 +97,7 @@ let reloadTimer = null;
 // ─── esbuild bundling ────────────────────────────────────────────────────────
 // `node:*` + `cloudflare:*` MUST stay external — workerd supplies them at runtime
 // under `nodejs_compat` (+ `cloudflare:workers`); bundling them breaks jose/arctic/
-// drizzle. `.sql` → text inlines main's drizzle migration modules (its generated
+// drizzle. `.sql` → text inlines sync's drizzle migration modules (its generated
 // migrations.js does `import m0000 from './0000_*.sql'`), so no Miniflare Text rule
 // is needed. `@avlo/*` resolve via each package's `exports` map (default condition).
 function esbuildOptions(entryAbs, define, plugins) {
@@ -179,22 +183,20 @@ function buildWorkerEntries() {
     entry.bindings = { ...workerOptions.bindings, DEV_LOGS: '1' };
 
     // users' cross-script `rooms` DO: the translator derives useSQLite from the
-    // BINDING worker's own migrations, which `users` lacks (main owns them). Storage
-    // semantics actually come from the defining worker (`avlo`), but set it
+    // BINDING worker's own migrations, which `users` lacks (sync owns them). Storage
+    // semantics actually come from the defining worker (`avlo-sync`), but set it
     // explicitly so Miniflare doesn't object to the cross-script SQLite class.
     if (dir === 'users') entry.durableObjects.rooms.useSQLite = true;
 
-    // main's Static Assets: drop in dev so a missing/stale client/dist can't crash the whole
-    // instance, and because Vite serves the SPA (main is hit only on /parties/* in dev). main's
-    // worker code no longer references c.env.ASSETS (the defensive catch-all was removed), so no
-    // ASSETS stub is needed. (run_worker_first/SPA-fallback are exercised only by dev:legacy/preview/prod.)
-    if (dir === 'main') delete entry.assets;
+    // No dev worker has an `assets` binding: `avlo` (the site worker) isn't assembled in dev —
+    // Vite serves the SPA, and the realtime worker (`avlo-sync`) is a pure worker. So there is
+    // nothing to drop here; the Static-Assets binding is exercised only by preview/prod.
 
     // Non-entry workers each listen on their existing dev port via an unsafe direct
     // socket (proxy:false = a normal HTTP entry to the worker's default `fetch`),
-    // so the Vite proxy reaches them unchanged. main is the entry worker on the
+    // so the Vite proxy reaches them unchanged. ENTRY (sync) is the entry worker on the
     // top-level port instead (the WS path stays on Miniflare's proven entry).
-    if (dir !== 'main') {
+    if (dir !== ENTRY) {
       entry.unsafeDirectSockets = [{ host: HOST, port: PORTS[dir] + offset, entrypoint: 'default', proxy: false }];
     }
     return entry;
@@ -206,7 +208,7 @@ function miniflareOptions() {
     log: new Log(logLevel), // [mf:*] request + lifecycle lines (suppressed by default via the API)
     defaultPersistRoot: persistRoot,
     host: HOST,
-    port: PORTS.main + offset, // entry worker = main → its existing port (WS /parties/*)
+    port: PORTS[ENTRY] + offset, // entry worker = sync → its existing port (WS /sync/*)
     inspectorPort: INSPECTOR_PORT, // ONE inspector for all isolates
     workers: buildWorkerEntries(),
   };
@@ -362,9 +364,9 @@ async function main() {
   mf = new Miniflare(miniflareOptions());
   await mf.ready;
 
-  console.error(`[mf] main    -> http://${HOST}:${PORTS.main + offset}  (entry worker; WS /parties/*)`);
+  console.error(`[mf] ${ENTRY.padEnd(7)} -> http://${HOST}:${PORTS[ENTRY] + offset}  (entry worker; WS /sync/*)`);
   for (const { dir, name } of translated) {
-    if (dir === 'main') continue;
+    if (dir === ENTRY) continue;
     console.error(`[mf] ${dir.padEnd(7)} -> ${await mf.unsafeGetDirectURL(name)}`);
   }
   console.error(`[mf] inspector -> http://${HOST}:${INSPECTOR_PORT}`);

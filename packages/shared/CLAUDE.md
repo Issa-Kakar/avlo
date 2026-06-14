@@ -9,7 +9,7 @@ Cross-runtime utilities and types used by client and Cloudflare Workers.
   `types/y-doc.ts` — Y.Doc shape alias (`YObjects`).
 - `z-order/` — fractional z-key generation + renorm. **`ZKey` is opaque; never construct by hand.**
   Algorithm + branded type + jittered FI wrappers live here so both client (hot-path sort,
-  hydrate, observer) and server (`workers/main/src/room.ts` renormalization) consume one
+  hydrate, observer) and server (`workers/sync/src/room.ts` renormalization) consume one
   implementation.
 - **Identity primitives** (server-resolved; the client never mints a `userId`):
   `utils/user-id.ts` (`generateUserId` — auth `/me` only, `asUserId`, `USER_ID_RE`),

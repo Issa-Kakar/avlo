@@ -1,35 +1,17 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "avlo",
-  "main": "src/index.ts",
+  "name": "avlo", // bare name preserved — canonical app identity; the asymmetry is load-bearing
   "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
-  "compatibility_flags": ["nodejs_compat"],
 
+  // Pure site worker: Static Assets only, NO worker script. The SPA + the _headers CSP are
+  // served by Cloudflare's Static Assets layer directly (no `main`, no ASSETS binding — that
+  // binding only exists to read assets FROM worker code, and there is none). Yjs sync + the
+  // AvloDO live in `avlo-sync` (sync.avlo.io), so SPA deploys never touch the DO worker.
   "assets": {
     "directory": "../../client/dist",
-    "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
-    "not_found_handling": "single-page-application",
-    "run_worker_first": ["/parties/*"]
+    "not_found_handling": "single-page-application"
   },
-
-  "durable_objects": {
-    "bindings": [{ "name": "rooms", "class_name": "RoomDurableObject" }]
-  },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDurableObject"] }],
-  "r2_buckets": [{ "binding": "DOCS", "bucket_name": "avlo-docs" }],
-
-  // step 6/7 — edge auth (AuthRpc.verifySession in onBeforeConnect) + room-event producers.
-  // The DO is the sole emitter of projection events about itself (§6).
-  "services": [{ "binding": "AUTH", "service": "avlo-auth", "entrypoint": "AuthRpc" }],
-  "queues": {
-    "producers": [
-      { "binding": "ROOM_VISITS", "queue": "avlo-room-visits" },
-      { "binding": "ROOM_META", "queue": "avlo-room-meta" }
-    ]
-  },
-  // drizzle-kit's generated migrations.js imports the .sql as text modules — ship them.
-  "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
 
   // routes uncommented post-DNS-transfer + remaining pre-prod essentials
   // "routes": [
@@ -37,7 +19,5 @@
   //   { "pattern": "www.avlo.io", "custom_domain": true }
   // ],
 
-  "dev": { "port": 8787 },
-  "observability": { "enabled": true },
-  "minify": true
+  "observability": { "enabled": true }
 }

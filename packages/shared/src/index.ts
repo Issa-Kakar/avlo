@@ -1,3 +1,4 @@
+export { SYNC_WS_PREFIX } from './sync';
 export * from './types/identifiers';
 export { Permission } from './types/permission';
 export type { YObjects } from './types/y-doc';
