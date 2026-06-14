@@ -3,6 +3,7 @@ import { ANON_COOKIE, AnonToken, cookieOpts, mintAnonToken } from '@avlo/worker-
 import type { Context } from 'hono';
 import { getSignedCookie, setCookie, setSignedCookie } from 'hono/cookie';
 import type { MeResponse } from '../app-type';
+import type { AuthEnv } from '../env';
 import { readSession, SESSION_COOKIE, SESSION_SLIDE_THRESHOLD_MS, SESSION_TTL_SEC, type SessionHit, slideSession } from '../session';
 
 // 400 days — the browser Max-Age ceiling. Sliding (re-bumped every /me), so the
@@ -19,7 +20,7 @@ export const ANON_MAX_AGE_SEC = 400 * 24 * 60 * 60;
  * (header-only); absent/invalid → mint a fresh `userId`. `name`/`color` are
  * deterministic from `userId` for anon; an account carries its Google name + avatar.
  */
-export async function handleMe(c: Context<{ Bindings: Env }>): Promise<Response> {
+export async function handleMe(c: Context<AuthEnv>): Promise<Response> {
   let sess: SessionHit | null = null;
   try {
     sess = await readSession(c.req.raw.headers.get('cookie'), c.env.SESSIONS);

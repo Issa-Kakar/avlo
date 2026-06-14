@@ -13,14 +13,15 @@ import type { AuthRpcSurface } from './rpc-surfaces';
  * chain without the env-variance friction a fixed-env middleware hits. The constraint
  * only demands the `AUTH` binding + the `userId` var slot this writes.
  *
- * `c.env.AUTH` is an untyped service binding across wrangler configs (§5.1) — cast to
- * the shared `AuthRpcSurface` so caller and the auth worker agree on the contract.
+ * `c.env.AUTH` is an untyped service binding across wrangler configs (§5.1); the generic
+ * constraint pins it to the shared `AuthRpcSurface`, which each caller satisfies by typing
+ * its env `RefineBindings<Env, { AUTH: AuthRpcSurface }>` — so the contract is
+ * asserted once per worker, not re-cast here.
  */
 export const requireAuth =
-  <E extends { Bindings: { AUTH: unknown }; Variables: { userId: UserId } }>(): MiddlewareHandler<E> =>
+  <E extends { Bindings: { AUTH: AuthRpcSurface }; Variables: { userId: UserId } }>(): MiddlewareHandler<E> =>
   async (c, next) => {
-    const auth = c.env.AUTH as unknown as AuthRpcSurface;
-    const ctx = await auth.verifySession(c.req.header('cookie') ?? null);
+    const ctx = await c.env.AUTH.verifySession(c.req.header('cookie') ?? null);
     if (!ctx) return c.json({ error: 'unauthenticated' }, 401);
     c.set('userId', ctx.userId);
     await next();

@@ -12,15 +12,7 @@ import {
   Z_RENORM_MAX_KEY_LEN,
   Z_RENORM_ORIGIN,
 } from '@avlo/shared';
-import {
-  assertRpcMatch,
-  devDrizzleLogger,
-  isDevLogs,
-  type MetaEvent,
-  type RoomDoStub,
-  traceRpc,
-  type VisitEvent,
-} from '@avlo/worker-shared';
+import { devDrizzleLogger, isDevLogs, type MetaEvent, type RoomDoStub, traceRpc, type VisitEvent } from '@avlo/worker-shared';
 import { eq } from 'drizzle-orm';
 import { type DrizzleSqliteDODatabase, drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
@@ -77,7 +69,7 @@ class RateState {
 //     wake (partyserver's __ps_name fallback only hydrates on fetch/webSocket entry), so
 //     the caller passes the room id and `#verifyRoomId` PROVES it addresses this object.
 //   • everything after mint: `this.meta.roomId` — the durable, constructor-loaded truth.
-export class AvloDO extends YServer<Env> {
+export class AvloDO extends YServer<Env> implements RoomDoStub {
   // R2-friendly cadence: fewer, bigger writes
   static override callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
   static override options = {
@@ -397,7 +389,3 @@ export class AvloDO extends YServer<Env> {
     }
   }
 }
-
-// Drift guard — `RoomDoStub` (the blind cross-script cast target in @avlo/worker-shared)
-// must stay mutually assignable with the real RPC surface. Mirrors assertSurfaceMatch.
-assertRpcMatch<Pick<AvloDO, keyof RoomDoStub>, RoomDoStub>(true);

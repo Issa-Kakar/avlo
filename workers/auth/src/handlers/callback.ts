@@ -1,16 +1,17 @@
 import { generateUserId } from '@avlo/shared';
-import { ANON_COOKIE, cookieOpts, type ImagesRpcSurface, mintAnonToken, type UsersRpcSurface, verifyAnonToken } from '@avlo/worker-shared';
+import { ANON_COOKIE, cookieOpts, mintAnonToken, type UsersRpcSurface, verifyAnonToken } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { deleteCookie, getSignedCookie, setCookie, setSignedCookie } from 'hono/cookie';
 import { createFactory } from 'hono/factory';
 import type { z } from 'zod/v4';
+import type { AuthEnv } from '../env';
 import { FLOW_COOKIE, FLOW_MAX_AGE_SEC, makeGoogle, verifyGoogleIdToken } from '../oauth';
 import { deleteSession, mintSessionToken, putSession, readSession, SESSION_COOKIE, SESSION_TTL_SEC, sessionKvKey } from '../session';
 import { callbackQuery, OAuthFlowToken, sanitizeReturnTo } from '../zod/oauth';
 import type { SessionRecord } from '../zod/session';
 import { ANON_MAX_AGE_SEC } from './me';
 
-const factory = createFactory<{ Bindings: Env }>();
+const factory = createFactory<AuthEnv>();
 
 /**
  * `GET /callback` — the OAuth trust pipeline, strictly ordered. Every exit is a top-level
@@ -82,7 +83,7 @@ export const handleCallback = factory.createHandlers(zValidator('query', callbac
   let avatarHash: string | null = null;
   if (claims.picture) {
     try {
-      avatarHash = await (c.env.IMAGES as unknown as ImagesRpcSurface).ingestAvatar(claims.picture);
+      avatarHash = await c.env.IMAGES.ingestAvatar(claims.picture);
     } catch {
       console.warn('[auth] avatar ingest rpc failed');
     }
@@ -97,7 +98,7 @@ export const handleCallback = factory.createHandlers(zValidator('query', callbac
   const token = mintSessionToken();
   let linked: Awaited<ReturnType<UsersRpcSurface['linkAccount']>>;
   try {
-    linked = await (c.env.USERS as unknown as UsersRpcSurface).linkAccount(currentUserId, claims.sub, {
+    linked = await c.env.USERS.linkAccount(currentUserId, claims.sub, {
       email: claims.email,
       name: displayName,
       avatarHash,

@@ -3,10 +3,11 @@ import { generateCodeVerifier, generateState } from 'arctic';
 import { setSignedCookie } from 'hono/cookie';
 import { createFactory } from 'hono/factory';
 import type { z } from 'zod/v4';
+import type { AuthEnv } from '../env';
 import { FLOW_COOKIE, flowCookieOpts, makeGoogle } from '../oauth';
 import { loginQuery, type OAuthFlowToken, sanitizeReturnTo } from '../zod/oauth';
 
-const factory = createFactory<{ Bindings: Env }>();
+const factory = createFactory<AuthEnv>();
 
 const SCOPES = ['openid', 'email', 'profile'];
 

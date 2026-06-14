@@ -12,6 +12,7 @@ import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
 import type { AuthApp as PublicSurface } from './app-type';
+import type { AuthEnv } from './env';
 import { handleCallback } from './handlers/callback';
 import { handleLogin } from './handlers/login';
 import { handleLogout } from './handlers/logout';
@@ -28,9 +29,9 @@ const noStore: MiddlewareHandler = async (c, next) => {
 
 // IP-keyed (pre-auth routes have no userId). /me is deliberately NOT limited — it is every
 // client's identity boot; a 10/min IP key would 429 whole NATs.
-const rl = ipRateLimiter<{ Bindings: Env }>((c) => c.env.RL_AUTH);
+const rl = ipRateLimiter<AuthEnv>((c) => c.env.RL_AUTH);
 
-const app = new Hono<{ Bindings: Env }>()
+const app = new Hono<AuthEnv>()
   .use('*', createCors({ methods: ['GET', 'POST'] }))
   .use('*', devRequestLogger()) // dev-only request lines (/me, /login, /callback, /logout); dormant in prod
   .use('*', cspHeaders('api-json'))

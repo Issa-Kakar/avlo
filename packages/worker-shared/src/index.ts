@@ -7,9 +7,16 @@ export { fetchBytesCapped, sha256Hex } from './fetch-bytes';
 export { ipRateLimiter, userRateLimiter } from './rate-limit';
 export { requireAuth } from './require-auth';
 export { retryTransient } from './retry';
-export { type AuthRpcSurface, type ImagesRpcSurface, type RoomDoStub, roomDoStub, type UsersRpcSurface } from './rpc-surfaces';
+export {
+  type AuthRpcSurface,
+  type ImagesRpcSurface,
+  type RefineBindings,
+  type RoomDoStub,
+  roomDoStub,
+  type UsersRpcSurface,
+} from './rpc-surfaces';
 export { isPrivateHost } from './ssrf';
-export { type AssertEqual, assertRpcMatch, assertSurfaceMatch, type HonoRouteSurface } from './surface-drift';
+export { type AssertEqual, assertSurfaceMatch, type HonoRouteSurface } from './surface-drift';
 export { AnonToken } from './zod/anon-token';
 export { assetKeyParam } from './zod/asset-key';
 export { avatarHashParam } from './zod/avatar-hash';

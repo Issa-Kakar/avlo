@@ -1,9 +1,10 @@
 import { cookieOpts } from '@avlo/worker-shared';
 import { setCookie } from 'hono/cookie';
 import { createFactory } from 'hono/factory';
+import type { AuthEnv } from '../env';
 import { deleteSession, readSession, SESSION_COOKIE } from '../session';
 
-const factory = createFactory<{ Bindings: Env }>();
+const factory = createFactory<AuthEnv>();
 
 /**
  * `POST /logout` — delete the KV record (retried; on persistent failure the cookie clear

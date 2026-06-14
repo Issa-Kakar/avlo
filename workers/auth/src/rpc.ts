@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { type AuthCtx, type AuthRpcSurface, assertRpcMatch, traceRpc, verifyAnonToken } from '@avlo/worker-shared';
+import { type AuthCtx, type AuthRpcSurface, traceRpc, verifyAnonToken } from '@avlo/worker-shared';
 import { readSession } from './session';
 
 // Binary RPC surface for sibling workers: verify a cookie header → resolved identity
@@ -7,7 +7,7 @@ import { readSession } from './session';
 // responses, H18). Called at the edge in main's onBeforeConnect (§7) and by the
 // images/unfurl/users auth gates. Session (KV) branch first, anon HMAC fallback — the
 // signature is unchanged, so every consumer inherits Google sessions with zero changes.
-export class AuthRpc extends WorkerEntrypoint<Env> {
+export class AuthRpc extends WorkerEntrypoint<Env> implements AuthRpcSurface {
   async verifySession(cookieHeader: string | null): Promise<AuthCtx | null> {
     return traceRpc(
       this.env,
@@ -31,7 +31,3 @@ export class AuthRpc extends WorkerEntrypoint<Env> {
     return verifyAnonToken(cookieHeader, this.env.ANON_SECRET);
   }
 }
-
-// Drift guard — `AuthRpcSurface` (the blind service-binding cast target in
-// @avlo/worker-shared) must stay mutually assignable with the real RPC surface.
-assertRpcMatch<Pick<AuthRpc, keyof AuthRpcSurface>, AuthRpcSurface>(true);

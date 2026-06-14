@@ -33,16 +33,3 @@ export type HonoRouteSurface<T> = T extends Hono<infer _E, infer S, infer _BP> ?
 export type AssertEqual<A, B> = [A, B] extends [B, A] ? true : never;
 
 export function assertSurfaceMatch<Real, Mock>(_ok: AssertEqual<HonoRouteSurface<Real>, HonoRouteSurface<Mock>>): void {}
-
-/**
- * Companion guard for the binary-RPC cast targets in `rpc-surfaces.ts`. Call sites cast
- * an untyped cross-config binding to a hand-written surface and call through it blindly,
- * so each implementing class asserts, next to its definition, that its real methods stay
- * mutually assignable with that surface:
- *
- *   assertRpcMatch<Pick<AvloDO, keyof RoomDoStub>, RoomDoStub>(true);
- *
- * A renamed/removed method fails the `Pick` constraint; param or return drift collapses
- * `AssertEqual` to `never` and the `true` argument errors at the call site.
- */
-export function assertRpcMatch<Impl, Surface>(_ok: AssertEqual<Impl, Surface>): void {}

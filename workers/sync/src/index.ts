@@ -2,11 +2,12 @@ import { SYNC_WS_PREFIX } from '@avlo/shared';
 import { devRequestLogger } from '@avlo/worker-shared';
 import { Hono } from 'hono';
 import { partyserverMiddleware } from 'hono-party';
+import type { SyncEnv } from './env';
 import { makeOnBeforeConnect } from './on-before-connect';
 
 export { AvloDO } from './room';
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<SyncEnv>();
 
 // Dev-only WS-upgrade log (which room, status) — dormant in prod (DEV_LOGS unset).
 app.use('*', devRequestLogger());
@@ -18,7 +19,7 @@ app.use('*', devRequestLogger());
 // — the `rooms` segment is the kebab-cased DO binding name (class is AvloDO; binding stays rooms).
 app.use(
   `/${SYNC_WS_PREFIX}/*`,
-  partyserverMiddleware<{ Bindings: Env }>({ options: { prefix: SYNC_WS_PREFIX, onBeforeConnect: makeOnBeforeConnect() } }),
+  partyserverMiddleware<SyncEnv>({ options: { prefix: SYNC_WS_PREFIX, onBeforeConnect: makeOnBeforeConnect() } }),
 );
 
 export default app;

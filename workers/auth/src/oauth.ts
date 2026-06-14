@@ -7,7 +7,8 @@ export const FLOW_MAX_AGE_SEC = 600; // 10 min — ample for consent, tight for 
 
 /** Exact-redirect baseline: client id/secret/redirect URI all from env — NEVER derived
  *  from the request, so a Host/X-Forwarded game can't bend the redirect. */
-export const makeGoogle = (env: Env): Google => new Google(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.OAUTH_REDIRECT_URI);
+export const makeGoogle = (env: Pick<Env, 'GOOGLE_CLIENT_ID' | 'GOOGLE_CLIENT_SECRET' | 'OAUTH_REDIRECT_URI'>): Google =>
+  new Google(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.OAUTH_REDIRECT_URI);
 
 /**
  * Flow-cookie attributes — the host-only variant of `cookieOpts` (no Domain even in prod:

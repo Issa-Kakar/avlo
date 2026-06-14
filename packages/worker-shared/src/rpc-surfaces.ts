@@ -6,12 +6,35 @@ import type { MetaEvent } from './zod/room-event';
  * Minimal RPC-surface interfaces for cross-config binary RPC (§5.1 of the handoff).
  *
  * `wrangler types` types a `services` binding (and a cross-script DO binding) as an
- * untyped `Fetcher`/`Service` — it cannot resolve the target class's methods across
- * separate wrangler configs. So the call site casts the binding to one of these and
- * calls through it. The shapes are kept honest by `assertRpcMatch` drift guards at each
- * implementation site (`workers/sync/src/room.ts`, `workers/auth/src/rpc.ts`) — drift
- * fails typecheck there, not at runtime here.
+ * untyped `Service`/`DurableObjectNamespace` — it cannot resolve the target class's
+ * methods across separate wrangler configs. These interfaces ARE the contract, and they
+ * sit on both ends:
+ *
+ *   • Producer — the implementing class declares `implements <Surface>`, so any drift
+ *     (renamed/removed method, param/return change) fails typecheck at the class itself,
+ *     with a native error (`workers/{auth,users,images}/src/rpc.ts`, `sync/src/room.ts`).
+ *   • Consumer — the worker retypes the untyped binding to the surface ONCE in its env via
+ *     `RefineBindings<Env, { AUTH: AuthRpcSurface }>`, so call sites read
+ *     `c.env.AUTH.verifySession(...)` with no per-call cast.
+ *
+ * The cross-script DO is the one binding still reached through a cast helper (`roomDoStub`)
+ * — its stub must be derived together with the validated room id it's called with.
  */
+
+/**
+ * Retype specific cross-config bindings of the generated worker `Env` to their RPC
+ * surfaces. `wrangler types` can only emit them as untyped `Service`/`DurableObjectNamespace`,
+ * and the generated `Env` interface can't be narrowed in place (declaration-merging a
+ * differently-typed `AUTH` is a conflict, not a refinement) — so each consumer omits the
+ * loose bindings and intersects the precise ones. `keyof Overrides` drives the omit, so the
+ * removed keys can never drift from the re-added ones. Pure type-level; never instantiated.
+ *
+ * Pass the GLOBAL `Env`, NOT `Cloudflare.Env`: the runtime types merge an empty
+ * `interface Env {}` into `namespace Cloudflare`, and tsgo computes `keyof` of that merged
+ * namespaced interface as `never` — which silently collapses the `Omit` to `{}`. The global
+ * `Env` is a single unmerged declaration, so its `keyof` resolves the bindings correctly.
+ */
+export type RefineBindings<Base, Overrides> = Omit<Base, keyof Overrides> & Overrides;
 
 /** auth worker's `AuthRpc` — cookie header in → resolved identity out, pure (H18). */
 export interface AuthRpcSurface {

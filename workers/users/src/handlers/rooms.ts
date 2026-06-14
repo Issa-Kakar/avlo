@@ -69,7 +69,7 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
  * try/catch → `''`: the DO already committed and the queue converges D1, so a failed
  * direct write must never fail the response (the client just keeps its prior bookmark).
  */
-async function projectMetaRYW(env: Env, snapshot: MetaEvent): Promise<string> {
+async function projectMetaRYW(env: UsersEnv['Bindings'], snapshot: MetaEvent): Promise<string> {
   try {
     const { db, session } = getSessionDB(env.DB, 'first-primary', devDrizzleLogger(env, '[d1]'));
     await withRetry(() => upsertRoomsFromMeta(db, [snapshot]));

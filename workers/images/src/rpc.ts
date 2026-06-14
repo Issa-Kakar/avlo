@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { validateImage } from '@avlo/shared';
-import { assertRpcMatch, fetchBytesCapped, type ImagesRpcSurface, retryTransient, sha256Hex, traceRpc } from '@avlo/worker-shared';
+import { fetchBytesCapped, type ImagesRpcSurface, retryTransient, sha256Hex, traceRpc } from '@avlo/worker-shared';
 
 const AVATAR_MAX_BYTES = 1024 * 1024; // 1 MiB — avatars are small; the cap bounds the SSRF/abuse blast radius
 const AVATAR_FETCH_TIMEOUT_MS = 5000;
@@ -28,7 +28,7 @@ function isAllowedAvatarHost(hostname: string): boolean {
  * failure; NEVER throws — a missing avatar must not fail sign-in. Logs are reason-only
  * (H10): the URL embeds a per-user CDN token.
  */
-export class ImagesRpc extends WorkerEntrypoint<Env> {
+export class ImagesRpc extends WorkerEntrypoint<Env> implements ImagesRpcSurface {
   async ingestAvatar(pictureUrl: string): Promise<string | null> {
     return traceRpc(
       this.env,
@@ -70,7 +70,3 @@ export class ImagesRpc extends WorkerEntrypoint<Env> {
     }
   }
 }
-
-// Drift guard — `ImagesRpcSurface` (the blind service-binding cast target in
-// @avlo/worker-shared) must stay mutually assignable with the real RPC surface.
-assertRpcMatch<Pick<ImagesRpc, keyof ImagesRpcSurface>, ImagesRpcSurface>(true);

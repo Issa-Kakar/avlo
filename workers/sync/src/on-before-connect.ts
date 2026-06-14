@@ -1,6 +1,7 @@
 import { ROOM_ID_RE } from '@avlo/shared';
-import { type AuthRpcSurface, isAllowedOrigin, isDevHost } from '@avlo/worker-shared';
+import { isAllowedOrigin, isDevHost } from '@avlo/worker-shared';
 import type { HonoPartyServerOptions } from 'hono-party';
+import type { SyncEnv } from './env';
 
 /**
  * Edge Origin guard + format-guard + auth stamp for the WS upgrade (§7/H16). hono-party
@@ -22,17 +23,16 @@ import type { HonoPartyServerOptions } from 'hono-party';
  * - verify is `try/catch`ed so a thrown error funnels to the same absent-header → 4401
  *   in the DO, rather than propagating to hono-party's catch → opaque 1006.
  *
- * `c.env.AUTH` is an untyped service binding across wrangler configs (§5.1) — cast to
- * the shared `AuthRpcSurface`.
+ * `c.env.AUTH` is an untyped service binding across wrangler configs (§5.1); `SyncEnv`
+ * retypes it to the shared `AuthRpcSurface`, so the verify call needs no cast.
  */
-export const makeOnBeforeConnect = (): HonoPartyServerOptions<{ Bindings: Env }>['onBeforeConnect'] => async (req, lobby, c) => {
+export const makeOnBeforeConnect = (): HonoPartyServerOptions<SyncEnv>['onBeforeConnect'] => async (req, lobby, c) => {
   if (!isAllowedOrigin(req.headers.get('origin'), isDevHost(c.req.header('host')))) return new Response('Forbidden', { status: 403 });
   if (!ROOM_ID_RE.test(lobby.name)) return new Response('Bad Request', { status: 400 });
 
   let userId: string | null = null;
   try {
-    const auth = c.env.AUTH as unknown as AuthRpcSurface;
-    userId = (await auth.verifySession(req.headers.get('cookie')))?.userId ?? null;
+    userId = (await c.env.AUTH.verifySession(req.headers.get('cookie')))?.userId ?? null;
   } catch {
     userId = null;
   }

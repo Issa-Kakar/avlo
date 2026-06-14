@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { getSessionDB, users, withRetry } from '@avlo/db';
 import { generateUserId, type UserId } from '@avlo/shared';
-import { assertRpcMatch, devDrizzleLogger, traceRpc, type UsersRpcSurface } from '@avlo/worker-shared';
+import { devDrizzleLogger, traceRpc, type UsersRpcSurface } from '@avlo/worker-shared';
 import { sql } from 'drizzle-orm';
 
 // `withRetry`'s transient regex deliberately does NOT match UNIQUE errors — they are
@@ -32,7 +32,7 @@ function isUserIdPkConflict(err: unknown): boolean {
  * the callback fails closed (no session cookie, no partial state — the upsert is idempotent,
  * the next attempt converges).
  */
-export class UsersRpc extends WorkerEntrypoint<Env> {
+export class UsersRpc extends WorkerEntrypoint<Env> implements UsersRpcSurface {
   async linkAccount(
     currentUserId: UserId,
     googleSub: string,
@@ -76,7 +76,3 @@ export class UsersRpc extends WorkerEntrypoint<Env> {
     return { userId: rows[0].userId, avatarHash: rows[0].avatarHash, bookmark: session.getBookmark() ?? '' };
   }
 }
-
-// Drift guard — `UsersRpcSurface` (the blind service-binding cast target in
-// @avlo/worker-shared) must stay mutually assignable with the real RPC surface.
-assertRpcMatch<Pick<UsersRpc, keyof UsersRpcSurface>, UsersRpcSurface>(true);
