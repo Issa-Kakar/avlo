@@ -39,7 +39,7 @@
     ]
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.13",
+    "@biomejs/biome": "2.4.13",
     "@types/node": "^22.13.4",
     "@typescript/native-preview": "beta",
     "concurrently": "^8.2.2",

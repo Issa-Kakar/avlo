@@ -1,6 +1,6 @@
 # @avlo/db
 
-Server-only D1 + Durable-Object-SQLite schemas & helpers (Drizzle ORM). **Never imported client-side** — it reaches Cloudflare ambient runtime types (`D1Database`, `DurableObjectStorage`). The omission of an `@avlo/db` path entry from `client/tsconfig*.json` is the guardrail (mirrors `@avlo/worker-shared`).
+Server-only D1 + Durable-Object-SQLite schemas & helpers (Drizzle ORM). **Never imported client-side** — it reaches Cloudflare ambient runtime types (`D1Database`, `DurableObjectStorage`). The omission of an `@avlo/db` path entry from `web/tsconfig*.json` is the guardrail (mirrors `@avlo/worker-shared`).
 
 Publishes TS source directly via `exports` (no dist build). Barrel `.` plus a `./schema-do` subpath — `workers/sync/src/room.ts` wants `import * as schema from '@avlo/db/schema-do'` for `drizzle(ctx.storage, { schema })`.
 
@@ -17,5 +17,5 @@ Publishes TS source directly via `exports` (no dist build). Barrel `.` plus a `.
 
 - **Two drivers.** D1 queries are async (`.all()`); DO-SQLite (`drizzle-orm/durable-sqlite`) is sync (`.get()`/`.run()`). `getSessionDB` casts the Sessions handle (`D1DatabaseSession` isn't structurally a `D1Database`).
 - **Branded ids end-to-end.** Id columns are `$type<RoomId>()`/`$type<UserId>()`, so a query result carries the brand; the `users` queue consumer `safeParse`s wire events into brands before insert.
-- **Migrations.** Regenerate via `npm run -w packages/db db:generate-d1` / `db:generate-do`. The DO generate emits a `migrations.js` importing the `.sql` as a text module (resolved at build by sync's `rules` Text glob + a hand-written `workers/sync/drizzle/migrations.d.ts` shadow). Pre-prod, solo-dev: clearing D1 / resetting the DO covers any schema pivot — no migration shims.
+- **Migrations.** Regenerate via `pnpm --filter @avlo/db db:generate-d1` / `db:generate-do`. The DO generate emits a `migrations.js` importing the `.sql` as a text module (resolved at build by sync's `rules` Text glob + a hand-written `workers/sync/drizzle/migrations.d.ts` shadow). Pre-prod, solo-dev: clearing D1 / resetting the DO covers any schema pivot — no migration shims.
 - **Not in the root `typecheck` chain** — checked transitively via the `users` worker (+ a standalone `typecheck` script).

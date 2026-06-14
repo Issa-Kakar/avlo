@@ -14,7 +14,7 @@
       "!**/.turbo",
       "!web/src/routeTree.gen.ts",
       "!workers/**/worker-configuration.d.ts",
-      "!package-lock.json"
+      "!pnpm-lock.yaml"
     ]
   },
   "formatter": {

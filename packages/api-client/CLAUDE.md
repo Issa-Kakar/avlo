@@ -36,9 +36,9 @@ See `workers/CLAUDE.md` → App-Type Pattern for the full design.
 The whole point of the package split is that the SW bundle stays small. Maintained by:
 
 - **AppType imports are `import type` only** — erased at build by `verbatimModuleSyntax: true` in `tsconfig.base.json`.
-- **No `@avlo/worker-shared` imports anywhere client-side.** Zod schemas, CSP, SSRF, etc. are server-only. Both `client/tsconfig.json` and `tsconfig.sw.json` deliberately omit `@avlo/worker-shared` from `paths`, so accidental imports fail at typecheck.
+- **No `@avlo/worker-shared` imports anywhere client-side.** Zod schemas, CSP, SSRF, etc. are server-only. Both `web/tsconfig.json` and `tsconfig.sw.json` deliberately omit `@avlo/worker-shared` from `paths`, so accidental imports fail at typecheck.
 - **`hc<App>(...)` instances are constructed once at module scope** — per-event construction in the SW would re-allocate the router on every `fetch` event.
-- **CI grep** — `.github/workflows/ci.yml` greps `client/dist/sw.js` for `partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost`. Empty output is the pass condition. Catches any accidental runtime import of server symbols into the SW.
+- **CI grep** — `.github/workflows/ci.yml` greps `web/dist/sw.js` for `partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost`. Empty output is the pass condition. Catches any accidental runtime import of server symbols into the SW.
 
 ## Binary Bodies vs JSON
 

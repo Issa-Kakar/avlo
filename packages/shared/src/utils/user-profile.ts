@@ -24,7 +24,23 @@ const ADJECTIVES = [
   'Zesty',
 ] as const;
 
-const ANIMALS = ['Fox', 'Bear', 'Wolf', 'Eagle', 'Owl', 'Hawk', 'Lion', 'Tiger', 'Lynx', 'Otter', 'Seal', 'Whale', 'Raven', 'Swan', 'Deer'] as const;
+const ANIMALS = [
+  'Fox',
+  'Bear',
+  'Wolf',
+  'Eagle',
+  'Owl',
+  'Hawk',
+  'Lion',
+  'Tiger',
+  'Lynx',
+  'Otter',
+  'Seal',
+  'Whale',
+  'Raven',
+  'Swan',
+  'Deer',
+] as const;
 
 /** The 16-color presence palette (§2). A `userId` maps to a stable index → one color. */
 export const PRESENCE_COLORS = [

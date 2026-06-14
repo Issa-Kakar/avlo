@@ -38,9 +38,9 @@ workers/main          workers/sync          workers/images        workers/unfurl
 ### `workers/main/` — SPA site host (assets-only)
 | File | Responsibility |
 |---|---|
-| `wrangler.jsonc` | `name: "avlo"`, `assets.directory: ../../client/dist` + `not_found_handling: single-page-application`. NO `main`, NO worker script, NO `ASSETS` binding — Cloudflare's Static Assets layer serves the SPA + the `client/public/_headers` CSP directly. Yjs sync + the DO moved to `avlo-sync`, so SPA deploys (`deploy:main`) never touch the DO worker — the whole point of the split. |
+| `wrangler.jsonc` | `name: "avlo"`, `assets.directory: ../../web/dist` + `not_found_handling: single-page-application`. NO `main`, NO worker script, NO `ASSETS` binding — Cloudflare's Static Assets layer serves the SPA + the `web/public/_headers` CSP directly. Yjs sync + the DO moved to `avlo-sync`, so SPA deploys (`deploy:main`) never touch the DO worker — the whole point of the split. |
 
-A pure assets-only worker. A worker *script* can be re-added later (redirects, etc.) without disturbing sync. Not run in dev (Vite serves the SPA); its real Static-Assets binding is exercised only by `preview` and prod (need `client/dist` — run `npm run build -w client` first).
+A pure assets-only worker. A worker *script* can be re-added later (redirects, etc.) without disturbing sync. Not run in dev (Vite serves the SPA); its real Static-Assets binding is exercised only by `preview` and prod (need `web/dist` — run `pnpm --filter @avlo/web build` first).
 
 ### `workers/sync/` — Yjs realtime sync + room DO
 | File | Responsibility |
@@ -51,7 +51,7 @@ A pure assets-only worker. A worker *script* can be re-added later (redirects, e
 | `drizzle/` | DO-SQLite migrations — the constructor's `migrate()` reads them; `migrations.js` imports the `.sql` as a text module (bundled via the wrangler `rules` Text glob). Regenerate target of `@avlo/db`'s `db:generate-do`. |
 | `wrangler.jsonc` | `name: avlo-sync`, `durable_objects: rooms→AvloDO`, `migrations: new_sqlite_classes: ["AvloDO"]`, `DOCS` R2, `AUTH` service, `ROOM_VISITS`/`ROOM_META` queue producers, `rules` Text glob. No `assets`. |
 
-Cross-origin SPA → sync — the SPA on `avlo.io` opens `wss://sync.avlo.io/sync/rooms/<id>` (host from `SYNC_HOST_PROD`, prefix from `SYNC_WS_PREFIX`, in `client/src/runtime/room-doc-manager.ts`). `avlo.io → sync.avlo.io` is **same-site** (so `SameSite=Lax` permits the `.avlo.io` cookie on the upgrade) but **cross-origin** (so a true cross-site attacker is blocked by Lax — plus the explicit Origin guard in `on-before-connect`).
+Cross-origin SPA → sync — the SPA on `avlo.io` opens `wss://sync.avlo.io/sync/rooms/<id>` (host from `SYNC_HOST_PROD`, prefix from `SYNC_WS_PREFIX`, in `web/src/runtime/room-doc-manager.ts`). `avlo.io → sync.avlo.io` is **same-site** (so `SameSite=Lax` permits the `.avlo.io` cookie on the upgrade) but **cross-origin** (so a true cross-site attacker is blocked by Lax — plus the explicit Origin guard in `on-before-connect`).
 
 **No `app-type.ts` mock here** — sync exposes only WSS (`y-partyserver` directly; the browser doesn't typed-RPC into it), so it's exempt from the App-Type pattern. Skip until a client-facing HTTP route is added.
 
@@ -93,7 +93,7 @@ Path is `/` (subdomain IS the namespace in prod). Dev uses `/api/unfurl?url=` vi
 | `src/rpc.ts` | `AuthRpc.verifySession(cookieHeader)` — KV session branch first, anon HMAC fallback. **Signature unchanged** ⇒ images/unfurl/users gates + main's WS `on-before-connect` inherit Google sessions with zero changes. KV outage degrades signed-in → anon (availability over fail-closed; flip = remove the fallthrough). |
 | `src/app-type.ts` | Public mock — `MeResponse` (+ optional `email`/`avatarHash`) + the three OAuth routes for `hc<AuthApp>`. |
 
-`/me` is the ONLY identity resolver — no client-side `userId` mint. Dev: Vite `/api/auth/*` proxy; the OAuth nav routes work through it too (localhost cookies are host-only + port-agnostic, so the flow cookie set via `:3000` is readable at the registered `:8792/callback`). **`dev:p` (PORT_OFFSET) completes OAuth too** — the orchestrator's `ensureAuthDevVars` derives `OAUTH_REDIRECT_URI`=`http://localhost:8802/callback` + `APP_ORIGIN`=`http://localhost:5180` from the offset, and BOTH redirect URIs (`:8792` and `:8802`) are registered on the Google web client, so Google's redirect and the post-login Vite bounce both resolve. `makeGoogle` stays env-only (never request-derived — a security invariant), so the orchestrator is the sole injection point. Secrets live in `workers/auth/.dev.vars` (gitignored) locally, `wrangler secret put` in prod; a stale dev session started before a `.dev.vars` edit serves `undefined` secrets — restart `npm run dev` after editing it (the 500 signature is `setSignedCookie → getCryptoKey` TypeError). `RL_AUTH` is rate-limit namespace **1003** (1001 images, 1002 unfurl, 1004 users).
+`/me` is the ONLY identity resolver — no client-side `userId` mint. Dev: Vite `/api/auth/*` proxy; the OAuth nav routes work through it too (localhost cookies are host-only + port-agnostic, so the flow cookie set via `:3000` is readable at the registered `:8792/callback`). **`dev:p` (PORT_OFFSET) completes OAuth too** — the orchestrator's `ensureAuthDevVars` derives `OAUTH_REDIRECT_URI`=`http://localhost:8802/callback` + `APP_ORIGIN`=`http://localhost:5180` from the offset, and BOTH redirect URIs (`:8792` and `:8802`) are registered on the Google web client, so Google's redirect and the post-login Vite bounce both resolve. `makeGoogle` stays env-only (never request-derived — a security invariant), so the orchestrator is the sole injection point. Secrets live in `workers/auth/.dev.vars` (gitignored) locally, `wrangler secret put` in prod; a stale dev session started before a `.dev.vars` edit serves `undefined` secrets — restart `pnpm dev` after editing it (the 500 signature is `setSignedCookie → getCryptoKey` TypeError). `RL_AUTH` is rate-limit namespace **1003** (1001 images, 1002 unfurl, 1004 users).
 
 ### `workers/users/` — dashboard data + projections (§4–§8)
 | File | Responsibility |
@@ -141,7 +141,7 @@ When adding a new worker (`code-exec`, `auth`, `ai`, …):
 2. Create `workers/<name>/{wrangler.jsonc,package.json,tsconfig.json,src/index.ts,src/app-type.ts}` plus generated `worker-configuration.d.ts`.
 3. Add the drift-guard `assertSurfaceMatch<typeof app, PublicSurface>(true)` call in `src/index.ts`.
 4. Create `packages/api-client/src/<name>.ts` (`hc<FooApp>(FOO_ORIGIN)`) and re-export from `packages/api-client/src/index.ts`.
-5. Add a Vite proxy entry in `client/vite.config.ts`.
+5. Add a Vite proxy entry in `web/vite.config.ts`.
 6. Add a dev port to `scripts/dev-ports.json` (heed the `_comment`: `PORT_OFFSET` is already `10`; keep it ≥ the port-span). The orchestrator reads this JSON for its worker list — the **first** key is the Miniflare entry worker (`sync` today, on the top-level port); **append** new workers, don't prepend.
 7. Add the dir→wrangler-`name` entry to the `NAME` map in `scripts/dev-miniflare.mjs` (else the pre-flight assert fails the new cross-worker edges). For `dev:legacy` rollback parity, also add `dev:<name>` to root `package.json` + the `dev:legacy` chain.
 8. Add the typecheck workspace to the root `typecheck` and `typecheck:tsc` scripts.
@@ -182,21 +182,21 @@ The identity + authz vertical layers these on top of H1–H12 (the formal H13–
 
 ## Dev Orchestration
 
-`npm run dev` runs Vite + **one** Miniflare instance holding **all five dev workers** (`scripts/dev-miniflare.mjs`) — `sync` + images/unfurl/auth/users; the `avlo` site worker is NOT run in dev (Vite serves the SPA). One instance is non-negotiable: Cloudflare Queues only deliver when producer (`sync` → `ROOM_VISITS`/`ROOM_META`) and consumer (`users`) share a single Miniflare (cross-process *service bindings* work since Sept 2025; cross-process *queues* do not — workers-sdk #9795). The old per-worker `wrangler dev` chain gave each worker its own Miniflare, so locally the queue → D1 projection never ran. Single source of truth for base ports stays `scripts/dev-ports.json`; Vite imports the same JSON for proxy targets, **unchanged** — that's the whole point.
+`pnpm dev` runs Vite + **one** Miniflare instance holding **all five dev workers** (`scripts/dev-miniflare.mjs`) — `sync` + images/unfurl/auth/users; the `avlo` site worker is NOT run in dev (Vite serves the SPA). One instance is non-negotiable: Cloudflare Queues only deliver when producer (`sync` → `ROOM_VISITS`/`ROOM_META`) and consumer (`users`) share a single Miniflare (cross-process *service bindings* work since Sept 2025; cross-process *queues* do not — workers-sdk #9795). The old per-worker `wrangler dev` chain gave each worker its own Miniflare, so locally the queue → D1 projection never ran. Single source of truth for base ports stays `scripts/dev-ports.json`; Vite imports the same JSON for proxy targets, **unchanged** — that's the whole point.
 
 ```bash
-npm run dev                                # Vite + ONE Miniflare (all 5 workers; queues + cross-script DO + service RPC live)
-PORT_OFFSET=10 VITE_PORT=5180 npm run dev   # parallel session (dev:p alias — orchestrator reads PORT_OFFSET)
-npm run dev:workers                        # just the orchestrator (no Vite)
-npm run dev:legacy                         # ROLLBACK: the old five-process wrangler-dev chain (no queues across workers)
-(cd workers/<name> && npm run types)       # regenerate worker-configuration.d.ts
+pnpm dev                                # Vite + ONE Miniflare (all 5 workers; queues + cross-script DO + service RPC live)
+PORT_OFFSET=10 VITE_PORT=5180 pnpm dev   # parallel session (dev:p alias — orchestrator reads PORT_OFFSET)
+pnpm dev:workers                        # just the orchestrator (no Vite)
+pnpm dev:legacy                         # ROLLBACK: the old five-process wrangler-dev chain (no queues across workers)
+(cd workers/<name> && pnpm types)       # regenerate worker-configuration.d.ts
 ```
 
 **Topology inside the one instance.** `sync` (wrangler `avlo-sync`) is `workers[0]` — the **entry worker** on Miniflare's top-level `port` (8787+offset; `const ENTRY = 'sync'` + `sync` first in `dev-ports.json`). This is the same entry path `wrangler dev` serves partyserver WS on, so the `/sync/*` upgrade + DO stay on proven ground (not an unsafe socket). `images`/`unfurl`/`auth`/`users` each pin `unsafeDirectSockets: [{ port: <existing dev port>+offset, entrypoint: 'default', proxy: false }]` → each listens on its **exact current port**, so the Vite proxy reaches every worker unchanged. Confirm at startup: each logs `[mf] <name> -> <url>` on the expected port (8787/8790-8793, +offset).
 
 **No config fork.** `unstable_getMiniflareWorkerOptions(wrangler.jsonc)` (wrangler, experimental — pinned `~4.92.0`) translates each config into Miniflare options faithfully: services→entrypoints, cross-script DO, queues, D1/KV/R2, **rate limits**, and it **auto-folds `workers/auth/.dev.vars`** (the orchestrator keeps a defensive merge if a wrangler bump ever stops folding). The one thing it doesn't do is bundle TypeScript — esbuild does that here (`node:*`/`cloudflare:*` external; `.sql` → text inlines sync's drizzle migrations). A **pre-flight assert** fails loudly if any `services[].name` / DO `scriptName` doesn't resolve to an assembled worker (the `NAME` dir→wrangler-name map is load-bearing — it must now resolve `users`' `scriptName: avlo-sync`, which it does). One source-confirmed fix-up remains: `users`' cross-script `rooms` DO is forced `useSQLite=true` (the translator derives it from the binding worker's own migrations, which `users` lacks). (No dev worker has an `assets` binding now — `avlo` isn't assembled in dev — so the old "drop main's Static Assets" fix-up is gone.)
 
-**Hot reload.** esbuild watches each worker's resolved graph **including `packages/*/src`** — a save rebuilds (sub-100 ms) and calls `mf.setOptions(...)`, which reloads in place: persisted state, DO storage, and the listening ports/direct sockets all survive, so the Vite proxy never blips. Build/reload errors are non-fatal (logged; last good bundle stays live). **`wrangler.jsonc` edits are NOT watched** — restart `npm run dev` (same partial behavior as `wrangler dev`).
+**Hot reload.** esbuild watches each worker's resolved graph **including `packages/*/src`** — a save rebuilds (sub-100 ms) and calls `mf.setOptions(...)`, which reloads in place: persisted state, DO storage, and the listening ports/direct sockets all survive, so the Vite proxy never blips. Build/reload errors are non-fatal (logged; last good bundle stays live). **`wrangler.jsonc` edits are NOT watched** — restart `pnpm dev` (same partial behavior as `wrangler dev`).
 
 **Dev logging.** The programmatic Miniflare API suppresses the `[mf:*]` request/lifecycle log by default, so the orchestrator passes `log: new Log(logLevel)` — `MF_LOG_LEVEL=info` (default; entry-worker request lines + reload notices) → `debug` (binding/options detail) → `verbose` (workerd internals). This is the `--verbose` equivalent (a wrangler-CLI flag, inapplicable to the script). The orchestrator also injects `DEV_LOGS='1'` into every worker; `@avlo/worker-shared/dev-logs` gates the rest off it: `devRequestLogger` (per-worker request lines — the dependable source for the direct-socket workers, which bypass Miniflare's entry log), `devDrizzleLogger` (SQL + params on D1 + the room DO), `traceRpc` (every service + DO-meta RPC: `method → outcome · ms`), and the DO hibernation/wake lines in `room.ts`. **`DEV_LOGS` is absent from every `wrangler.jsonc`**, so prod (`wrangler deploy`) leaves it unset and all of the above stay dormant — the only always-on addition is the H10-safe queue projection heartbeat (`[queue] … applied/superseded · ms`) in `users/src/queue.ts`. `dev:legacy` (raw `wrangler dev`) doesn't set `DEV_LOGS` — there you get wrangler's own request UI instead. Prod observability is the per-worker `observability.enabled: true` + `wrangler tail`; **tail/Tail-Workers are prod-only** (they stream/trace a *deployed* worker — not a local-dev tool). For local deep dives use the single inspector at `9229+offset` (console + breakpoints across all five isolates).
 
@@ -206,14 +206,14 @@ npm run dev:legacy                         # ROLLBACK: the old five-process wran
 
 **D1 migrations are not auto-applied** (not by the orchestrator, not by `wrangler dev`) — a one-time manual step, same as before. On a fresh state tree the `users` D1 has no tables and `GET /rooms` 500s with `no such table: room_visits`; the orchestrator detects this at startup and prints the fix: `npx wrangler d1 migrations apply avlo-db --local --persist-to .wrangler/state -c workers/users/wrangler.jsonc` (note `--persist-to .wrangler/state`, NOT `…/v3` — wrangler appends `v3` itself). DO-SQLite migrations (sync's `rooms`) self-apply in the DO constructor via drizzle `migrate()`, so only the D1 ones are manual.
 
-**`dev:legacy` escape hatch.** `scripts/dev-worker.mjs` + the `dev:sync`…`dev:users` scripts are retained **verbatim**, reachable only via `dev:legacy`. It restores the exact five-`wrangler dev` behavior (separate Miniflare each → no cross-worker queues) for rollback. It does NOT run the `avlo` site worker (Vite serves the SPA), so main's real Static-Assets binding is exercised only by prod (or a manual `wrangler dev -c workers/main/wrangler.jsonc`); `preview` also serves the SPA via Vite preview, so it needs `client/dist` (run `npm run build -w client` first).
+**`dev:legacy` escape hatch.** `scripts/dev-worker.mjs` + the `dev:sync`…`dev:users` scripts are retained **verbatim**, reachable only via `dev:legacy`. It restores the exact five-`wrangler dev` behavior (separate Miniflare each → no cross-worker queues) for rollback. It does NOT run the `avlo` site worker (Vite serves the SPA), so main's real Static-Assets binding is exercised only by prod (or a manual `wrangler dev -c workers/main/wrangler.jsonc`); `preview` also serves the SPA via Vite preview, so it needs `web/dist` (run `pnpm --filter @avlo/web build` first).
 
 ## CI
 
 `.github/workflows/ci.yml` runs typecheck (tsgo — the same check you run locally — plus a redundant `tsc --noEmit` pass whose only job is to catch the preview compiler ever diverging from tsc), biome check, client build, and the **SW bundle isolation grep**:
 
 ```bash
-grep -E 'partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost' client/dist/sw.js
+grep -E 'partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost' web/dist/sw.js
 # empty output = pass
 ```
 
@@ -236,11 +236,11 @@ This is the load-bearing check that proves type-only imports of worker AppTypes 
 | Rename main's wrangler `name` from `avlo` to `avlo-main` | Asymmetry is load-bearing — bare `avlo` is the canonical app identity + public domain stem (the `rooms` DO namespace now lives in `avlo-sync`) |
 | Add a worker script + routes to the `avlo` site host | It's assets-only; put WSS/server logic in `avlo-sync` or a new worker (a main script is fine ONLY for site-level concerns like redirects) |
 | Rename `avlo-sync`'s `rooms` DO binding or change the `/sync` prefix on one side only | The URL party segment = the kebab-cased binding name (`rooms`); the prefix is `SYNC_WS_PREFIX` (shared) on the server + provider, a matching literal in the SW matcher + Vite proxy. Change all four together |
-| Import `@avlo/worker-shared` from any client-side bundle | Server-only. Client uses `@avlo/api-client` (typed `hc`) and `@avlo/shared` (cross-runtime). Missing path entry in `client/tsconfig*.json` makes this a hard typecheck failure |
-| Add `@avlo/worker-shared` to `client/tsconfig.json` paths | The omission IS the guardrail |
+| Import `@avlo/worker-shared` from any client-side bundle | Server-only. Client uses `@avlo/api-client` (typed `hc`) and `@avlo/shared` (cross-runtime). Missing path entry in `web/tsconfig*.json` makes this a hard typecheck failure |
+| Add `@avlo/worker-shared` to `web/tsconfig.json` paths | The omission IS the guardrail |
 | Import `import type { FooApp } from '…/workers/foo/src/index'` in `@avlo/api-client` | Always import from `.../src/app-type`. The mock exists to prevent the ambient-types leak; bypassing reintroduces it |
 | Drop `assertSurfaceMatch<...>(true)` from a real `index.ts` | Without it, mock and real silently diverge and typed clients reference stale routes |
-| Stop to run `tsc` / `npm run typecheck:tsc` as a "ground truth" pass after worker/backend edits | `npm run typecheck` (tsgo) **is** the check — client *and* workers, no exceptions. The `tsc` parity pass is reserved for CI and pre-prod; it is never an agent step |
+| Stop to run `tsc` / `pnpm typecheck:tsc` as a "ground truth" pass after worker/backend edits | `pnpm typecheck` (tsgo) **is** the check — client *and* workers, no exceptions. The `tsc` parity pass is reserved for CI and pre-prod; it is never an agent step |
 | Uncomment a `[[routes]]` block as part of any refactor | Deploy is gated on more than DNS — additional pre-prod essentials still needed |
 | Speculatively cap `cpu_ms` in `wrangler.jsonc` | No cap until profiling shows a pathological ceiling worth defending |
 | Use `console.log` in worker code | Biome blocks it; `console.warn`/`error` with redacted payloads (H10) |
