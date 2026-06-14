@@ -12,7 +12,7 @@
       "!**/test-results",
       "!**/.cache",
       "!**/.turbo",
-      "!client/src/routeTree.gen.ts",
+      "!web/src/routeTree.gen.ts",
       "!workers/**/worker-configuration.d.ts",
       "!package-lock.json"
     ]
@@ -86,7 +86,7 @@
   },
   "overrides": [
     {
-      "includes": ["client/**/*.{ts,tsx,js,jsx}"],
+      "includes": ["web/**/*.{ts,tsx,js,jsx}"],
       "linter": {
         "rules": {
           "correctness": {

@@ -1,6 +1,6 @@
 // SPA HTTP headers are NOT set by a worker. The `avlo` site worker is assets-only (no
 // worker script at all), so SPA-level CSP, COOP, COEP, and X-Content-Type-Options live in
-// `client/public/_headers`, applied by the Static Assets layer to all matching responses.
+// `web/public/_headers`, applied by the Static Assets layer to all matching responses.
 
 import type { MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';

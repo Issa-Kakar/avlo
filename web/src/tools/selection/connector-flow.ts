@@ -51,8 +51,8 @@ import { isBindableKind } from '@/core/types/objects';
 import { isCtrlHeld } from '@/runtime/InputManager';
 import { getAttachedConnectors, getHandle, getObjects, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
-import { useCameraStore } from '@/stores/camera-store';
 import { getUserId } from '@/stores/auth-store';
+import { useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
 

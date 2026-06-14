@@ -46,7 +46,83 @@ importers:
         specifier: ~4.92.0
         version: 4.92.0(@cloudflare/workers-types@4.20260613.1)
 
-  client:
+  packages/api-client:
+    dependencies:
+      hono:
+        specifier: ^4.12.15
+        version: 4.12.25
+    devDependencies:
+      vite:
+        specifier: ^7.2.1
+        version: 7.3.5(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
+
+  packages/db:
+    dependencies:
+      '@avlo/shared':
+        specifier: workspace:*
+        version: link:../shared
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260613.1)
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20251106.1
+        version: 4.20260613.1
+      drizzle-kit:
+        specifier: ^0.31.10
+        version: 0.31.10
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  packages/shared:
+    dependencies:
+      fractional-indexing:
+        specifier: ^3.2.0
+        version: 3.2.0
+      jittered-fractional-indexing:
+        specifier: ^1.0.1
+        version: 1.0.1
+      nanoid:
+        specifier: ^5.1.11
+        version: 5.1.11
+      ulid:
+        specifier: ^3.0.1
+        version: 3.0.2
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
+    devDependencies:
+      yjs:
+        specifier: ^13.6.27
+        version: 13.6.31
+
+  packages/worker-shared:
+    dependencies:
+      '@avlo/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@hono-rate-limiter/cloudflare':
+        specifier: ^0.2.2
+        version: 0.2.2(@cloudflare/workers-types@4.20260613.1)(hono@4.12.25)
+      hono:
+        specifier: ^4.12.15
+        version: 4.12.25
+      hono-rate-limiter:
+        specifier: ^0.5.3
+        version: 0.5.3(hono@4.12.25)
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20251106.1
+        version: 4.20260613.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  web:
     dependencies:
       '@avlo/api-client':
         specifier: workspace:*
@@ -199,82 +275,6 @@ importers:
       vite:
         specifier: ^7.2.1
         version: 7.3.5(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
-
-  packages/api-client:
-    dependencies:
-      hono:
-        specifier: ^4.12.15
-        version: 4.12.25
-    devDependencies:
-      vite:
-        specifier: ^7.2.1
-        version: 7.3.5(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
-
-  packages/db:
-    dependencies:
-      '@avlo/shared':
-        specifier: workspace:*
-        version: link:../shared
-      drizzle-orm:
-        specifier: ^0.45.2
-        version: 0.45.2(@cloudflare/workers-types@4.20260613.1)
-    devDependencies:
-      '@cloudflare/workers-types':
-        specifier: ^4.20251106.1
-        version: 4.20260613.1
-      drizzle-kit:
-        specifier: ^0.31.10
-        version: 0.31.10
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-
-  packages/shared:
-    dependencies:
-      fractional-indexing:
-        specifier: ^3.2.0
-        version: 3.2.0
-      jittered-fractional-indexing:
-        specifier: ^1.0.1
-        version: 1.0.1
-      nanoid:
-        specifier: ^5.1.11
-        version: 5.1.11
-      ulid:
-        specifier: ^3.0.1
-        version: 3.0.2
-      zod:
-        specifier: ^4.3.6
-        version: 4.4.3
-    devDependencies:
-      yjs:
-        specifier: ^13.6.27
-        version: 13.6.31
-
-  packages/worker-shared:
-    dependencies:
-      '@avlo/shared':
-        specifier: workspace:*
-        version: link:../shared
-      '@hono-rate-limiter/cloudflare':
-        specifier: ^0.2.2
-        version: 0.2.2(@cloudflare/workers-types@4.20260613.1)(hono@4.12.25)
-      hono:
-        specifier: ^4.12.15
-        version: 4.12.25
-      hono-rate-limiter:
-        specifier: ^0.5.3
-        version: 0.5.3(hono@4.12.25)
-      zod:
-        specifier: ^4.3.6
-        version: 4.4.3
-    devDependencies:
-      '@cloudflare/workers-types':
-        specifier: ^4.20251106.1
-        version: 4.20260613.1
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
 
   workers/auth:
     dependencies:

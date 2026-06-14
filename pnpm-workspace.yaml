@@ -1,5 +1,5 @@
 packages:
-  - client          # → flips to `web` in Stage 2
+  - web
   - packages/*
   - workers/*
 

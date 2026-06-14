@@ -7,6 +7,6 @@
  * Two consumers can't import it and so carry the literal `'sync'` with a matching comment:
  *   • `packages/api-client/src/sw-matchers.ts` — SW-graph code must not pull `@avlo/shared` into
  *     the SW bundle (the isolation grep); it path-matches the literal instead.
- *   • `client/vite.config.ts` / `scripts/*` — outside the TS source graph.
+ *   • `web/vite.config.ts` / `scripts/*` — outside the TS source graph.
  */
 export const SYNC_WS_PREFIX = 'sync';

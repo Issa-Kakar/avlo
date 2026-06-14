@@ -10,7 +10,7 @@
 // queue → D1 projection never ran. This boots all five workers in one
 // `new Miniflare({ workers: [...] })` so queues, cross-script DO RPC, and every
 // service-binding edge behave like prod — while each worker keeps its EXISTING
-// dev port (so `client/vite.config.ts` is untouched).
+// dev port (so `web/vite.config.ts` is untouched).
 //
 // Topology inside the one instance:
 //   • `sync` is workers[0] (the ENTRY worker) on the top-level `port` (8787+offset).

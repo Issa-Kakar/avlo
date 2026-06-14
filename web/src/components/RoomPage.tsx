@@ -3,9 +3,10 @@
  * floating chrome: the left TopBar, the right TopBarRight (avatars + Share),
  * the vertical left tool rail (Toolbar), and zoom controls.
  */
+
+import { normalizeRoomId } from '@avlo/shared';
 import { getRouteApi } from '@tanstack/react-router';
 import { useEffect } from 'react';
-import { normalizeRoomId } from '@avlo/shared';
 import { disconnectRoom } from '@/runtime/room-runtime';
 import { Canvas } from './Canvas';
 import { Toolbar } from './toolbar';

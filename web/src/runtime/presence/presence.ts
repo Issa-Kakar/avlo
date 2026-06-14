@@ -9,8 +9,8 @@
 
 import type YProvider from 'y-partyserver/provider';
 import type { Awareness as YAwareness } from 'y-protocols/awareness';
-import { isMobile } from '@/stores/camera-store';
 import { getUserProfile } from '@/stores/auth-store';
+import { isMobile } from '@/stores/camera-store';
 import { PresenceCursorRenderer } from './presence-renderer';
 
 // ─── Module State ────────────────────────────────────────────────────

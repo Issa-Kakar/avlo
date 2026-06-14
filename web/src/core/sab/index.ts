@@ -49,7 +49,7 @@ export interface ControlSab {
 export function assertCrossOriginIsolated(): void {
   if (typeof crossOriginIsolated === 'undefined' || !crossOriginIsolated) {
     throw new Error(
-      '[sab] requires crossOriginIsolated — set COOP: same-origin + COEP: credentialless (client/public/_headers + vite.config.ts).',
+      '[sab] requires crossOriginIsolated — set COOP: same-origin + COEP: credentialless (web/public/_headers + vite.config.ts).',
     );
   }
 }

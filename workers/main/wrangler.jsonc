@@ -8,7 +8,7 @@
   // binding only exists to read assets FROM worker code, and there is none). Yjs sync + the
   // AvloDO live in `avlo-sync` (sync.avlo.io), so SPA deploys never touch the DO worker.
   "assets": {
-    "directory": "../../client/dist",
+    "directory": "../../web/dist",
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "single-page-application"
   },
