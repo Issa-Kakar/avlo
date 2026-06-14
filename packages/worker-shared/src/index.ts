@@ -7,13 +7,12 @@ export { fetchBytesCapped, sha256Hex } from './fetch-bytes';
 export { ipRateLimiter, userRateLimiter } from './rate-limit';
 export { requireAuth } from './require-auth';
 export { retryTransient } from './retry';
-export {
-  type AuthRpcSurface,
-  type ImagesRpcSurface,
-  type RefineBindings,
-  type RoomDoStub,
-  roomDoStub,
-  type UsersRpcSurface,
+export type {
+  AuthRpcSurface,
+  ImagesRpcSurface,
+  RefineBindings,
+  RoomDoRpc,
+  UsersRpcSurface,
 } from './rpc-surfaces';
 export { isPrivateHost } from './ssrf';
 export { type AssertEqual, assertSurfaceMatch, type HonoRouteSurface } from './surface-drift';

@@ -1,5 +1,5 @@
 import { getSessionDB, rooms, roomVisits, upsertRoomsFromMeta, users, withRetry } from '@avlo/db';
-import { devDrizzleLogger, type MetaEvent, roomDoStub } from '@avlo/worker-shared';
+import { devDrizzleLogger, type MetaEvent } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq } from 'drizzle-orm';
 import { createFactory } from 'hono/factory';
@@ -82,10 +82,10 @@ async function projectMetaRYW(env: UsersEnv['Bindings'], snapshot: MetaEvent): P
 
 /**
  * Map a meta-RPC failure to its HTTP shape. The DO's thrown `Error.message` IS the wire
- * contract (`RoomDoStub`): `forbidden` → 403 (caller isn't the owner), `invalid-title` →
+ * contract (`RoomDoRpc`): `forbidden` → 403 (caller isn't the owner), `invalid-title` →
  * 400 (failed the shared normalize — only reachable by a caller bypassing `titleBody`).
- * Everything else — transport failure, identity-proof mismatch — is internal: log it
- * (no body/url, H10) and 500, which the client treats as transient/retryable.
+ * Everything else — transport failure — is internal: log it (no body/url, H10) and 500,
+ * which the client treats as transient/retryable.
  */
 function metaRpcFailure(err: unknown): { error: 'forbidden' | 'invalid-title' | 'internal'; status: 400 | 403 | 500 } {
   const msg = err instanceof Error ? err.message : '';
@@ -98,12 +98,11 @@ function metaRpcFailure(err: unknown): { error: 'forbidden' | 'invalid-title' | 
 /**
  * `PATCH /rooms/:id/permission` (§8) — the server-side permission seam (no client UI
  * calls it yet). Validates the id + body, then defers the entire authority decision to
- * the room DO cross-script: the DO is the source of truth, and the branded `id` rides
- * along as the RPC's first argument (stub + argument from the one validated value —
- * `this.name` is unresolvable on a cold raw-RPC wake, and the DO proves the pair cohere).
- * Failures map via `metaRpcFailure`; success → the DO has updated SQLite + `this.meta` +
- * re-pushed/closed live connections + projected, and the snapshot is mirrored into D1
- * here for the read-your-writes bookmark.
+ * the room DO cross-script via `c.env.rooms.getByName(id)`: the DO is the source of truth
+ * and derives its own identity from `ctx.id.name`, so only the authenticated caller is
+ * passed. Failures map via `metaRpcFailure`; success → the DO has updated SQLite +
+ * `this.meta` + re-pushed/closed live connections + projected, and the snapshot is
+ * mirrored into D1 here for the read-your-writes bookmark.
  */
 export const handleSetPermission = factory.createHandlers(
   zValidator('param', roomIdParam),
@@ -115,7 +114,7 @@ export const handleSetPermission = factory.createHandlers(
 
     let snapshot: MetaEvent;
     try {
-      snapshot = await roomDoStub(c.env.rooms, id).setPermission(id, userId, permission);
+      snapshot = await c.env.rooms.getByName(id).setPermission(userId, permission);
     } catch (err) {
       const { error, status } = metaRpcFailure(err);
       return c.json({ error }, status);
@@ -141,7 +140,7 @@ export const handleSetTitle = factory.createHandlers(zValidator('param', roomIdP
 
   let snapshot: MetaEvent;
   try {
-    snapshot = await roomDoStub(c.env.rooms, id).setTitle(id, userId, title);
+    snapshot = await c.env.rooms.getByName(id).setTitle(userId, title);
   } catch (err) {
     const { error, status } = metaRpcFailure(err);
     return c.json({ error }, status);

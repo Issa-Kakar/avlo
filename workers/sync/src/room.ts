@@ -4,15 +4,13 @@ import {
   asUserId,
   maxZLength,
   normalizeRoomTitle,
-  Permission,
-  ROOM_ID_RE,
-  type RoomId,
+  type Permission,
   renormalizeZ,
   type UserId,
   Z_RENORM_MAX_KEY_LEN,
   Z_RENORM_ORIGIN,
 } from '@avlo/shared';
-import { devDrizzleLogger, isDevLogs, type MetaEvent, type RoomDoStub, traceRpc, type VisitEvent } from '@avlo/worker-shared';
+import { devDrizzleLogger, isDevLogs, type MetaEvent, type RoomDoRpc, traceRpc, type VisitEvent } from '@avlo/worker-shared';
 import { eq } from 'drizzle-orm';
 import { type DrizzleSqliteDODatabase, drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
@@ -33,14 +31,14 @@ interface ConnState {
 }
 
 /** The room DO's authoritative meta — the one `room_meta` row, shape-identical to the
- *  `MetaEvent` projection it emits. `roomId` (the PK) doubles as the DO's durable
- *  self-identity: raw cross-script RPC can't resolve partyserver's `this.name` on a cold
- *  wake (native RPC bypasses the fetch/webSocket init that hydrates it), so identity on
- *  that path comes from this row — or, pre-mint, from the `#verifyRoomId`-proven argument.
- *  `rev` is the per-room monotonic counter: bumped + persisted BEFORE every queue send
- *  (both queues share it), so the D1 consumer resolves ordering with a plain
- *  `excluded.rev >` guard and at-least-once redelivery is a no-op. `deleted` is the
- *  persistent tombstone (no delete flow yet — column + type prep only). */
+ *  `MetaEvent` projection it emits. `roomId` is the PK; the DO's self-identity is just
+ *  `asRoomId(this.name)` (= `ctx.id.name`, reliable on every entry path — see the class
+ *  note). Meta still loads in the constructor so the ownership check + warm cache are
+ *  present on the cold raw-RPC path (which skips onStart/onLoad). `rev` is the per-room
+ *  monotonic counter: bumped + persisted BEFORE every queue send (both queues share it),
+ *  so the D1 consumer resolves ordering with a plain `excluded.rev >` guard and
+ *  at-least-once redelivery is a no-op. `deleted` is the persistent tombstone (no delete
+ *  flow yet — column + type prep only). */
 type RoomMeta = MetaEvent;
 
 // --- Tier-3 WS message limiter (§10/H25) — generous abuse backstop, not an editing throttle.
@@ -59,17 +57,19 @@ class RateState {
 
 // YServer lifecycle: awaits onStart(), then onLoad(), installs debounced onSave(), then
 // accepts sockets — so hydration always completes before the first sync step. The DO
-// constructor loads this.meta (NOT onLoad) so it is present on EVERY entry point including
-// raw cross-script RPC (setPermission/setTitle), which bypasses onStart/onLoad (§5).
+// constructor loads this.meta (NOT onLoad) so the ownership check + warm cache are present
+// on EVERY entry point including the cold raw cross-script RPC (setPermission/setTitle),
+// which bypasses onStart/onLoad (§5).
 //
-// Identity scaffold — who knows the room id, where:
-//   • partyserver-routed entries (WSS connect → onConnect, and the onLoad/onSave lifecycle
-//     beneath it): `this.name` is valid — the router bootstraps it before forwarding.
-//   • raw cross-script RPC (setPermission/setTitle): `this.name` is UNAVAILABLE on a cold
-//     wake (partyserver's __ps_name fallback only hydrates on fetch/webSocket entry), so
-//     the caller passes the room id and `#verifyRoomId` PROVES it addresses this object.
-//   • everything after mint: `this.meta.roomId` — the durable, constructor-loaded truth.
-export class AvloDO extends YServer<Env> implements RoomDoStub {
+// Identity is uniform: `asRoomId(this.name)`. partyserver resolves `this.name` from
+// `ctx.id.name`, which the runtime populates for any stub addressed via getByName/idFromName
+// on EVERY entry path — the cold raw-RPC wake and the constructor included (workerd ≥
+// 2026-03). So the meta RPCs need no room-id argument and no identity proof: the
+// `getByName(validatedId)` addressing already binds this object to that id. (Dev caveat: this
+// needs the single-Miniflare orchestrator — `dev:legacy`'s per-process registry proxies the
+// id via idFromString and drops the name, so the meta RPCs throw there. That mode already
+// can't run the cross-worker queues this path feeds, so it's rollback-only.)
+export class AvloDO extends YServer<Env> implements RoomDoRpc {
   // R2-friendly cadence: fewer, bigger writes
   static override callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
   static override options = {
@@ -146,7 +146,7 @@ export class AvloDO extends YServer<Env> implements RoomDoStub {
     // Connect proceeds even if the projection enqueue fails — DO meta is already durable
     // on disk; a missed send only loses the D1 row until the next meta event (§6).
     if (!this.meta) {
-      this.meta = this.#mintMeta(asRoomId(this.name), userId, 'Untitled');
+      this.meta = this.#mintMeta(userId, 'Untitled');
       await this.#projectMeta(this.meta);
     }
     if (this.meta.permission === 'private' && this.meta.ownerId !== userId) {
@@ -183,28 +183,22 @@ export class AvloDO extends YServer<Env> implements RoomDoStub {
   }
 
   /**
-   * RPC authority guard (§14a): prove a caller-supplied room id addresses THIS object —
-   * `idFromName(id)` must equal our own `ctx.id`. Raw cross-script RPC can't lean on
-   * partyserver's `this.name` (a cold native-RPC wake bypasses the fetch/webSocket init
-   * that hydrates it and throws), so the users worker passes the id it derived the stub
-   * from, and this equality makes the pair tamper-evident — a forged or drifted id can't
-   * hash to our identity. The format re-test keeps the `RoomId` brand honest even if a
-   * future caller skips Zod.
-   */
-  #verifyRoomId(roomId: RoomId): void {
-    if (!ROOM_ID_RE.test(roomId) || !this.env.rooms.idFromName(roomId).equals(this.ctx.id)) throw new Error('room-mismatch');
-  }
-
-  /**
    * First-write mint — the authenticated first toucher owns the room (single-threaded DO).
-   * `roomId` is the verified self-identity: `asRoomId(this.name)` on the partyserver-routed
-   * connect path, the `#verifyRoomId`-proven argument on the raw-RPC path. Builds +
-   * persists the row and RETURNS it; the caller assigns `this.meta` inline so TS narrowing
-   * survives at the call site.
+   * Self-identity is `asRoomId(this.name)` (= `ctx.id.name`); builds + persists the row and
+   * RETURNS it so the caller assigns `this.meta` inline (TS narrowing survives).
    */
-  #mintMeta(roomId: RoomId, ownerId: UserId, title: string, permission: Permission = 'public'): RoomMeta {
+  #mintMeta(ownerId: UserId, title: string, permission: Permission = 'public'): RoomMeta {
     const now = Date.now();
-    const meta: RoomMeta = { roomId, ownerId, permission, createdAt: now, updatedAt: now, title, rev: 1, deleted: false };
+    const meta: RoomMeta = {
+      roomId: asRoomId(this.name),
+      ownerId,
+      permission,
+      createdAt: now,
+      updatedAt: now,
+      title,
+      rev: 1,
+      deleted: false,
+    };
     this.db.insert(roomMeta).values(meta).run(); // authoritative SQLite
     return meta;
   }
@@ -227,33 +221,29 @@ export class AvloDO extends YServer<Env> implements RoomDoStub {
 
   /**
    * Owner-only permission flip, reached by cross-script raw RPC from `users` (§8). Cold-DO
-   * safe: meta loads in the constructor, and self-identity is the proven `roomId` argument
-   * + the meta row — never `this.name` (see the identity scaffold above). Meta absent →
+   * safe: meta loads in the constructor and identity is `asRoomId(this.name)`. Meta absent →
    * mint exactly like setTitle (offline-created room shared from the dashboard pre-first-
    * connect; the authenticated caller IS the creator). Otherwise updates SQLite + mutates
    * this.meta in memory (★ warm-cache fix — warm DOs don't re-run onStart/onLoad, so the
    * SQLite write alone leaves isReadOnly stale on the live connections that matter), then
    * one pass over live connections (`perm:` to the caller's tabs; evict-or-re-push for
    * non-owners) + projects, returning the snapshot for the users worker's read-your-writes
-   * D1 write. Thrown messages are the wire contract (`RoomDoStub`): 'room-mismatch' |
-   * 'forbidden'.
+   * D1 write. Thrown message is the wire contract (`RoomDoRpc`): 'forbidden'.
    */
-  async setPermission(roomId: RoomId, caller: UserId, next: Permission): Promise<MetaEvent> {
+  async setPermission(caller: UserId, next: Permission): Promise<MetaEvent> {
     return traceRpc(
       this.env,
       'room.setPermission',
-      () => this.#setPermission(roomId, caller, next),
+      () => this.#setPermission(caller, next),
       (r) => r.permission,
     );
   }
 
-  async #setPermission(roomId: RoomId, caller: UserId, next: Permission): Promise<MetaEvent> {
-    this.#verifyRoomId(roomId);
-    Permission.parse(next); // authority-boundary guard (§14a)
+  async #setPermission(caller: UserId, next: Permission): Promise<MetaEvent> {
     if (!this.meta) {
       // Mint-on-absent, mirroring setTitle: an offline-created room shared from the
       // dashboard before its first connect. The mint IS rev 1 — no extra bump.
-      this.meta = this.#mintMeta(roomId, caller, 'Untitled', next);
+      this.meta = this.#mintMeta(caller, 'Untitled', next);
     } else {
       if (this.meta.ownerId !== caller) throw new Error('forbidden');
       const now = Date.now();
@@ -282,28 +272,27 @@ export class AvloDO extends YServer<Env> implements RoomDoStub {
 
   /**
    * Owner-only rename, reached by cross-script raw RPC from `users` (§8) — same shape as
-   * setPermission: identity proof → authority-boundary guard → SQLite + warm-cache → live
-   * push → project + return the snapshot. The new title is broadcast to EVERY connection
-   * (the renamer's own tabs included — idempotent there). If meta doesn't exist yet
-   * (offline-created room renamed from the dashboard before its first connect, replayed on
+   * setPermission: normalize (authority-boundary guard) → SQLite + warm-cache → live push →
+   * project + return the snapshot. The new title is broadcast to EVERY connection (the
+   * renamer's own tabs included — idempotent there). If meta doesn't exist yet (offline-
+   * created room renamed from the dashboard before its first connect, replayed on
    * reconnect), mint it exactly like onConnect would — the authenticated renamer IS the
-   * creator, and the proven `roomId` argument supplies the identity `this.name` can't.
+   * creator, and `asRoomId(this.name)` supplies the identity.
    */
-  async setTitle(roomId: RoomId, caller: UserId, raw: string): Promise<MetaEvent> {
+  async setTitle(caller: UserId, raw: string): Promise<MetaEvent> {
     return traceRpc(
       this.env,
       'room.setTitle',
-      () => this.#setTitle(roomId, caller, raw),
+      () => this.#setTitle(caller, raw),
       () => 'ok',
     );
   }
 
-  async #setTitle(roomId: RoomId, caller: UserId, raw: string): Promise<MetaEvent> {
-    this.#verifyRoomId(roomId);
+  async #setTitle(caller: UserId, raw: string): Promise<MetaEvent> {
     const title = normalizeRoomTitle(raw);
     if (title === null) throw new Error('invalid-title'); // authority-boundary guard (§14a)
     if (!this.meta) {
-      this.meta = this.#mintMeta(roomId, caller, title);
+      this.meta = this.#mintMeta(caller, title);
     } else {
       if (this.meta.ownerId !== caller) throw new Error('forbidden');
       const now = Date.now();

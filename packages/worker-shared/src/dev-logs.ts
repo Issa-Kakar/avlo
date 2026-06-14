@@ -44,7 +44,7 @@ export function devDrizzleLogger(env: unknown, label = '[db]'): { logQuery(query
  * `verifySession` fire on every gated request + WS connect, so always-on would flood prod logs
  * (and cost). H10-safe regardless (no args, no urls). Wrap the implementation:
  *   verifySession(cookie) { return traceRpc(this.env, 'auth.verifySession', () => this.#impl(cookie), r => r ? 'hit' : 'null') }
- * Errors are logged (the DO meta RPCs throw `forbidden`/`invalid-title`/`room-mismatch` as
+ * Errors are logged (the DO meta RPCs throw `forbidden`/`invalid-title` as
  * their wire contract — informative here) and rethrown unchanged, so callers' handling is
  * untouched. Non-dev path returns `fn()` directly — zero added overhead beyond one branch.
  */
