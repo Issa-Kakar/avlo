@@ -65,10 +65,9 @@ class RateState {
 // `ctx.id.name`, which the runtime populates for any stub addressed via getByName/idFromName
 // on EVERY entry path — the cold raw-RPC wake and the constructor included (workerd ≥
 // 2026-03). So the meta RPCs need no room-id argument and no identity proof: the
-// `getByName(validatedId)` addressing already binds this object to that id. (Dev caveat: this
-// needs the single-Miniflare orchestrator — `dev:legacy`'s per-process registry proxies the
-// id via idFromString and drops the name, so the meta RPCs throw there. That mode already
-// can't run the cross-worker queues this path feeds, so it's rollback-only.)
+// `getByName(validatedId)` addressing already binds this object to that id. (Dev parity: the
+// single-Miniflare orchestrator populates `this.name` exactly as prod does, so the meta RPCs
+// resolve their room id identically under `pnpm dev`.)
 export class AvloDO extends YServer<Env> implements RoomDoRpc {
   // R2-friendly cadence: fewer, bigger writes
   static override callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };

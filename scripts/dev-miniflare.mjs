@@ -5,9 +5,9 @@
 // `avlo-room-visits`/`avlo-room-meta`; `users` (`avlo-users`) CONSUMES both.
 // Cloudflare Queues only deliver when producer and consumer share ONE Miniflare
 // instance (cross-process service bindings work since Sept 2025, cross-process
-// queues do NOT — workers-sdk #9795). The old `scripts/dev-worker.mjs` spawns a
-// SEPARATE `wrangler dev` (hence a separate Miniflare) per worker, so locally the
-// queue → D1 projection never ran. This boots all five workers in one
+// queues do NOT — workers-sdk #9795). A separate `wrangler dev` (hence a separate
+// Miniflare) per worker — the pre-consolidation approach — meant the queue → D1
+// projection never ran locally. This boots all five workers in one
 // `new Miniflare({ workers: [...] })` so queues, cross-script DO RPC, and every
 // service-binding edge behave like prod — while each worker keeps its EXISTING
 // dev port (so `web/vite.config.ts` is untouched).
@@ -23,8 +23,6 @@
 // Miniflare options faithfully (services→entrypoints, cross-script DO, queues,
 // D1/KV/R2, rate limits, auto-folds `.dev.vars`) — no config fork, zero drift.
 // The ONE thing it does not do is bundle TypeScript; that is esbuild's job here.
-//
-// Rollback: `npm run dev:legacy` restores the five-process behavior verbatim.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -77,8 +75,8 @@ const NAME = { sync: 'avlo-sync', images: 'avlo-images', unfurl: 'avlo-unfurl', 
 // open a brand-new EMPTY state tree beside the real one: D1 with no tables ("no such
 // table: room_visits"), empty R2 buckets, lost KV sessions + DO room data. So we append
 // `v3` to match wrangler's exact layout (same DB keys → reads the migrated DB directly).
-// Like the legacy dev-worker.mjs, ONE tree regardless of offset: each git checkout /
-// worktree has its own `.wrangler/`, so two checkouts never contend. Full continuity,
+// ONE tree regardless of offset: each git checkout / worktree has its own
+// `.wrangler/`, so two checkouts never contend. Full continuity,
 // zero drift. (A truly fresh tree still needs `wrangler d1 migrations apply` once — see
 // the startup hint below; that was always true under the legacy setup too.)
 const persistRoot = resolve(repoRoot, '.wrangler/state/v3');
@@ -359,7 +357,7 @@ async function main() {
 
   // 4. Start ONE instance (main = workers[0] = entry on the top-level port).
   //    No SQLITE_BUSY retry: one process opens the state tree serially, so the
-  //    cross-process create race dev-worker.mjs guarded against is gone — a real
+  //    cross-process create race the old per-worker chain guarded against is gone — a real
   //    error now surfaces immediately.
   mf = new Miniflare(miniflareOptions());
   await mf.ready;

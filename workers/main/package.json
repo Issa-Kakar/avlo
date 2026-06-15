@@ -1,5 +1,8 @@
 {
   "name": "@avlo/main",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  }
 }

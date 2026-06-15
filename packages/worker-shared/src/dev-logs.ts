@@ -12,8 +12,8 @@ import { logger } from 'hono/logger';
  *
  * `DEV_LOGS` is intentionally absent from every `wrangler.jsonc`, so it never reaches the
  * generated `Env` type — one localized cast here is the whole surface (mirrors the untyped
- * service-binding casts elsewhere). `dev:legacy` (raw `wrangler dev`) doesn't set it either;
- * there you get wrangler's own request UI instead.
+ * service-binding casts elsewhere). A raw `wrangler dev` on a single worker doesn't set it
+ * either; there you get wrangler's own request UI instead.
  */
 const isDevLogs = (env: unknown): boolean => !!(env as { DEV_LOGS?: unknown } | null | undefined)?.DEV_LOGS;
 
