@@ -4,7 +4,7 @@
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence}`, `components/context-menu`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence}`, `query`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -49,13 +49,15 @@ All paths relative to `web/src/` unless noted.
 | `CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch |
 | `SurfaceManager.ts` | DOM refs (contexts, editorHost, cursorHost) + resize/DPR + deferred canvas resize |
 | `InputManager.ts` | DOM event forwarder + modifier state (shift/ctrl/meta) |
-| `tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
+| `tool-registry.ts` | Self-constructing tool singletons + lookup helpers (pen/highlighter/shape→drawingTool, text/note→textTool, image→one-shot file picker, rest→own singleton) |
 | `room-runtime.ts` | Module-level room context — `connectRoom`/`disconnectRoom` + imperative getters |
 | `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring. WS provider → `wss://sync.avlo.io/sync/rooms/<id>` (prod; host = `SYNC_HOST_PROD`, prefix = `SYNC_WS_PREFIX`) — cross-origin to the SPA, gated server-side by the CSWSH Origin allowlist in sync's `on-before-connect` |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
 | `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
 | `toolbar-place.ts` | Drag-place entry from inspector buttons — applies the selection, `beginPlace` on the tool singleton, pointer capture to canvas + grabbing cursor; move/up then flow through the normal dispatch |
 | `cursor-tracking.ts` | Last cursor world position (for paste placement) |
+| `history-bridge.ts` | Binds a `Y.UndoManager`'s stack events → `history-store` (`canUndo`/`canRedo`); disposer resets to `(false,false)` |
+| `install-ui-zoom-block.ts` | Window capture-phase block of browser page-zoom (Ctrl/⌘ wheel/±/0, Safari pinch) on canvas routes only; toggles `html.canvas-room` |
 | `presence/presence.ts` | Awareness lifecycle, cursor send (throttle + backpressure), receive dispatch. Delegates peer state to the renderer. |
 | `presence/presence-renderer.ts` | `PresenceCursorRenderer` — SoA peer state, slot pool, self-driven rAF, DOM `<img>` cursors (host at z:4, above editor overlay) |
 | `presence/presence-pointer.ts` | Pure dispatch for the `document`-level local-cursor input path (move/out/blur/camera-sync) |
@@ -77,6 +79,7 @@ All paths relative to `web/src/` unless noted.
 | `layers/tool-preview.ts` | Active-tool preview dispatcher |
 | `layers/connector-preview.ts` | In-flight connector overlay |
 | `layers/connector-render-atoms.ts` | Shared connector draw atoms (`paintConnector`, `drawAnchorDot`, dash guides) |
+| `layers/connector-flow.ts` | Connector-flow overlay: N/S/E/W flow buttons + hover preview (offscreen faded layer) + live flow-drag connector |
 | `layers/shape-preview.ts` | In-flight shape draw (line/rect/ellipse/diamond/roundedRect) |
 | `layers/stroke-preview.ts` | In-flight Perfect Freehand stroke |
 | `layers/eraser-dim.ts` | Dim hovered objects under eraser via 'screen' blend |
@@ -95,6 +98,8 @@ All paths relative to `web/src/` unless noted.
 | `selection/selection-actions.ts` | Mutation wrappers — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` |
 | `selection/selection-field-table.ts` | `FieldDescriptor<V>` table + `foldField`/`applyField`/`toggleField`/`adjustByPresets` primitives |
 | `selection/connector-topology.ts` | `buildTopology` — graph of attached connectors per selected shape |
+| `selection/connector-flow.ts` | Connector Flows — inline N/S/E/W connector affordances for a single bindable selection (drag = create, click = connect/duplicate). Overlay-only previews; commits flow the normal observer path |
+| `selection/convert-kind.ts` | Cross-kind conversion text↔note↔shape — in place, same Y.Map/id; one `transact` over pre-read plans, downstream driven by the observer's kind-keychange branch |
 | `DrawingTool.ts` | Pen, highlighter, shape drawing. `hold-detector.ts` (550ms) fires the $P recognizer on dwell. `'place'` mode (toolbar drag-place via `beginPlace`) — 180wu preview follows cursor, commits on drop |
 | `EraserTool.ts` | Geometry-aware hit testing + deletion |
 | `TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay (`core/text/`). Note drag-place mode (`beginPlace`) — `NotePreview` follows cursor, drop creates + opens editor |
@@ -146,7 +151,6 @@ All paths relative to `web/src/` unless noted.
 | `utils/dispose.ts` | `dispose<T>(value, fn): null` — single-line teardown chain |
 | `utils/color.ts` | `createFillFromStroke(stroke, mixRatio)` |
 | `utils/room-local-data.ts` | `ROOM_DOC_DB_PREFIX` (the y-indexeddb DB-name template) + `deleteRoomDocDB` (fire-and-forget; callers skip the active room — its open connection blocks the delete) + `purgeAllRoomDocDBs` (sign-out sweep; pre-mount only) |
-| `utils/generate-user-profile.ts` | Random adjective+animal name + color palette |
 | `packages/shared/src/types/identifiers.ts` | `RoomId`, `UserId`, `StrokeId`, `TextId` (branded) |
 | `packages/shared/src/types/permission.ts` | `Permission` (`z.enum`; value + type) |
 | `packages/shared/src/utils/user-id.ts` | `generateUserId` (auth `/me` only), `asUserId`, `USER_ID_RE` |
@@ -174,7 +178,7 @@ Six independently-deployed Cloudflare Workers. Full architecture, hardening inva
 
 ### Routes + UI
 `routes/__root.tsx` (queryClient context + `QueryClientProvider` — the IDB cache restore happens in `main.tsx` BEFORE the router mounts), `routes/index.tsx` (→ `/home` redirect), `routes/home.tsx` (dashboard — `useRoomList`), `routes/room.$roomId.tsx` (`connectRoom` in `beforeLoad`).
-`components/Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `TopBar.tsx`, `TopBarRight.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`, `icons/`, `toolbar/`, `context-menu/` (own CLAUDE.md).
+`components/`: top-level `Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`; subsystem dirs with own CLAUDE.md — `topbar/` (TopBar, RoomTitle, ShareModal, MainMenu, HistoryButtons), `toolbar/`, `dashboard/`, `context-menu/`.
 Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
 
 ---
@@ -182,9 +186,6 @@ Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
 ## Architecture Overview
 
 ```
-Route beforeLoad         → connectRoom(roomId)   → room-runtime.ts
-RoomPage cleanup effect  → disconnectRoom(roomId)
-
 Canvas.tsx (thin React wrapper — mounts DOM, creates runtime)
   └── new CanvasRuntime().start({ container, baseCanvas, overlayCanvas, editorHost })
 
@@ -195,11 +196,6 @@ CanvasRuntime (the brain)
   ├── InputManager     — pointer + keyboard + modifier state
   ├── camera subscription → tool.onViewChange() (guarded by isEdgeScrolling)
   └── pointer dispatch → spacebar/MMB pan check → tool.begin/move/end
-
-tool-registry.ts (self-constructing singletons)
-  pen/highlighter/shape → drawingTool   text/note → textTool
-  eraser, select, pan, connector, code → respective singletons
-  image → one-shot file picker (no persistent tool)
 ```
 
 ### Data flow
@@ -219,32 +215,15 @@ RoomDocManager.applyObjectChanges()
    camera-store (scale, pan, viewport) — self-subscribed
 ```
 
-### Write path
-
-```
-Tool.begin/move/end()              → user gesture
-  → tool.commit() via transact(()=> getObjects().set(...))
-  → ydoc.transact(fn, userId)
-  → deep observer fires applyObjectChanges()
-  → handle upsert + cache evict + invalidateWorldBBox()
-```
-
 ### Event flow
 
 ```
-Canvas pointer event → InputManager → CanvasRuntime
-  ├─ screenToWorld(clientX, clientY)
-  ├─ setLastCursorWorld()  (paste-at-cursor placement)
-  ├─ updateEdgeScroll() (auto-pan near edges)
-  └─ getCurrentTool().begin/move/end(worldX, worldY)
-       ↓
-  Tool updates internal state
-    ├─ invalidateOverlay()      preview changed
-    └─ invalidateWorldBBox()    geometry changed
+Canvas pointer → InputManager → CanvasRuntime:
+  screenToWorld → setLastCursorWorld (paste-at-cursor) → updateEdgeScroll (edge auto-pan)
+  → getCurrentTool().begin/move/end → tool state → invalidateOverlay (preview) / invalidateWorldBBox (geometry)
 
-Document pointer event → InputManager → presence-pointer.ts
-  └─ screenToWorldInto() → updateCursor()   (local cursor broadcast — fires
-       over DOM chrome too, a separate path from the canvas chain above)
+Document pointer → InputManager → presence-pointer.ts:
+  screenToWorldInto → updateCursor (local cursor broadcast — fires over DOM chrome too, separate from the canvas chain)
 ```
 
 ---
@@ -327,35 +306,26 @@ transact(() => {
 **`z` is mandatory and never hand-authored** — a fractional sort key minted against the current stack. Generators (`generateZAtTop` etc.) are exported from `@avlo/shared`; `getZOrder()` (room-runtime) returns the client `ZRankTable`, whose `.maxZ()`/`.minZ()` give the current top/bottom `z` (`null` on an empty doc). One object on top → `generateZAtTop(getZOrder().maxZ())`. N objects in one `transact` → `generateNZAtTop(getZOrder().maxZ(), n): ZKey[]` — mint once, assign in order (see `clipboard-actions.ts`). `*AtBottom` (minZ) / `*Between` variants cover the other anchors; reorder actions live in `core/z-order/`.
 
 ### ObjectHandle (live reference, IS the rbush item)
+`objectsById` and the spatial index reference the **same** object — one source of truth, two access paths; spatial queries return handles directly. Full shape in `core/types/objects.ts`:
 ```ts
 interface ObjectHandle {
-  id: string;            // ULID
-  kind: ObjectKind;      // mirror of y.get('kind'); mutated only by the observer's kind-keychange branch (in-place conversion)
-  y: Y.Map<unknown>;     // LIVE reference
-  bbox: BBoxTuple;       // [minX, minY, maxX, maxY] — computed locally, mutated in place by observer
-  // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox.
-  minX: number; minY: number; maxX: number; maxY: number;
-  z: ZKey;               // mirror of y.get('z'); mutated only by the observer's z-key-edit branch
-  slot: number;          // stable Uint32Array index into ZRankTable._ranks; immutable post-creation
+  id; kind;                  // kind mirrors y.get('kind')
+  y: Y.Map<unknown>;         // LIVE reference
+  bbox: BBoxTuple;           // [minX,minY,maxX,maxY]
+  minX; minY; maxX; maxY;    // rbush envelope — mirrors bbox[0..3]
+  z: ZKey;                   // mirrors y.get('z')
+  slot: number;              // immutable Uint32 index into ZRankTable._ranks
 }
 ```
-
-The handle is the rbush spatial-index item — its envelope fields mirror `bbox[0..3]` and rbush reads them directly. **Invariants:** `applyHandleBBox(handle, src)` is the only legal post-creation mutator for the bbox tuple + envelope mirrors; it writes them atomically. `handle.z` is mutated only by the deep observer's `'z'` key handler (mirror of `y.get('z')`). `handle.kind` is a mirror of `y.get('kind')`, mutated only by the deep observer's kind-keychange branch (in-place cross-kind conversion, `tools/selection/convert-kind.ts`) — the branch evicts caches by the OLD kind before the mutation so Phase B repopulates for the new kind. `handle.slot` is assigned once by `ZRankTable.acquireSlot()` and never reassigned (the slot returns to the free-list on delete and is reusable, but no live handle ever changes its slot). No `handle.bbox[N] = ...` or `copyBbox(_, handle.bbox)` writes anywhere — that would desync the mirrors and corrupt the spatial tree.
-
-Wrapper persists across observer fires; only `bbox`'s four slots + mirrors (and `z` when the user reorders) change. Consumers needing a stable snapshot across fires must clone at read time — transform / topology / image-manager already do (`[...handle.bbox]` at gesture begin).
+**Mutation invariants** (violate → spatial tree desyncs): `applyHandleBBox(handle, src)` — wrapped by `spatialIndex.updateHandleBBox` — is the ONLY legal post-creation writer of `bbox` + the four mirrors, written atomically; never `handle.bbox[N]=…` / `copyBbox(_, handle.bbox)`. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`), reusable after delete but never reassigned on a live handle. The wrapper persists for the id's lifetime — consumers needing a snapshot across fires clone at read time (`[...handle.bbox]`; transform/topology/image-manager do).
 
 ### Stored vs derived geometry
 
 - **Stored in Y.Map:** shape/image `frame`, stroke `points`.
-- **Derived from layout/origin/scale** (subsystem-cached, accessed via getter): text/note `getTextFrame(id)` (`core/text/text-system.ts`), code `getCodeFrame(id)` (`core/code/code-system.ts`), bookmark `getBookmarkFrame(id)` (`core/bookmark/bookmark-render.ts`).
-- **Connectors are a third class.** Y.Map stores endpoint refs only (`start`/`end`: point or `StoredAnchor`); the routed polyline lives in `ConnectorRouter`'s local cache, populated by the deep observer on every relevant input change. Read via `getConnectorRoute(id)`.
+- **Derived** (subsystem-cached, via getter; `FrameTuple | null` before first layout): text/note `getTextFrame`, code `getCodeFrame`, bookmark `getBookmarkFrame`.
+- **Connectors** — a third class: Y.Map stores endpoint refs only (`start`/`end`: point or `StoredAnchor`); the routed polyline lives in `ConnectorRouter`'s cache, populated by the observer. Read via `getConnectorRoute(id)`.
 
-All frame getters return `FrameTuple | null` (null before first layout). `computeBBoxFor{,Into}` (`core/geometry/bbox.ts`) dispatches to the right subsystem — observer fires use `*Into` (writes into a pooled scratch); hydrate uses the allocating wrapper.
-
-**Global helpers** (use before reaching into a subsystem):
-- `frameOf(handle)` — `core/geometry/frame-of.ts` — single dispatch over every bindable kind.
-- `getHandleShapeType(handle)` — `core/accessors.ts` — `shapeType` for shapes, `'rect'` for every other bindable.
-- `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` / `isUnbindableKind` — `core/types/objects.ts`.
+`computeBBoxFor{,Into}` (`core/geometry/bbox.ts`) dispatches per-subsystem — observer fires use `*Into` (pooled scratch), hydrate the allocating wrapper. **Global dispatch helpers** (reach for these before a subsystem): `frameOf(handle)` (`frame-of.ts`), `getHandleShapeType(handle)` (`shapeType` for shapes, `'rect'` else), and `BINDABLE_KINDS`/`isBindableKind`/`isBindableHandle`/`isUnbindableKind` (`core/types/objects.ts`).
 
 ---
 
@@ -366,13 +336,9 @@ All frame getters return `FrameTuple | null` (null before first layout). `comput
 **Bounds helpers** (`core/geometry/bounds.ts`): `expandBBox`, `expandBBoxEnvelope`, `unionBBox`, `pointsToBBox{,Mut}`, `translateBBox`, `frameToBbox{,Mut}`, `bboxToFrame{,Mut}`, `copyBbox`, `copyFrame`, `bboxCenter`, `bboxSize`, `frameCenter`, `fillFrameCenter`, `unionBounds`, `expandEnvelope`, `translateBounds`, `scaleBoundsAround`, `expandBounds`, `offsetPoint`, `offsetBBox`, `offsetFrame`, `offsetPoints`, `setBBoxXYWH`, `boundsIntersect`. Most have in-place `*Mut`/`*Into` mirrors — use them on hot paths.
 
 **Typed Y.Map accessors** (`core/accessors.ts`): prefer over raw `.get()`.
-- Common: `getColor`, `getOpacity`, `getWidth`, `getFrame`, `getOrigin`, `getPoints`
-- Per-kind bulk (preferred): `getStrokeProps`, `getShapeProps`, `getTextProps`, `getCodeProps`, `getNoteProps`, `getImageProps`, `getBookmarkProps`
-- Connector: `getStart`, `getEnd`, `getStartCap`, `getEndCap`, `getConnectorType`, `getConnectorProps`, `getRouteInputs`
-- Text/code: `getFontSize`, `getFontFamily`, `getAlign`, `getAlignV`, `getContent`, `getCodeText`, `getTextWidth`, `getLanguage`, `getHeaderVisible`, `getOutputVisible`, `getCodeOutput`
-- Shape: `getShapeType`, `getHandleShapeType`, `getFillColor`, `getLabelColor`, `hasLabel`
-- Image/bookmark: `getAssetId`, `getNaturalDimensions`, `getBookmarkUrl`, `getBookmarkAssetIds`
-- Key types: `TextAlign`, `TextAlignV`, `TextWidth`, `FontFamily` (4 fonts), `CodeLanguage`, `StoredAnchor` (elbow/straight variants), `ConnectorCap`, `ConnectorType`
+- Per-field: `getColor`/`getOpacity`/`getWidth`/`getFrame`/`getOrigin`/`getPoints`; connector `getStart`/`getEnd`/`getStartCap`/`getEndCap`/`getConnectorType`/`getRouteInputs`; text·code `getFontSize`/`getFontFamily`/`getAlign`/`getAlignV`/`getContent`/`getCodeText`/`getTextWidth`/`getLanguage`/`getHeaderVisible`/`getOutputVisible`/`getCodeOutput`; shape `getShapeType`/`getHandleShapeType`/`getFillColor`/`getLabelColor`/`hasLabel`; image·bookmark `getAssetId`/`getNaturalDimensions`/`getBookmarkUrl`/`getBookmarkAssetIds`.
+- Per-kind bulk (**preferred**): `getStrokeProps`/`getShapeProps`/`getTextProps`/`getCodeProps`/`getNoteProps`/`getImageProps`/`getBookmarkProps`/`getConnectorProps`.
+- Key types: `TextAlign`, `TextAlignV`, `TextWidth`, `FontFamily` (4 fonts), `CodeLanguage`, `StoredAnchor` (elbow/straight), `ConnectorCap`, `ConnectorType`.
 
 ---
 
@@ -382,60 +348,20 @@ Public fields (non-null from construction): `objectsById`, `spatialIndex`, `conn
 
 ### Observer Pipeline
 
-`observeDeep` on `objects` is the single CRDT-driven update path. The body is **synchronous main-thread**, non-reentrant (Y dispatches at end-of-transaction and observers don't open a new one). By the time the callback returns, every subsystem cache referenced below is consistent and visible dirty rects are published — **no awaits, no microtasks, no race between Y change and renderable state**.
+`observeDeep` on `objects` is the single CRDT-driven update path — **synchronous main-thread, non-reentrant** (Y dispatches at end-of-transaction). By the time the callback returns every subsystem cache is consistent and visible dirty rects are published: no awaits, no microtasks, no race between Y change and renderable state.
 
-Two passes per fire: **inline routing** (per-event, routes content/anchor edits to subsystem hooks so subsystem state is fresh BEFORE the bulk phase reads it) then **`applyObjectChanges`** (three phases over the accumulated `touchedIds` + `deletedIds`).
+**Two passes per fire.** First, **inline routing** — per event, route the edit to its subsystem hook so that state is fresh BEFORE the bulk phase reads it. This ordering is **load-bearing**: `compute*BBox` then reads already-fresh caches and Phase C can drain reroutes in the same fire (no second pass).
+- top-level add/delete → `router.onConnectorAdded` / `onObjectDeleted`
+- `kind` keychange (in-place conversion) → `removeObjectCaches(id, OLD kind)` → set `handle.kind` → `kindChanged+=id` + `router.onBindableChanged` (→shape eager-layouts so `getInlineStyles` is warm)
+- connector `start|end|connectorType` → `router.onConnectorEdited`; `startCap|endCap` → `evictGeometry` (cap bakes into Path2D); shape `shapeType` → `router.onBindableChanged`
+- nested `'content'` → code `codeSystem.handleContentChange` / text·label·note `textLayoutCache.invalidateContent`
 
-```
-observeDeep(events):                                // synchronous, non-reentrant, per Y transaction
-  reset touchedIds, deletedIds
-  for ev in events, categorize and inline-route:
-    top-level add         → touched += id; if connector → router.onConnectorAdded(id, y)
-    top-level delete      → deleted += id; router.onObjectDeleted(id)
-    YMap edit on object   → touched += id
-        kind keychange (in-place conversion)            → removeObjectCaches(id, OLD kind) → handle.kind = kind
-                                                          → kindChanged += id → router.onBindableChanged(id)
-                                                          (→shape also eager-getLayout so getInlineStyles is warm)
-        connector & (start|end|connectorType keychange) → router.onConnectorEdited(id, y, …)
-        connector & (startCap|endCap keychange)         → evictGeometry(id)  // cap bakes into cached Path2D
-        shape     & (shapeType keychange)               → router.onBindableChanged(id)
-    nested 'content' edit → touched += id
-        Y.Text         (code)            → codeSystem.handleContentChange(id, ev, lang)
-        Y.XmlFragment  (text|label|note) → textLayoutCache.invalidateContent(id, content)
-  if touched|deleted nonempty → applyObjectChanges()
+Then **`applyObjectChanges`** over accumulated `touched`/`deleted` (`_newBBoxScratch` reused):
+- **A · deletions** — `spatialIndex.remove` → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
+- **B · touched** — skip ids queued for reroute (→C); connectors get style-only `router.computeBBox`, else `computeBBoxForInto` (★ **populates subsystem caches**) → `upsertHandle`; a bbox-changed bindable calls `router.onBindableChanged` (queues a reroute).
+- **C · drain reroute queue** — `router.rerouteCanonical` (route + bbox) → `upsertHandle(…, alwaysEvict=true)`. Then `selection.onObjectsKindChanged` (re-derive composition BEFORE refreshStyles) + `onObjectsChanged`.
 
-applyObjectChanges:                                 // _newBBoxScratch reused per fire
-  vp = getVisibleBoundsTuple()
-
-  // Phase A — deletions (router maps already updated inline above)
-  for id in deleted:
-    spatialIndex.remove(id, handle.bbox)
-    removeObjectCaches(id, kind)                    // geometry + text/code/bookmark/image
-    invalidateIfVisible(handle.bbox, vp)
-    objectsById.delete(id)
-  selection.onObjectsDeleted(deleted)
-
-  // Phase B — touched non-connectors + style-only connectors
-  for id in touched:
-    if router.isQueuedForReroute(id): continue      // → Phase C
-    if connector: router.computeBBox(id, y, scratch)             // style-only (color/width/cap)
-    else:         computeBBoxForInto(id, kind, y, scratch)       // ★ populates subsystem caches
-    bboxChanged = upsertHandle(id, kind, y, scratch, vp)         // spatial + evict + dirty rect
-    if bboxChanged & bindable(kind): router.onBindableChanged(id)
-
-  // Phase C — drain reroute queue (router-owned)
-  for id in router.drainRerouteQueue():
-    router.rerouteCanonical(id, y, scratch)         // route + bbox
-    upsertHandle(id, 'connector', y, scratch, vp, alwaysEvict=true)
-  if kindChanged nonempty → selection.onObjectsKindChanged(kindChanged)   // re-derive composition BEFORE refreshStyles
-  selection.onObjectsChanged(touched, bboxChanged)
-```
-
-**Inline-before-bulk is load-bearing.** `handleContentChange` / `invalidateContent` / router events fire BEFORE Phase B so that `compute*BBox` reads already-fresh subsystem state and routes can be drained from the queue in Phase C in the same fire. No second pass.
-
-`upsertHandle` mutates `handle.bbox` + the rbush mirror fields in place via `spatialIndex.updateHandleBBox`; the wrapper persists for the id's lifetime. On `bboxChanged`: invalidate prev rect → `spatialIndex.updateHandleBBox(handle, newBBox)` [internally: `remove(handle)` reads old envelope → `applyHandleBBox` writes new tuple + mirrors → `insert(handle)` reads new envelope] → `evictGeometry` → invalidate new rect (order critical — `handle.bbox` must still hold the old values when `updateHandleBBox` is called, since rbush's `remove` descends to the old leaf). On no-bbox-change with `alwaysEvict`: only evict + invalidate new rect. New rect is invalidated unconditionally (content may have changed visually without bbox change).
-
-Mutation: prefer `transact(fn)` (room-runtime) over `mutate(fn)`.
+`upsertHandle` is the only bbox writer. On bbox change: invalidate prev rect → `spatialIndex.updateHandleBBox(handle, newBBox)` (`remove` reads old envelope → `applyHandleBBox` writes new tuple+mirrors → `insert`) → `evictGeometry` → invalidate new rect. **Order-critical** — `handle.bbox` must still hold OLD values at `updateHandleBBox` (rbush's `remove` descends to the old leaf). New rect is always invalidated (content can change visually without a bbox change); the `alwaysEvict` no-bbox-change path only evicts + invalidates. Mutate via `transact(fn)` (room-runtime), not `mutate(fn)`.
 
 ---
 
@@ -458,17 +384,13 @@ computeBBoxForInto(id, kind, y, out) {
 }
 ```
 
-**Handle exists ⇒ caches populated.** Frame getters (`getTextFrame` / `getCodeFrame` / `getBookmarkFrame`) defensively return `null` via `?? null`, but the `null` is just the natural Map-miss return — it fires only when no handle exists in `objectsById` (caller is reading an id that was never observed or has been deleted, in which case the cache entry was removed alongside the handle). Within an id's lifetime, its caches stay populated.
-
-**rbush items ARE handles.** `objectsById` and the spatial index reference the same `ObjectHandle` objects — one source of truth, two access paths. The handle's `minX/minY/maxX/maxY` mirror `bbox[0..3]` and are kept in sync by `applyHandleBBox` (the only legal post-creation mutator, wrapped by `spatialIndex.updateHandleBBox`). Spatial queries return handles directly — no `getHandle(e.id)` lookup post-query, no `IndexEntry` indirection.
+**Handle exists ⇒ caches populated.** Frame getters (`getTextFrame` / `getCodeFrame` / `getBookmarkFrame`) return `null` only on a genuine Map-miss — an id never observed or already deleted (its cache entry was removed alongside the handle). Within an id's lifetime its caches stay populated.
 
 **Lazy exceptions** (populated on first read, not via observer):
 - `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common). Connector cap toggles (`startCap` / `endCap` keychange) pre-evict in the observer because the arrowhead bakes into the cached Path2D and cap-only toggles don't always shift the bbox.
 - **Shape label layouts.** The `shape` branch of `computeBBoxForInto` reads frame only — the label layout populates on first `drawShapeLabel`.
 
-**Async exceptions** (cross a worker boundary; render coarser fallback meanwhile, self-publish dirty rects):
-- Image bitmaps — worker decode; `getBitmap(assetId)` returns `null` until ready. Frame-driven by `manageImageViewport` per `RenderLoop.tick`.
-- Code tier-2 Lezer spans — sync floor inside the observer is eager (instant color); worker upgrade arrives later via `codeSystem.applyWorkerSpans`. **Layout is already eager** — tier-2 is colors only.
+**Async exceptions** (cross a worker boundary — coarser fallback meanwhile, self-publish dirty rects): image bitmaps (`getBitmap(assetId)` → `null` until worker decode) and code tier-2 Lezer spans (eager sync color floor in-observer, worker upgrade via `codeSystem.applyWorkerSpans`; layout is already eager). See `core/image/` + `core/code/`.
 
 | Subsystem cache | Owner | Read API |
 |---|---|---|
@@ -494,14 +416,12 @@ computeBBoxForInto(id, kind, y, out) {
 - `SelectTool` renders transformed objects on the base canvas for correct Z-order during translate/scale.
 
 ### Object dispatch (`renderer/layers/objects.ts`)
-Switch on `handle.kind`: stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()`, bookmark via `drawBookmark()`. During scale (`renderScaleEntry`, behavior from `getScaleBehavior`): shape rebuilds frame; image bitmap at scaled frame; stroke uses cached Path2D with `ctx.scale(factor)`; text/code reflow on E/W sides else `ctx.scale(ratio)` on cached layout; note/bookmark `ctx.scale(out.scale/frozen.scale)` around `out.origin`. Edge-pin (multi-select side handle) falls back to `renderTranslatedEntry`. Details in `tools/selection/CLAUDE.md`.
-
-Per-frame hoisting in `drawObjects`: editing IDs (incl. `_textEditingId` threaded into `drawStickyNote`), hovered Open-button id, translate `dx/dy`, topology `connEntries` Map, viewport bounds — read once, used per-object. Module scratches (`_candidateIds`, `_previewScratch`) for zero alloc.
+`drawObjects` paints viewport candidates (from the spatial index) in z-order, dispatching each leaf `draw*` on `handle.kind`: stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()`, bookmark via `drawBookmark()`. Under transform, selected/attached handles are re-injected by their preview bbox and scaled per-kind in `renderScaleEntry` (`getScaleBehavior` → reflow / uniform / else translated) — the scale-behavior model lives in `tools/selection/CLAUDE.md`. Per-frame state (editing ids, topology entries, translate delta, viewport) is hoisted once and leaf draws use module scratches for zero alloc; the file is self-contained on the specifics.
 
 ### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
-Two helpers, one per Content subclass. `readPrim` reads `val.content.arr[0]` (ContentAny — every primitive/array/object key); `readY` reads `val.content.type` (ContentType — the single `'content'` key on shape labels). Both check `!val.deleted` (Yjs tombstones an Item rather than removing it from `_map` on `.delete(key)` — fillColor=null in `selection-field-table.ts`, empty-label close in `TextTool.ts`). Both bypass `Content.getContent()` so there's no `[this.type]` allocation for ContentType to depend on EA for. ~10 ns/key (vs ~109 ns for `y.get()`). `Y.Map._map` items always have `length === 1` (merges blocked by deleted-state asymmetry — proven from Yjs source), so `arr[0]` is correct without a `length - 1` lookup. One `readXxxRender(y)` per leaf draw fn writes into a per-kind module-level scratch returned by reference. Each `draw*` consumes its scratch before the next reader fires — no cross-reader hazards.
+Each leaf `draw*` calls one `readXxxRender(y)` that reads only the keys it paints straight off Yjs's `_map` (~10 ns/key vs ~109 for `y.get()`) into a per-kind module scratch. The mechanism — `readPrim`/`readY` split by Content subclass, the `!deleted` tombstone guard, the `arr[0]` length-1 invariant, scratch-consumed-before-the-next-reader — is documented in the file.
 
-Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById`, `noteCachedLayout`, `codeSystem.getLayoutById`, `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, fontSize, ...)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantees; see Cache Architecture). Geometry-cache trusts entries — `shapeType` / `startCap` / `endCap` keychanges pre-evict via `evictGeometry(id)` in the observer rather than a per-draw re-check. Defensive guards stripped on the hot path: bbox-size (`scaleFrameNonUniform` clamps to `MIN_SHAPE_FRAME_DIM + 2·pad`), `n < 2` (already in `paintConnectorFromPoints`), null `assetId`/`frame` on image (observer contract).
+Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById` / `codeSystem.getLayoutById` / `noteCachedLayout` / `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls; populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, …)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantee; see Cache Architecture). The hot path trusts its caches — geometry-cache entries (observer pre-evicts on keychange), populated layouts, the observer's frame/asset contracts — and drops the re-validation guards that would otherwise repeat that work.
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
@@ -528,38 +448,19 @@ Imperative getters: `setCursorOverride`, `applyCursor`. Constants: `TEXT_FONT_SI
 
 ---
 
-## Query Layer (`query/` — TanStack Query)
+## Query Layer (`query/` — TanStack Query) — see `query/CLAUDE.md`
 
-Server-projection reads + identity, IndexedDB-persisted (idb-keyval; restored by `main.tsx` awaiting `restoreQueryCache()` BEFORE the router mounts — never inside the React tree); `networkMode: 'offlineFirst'`.
-- `client.ts` — the `QueryClient` + idb persister + `restoreQueryCache()` (21d `maxAge`/`gcTime` — hard ceiling 2^31−1 ms ≈ 24.8d: `gcTime` feeds a raw setTimeout, overflow = instant GC of observerless queries). Restore does NOT resume paused mutations — `main.tsx` `init()` fires `void resumePausedMutations()` as the last step before mount, AFTER the `?auth=` marker branch (resuming earlier would replay a pre-logout offline mutation under the new identity, 403, and its persisted onError context would resurrect purged state).
-- `me.ts` — `meQueryOptions` (the `/me` identity query; its `staleTime` IS the anon-cookie slide throttle, off query-cache `dataUpdatedAt` — no `lastValidatedAt` in any store) + `ensureIdentity` (cold visitor → `await ensureQueryData`; returning visitor → `void prefetchQuery`, fire-and-forget). The queryFn is the sole writer of `auth-store` (incl. account `email`/`avatarHash`).
-- `auth-redirect.ts` — the `?auth=ok|out|denied|error` marker boot: `consumeAuthMarker()` (synchronous read+strip via raw `history.replaceState` — preserves `__TSR_*` state, router never sees the marker) + `purgeLocalRoomDataForSignOut()` (`out` only, before the identity refresh: mutation-cache clear → facts-keys capture → `clearAllRooms()` → `purgeAllRoomDocDBs` — unconditional even if the network logout failed; privacy on a shared device beats data retention. `ok` does NOT purge — local rooms merge with the account list) + `refreshIdentityForAuthChange()` (REMOVE me+rooms caches — no cross-account flash — then one forced `/me` raced 4 s; offline proceeds on persisted identity). Called only from `main.tsx` `init()`.
-- `rooms.ts` — `roomsQueryOptions` (`GET /rooms`; threads the D1 `x-d1-bookmark` for read-your-writes). The queryFn absorbs each fetch into the facts store (`absorbServerRooms`) and deletes pruned private rooms' doc DBs, skipping the active room (open y-indexeddb connection; its own 4403 path cleans up).
-- `room-list.ts` — `useRoomList` merges the D1 projection with `room-list-store` facts by roomId (offline-first; local-only rooms never dropped; private-not-owned rows hidden via a pre-collected set so the facts loop can't resurrect them). Owner display: self → "Me" (anon) / account name; other → `ownerName` ?? "Anonymous". Subscribes to auth `name`/`isAnon` so the owner column flips the moment `/me` resolves.
-- `room-rename.ts` — the rename mutation (`PATCH /rooms/:id/title`) as `setMutationDefaults(['rename-room'])` + the `useRenameRoom()` hook. Optimistic across the rooms cache + session store + title fact; rollback ctx is PER-ROW (`prevTitle` of the one row — a persisted whole-cache snapshot could resurrect the previous account's rooms list after a sign-out/sign-in replay); success merges the canonical title + RYW bookmark (`'' ` never clobbers a real one). Offline renames pause, dehydrate with the cache, and replay serially (`scope`). **`main.tsx` imports this module BEFORE `init()`** — hydrated paused mutations resolve their `mutationFn` from these defaults at restore time (route code-splitting registers nothing else that early).
-- `room-permission.ts` — the permission mutation (`PATCH /rooms/:id/permission`) as `setMutationDefaults(['set-permission'])` + `useSetPermission()` (the Share modal's dropdown). Same shape as `room-rename`: per-row rollback ctx, transient-only retry, RYW bookmark merge, `main.tsx` side-effect import before `init()`.
+Server-projection reads (`/me` identity, `GET /rooms` dashboard) + offline mutations (`rename-room`, `set-permission`), IndexedDB-persisted, `networkMode: 'offlineFirst'`. The cache is restored BEFORE the router mounts (`main.tsx` awaits `restoreQueryCache()`) — load-bearing: `beforeLoad`/loaders fire during mount and the me query's restored `dataUpdatedAt` is the anon-cookie slide-throttle clock. The `/me` queryFn is the **sole writer of `auth-store`**. `query/CLAUDE.md` owns the file map + boot ordering (`?auth=` marker, paused-mutation replay-after-marker, mutation-default registration before `init()`).
 
 ## Selection System
 
-Detailed in `tools/selection/CLAUDE.md`: state machine, per-kind transform behavior, connector topology, hit testing (Z-order, handles, endpoints), text/code reflow, dirty rect optimization, commit paths.
-
-**Key entry points:** `SelectTool` (state machine + commits, owns marquee state), `tools/selection/transform.ts` (TransformController, dispatch tables, owns built topology), `connector-topology.ts` (`buildTopology`), `selection-store.ts` (Zustand state), `core/spatial/object-query.ts` (picker facade shared with EraserTool/TextTool/CodeTool/snap), `core/spatial/handle-hit.ts` (resize handles + endpoint dots), `core/geometry/scale-system.ts` (pure scale math), `core/types/handles.ts` (handle taxonomy), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
+Detailed in `tools/selection/CLAUDE.md` (state machine, per-kind transform, connector topology, hit testing, text/code reflow, dirty-rect, commit paths). Entry points: `SelectTool` (state machine + commits + marquee), `transform.ts` (TransformController + dispatch tables + built topology), `selection-store.ts`; shared spatial/geometry: `core/spatial/object-query.ts` (picker facade, also Eraser/Text/Code/snap), `core/spatial/handle-hit.ts`, `core/geometry/scale-system.ts`, `core/types/handles.ts`; rendering in `renderer/layers/{objects,selection-overlay}.ts`.
 
 ---
 
 ## Other Tools
 
-**DrawingTool** — pen, highlighter, AND shape drawing. HoldDetector (550ms, `core/geometry/recognizer/hold-detector.ts`) fires $P recognizer (`core/geometry/recognizer/`) for shape snap. Click-to-place: 180wu fixed shape. Settings frozen at `begin()`.
-
-**EraserTool** — geometry-aware hit testing, deletes all object kinds.
-
-**TextTool** — WYSIWYG rich text with Tiptap DOM overlay + canvas rendering. Origin-based positioning, auto/fixed width, three-tier layout cache. Shape labels and sticky notes supported (note tool maps to TextTool). See `core/text/CLAUDE.md`.
-
-**CodeTool** — code blocks with CodeMirror DOM overlay. Screen-space rendering (world × scale in px). Two-tier tokenization (sync regex + Lezer workers). Per-session UndoManager. See `core/code/CLAUDE.md`.
-
-**PanTool** — viewport panning. Also used for MMB pan and spacebar ephemeral pan.
-
-**ConnectorTool** — elbow A* + straight connectors with shape snapping. Ctrl suppresses snapping. See `core/connectors/CLAUDE.md`.
+Beyond `SelectTool` (see Selection System), all tools sit in the Tools file map, each pointing to its subsystem `CLAUDE.md`. Non-obvious notes: `DrawingTool` freezes settings at `begin()` and click-places a 180wu shape; the **note tool maps to `TextTool`** (shape labels + sticky notes share its engine); `CodeTool` renders screen-space (world × scale) with a per-session `UndoManager`; `ConnectorTool` Ctrl-suppresses snapping; `PanTool` also serves MMB + spacebar pan; `EraserTool` deletes all kinds via geometry-aware hit testing.
 
 ---
 

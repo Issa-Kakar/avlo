@@ -1,0 +1,23 @@
+# Query Layer (`web/src/query/` — TanStack Query)
+
+Server-projection reads + identity, IndexedDB-persisted (idb-keyval), `networkMode: 'offlineFirst'`. One in-memory `QueryClient` caches `/me` (identity) and `GET /rooms` (dashboard). It is restored from IDB **once, BEFORE the router mounts** (`main.tsx` awaits `restoreQueryCache()` ahead of `<RouterProvider/>`) — load-bearing: route `beforeLoad`/loaders fire during mount, and the me query's restored `dataUpdatedAt` is the cookie-slide throttle clock (restoring inside the React tree ran after `beforeLoad`, so every boot refetched `/me`).
+
+## File Map
+
+| File | Responsibility |
+|------|----------------|
+| `client.ts` | `QueryClient` + idb persister + `restoreQueryCache()`. 21d `maxAge`/`gcTime` — **hard ceiling < 2^31−1 ms ≈ 24.8d**: `gcTime` feeds a raw `setTimeout`; an overflowed delay fires at ~1ms and instantly GCs every observerless query (the prefetch-only `/me` entry first), silently breaking the slide throttle. Restore does NOT resume paused mutations. |
+| `me.ts` | `meQueryOptions` (`/me` — the sole server identity resolver) + `ensureIdentity`. `staleTime` (24h) IS the anon-cookie slide throttle, clocked off query-cache `dataUpdatedAt` — no `lastValidatedAt` in any store. `ensureIdentity`: returning visitor (userId in persisted auth-store) → `void prefetchQuery` (fire-and-forget, no-op while fresh); cold visitor → `await ensureQueryData` (block on the mint so a signed cookie + userId exist before `connectRoom`). The queryFn is the **sole writer of `auth-store`** (incl. account `email`/`avatarHash`). |
+| `rooms.ts` | `roomsQueryOptions` (`GET /rooms` dashboard projection; threads the D1 `x-d1-bookmark` for read-your-writes — stashed in the query data so it rides the IDB cache). queryFn: `await ensureIdentity()` first (cookie before `/rooms`), then `absorbServerRooms` into facts + `deleteRoomDocDB` for pruned private-not-owned rooms (**skipping the active room** — its open y-indexeddb connection blocks `deleteDatabase`; its own 4403 path cleans up). |
+| `room-list.ts` | `useRoomList`/`mergeRooms` — read-time union of the D1 projection + `room-list-store` facts by roomId. Offline-first: local-only rooms never dropped; private-not-owned rows hidden via a set collected BEFORE the facts loop (so the fallback can't resurrect one as owned-by-me). Owner: self → "Me" (anon) / account name; other → `ownerName` ?? "Anonymous". Memoized on the projection + facts + auth `name`/`isAnon`. |
+| `room-rename.ts` | Rename mutation (`PATCH /rooms/:id/title`) as `setMutationDefaults(['rename-room'])` + `useRenameRoom()`. Optimistic across rooms cache + session store + title fact; rollback ctx is **PER-ROW** (`prevTitle` of the one row — a whole-cache snapshot could resurrect the previous account's list after a sign-out/sign-in replay). Success merges canonical title + RYW bookmark (`''` never clobbers a real one). Offline: pauses, dehydrates with the cache, replays serially (`scope`); transient-only retry (5xx/thrown retry, 4xx surfaces + rolls back). |
+| `room-permission.ts` | Permission mutation (`PATCH /rooms/:id/permission`) as `setMutationDefaults(['set-permission'])` + `useSetPermission()` (the Share modal dropdown). Same shape as `room-rename`. |
+| `auth-redirect.ts` | The `?auth=ok\|out\|denied\|error` marker boot. `consumeAuthMarker()` — sync read+strip via raw `history.replaceState` (preserves TanStack `__TSR_*`; the router never sees the marker). `purgeLocalRoomDataForSignOut()` (`out` only) — mutation-cache clear → capture facts keys → `clearAllRooms()` → `purgeAllRoomDocDBs`; unconditional even if the network logout failed (privacy beats retention). `refreshIdentityForAuthChange()` — **remove** (not invalidate) me+rooms caches so stale cross-account data can't flash, then one forced `/me` raced 4 s (offline proceeds on persisted identity). Called only from `main.tsx` `init()`. |
+
+## Boot ordering (load-bearing, all in `main.tsx`)
+
+1. `consumeAuthMarker()` FIRST (before the router exists). For `out`: `purgeLocalRoomDataForSignOut()`. For `ok`/`out`: `refreshIdentityForAuthChange()`.
+2. `await restoreQueryCache()` (concurrent with fonts) — BEFORE `<RouterProvider/>`.
+3. `void resumePausedMutations()` LAST before mount, **AFTER** the marker branch — resuming earlier would replay a pre-logout offline mutation under the new identity (403), and its persisted `onError` context would resurrect purged state.
+
+`room-rename.ts` / `room-permission.ts` are imported for side-effect **before** `init()` so hydrated paused mutations resolve their `mutationFn` from the registered defaults at restore time (route code-splitting registers nothing else that early). Identity is **server-resolved only** — the client never mints a userId.
