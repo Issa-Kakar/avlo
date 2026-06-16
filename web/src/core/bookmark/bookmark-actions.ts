@@ -25,7 +25,7 @@ import { getHandle } from '@/runtime/room-runtime';
  */
 export function openBookmarkUrl(id: string): void {
   const handle = getHandle(id);
-  if (!handle || handle.kind !== 'bookmark') return;
+  if (handle?.kind !== 'bookmark') return;
   const props = getBookmarkProps(handle.y);
   if (!props) return;
   const url = props.url;

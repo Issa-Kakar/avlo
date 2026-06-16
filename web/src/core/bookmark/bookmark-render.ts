@@ -706,7 +706,7 @@ export function hitTestOpenButton(handle: ObjectHandle, worldX: number, worldY: 
  */
 export function getOpenButtonWorldBBox(id: string): BBoxTuple | null {
   const handle = getHandle(id);
-  if (!handle || handle.kind !== 'bookmark') return null;
+  if (handle?.kind !== 'bookmark') return null;
   const props = getBookmarkProps(handle.y);
   if (!props) return null;
   const layout = layoutCache.get(id);

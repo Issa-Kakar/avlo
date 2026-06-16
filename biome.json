@@ -41,7 +41,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "suspicious": {
         "noExplicitAny": "error",
         "noConsole": { "level": "error", "options": { "allow": ["warn", "error"] } },
@@ -63,7 +63,7 @@
         "noAccumulatingSpread": "off"
       },
       "a11y": {
-        "recommended": false
+        "preset": "none"
       },
       "complexity": {
         "useFlatMap": "error",
@@ -72,7 +72,10 @@
         "useDateNow": "error"
       },
       "correctness": {
-        "noConstantMathMinMaxClamp": "error"
+        "noConstantMathMinMaxClamp": "error",
+        "noUnusedVariables": "warn",
+        "noUnusedImports": "warn",
+        "noUnusedFunctionParameters": "warn"
       }
     }
   },
@@ -97,22 +100,11 @@
       }
     },
     {
-      "includes": [
-        "**/__tests__/**/*.{ts,tsx,js,jsx}",
-        "**/*.test.{ts,tsx,js,jsx}",
-        "**/*.spec.{ts,tsx,js,jsx}",
-        "**/test-*.{ts,tsx,js,jsx}"
-      ],
+      "includes": ["scripts/**"],
       "linter": {
         "rules": {
           "suspicious": {
-            "noExplicitAny": "off",
-            "noConsole": "off"
-          },
-          "correctness": {
-            "noUnusedVariables": "off",
-            "noUnusedImports": "off",
-            "noUnusedFunctionParameters": "off"
+            "noUndeclaredEnvVars": "off"
           }
         }
       }

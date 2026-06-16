@@ -409,7 +409,7 @@ export class SelectTool implements PointerTool {
         if (epTransform.kind !== 'endpointDrag') break;
         // Read connectorType from the live handle (cheaper than threading through controller).
         const handle = getHandle(epTransform.connectorId);
-        if (!handle || handle.kind !== 'connector') break;
+        if (handle?.kind !== 'connector') break;
         const snap = isCtrlHeld()
           ? null
           : findBestSnapTarget({

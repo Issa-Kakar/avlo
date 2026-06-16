@@ -115,7 +115,7 @@ export function hitEndpointDot(at: Point, selectedIds: readonly string[]): Endpo
 
   for (const id of selectedIds) {
     const h = getHandle(id);
-    if (!h || h.kind !== 'connector') continue;
+    if (h?.kind !== 'connector') continue;
     const startPos = getEndpointEdgePosition(h, 'start');
     let dx = px - startPos[0];
     let dy = py - startPos[1];

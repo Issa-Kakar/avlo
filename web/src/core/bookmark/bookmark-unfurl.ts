@@ -188,7 +188,7 @@ export async function handleUnfurlResult(objectId: string, data: UnfurlResultDat
   // Case C: page refresh recovery — no pending map entry
   try {
     const handle = getHandle(objectId);
-    if (!handle || handle.kind !== 'bookmark') return;
+    if (handle?.kind !== 'bookmark') return;
 
     const faviconAssetId = await resolveFaviconAssetId(data);
     if (!hasActiveRoom()) return;
@@ -201,7 +201,7 @@ export async function handleUnfurlResult(objectId: string, data: UnfurlResultDat
     // Upgrade existing bookmark with metadata
     transact(() => {
       const yObj = getObjects().get(objectId);
-      if (!yObj || yObj.get('kind') !== 'bookmark') return;
+      if (yObj?.get('kind') !== 'bookmark') return;
 
       if (data.title != null) yObj.set('title', data.title);
       if (data.description != null) yObj.set('description', data.description);

@@ -1033,7 +1033,7 @@ export function getTransformMode(): 'none' | 'scale' | 'translate' | 'endpointDr
 }
 
 export function getTranslateDelta(): [number, number] | null {
-  if (!ctrl || ctrl.getMode() !== 'translate') return null;
+  if (ctrl?.getMode() !== 'translate') return null;
   return [ctrl.dx, ctrl.dy];
 }
 

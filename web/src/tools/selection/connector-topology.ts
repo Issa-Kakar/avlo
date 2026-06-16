@@ -404,7 +404,7 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
       }
       for (const cid of attachedIds) {
         const h = getHandle(cid);
-        if (!h || h.kind !== 'connector') continue;
+        if (h?.kind !== 'connector') continue;
         processConnector(h, false, mode, selectedBindables, translates, elbowReroutes, straightReroutes, byId);
       }
 

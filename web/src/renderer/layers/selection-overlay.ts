@@ -288,7 +288,7 @@ function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: Readonly<BB
  */
 function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: string, transform: TransformState): void {
   const handle = getHandle(connectorId);
-  if (!handle || handle.kind !== 'connector') return;
+  if (handle?.kind !== 'connector') return;
   const isStraight = getConnectorType(handle.y) === 'straight';
 
   if (transform.kind === 'endpointDrag' && transform.connectorId === connectorId) {

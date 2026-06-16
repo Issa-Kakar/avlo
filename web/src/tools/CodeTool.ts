@@ -259,7 +259,7 @@ export class CodeTool implements PointerTool {
     if (!host) return;
 
     const handle = getHandle(objectId);
-    if (!handle || handle.kind !== 'code') return;
+    if (handle?.kind !== 'code') return;
 
     const props = getCodeProps(handle.y);
     if (!props) return;
@@ -320,7 +320,7 @@ export class CodeTool implements PointerTool {
     // and don't touch shared state.
     if (this.pendingMountId !== objectId) return;
     const stillValid = getHandle(objectId);
-    if (!stillValid || stillValid.kind !== 'code') {
+    if (stillValid?.kind !== 'code') {
       this.pendingMountId = null;
       return;
     }
