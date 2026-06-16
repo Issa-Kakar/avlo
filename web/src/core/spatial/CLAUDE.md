@@ -14,7 +14,7 @@ reads, so queries return handles directly. No `IndexEntry` indirection, no
 ## File Map
 
 ```
-client/src/core/spatial/
+web/src/core/spatial/
 ├── object-spatial-index.ts  — RBush wrapper, tuple-first             (~70 LOC)
 ├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers (~250 LOC)
 ├── object-query.ts          — Picker facade: 4 exports, no options  (~230 LOC)

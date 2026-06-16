@@ -30,7 +30,7 @@ A consumer module (e.g. `image-sab.ts`) names the header indices and slot fields
 
 ## Invariants
 
-- **Cross-origin isolation is the contract.** `Atomics.waitAsync` + SAB require `crossOriginIsolated` (COOP `same-origin` + COEP `credentialless`, set in `client/public/_headers` + `vite.config.ts`). `assertCrossOriginIsolated()` throws at pool init — no dual-path fallback (pre-production doctrine).
+- **Cross-origin isolation is the contract.** `Atomics.waitAsync` + SAB require `crossOriginIsolated` (COOP `same-origin` + COEP `credentialless`, set in `web/public/_headers` + `vite.config.ts`). `assertCrossOriginIsolated()` throws at pool init — no dual-path fallback (pre-production doctrine).
 
 - **Single producer.** Exactly one thread (main) pushes to a ring and writes `tail`; only `head` is contended (CAS between consumers). This is what makes the ring lock-free yet correct without a full MPMC protocol. Never push from a worker.
 

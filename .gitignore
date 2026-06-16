@@ -28,9 +28,7 @@ lerna-debug.log*
 .pnpm-debug.log*
 
 # IDE
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
+.vscode/
 .idea/
 *.swp
 *.swo
@@ -92,8 +90,7 @@ client/dist-ssr
 *.local
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 *.suo
 *.ntvs*
@@ -116,20 +113,10 @@ pids
 *.pid.lock
 
 # Environment variables (duplicate entries removed)
-THIS_PROMPT.md
 
-# Phase 2 development files
-PHASE2_*.md
-WEBSOCKET_*.md
+# development files
 prompt.md 
-PROMPT.MD
 completed_tasks/
-e2e_test_results/
-# Temporary test files
-test-ws*.js
-
-# Generated type definitions
-client/src/vite-env.d.ts
 
 # Compiled JavaScript in source directories
 client/src/**/*.js
@@ -148,41 +135,9 @@ completed_tasks
 # TanStack Router codegen cache
 .tanstack/
 */.tanstack/
-# Client test results (specific path)
-client/test-results/
-
-# Development scripts (keep setup-dev.sh in repo)
-setup-dev.sh
 
 # Personal notes and changelogs
 docs(local)
-BRANCH_STATUS.md
-CLAUDE.MD
-NEW_OVERVIEW.MD
-NEW_IMPLEMENTATION.MD
-PROMPT.MD
-CONFIG_IMPLEMENTATION.md
-PROJECT_STATUS.md
 .claude/
-full_project.MD 
 PROMPT.MD
-instruction_fix.md
-OVERVIEW.MD
-OVERVIEW_CONDENSED.MD
-NEW_PROMPT.MD
-FULLER_IMPLEMENTATION.MD
-NEW_OVERVIEW.MD
-NEW_IMPLEMENTATION.MD
-PROMPT.MD
-CONFIG_IMPLEMENTATION.md
-PROJECT_STATUS.md
-.claude/
-full_project.MD 
-PROMPT.MD
-instruction_fix.md
-OVERVIEW.MD
-OVERVIEW_CONDENSED.MD
-NEW_PROMPT.MD
-FULLER_IMPLEMENTATION.MD
-#personal tasks completion folder
-completed_tasks/cloudflared.deb
+

@@ -15,6 +15,8 @@ pnpm lint         # Biome — skip routine runs (noisy, sometimes wrong); pre-co
 > **Typecheck is tsgo** for client and workers alike — `pnpm typecheck` is the only check an agent runs. `pnpm typecheck:tsc` (a `tsc` parity pass) is reserved for CI and pre-prod; don't reach for tsc after backend/worker edits.
 > In the `avlo-parallel` worktree, run `pnpm dev:p` instead of `pnpm dev` — it shifts every wrangler port by `PORT_OFFSET` so the two checkouts can run side-by-side without colliding.
 
+> **Search tooling (optional).** `rg`, `fd`, `jq`, and `ast-grep`/`sg` are installed if you want them. `rg`/`fd` honor `.gitignore` by default (no manual `node_modules`/`dist` excludes); plain `grep -r` does not. Use whatever fits — none of this is required.
+
 - `@avlo/shared` → `packages/shared/src/*` (cross-runtime; client + server)
 - `@avlo/worker-shared` → `packages/worker-shared/src/*` (server-only — never imported client-side)
 - `@avlo/db` → `packages/db/src/*` (server-only — D1 + DO-SQLite Drizzle schemas; never client-side)

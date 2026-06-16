@@ -2,7 +2,7 @@
    One custom property per recurring literal. Scoped to the portal class
    (.context-menu-floating) so every context-menu surface — including the
    absolutely-positioned submenu popovers — inherits them. Pure indirection:
-   each token aliases the chrome-wide global token in `client/src/index.css`,
+   each token aliases the chrome-wide global token in `web/src/index.css`,
    keeping the `--ctx-*` names so the five sibling foundation files
    (shell/buttons/dropdowns/color-grid/svg-triggers) need no edits. */
 

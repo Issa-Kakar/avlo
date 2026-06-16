@@ -564,7 +564,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
 | `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
-| `styles/*.css` | The entire CSS foundation, six files: `tokens.css` (`--ctx-*` custom properties scoped to `.context-menu-floating`, mostly aliasing the chrome-wide `--color-chrome-*` scale in `client/src/index.css`), `shell.css` (`.ctx-menu` / `.ctx-hidden` / `.ctx-divider` / `.ctx-group`), `buttons.css` (`.ctx-btn` family — base, engaged marker, square, format, filter, lang), `dropdowns.css` (`.ctx-submenu` base + `.ctx-submenu-item` / `.ctx-type-item` / `.ctx-align-item` row primitives), `color-grid.css` (`.ctx-cp-grid` / `.ctx-cp-swatch` / `.ctx-cp-swatch-nofill` — shared by every color picker), `svg-triggers.css` (the FILTER + LANGUAGE trigger's nested `<text>` rules + on-open fill swaps). All wrapped in `@layer components`. |
+| `styles/*.css` | The entire CSS foundation, six files: `tokens.css` (`--ctx-*` custom properties scoped to `.context-menu-floating`, mostly aliasing the chrome-wide `--color-chrome-*` scale in `web/src/index.css`), `shell.css` (`.ctx-menu` / `.ctx-hidden` / `.ctx-divider` / `.ctx-group`), `buttons.css` (`.ctx-btn` family — base, engaged marker, square, format, filter, lang), `dropdowns.css` (`.ctx-submenu` base + `.ctx-submenu-item` / `.ctx-type-item` / `.ctx-align-item` row primitives), `color-grid.css` (`.ctx-cp-grid` / `.ctx-cp-swatch` / `.ctx-cp-swatch-nofill` — shared by every color picker), `svg-triggers.css` (the FILTER + LANGUAGE trigger's nested `<text>` rules + on-open fill swaps). All wrapped in `@layer components`. |
 | `icons/` | Custom SVGs: fill-based paths for pixel-crisp rendering at small sizes |
 
 ### Icons
@@ -607,7 +607,7 @@ utilities into a later layer than `components`, so inline utilities on a
 **Tokens** (`styles/tokens.css`, scoped to `.context-menu-floating` — every
 surface, incl. the absolutely-positioned submenus, inherits them). Eleven
 of the thirteen `--ctx-*` names alias the chrome-wide `--color-chrome-*`
-scale in `client/src/index.css`'s `@theme` block (shared with the TopBar,
+scale in `web/src/index.css`'s `@theme` block (shared with the TopBar,
 MainMenu, and ZoomControls); the two odd-byte single-use values
 (`--ctx-black-a13`, `--ctx-black-a20`) stay literal. The `--ctx-*` names
 are kept so the five sibling foundation files keep working without edit:

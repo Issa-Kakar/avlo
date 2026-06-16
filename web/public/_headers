@@ -1,8 +1,8 @@
 # script-src is plain 'self' (hashed same-origin bundles) plus ONE sha256 for the inline
-# SW-registration <script> in client/index.html — the only inline script. The hash is over
+# SW-registration <script> in web/index.html — the only inline script. The hash is over
 # the EXACT bytes between its <script>/</script> tags; if that snippet ever changes, recompute
 # or SW registration is CSP-blocked in prod (the app still boots — registration is best-effort).
-#   node -e 'const f=require("fs").readFileSync("client/index.html","utf8");const o="<script>";const i=f.indexOf(o),j=f.indexOf("</script>",i);console.log("sha256-"+require("crypto").createHash("sha256").update(f.slice(i+o.length,j)).digest("base64"))'
+#   node -e 'const f=require("fs").readFileSync("web/index.html","utf8");const o="<script>";const i=f.indexOf(o),j=f.indexOf("</script>",i);console.log("sha256-"+require("crypto").createHash("sha256").update(f.slice(i+o.length,j)).digest("base64"))'
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin

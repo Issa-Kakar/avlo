@@ -84,7 +84,7 @@ Viewport management (every frame in RenderLoop.tick()):
 
 ---
 
-## Service Worker (`client/src/sw.ts`)
+## Service Worker (`web/src/sw.ts`)
 
 ~100 lines. Separate tsconfig (`tsconfig.sw.json`) with `WebWorker` lib.
 
@@ -103,7 +103,7 @@ Viewport management (every frame in RenderLoop.tick()):
 | `/fonts/*`, `/cursors/*` | Cache-first | Static resources |
 | Navigation (HTML) | Network-first | Try network → cache on success → fallback to cached URL or `/` or 503 |
 
-### Registration (`client/index.html`)
+### Registration (`web/index.html`)
 
 ```html
 <link rel="preload" href="/sw.js" as="script">
@@ -116,7 +116,7 @@ Viewport management (every frame in RenderLoop.tick()):
 
 Preload + `updateViaCache: 'all'` = register uses HTTP-cached copy (no network check on every load). Inline script before module script = registration starts before app JS. Dev mode: `/sw.js` 404s harmlessly.
 
-### Build (`client/vite.config.ts`)
+### Build (`web/vite.config.ts`)
 
 SW is a second rollup entry → outputs to `/sw.js` (root, stable URL, no content hash). App bundles stay in `/assets/[name]-[hash].js`.
 
@@ -486,7 +486,7 @@ All responses get `applyCsp(headers, 'api-json')` (H5) including empty 502/204 b
 
 Response codes: 200 (success, has title or OG image), 204 (no useful metadata), 400 (invalid URL / SSRF refine), 502 (upstream fetch failed)
 
-Detailed docs: `client/src/core/bookmark/CLAUDE.md`
+Detailed docs: `web/src/core/bookmark/CLAUDE.md`
 
 ### R2 Buckets
 
@@ -495,7 +495,7 @@ Detailed docs: `client/src/core/bookmark/CLAUDE.md`
 | `IMAGES` | `avlo-assets` | images, unfurl | Image blobs (content-addressed, immutable) |
 | `DOCS` | `avlo-docs` | main | Y.Doc V2 snapshots (rooms) |
 
-### Dev Proxy (`client/vite.config.ts`)
+### Dev Proxy (`web/vite.config.ts`)
 
 Driven by `scripts/dev-ports.json` (single source of truth) + `PORT_OFFSET`:
 
@@ -505,11 +505,11 @@ Driven by `scripts/dev-ports.json` (single source of truth) + `PORT_OFFSET`:
 /api/unfurl  → http://localhost:${UNFURL} (strips /api/unfurl prefix → worker sees /?url=)
 ```
 
-Client port: 3000 (`VITE_PORT`). Base worker ports: 8787/8788/8789. Parallel dev (`PORT_OFFSET=3 VITE_PORT=3001 npm run dev`) shifts all uniformly.
+Client port: 3000 (`VITE_PORT`). Base worker ports: sync 8787, images 8790, unfurl 8791. Parallel dev (`pnpm dev:p` → `PORT_OFFSET=10 VITE_PORT=5180 pnpm dev`) shifts all uniformly.
 
 Client URL building uses `@avlo/api-client` typed `hc<App>` — `imagesClient[':key'].$url({ param: { key: id } })` produces the right cross-origin URL in prod (`https://images.avlo.io/<key>`) and an absolute localhost URL in dev (`${location.origin}/api/images/<key>` → e.g. `http://localhost:3000/api/images/<key>`), driven by `import.meta.env.PROD` in `packages/api-client/src/origins.ts`. The dev origin must be absolute: a bare path base throws `Invalid URL` inside Hono's `$url(...)` URL constructor.
 
-**Testing SW:** `npm run -w client build && npm run -w client preview` (preview has same proxy config). Dev mode doesn't build SW — worker's `readAssetBlob()` handles this transparently.
+**Testing SW:** `pnpm --filter @avlo/web build && pnpm --filter @avlo/web preview` (preview has same proxy config). Dev mode doesn't build SW — worker's `readAssetBlob()` handles this transparently.
 
 ---
 
@@ -563,7 +563,7 @@ After `pasteInternal()` creates image objects via Y.Doc mutation:
 
 ---
 
-## Accessors (`client/src/core/accessors.ts`)
+## Accessors (`web/src/core/accessors.ts`)
 
 ```typescript
 getAssetId(y: Y.Map) → string | null           // SHA-256 hex
@@ -606,14 +606,8 @@ isSvg(bytes: Uint8Array): boolean
 ### Client-Side
 - No aspect-ratio-locked resize (images should maintain aspect ratio by default)
 - No image-specific context menu controls (crop, replace, opacity slider)
-- Multiple images dropped/picked at same position stack on top of each other (no offset)
 - No loading state indicator beyond the gray placeholder rect
 - No error state UI (failed decode / failed upload)
 
 ### Server-Side
-- No authentication on upload endpoint (anyone can upload)
 - No image dimension limits (only 10 MB file size limit)
-
-### SelectTool Integration
-- No rotation support
-- No double-click behavior defined for images
