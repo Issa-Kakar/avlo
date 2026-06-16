@@ -2,7 +2,6 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["./worker-configuration.d.ts"],
-    "noEmit": true,
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
     "paths": {

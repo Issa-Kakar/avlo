@@ -6,15 +6,16 @@
  * worker reads it back to a hex `assetId` (`bytesToHex`) to build the cache URL —
  * so the SAB is self-describing and needs no per-asset registration message.
  * Also the single home for the image worker's `sha256Hex` byte→hex conversion.
+ *
+ * `bytesToHex`/`hexToBytes` delegate to the native `Uint8Array` hex methods.
+ * `hexToBytesInto` stays hand-rolled: its whole reason to exist is the zero-alloc
+ * decode into a caller-owned buffer, and native `setFromHex` returns a
+ * `{ read, written }` result object that would defeat that guarantee.
  */
-
-const HEX_LUT = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
 
 /** Bytes → lowercase hex string. */
 export function bytesToHex(bytes: Uint8Array): string {
-  let hex = '';
-  for (let i = 0; i < bytes.length; i++) hex += HEX_LUT[bytes[i]];
-  return hex;
+  return bytes.toHex();
 }
 
 // '0'-'9' = 48-57 → 0-9 ; 'a'-'f' = 97-102 → 10-15. Lowercase hex only.
@@ -32,7 +33,5 @@ export function hexToBytesInto(hex: string, out: Uint8Array): void {
 
 /** Decode lowercase hex into a fresh `Uint8Array`. */
 export function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length >> 1);
-  hexToBytesInto(hex, out);
-  return out;
+  return Uint8Array.fromHex(hex);
 }

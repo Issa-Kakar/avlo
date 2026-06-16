@@ -8,10 +8,7 @@
 /** SHA-256 → lowercase hex. The content-addressing primitive (H4). */
 export async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data);
-  const arr = new Uint8Array(digest);
-  let hex = '';
-  for (let i = 0; i < arr.length; i++) hex += arr[i].toString(16).padStart(2, '0');
-  return hex;
+  return new Uint8Array(digest).toHex();
 }
 
 /**

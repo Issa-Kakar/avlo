@@ -1,20 +1,14 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2022", "WebWorker"],
+    "lib": ["ESNext", "WebWorker"],
     "paths": {
       "@/*": ["./src/*"],
       "@avlo/shared": ["../packages/shared/src/index.ts"],
       "@avlo/shared/*": ["../packages/shared/src/*"],
       "@avlo/api-client": ["../packages/api-client/src/index.ts"],
       "@avlo/api-client/*": ["../packages/api-client/src/*"]
-    },
-    "noEmit": true,
-    "module": "ESNext",
-    "target": "ES2022",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "skipLibCheck": true
+    }
   },
   "include": ["src/sw.ts"]
 }

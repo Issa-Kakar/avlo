@@ -1,7 +1,7 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2022", "DOM", "DOM.Iterable", "ES2024.SharedMemory"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "paths": {
       "@/*": ["./src/*"],
@@ -10,13 +10,7 @@
       "@avlo/api-client": ["../packages/api-client/src/index.ts"],
       "@avlo/api-client/*": ["../packages/api-client/src/*"]
     },
-    "types": ["vite/client", "node", "react", "react-dom"],
-    "noEmit": true,
-    "module": "ESNext",
-    "target": "ES2022",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "skipLibCheck": true
+    "types": ["vite/client", "node", "react", "react-dom"]
   },
   "include": ["src/**/*", "vite.config.ts"],
   "exclude": ["node_modules", "dist", "src/sw.ts"]
