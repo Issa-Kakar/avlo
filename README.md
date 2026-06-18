@@ -28,7 +28,7 @@ Eight object kinds, each with its own subsystem:
 
 ## Quick start
 
-Requires **Node 24+** and **pnpm 10+** (enable via `corepack enable`). [Turborepo](https://turbo.build) orchestrates the workspace.
+Requires **Node 24+** and **pnpm 11+** (enable via `corepack enable`). [Turborepo](https://turbo.build) orchestrates the workspace.
 
 ```bash
 pnpm install
