@@ -21,9 +21,13 @@ const factory = createFactory<AuthEnv>();
  * token exchange exits with NO session cookie and no partial trust.
  */
 export const handleCallback = factory.createHandlers(zValidator('query', callbackQuery), async (c) => {
-  const finish = (status: 'ok' | 'denied' | 'error', returnTo: string): Response => {
+  const finish = (status: 'ok' | 'denied' | 'error', returnTo: string, d1Bookmark?: string): Response => {
     const url = new URL(c.env.APP_ORIGIN + returnTo);
     url.searchParams.set('auth', status);
+    // §9 — the second-device migration's read-your-writes bookmark, single-shot. The SPA's
+    // consumeAuthMarker strips it (like `auth`) and seeds it as the rooms-query bookmark so
+    // the first post-sign-in /rooms read sees the migrated ownership.
+    if (d1Bookmark) url.searchParams.set('d1bm', d1Bookmark);
     return c.redirect(url.toString(), 302);
   };
 
@@ -141,7 +145,22 @@ export const handleCallback = factory.createHandlers(zValidator('query', callbac
     await setSignedCookie(c, ANON_COOKIE, mintAnonToken(generateUserId()), c.env.ANON_SECRET, cookieOpts(c.req.raw, ANON_MAX_AGE_SEC));
   }
 
-  return finish('ok', returnTo);
+  // 11. Second-device adopt migration (§9) — ONLY when this sign-in adopted an existing
+  //     account (linked.userId !== the device's current id; PROMOTE returns the same id).
+  //     Runs AFTER the session is minted so a partial fan-out can never fail-close sign-in;
+  //     the returned bookmark covers the synchronously-migrated rooms and rides back as
+  //     `d1bm` for the SPA's first read-your-writes /rooms read. Migration converges via the
+  //     room-migrate queue / next sign-in if this call fails, so a throw is swallowed.
+  let migrateBookmark = '';
+  if (linked.userId !== currentUserId) {
+    try {
+      migrateBookmark = (await c.env.USERS.migrateOwnership(currentUserId, linked.userId)).bookmark;
+    } catch {
+      console.warn('[auth] ownership migration failed — eventual');
+    }
+  }
+
+  return finish('ok', returnTo, migrateBookmark);
 });
 
 function safeJson(s: string): unknown {

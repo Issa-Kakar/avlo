@@ -30,19 +30,23 @@ export const rooms = sqliteTable(
   'rooms',
   {
     roomId: text('room_id').$type<RoomId>().primaryKey(), // 14-char base62 (§13)
-    ownerId: text('owner_id').$type<UserId>().notNull(), // first-write-wins (immutable)
+    ownerId: text('owner_id').$type<UserId>().notNull(), // FWW on create; rev-LWW on ownership migration (§9 second-device adopt)
     permission: text('permission').$type<Permission>().notNull(), // LWW by rev
     createdAt: integer('created_at').notNull(), // first-write-wins
     updatedAt: integer('updated_at').notNull(), // display/audit (rev is the LWW guard)
     title: text('title').notNull().default('Untitled'), // LWW by rev (rename RPC)
     rev: integer('rev').notNull(), // DO's per-room monotonic counter — the LWW guard
-    deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false), // DO tombstone projection (no delete flow yet)
+    deletedAt: integer('deleted_at'), // nullable tombstone timestamp (null = live); preserves deletion time, keeps the dashboard query cheap
   },
-  // One-time cost per room creation; serves the future OAuth promote/adopt ownership
-  // fan-out (`UPDATE rooms SET owner_id = new WHERE owner_id = old`). FULL index, not
-  // partial-on-not-deleted: the migration UPDATE must touch tombstoned rows too, and
-  // SQLite only uses a partial index when the query implies its predicate.
-  (t) => [index('idx_rooms_owner').on(t.ownerId)],
+  // The second-device OAuth adopt fan-out enumerates owned-LIVE rooms
+  // (`SELECT room_id WHERE owner_id = ? AND deleted_at IS NULL`), so a PARTIAL index on
+  // live rooms is the exact fit — we deliberately do NOT re-own tombstoned rooms (a
+  // deleted board staying under a dead anon id is harmless, never listed). The partial
+  // predicate is hand-appended to the generated SQL (Drizzle can't express index WHERE);
+  // it is maintained only on create / owner-migrate / deleted_at-flip, free on every
+  // title/rev/permission/updated_at write. The enumerate query MUST repeat the predicate
+  // (`AND deleted_at IS NULL`) or SQLite won't match the partial index.
+  (t) => [index('rooms_by_owner').on(t.ownerId)],
 );
 
 /** Per-user access + recency list — the dashboard's primary source. Visit facts only. */
@@ -51,8 +55,7 @@ export const roomVisits = sqliteTable(
   {
     userId: text('user_id').$type<UserId>().notNull(),
     roomId: text('room_id').$type<RoomId>().notNull(),
-    lastVisitedAt: integer('last_visited_at').notNull(), // display/sort (rev resolves ordering)
-    rev: integer('rev').notNull(), // per-room monotonic counter — ordering resolver
+    lastVisitedAt: integer('last_visited_at').notNull(), // display/sort AND the LWW guard (visits order by recency; rev is a meta-only concept)
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.roomId] }), // upsert target + "my visit to room X"

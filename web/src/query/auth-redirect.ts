@@ -13,23 +13,31 @@ import { ROOMS_QUERY_KEY } from './rooms';
 
 export type AuthMarker = 'ok' | 'out' | 'denied' | 'error';
 
+/** The marker plus the optional second-device migration bookmark (§9, `ok` only). */
+export interface AuthRedirect {
+  marker: AuthMarker;
+  d1Bookmark: string | null;
+}
+
 /**
- * Synchronously read AND strip the `?auth=` marker. Raw `history.replaceState` with the
- * CURRENT state object preserves TanStack's `__TSR_index`/`__TSR_key`; the router's
- * patched global updates its cached location and the mount-time `router.load()` re-parses
- * — the router never sees the marker, so it can't leak into a room URL or a copied link.
- * `denied`/`error` are warn-only (no identity change happened server-side).
- * Marker-less boots: one `URLSearchParams` parse, zero behavior change.
+ * Synchronously read AND strip the `?auth=` marker (and the optional `d1bm` migration
+ * bookmark). Raw `history.replaceState` with the CURRENT state object preserves TanStack's
+ * `__TSR_index`/`__TSR_key`; the router's patched global updates its cached location and
+ * the mount-time `router.load()` re-parses — the router never sees these params, so they
+ * can't leak into a room URL or a copied link. `denied`/`error` are warn-only (no identity
+ * change happened server-side). Marker-less boots: one `URLSearchParams` parse, null.
  */
-export function consumeAuthMarker(): AuthMarker | null {
+export function consumeAuthMarker(): AuthRedirect | null {
   const params = new URLSearchParams(window.location.search);
   const marker = params.get('auth');
   if (marker !== 'ok' && marker !== 'out' && marker !== 'denied' && marker !== 'error') return null;
+  const d1Bookmark = params.get('d1bm');
   params.delete('auth');
+  params.delete('d1bm');
   const qs = params.toString();
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`);
   if (marker === 'denied' || marker === 'error') console.warn(`[auth] sign-in ${marker}`);
-  return marker;
+  return { marker, d1Bookmark };
 }
 
 /**

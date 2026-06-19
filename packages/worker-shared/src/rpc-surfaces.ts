@@ -56,6 +56,16 @@ export interface UsersRpcSurface {
     googleSub: string,
     profile: { email: string; name: string; avatarHash: string | null },
   ): Promise<{ userId: UserId; avatarHash: string | null; bookmark: string }>;
+  /**
+   * Second-device adopt fan-out (§9) — called by the OAuth callback AFTER the session is
+   * minted (so a partial failure never fail-closes sign-in). No-op when `prevOwner ===
+   * nextOwner` (PROMOTE). Enumerates live rooms owned by `prevOwner`, migrates up to a cap
+   * synchronously (bounded concurrency, retries) and direct-writes them to D1; overflow +
+   * post-retry failures hand off to the `avlo-room-migrate` queue. The returned `bookmark`
+   * covers the synchronously-migrated rooms — the callback threads it to the client so the
+   * first post-sign-in `/rooms` read is read-your-writes consistent for them.
+   */
+  migrateOwnership(prevOwner: UserId, nextOwner: UserId): Promise<{ bookmark: string }>;
 }
 
 /**
@@ -91,4 +101,14 @@ export interface ImagesRpcSurface {
 export interface RoomDoRpc extends Rpc.DurableObjectBranded {
   setPermission(caller: UserId, next: Permission): Promise<MetaEvent>;
   setTitle(caller: UserId, title: string): Promise<MetaEvent>;
+  /**
+   * Second-device ownership migration (§9) — reassigns this room from `prevOwner` to
+   * `nextOwner` through the same rev-bump path as setTitle/setPermission (bumps rev,
+   * mutates the in-memory warm-cache, projects a `MetaEvent`). Idempotent: returns `null`
+   * when meta is absent OR `meta.ownerId !== prevOwner` (already migrated / never owned by
+   * prevOwner), writing nothing. Trusted RPC — the users worker has already proven (via
+   * linkAccount adopt) that prevOwner + nextOwner are the same human; the `ownerId ===
+   * prevOwner` guard bounds the blast radius to exactly prevOwner's rooms.
+   */
+  migrateOwner(prevOwner: UserId, nextOwner: UserId): Promise<MetaEvent | null>;
 }

@@ -1,4 +1,5 @@
 export { syntheticCacheUrl } from './cache-keys';
+export { mapWithConcurrency } from './concurrency';
 export { ANON_COOKIE, type AuthCtx, cookieOpts, mintAnonToken, parseCookieHeader, verifyAnonToken } from './cookies';
 export { type CorsOptions, createCors, isAllowedOrigin, isDevHost } from './cors';
 export { applyCsp, type CspProfile, cspError, cspHeaders } from './csp';
@@ -20,5 +21,5 @@ export { AnonToken } from './zod/anon-token';
 export { assetKeyParam } from './zod/asset-key';
 export { avatarHashParam } from './zod/avatar-hash';
 export { contentLengthBound, MAX_UPLOAD_BYTES } from './zod/content-length';
-export { MetaEvent, VisitEvent } from './zod/room-event';
+export { MetaEvent, RoomMigrateEvent, VisitEvent } from './zod/room-event';
 export { unfurlQuery } from './zod/url-param';

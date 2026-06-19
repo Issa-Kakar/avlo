@@ -6,5 +6,5 @@ CREATE TABLE `room_meta` (
 	`updated_at` integer NOT NULL,
 	`title` text DEFAULT 'Untitled' NOT NULL,
 	`rev` integer NOT NULL,
-	`deleted` integer DEFAULT false NOT NULL
+	`deleted_at` integer
 );

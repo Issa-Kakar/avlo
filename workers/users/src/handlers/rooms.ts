@@ -1,7 +1,7 @@
 import { getSessionDB, rooms, roomVisits, upsertRoomsFromMeta, users, withRetry } from '@avlo/db';
 import { devDrizzleLogger, type MetaEvent } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { createFactory } from 'hono/factory';
 import type { RoomListEntry, RoomListResponse } from '../app-type';
 import type { UsersEnv } from '../env';
@@ -37,7 +37,7 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
       .from(roomVisits)
       .innerJoin(rooms, eq(rooms.roomId, roomVisits.roomId))
       .leftJoin(users, eq(users.userId, rooms.ownerId))
-      .where(and(eq(roomVisits.userId, userId), eq(rooms.deleted, false))) // tombstoned rooms never listed
+      .where(and(eq(roomVisits.userId, userId), isNull(rooms.deletedAt))) // tombstoned rooms never listed
       .orderBy(desc(roomVisits.lastVisitedAt))
       .all(),
   );

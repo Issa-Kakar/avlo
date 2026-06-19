@@ -15,6 +15,6 @@ export const roomMeta = sqliteTable('room_meta', {
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
   title: text('title').notNull().default('Untitled'), // owner-only rename via the DO's setTitle RPC
-  rev: integer('rev').notNull(), // monotonic per-room counter — bumped before EVERY queue send; the projection's ordering resolver
-  deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false), // persistent tombstone (no delete flow yet)
+  rev: integer('rev').notNull(), // monotonic per-room counter — bumped on EVERY meta mutation (mint/permission/title/owner-migrate); the projection's ordering resolver
+  deletedAt: integer('deleted_at'), // nullable tombstone timestamp (null = live; no delete flow yet)
 });

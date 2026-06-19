@@ -35,10 +35,10 @@ interface ConnState {
  *  `asRoomId(this.name)` (= `ctx.id.name`, reliable on every entry path — see the class
  *  note). Meta still loads in the constructor so the ownership check + warm cache are
  *  present on the cold raw-RPC path (which skips onStart/onLoad). `rev` is the per-room
- *  monotonic counter: bumped + persisted BEFORE every queue send (both queues share it),
- *  so the D1 consumer resolves ordering with a plain `excluded.rev >` guard and
- *  at-least-once redelivery is a no-op. `deleted` is the persistent tombstone (no delete
- *  flow yet — column + type prep only). */
+ *  monotonic counter: bumped + persisted on every meta mutation (mint/permission/title/
+ *  owner-migrate; the visit projection no longer bumps it), so the D1 consumer resolves
+ *  ordering with a plain `excluded.rev >` guard and at-least-once redelivery is a no-op.
+ *  `deletedAt` is the persistent tombstone timestamp (null = live; no delete flow yet). */
 type RoomMeta = MetaEvent;
 
 // --- Tier-3 WS message limiter (§10/H25) — generous abuse backstop, not an editing throttle.
@@ -167,11 +167,10 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     this.sendCustomMessage(conn, `perm:${this.meta.permission}`);
 
     // 5. PROJECT THE VISIT — fire-and-forget send, error-handled (waitUntil is a no-op in a
-    // DO, §6). The rev bump is made durable BEFORE the send so a DO restart can never
-    // reissue a lower rev — the consumer's ordering guard rides on monotonicity.
-    const rev = ++this.meta.rev;
-    this.db.update(roomMeta).set({ rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-    this.env.ROOM_VISITS.send({ userId, roomId: this.meta.roomId, visitedAt: Date.now(), rev } satisfies z.input<typeof VisitEvent>).catch(
+    // DO, §6). Visits order by `visitedAt` (recency IS the truth), so this path no longer
+    // bumps/persists `rev` — `rev` is now purely the meta counter (mint/permission/title/
+    // owner-migrate). One less SQLite write on the hot connect path.
+    this.env.ROOM_VISITS.send({ userId, roomId: this.meta.roomId, visitedAt: Date.now() } satisfies z.input<typeof VisitEvent>).catch(
       (err) => console.error('visit projection failed', err),
     );
   }
@@ -196,7 +195,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       updatedAt: now,
       title,
       rev: 1,
-      deleted: false,
+      deletedAt: null,
     };
     this.db.insert(roomMeta).values(meta).run(); // authoritative SQLite
     return meta;
@@ -302,6 +301,37 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
 
     for (const c of this.getConnections<ConnState>()) this.sendCustomMessage(c, `title:${title}`);
 
+    return this.#projectMeta(this.meta);
+  }
+
+  /**
+   * Second-device ownership migration, reached by cross-script raw RPC from `users` (§9) —
+   * reassigns this room from `prevOwner` to `nextOwner` through the SAME rev-bump path as
+   * setTitle/setPermission. Idempotency + blast-radius guard: returns `null` (writing
+   * nothing) when meta is absent OR `meta.ownerId !== prevOwner` — so a redelivered/duplicate
+   * migrate, or a room never owned by prevOwner, is a clean no-op. NO mint-on-absent (unlike
+   * setTitle): an enumerated-from-D1 room definitionally already has meta, and minting here
+   * would wrongly stamp the RPC caller as owner. NO live-connection push: `owner:` is a
+   * per-connection flag pushed only at onConnect, and both ids belong to the same human
+   * mid-redirect — no live connection needs its flag corrected. The in-memory warm-cache
+   * mutation (★) is load-bearing: it guarantees every later rev bump carries the NEW owner,
+   * so the old owner can never win back the rev-LWW projection.
+   */
+  async migrateOwner(prevOwner: UserId, nextOwner: UserId): Promise<MetaEvent | null> {
+    return traceRpc(
+      this.env,
+      'room.migrateOwner',
+      () => this.#migrateOwner(prevOwner, nextOwner),
+      (r) => (r ? 'migrated' : 'noop'),
+    );
+  }
+
+  async #migrateOwner(prevOwner: UserId, nextOwner: UserId): Promise<MetaEvent | null> {
+    if (!this.meta || this.meta.ownerId !== prevOwner) return null;
+    const now = Date.now();
+    const rev = this.meta.rev + 1;
+    this.db.update(roomMeta).set({ ownerId: nextOwner, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
+    this.meta = { ...this.meta, ownerId: nextOwner, updatedAt: now, rev }; // ★ warm-cache (rev-LWW safety, §9)
     return this.#projectMeta(this.meta);
   }
 
