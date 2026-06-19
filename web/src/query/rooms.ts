@@ -25,6 +25,21 @@ export interface RoomsQueryData {
 
 export const ROOMS_QUERY_KEY = ['rooms'] as const;
 
+/**
+ * One-shot stash for the adopt-migration D1 read-your-writes bookmark. `main.tsx` sets it from
+ * the `?auth=ok&rbm=` redirect param (a module `let` survives the page lifetime); the first
+ * SUCCESSFUL `/rooms` read burns it. Load-bearing for the post-sign-in dashboard: sign-in returns
+ * to the ROOM route (never calls `roomsQueryOptions`), so the stash waits untouched until the user
+ * opens `/home` and the prefetch threads it — the dashboard never reads stale pre-migration
+ * ownership (which would prune + delete a just-migrated local board). The queryFn reads it WITHOUT
+ * consuming and clears it only after a successful parse, so a transient first-read failure (TanStack
+ * auto-retries) still threads the bookmark on the retry rather than reading a stale replica.
+ */
+let pendingRoomsBookmark: string | null = null;
+export function setPendingRoomsBookmark(bookmark: string): void {
+  pendingRoomsBookmark = bookmark;
+}
+
 export function roomsQueryOptions() {
   return queryOptions({
     queryKey: ROOMS_QUERY_KEY,
@@ -35,9 +50,14 @@ export function roomsQueryOptions() {
       // via the shared me query key. Instant for a returning visitor.
       await ensureIdentity();
       const prev = queryClient.getQueryData<RoomsQueryData>(ROOMS_QUERY_KEY);
-      const res = await usersClient.rooms.$get({}, prev?.bookmark ? { headers: { 'x-d1-bookmark': prev.bookmark } } : undefined);
+      // Prefer the cached bookmark; on the first read after an adopt sign-in the cache was removed
+      // (refreshIdentityForAuthChange), so fall back to the one-shot migration stash — read WITHOUT
+      // consuming so a transient retry can still thread it (burned only after the successful parse).
+      const bookmark = prev?.bookmark ?? pendingRoomsBookmark ?? undefined;
+      const res = await usersClient.rooms.$get({}, bookmark ? { headers: { 'x-d1-bookmark': bookmark } } : undefined);
       if (!res.ok) throw new Error(`GET /rooms ${res.status}`);
       const body = await res.json();
+      pendingRoomsBookmark = null; // success → burn the one-shot stash (its bookmark now rides the query cache)
       // Absorb the server facts into the persisted local mirror (precedent: the me
       // queryFn writes auth-store). Pruned = private rooms we don't own — drop their
       // local doc DBs too, EXCEPT the active room's: its open y-indexeddb connection

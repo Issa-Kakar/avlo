@@ -1,3 +1,4 @@
+import type { RoomId, UserId } from '@avlo/shared';
 import { type Logger, sql } from 'drizzle-orm';
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema-d1';
@@ -32,10 +33,14 @@ export const createDB = (DB: D1Database) => drizzle(DB, { schema });
  * The standardized `rooms` projection write — one rev-guarded multi-row upsert shared by
  * the queue consumer (chunked statements into `db.batch`) and the users worker's direct
  * read-your-writes write after a DO meta RPC (awaited inline, then `session.getBookmark()`).
- * `ownerId`/`createdAt` are deliberately absent from `set` (first-write-wins); the rest is
- * LWW resolved by the DO's per-room monotonic `rev` — a duplicate, stale, or already-applied
- * delivery fails `excluded.rev >` and no-ops, which is exactly what makes the direct-write +
- * queue double-write idempotent in either order.
+ * `ownerId` is now **rev-LWW** (the OAuth adopt migration re-owns through the DO's same
+ * rev-bumping path — `#migrateOwner` — so `excluded.owner_id` rides the LWW guard like the
+ * rest); `createdAt` is the ONE remaining first-write-wins field (deliberately absent from
+ * `set`). Everything else is LWW resolved by the DO's per-room monotonic `rev` — a duplicate,
+ * stale, or already-applied delivery fails `excluded.rev >` and no-ops, which is exactly what
+ * makes the direct-write + queue double-write idempotent in either order. Safe because the DO
+ * is the sole MetaEvent producer (`room.ts` `#mintMeta`/`#set*`/`#migrateOwner`), rev is
+ * DO-monotonic, and `#migrateOwner`'s three-way guard never emits a wrong-owner event.
  */
 export function upsertRoomsFromMeta(db: DrizzleD1Database<typeof schema>, rows: (typeof schema.rooms.$inferInsert)[]) {
   return db
@@ -44,14 +49,45 @@ export function upsertRoomsFromMeta(db: DrizzleD1Database<typeof schema>, rows: 
     .onConflictDoUpdate({
       target: schema.rooms.roomId,
       set: {
+        ownerId: sql`excluded.owner_id`,
         permission: sql`excluded.permission`,
         updatedAt: sql`excluded.updated_at`,
         title: sql`excluded.title`,
         rev: sql`excluded.rev`,
-        deleted: sql`excluded.deleted`,
+        deletedAt: sql`excluded.deleted_at`,
       },
       setWhere: sql`excluded.rev > ${schema.rooms.rev}`,
     });
+}
+
+/**
+ * Copy a set of `room_visits` rows from one user id to another, collision-safe — the OAuth
+ * adopt migration's visit fan-out, so a migrated room's recency follows the user onto every
+ * device (the whole point of accounts). Raw `INSERT … SELECT … ON CONFLICT` because the
+ * conflict expression is a `max()` and the source `user_id` is a literal param; identifiers
+ * are written literally (they mirror schema-d1's `room_visits` table/columns and are stable).
+ * Old `from` rows are left as harmless orphans (the anon id was rotated; never queried again).
+ * A `SQLiteRaw` — awaitable standalone OR batchable (it implements `RunnableQuery`). Bound
+ * params = 2 (`to`/`from`) + `roomIds.length`, so the caller chunks `roomIds` under D1's 100.
+ */
+export function visitCopyStmt(db: DrizzleD1Database<typeof schema>, from: UserId, to: UserId, roomIds: readonly RoomId[]) {
+  return db.run(sql`
+    insert into room_visits (user_id, room_id, last_visited_at)
+    select ${to}, room_id, last_visited_at from room_visits
+    where user_id = ${from} and room_id in (${sql.join(
+      roomIds.map((id) => sql`${id}`),
+      sql`, `,
+    )})
+    on conflict (user_id, room_id) do update set last_visited_at = max(excluded.last_visited_at, room_visits.last_visited_at)
+  `);
+}
+
+/** Param-bound chunker — split rows so each multi-row D1 statement stays under the 100-param
+ *  cap. Shared by the queue consumer (visits/meta upserts) and the adopt migration orchestrator. */
+export function chunk<T>(rows: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
+  return out;
 }
 
 /**

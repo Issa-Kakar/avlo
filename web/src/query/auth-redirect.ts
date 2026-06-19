@@ -14,22 +14,27 @@ import { ROOMS_QUERY_KEY } from './rooms';
 export type AuthMarker = 'ok' | 'out' | 'denied' | 'error';
 
 /**
- * Synchronously read AND strip the `?auth=` marker. Raw `history.replaceState` with the
- * CURRENT state object preserves TanStack's `__TSR_index`/`__TSR_key`; the router's
- * patched global updates its cached location and the mount-time `router.load()` re-parses
- * — the router never sees the marker, so it can't leak into a room URL or a copied link.
- * `denied`/`error` are warn-only (no identity change happened server-side).
- * Marker-less boots: one `URLSearchParams` parse, zero behavior change.
+ * Synchronously read AND strip the `?auth=` marker (and the adopt-migration `?rbm=` D1
+ * bookmark that rides `?auth=ok`). Raw `history.replaceState` with the CURRENT state object
+ * preserves TanStack's `__TSR_index`/`__TSR_key`; the router's patched global updates its
+ * cached location and the mount-time `router.load()` re-parses — the router never sees either
+ * param, so they can't leak into a room URL or a copied link. `denied`/`error` are warn-only
+ * (no identity change happened server-side). `roomsBookmark` is returned ONLY alongside `ok`
+ * (it's meaningless without a completed sign-in). Marker-less boots: one `URLSearchParams`
+ * parse, zero behavior change.
  */
-export function consumeAuthMarker(): AuthMarker | null {
+export function consumeAuthMarker(): { marker: AuthMarker | null; roomsBookmark: string | null } {
   const params = new URLSearchParams(window.location.search);
-  const marker = params.get('auth');
-  if (marker !== 'ok' && marker !== 'out' && marker !== 'denied' && marker !== 'error') return null;
+  const raw = params.get('auth');
+  const marker = raw === 'ok' || raw === 'out' || raw === 'denied' || raw === 'error' ? raw : null;
+  const rbm = params.get('rbm');
+  if (!marker && rbm === null) return { marker: null, roomsBookmark: null };
   params.delete('auth');
+  params.delete('rbm');
   const qs = params.toString();
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`);
   if (marker === 'denied' || marker === 'error') console.warn(`[auth] sign-in ${marker}`);
-  return marker;
+  return { marker, roomsBookmark: marker === 'ok' ? rbm : null };
 }
 
 /**

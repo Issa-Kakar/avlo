@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "51ad905b-3b58-4d34-8213-e8c2f7475368",
+  "id": "03a059d5-611d-4a4f-8d45-4e86c12222b6",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "room_visits": {
@@ -23,13 +23,6 @@
         },
         "last_visited_at": {
           "name": "last_visited_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "rev": {
-          "name": "rev",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -106,16 +99,22 @@
           "notNull": true,
           "autoincrement": false
         },
-        "deleted": {
-          "name": "deleted",
+        "deleted_at": {
+          "name": "deleted_at",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
+          "notNull": false,
+          "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "idx_rooms_owner": {
+          "name": "idx_rooms_owner",
+          "columns": ["owner_id"],
+          "isUnique": false,
+          "where": "deleted_at IS NULL"
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

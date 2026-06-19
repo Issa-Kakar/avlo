@@ -1,4 +1,4 @@
-import { generateUserId } from '@avlo/shared';
+import { generateUserId, normalizeRoomId, type RoomId } from '@avlo/shared';
 import { ANON_COOKIE, cookieOpts, mintAnonToken, type UsersRpcSurface, verifyAnonToken } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { deleteCookie, getSignedCookie, setCookie, setSignedCookie } from 'hono/cookie';
@@ -21,9 +21,12 @@ const factory = createFactory<AuthEnv>();
  * token exchange exits with NO session cookie and no partial trust.
  */
 export const handleCallback = factory.createHandlers(zValidator('query', callbackQuery), async (c) => {
-  const finish = (status: 'ok' | 'denied' | 'error', returnTo: string): Response => {
+  const finish = (status: 'ok' | 'denied' | 'error', returnTo: string, roomsBookmark = ''): Response => {
     const url = new URL(c.env.APP_ORIGIN + returnTo);
     url.searchParams.set('auth', status);
+    // The post-adopt D1 read-your-writes bookmark (sync slice). `searchParams.set` encodes it;
+    // the client (consumeAuthMarker) strips + stashes it for the first /rooms read.
+    if (roomsBookmark) url.searchParams.set('rbm', roomsBookmark);
     return c.redirect(url.toString(), 302);
   };
 
@@ -141,8 +144,31 @@ export const handleCallback = factory.createHandlers(zValidator('query', callbac
     await setSignedCookie(c, ANON_COOKIE, mintAnonToken(generateUserId()), c.env.ANON_SECRET, cookieOpts(c.req.raw, ANON_MAX_AGE_SEC));
   }
 
-  return finish('ok', returnTo);
+  // 11. ADOPT owner migration: `anon && linked.userId !== anon.userId` is EXACTLY adopt (promote
+  //     has `linked.userId === anon.userId`, skipped above-or-here). It only ever migrates the
+  //     ANON id's rooms, never `priorSession`'s account — the required safety property. Never
+  //     throws (the orchestrator catches every branch); a failure just lets rooms converge via
+  //     the migrate queue / on next reopen. The room signed in from is prioritized into the sync
+  //     slice so it's never an overflow (which, if private, would 4403-prune the local board).
+  let roomsBookmark = '';
+  if (anon && linked.userId !== anon.userId) {
+    try {
+      const priorityRoomId = roomIdFromReturnTo(returnTo);
+      ({ bookmark: roomsBookmark } = await c.env.USERS.migrateOwnedRooms(anon.userId, linked.userId, priorityRoomId));
+    } catch {
+      console.warn('[auth] owner migration failed — rooms converge via queue/reopen');
+    }
+  }
+
+  return finish('ok', returnTo, roomsBookmark);
 });
+
+/** Parse a `/room/<id>` returnTo into a validated `RoomId` (the room the user signed in from —
+ *  prioritized into the migration's synchronous slice). `/home` and any non-room path → undefined. */
+function roomIdFromReturnTo(returnTo: string): RoomId | undefined {
+  const m = /^\/room\/([^/?#]+)/.exec(returnTo);
+  return m ? (normalizeRoomId(m[1]) ?? undefined) : undefined;
+}
 
 function safeJson(s: string): unknown {
   try {

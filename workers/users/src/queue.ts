@@ -1,33 +1,32 @@
-import { getSessionDB, roomVisits, upsertRoomsFromMeta } from '@avlo/db';
-import { MetaEvent, VisitEvent } from '@avlo/worker-shared';
+import { chunk, getSessionDB, roomVisits, upsertRoomsFromMeta, visitCopyStmt } from '@avlo/db';
+import { MetaEvent, MigrateEvent, VisitEvent } from '@avlo/worker-shared';
 import { sql } from 'drizzle-orm';
+import type { UsersEnv } from './env';
 
 /**
- * Queue consumer (§6/H23) — one handler binding BOTH queues, discriminating on
+ * Queue consumer (§6/H23) — one handler binding ALL THREE queues, discriminating on
  * `batch.queue` (the queue name IS the discriminator; no `type` field). Each message is
  * `safeParse`d against its flat schema — a poison body is `ack`-dropped (discarded; NOT
  * routed to the DLQ, which is retry-exhaustion only) so one bad message can't crash the
  * batch. Dev-time choice — proper poison handling (quarantine + inspect + alert) is later
- * work. Coalesce within the batch, then ONE `db.batch` round trip (a single implicit
- * transaction) of param-bounded multi-row upserts.
- * No inner `withRetry`: a thrown error → `batch.retryAll()` (Queue-level redelivery with
- * backoff, exhausted → DLQ); an inner retry would just stall the batch.
+ * work.
  *
- * Idempotent (at-least-once, no ordering): owner/createdAt first-write-wins (untouched on
- * conflict), everything else LWW guarded by the DO's per-room monotonic `rev` — a
- * duplicate or stale delivery fails `excluded.rev >` and no-ops.
+ * visits/meta coalesce within the batch, then ONE `db.batch` round trip (a single implicit
+ * transaction) of param-bounded multi-row upserts, then `batch.ackAll()`; a thrown error →
+ * `batch.retryAll()` (Queue-level redelivery, exhausted → DLQ). The migrate queue is the
+ * exception — its rooms are INDEPENDENT, so it uses PER-MESSAGE `ack`/`retry` (one bad room
+ * must not retry the whole batch) and never reaches the shared `ackAll`.
+ *
+ * Idempotent (at-least-once, no ordering): visits LWW by `last_visited_at`; meta `createdAt`
+ * first-write-wins, everything else (incl. `ownerId`) LWW by the DO's per-room monotonic
+ * `rev` — a duplicate or stale delivery fails `excluded.rev >` and no-ops. migrate leans on
+ * `migrateOwner`'s own idempotency (owner-already-`to` no-ops; `forbidden` = terminal skip).
  */
 
-// D1 caps bound parameters at 100 per statement — chunk rows so each multi-row upsert
-// stays under it (visits bind 4 params/row, meta 8 → 96 params/statement).
-const VISIT_ROWS_MAX = 24;
+// D1 caps bound parameters at 100 per statement — chunk rows so each multi-row upsert stays
+// under it: visits bind 3 params/row (33×3=99), meta 8 (12×8=96).
+const VISIT_ROWS_MAX = 33;
 const META_ROWS_MAX = 12;
-
-function chunk<T>(rows: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
-  return out;
-}
 
 // D1 exposes rows-actually-written as `meta.changes`; drizzle's batch passes the underlying
 // D1Result through for inserts. Read it defensively (the shape isn't in drizzle's types) →
@@ -46,10 +45,10 @@ function readChanges(results: unknown): number | null {
   return sawNumeric ? n : null;
 }
 
-export async function consume(batch: MessageBatch, env: Env): Promise<void> {
+export async function consume(batch: MessageBatch, env: UsersEnv['Bindings']): Promise<void> {
   const { db } = getSessionDB(env.DB); // writer session → primary
   const t0 = Date.now();
-  let coalesced = 0; // unique rows after in-batch rev-coalescing
+  let coalesced = 0; // unique rows after in-batch coalescing (migrate: rooms successfully processed)
   let dropped = 0; // poison messages ack-discarded
   let applied: number | null = null; // rows D1 actually wrote (the rest superseded by the rev guard)
   try {
@@ -65,7 +64,7 @@ export async function consume(batch: MessageBatch, env: Env): Promise<void> {
         const e = p.data;
         const k = `${e.userId}|${e.roomId}`;
         const prev = visits.get(k);
-        if (!prev || e.rev > prev.rev) visits.set(k, e);
+        if (!prev || e.visitedAt > prev.visitedAt) visits.set(k, e); // coalesce by recency (no rev on visits)
       }
       const v = [...visits.values()];
       coalesced = v.length;
@@ -73,17 +72,18 @@ export async function consume(batch: MessageBatch, env: Env): Promise<void> {
         const stmts = chunk(v, VISIT_ROWS_MAX).map((rows) =>
           db
             .insert(roomVisits)
-            .values(rows.map((e) => ({ userId: e.userId, roomId: e.roomId, lastVisitedAt: e.visitedAt, rev: e.rev })))
+            .values(rows.map((e) => ({ userId: e.userId, roomId: e.roomId, lastVisitedAt: e.visitedAt })))
             .onConflictDoUpdate({
               target: [roomVisits.userId, roomVisits.roomId],
-              set: { lastVisitedAt: sql`excluded.last_visited_at`, rev: sql`excluded.rev` },
-              setWhere: sql`excluded.rev > ${roomVisits.rev}`,
+              set: { lastVisitedAt: sql`excluded.last_visited_at` },
+              setWhere: sql`excluded.last_visited_at > ${roomVisits.lastVisitedAt}`,
             }),
         );
         applied = readChanges(await db.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]));
       }
-    } else {
-      // avlo-room-meta — room creation (owner/createdAt) + permission flips.
+      batch.ackAll();
+    } else if (batch.queue === 'avlo-room-meta') {
+      // room creation (createdAt) + permission/title/owner mutations.
       const metas = new Map<string, MetaEvent>();
       for (const m of batch.messages) {
         const p = MetaEvent.safeParse(m.body);
@@ -100,15 +100,45 @@ export async function consume(batch: MessageBatch, env: Env): Promise<void> {
       coalesced = ms.length;
       if (ms.length) {
         // Shared rev-guarded upsert (@avlo/db) — same statement the §8 PATCH handlers use
-        // for their direct read-your-writes write; owner/createdAt first-write-wins.
+        // for their direct read-your-writes write; createdAt first-write-wins, ownerId rev-LWW.
         const stmts = chunk(ms, META_ROWS_MAX).map((rows) => upsertRoomsFromMeta(db, rows));
         applied = readChanges(await db.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]));
       }
+      batch.ackAll();
+    } else {
+      // avlo-room-migrate — OAuth adopt overflow/retry. INDEPENDENT rooms → PER-MESSAGE
+      // ack/retry (never ackAll/retryAll). `migrateOwner` is idempotent (owner-already-`to`
+      // no-ops) and enqueues a ROOM_META the meta consumer projects, so redelivery converges;
+      // the visit-copy for the room rides the same handling. `forbidden` (room owned by a
+      // third party) is a TERMINAL skip — ack so it can't loop to the DLQ.
+      let processed = 0;
+      for (const m of batch.messages) {
+        const p = MigrateEvent.safeParse(m.body);
+        if (!p.success) {
+          m.ack();
+          dropped++;
+          continue;
+        }
+        const { roomId, from, to } = p.data;
+        try {
+          await env.rooms.getByName(roomId).migrateOwner(from, to);
+          await visitCopyStmt(db, from, to, [roomId]);
+          m.ack();
+          processed++;
+        } catch (err) {
+          if (err instanceof Error && err.message === 'forbidden') {
+            m.ack(); // terminal skip — never our migration's room
+            continue;
+          }
+          console.error('migrate consume failed', err);
+          m.retry(); // transient → redeliver → DLQ after max_retries
+        }
+      }
+      coalesced = processed;
     }
-    batch.ackAll();
     // Always-on projection heartbeat (H10-safe — counts + timing, no ids/bodies). `rows < msgs`
-    // is in-batch rev-coalescing; `superseded` is rows the D1 `excluded.rev >` guard rejected as
-    // stale/duplicate (at-least-once redelivery + the direct-write/queue double-write).
+    // is in-batch coalescing (or migrate retries/skips); `superseded` is rows the D1 rev guard
+    // rejected as stale/duplicate (at-least-once redelivery + the direct-write/queue double-write).
     const lww = applied != null ? ` applied=${applied} superseded=${coalesced - applied}` : '';
     console.warn(`[queue] ${batch.queue} msgs=${batch.messages.length} rows=${coalesced} dropped=${dropped}${lww} (${Date.now() - t0}ms)`);
   } catch (err) {

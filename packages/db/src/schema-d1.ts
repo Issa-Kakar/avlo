@@ -1,4 +1,5 @@
 import type { Permission, RoomId, UserId } from '@avlo/shared';
+import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /**
@@ -30,19 +31,21 @@ export const rooms = sqliteTable(
   'rooms',
   {
     roomId: text('room_id').$type<RoomId>().primaryKey(), // 14-char base62 (§13)
-    ownerId: text('owner_id').$type<UserId>().notNull(), // first-write-wins (immutable)
+    ownerId: text('owner_id').$type<UserId>().notNull(), // rev-LWW (the OAuth adopt migration re-owns; see d1.ts upsert)
     permission: text('permission').$type<Permission>().notNull(), // LWW by rev
-    createdAt: integer('created_at').notNull(), // first-write-wins
+    createdAt: integer('created_at').notNull(), // first-write-wins (the ONLY remaining FWW field)
     updatedAt: integer('updated_at').notNull(), // display/audit (rev is the LWW guard)
     title: text('title').notNull().default('Untitled'), // LWW by rev (rename RPC)
-    rev: integer('rev').notNull(), // DO's per-room monotonic counter — the LWW guard
-    deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false), // DO tombstone projection (no delete flow yet)
+    rev: integer('rev').notNull(), // DO's per-room monotonic counter — the LWW guard (meta-mutation-only; see room.ts)
+    deletedAt: integer('deleted_at'), // nullable epoch-ms tombstone (NULL = live); DO tombstone projection (no delete flow yet)
   },
-  // One-time cost per room creation; serves the future OAuth promote/adopt ownership
-  // fan-out (`UPDATE rooms SET owner_id = new WHERE owner_id = old`). FULL index, not
-  // partial-on-not-deleted: the migration UPDATE must touch tombstoned rows too, and
-  // SQLite only uses a partial index when the query implies its predicate.
-  (t) => [index('idx_rooms_owner').on(t.ownerId)],
+  // One-time cost per room creation; serves the OAuth adopt ownership fan-out, which
+  // enumerates `WHERE owner_id = old AND deleted_at IS NULL`. PARTIAL index (matching that
+  // predicate) BECAUSE a tombstoned room is intentionally never re-owned — a deleted room's
+  // owner is irrelevant. This is the verified WITHOUT-ROWID win: a title/perm/rev/updated_at
+  // write touches neither `owner_id` nor `deleted_at`, so the index entry is byte-identical
+  // and skipped; only create/migrate/soft-delete pay.
+  (t) => [index('idx_rooms_owner').on(t.ownerId).where(sql`deleted_at IS NULL`)],
 );
 
 /** Per-user access + recency list — the dashboard's primary source. Visit facts only. */
@@ -51,8 +54,7 @@ export const roomVisits = sqliteTable(
   {
     userId: text('user_id').$type<UserId>().notNull(),
     roomId: text('room_id').$type<RoomId>().notNull(),
-    lastVisitedAt: integer('last_visited_at').notNull(), // display/sort (rev resolves ordering)
-    rev: integer('rev').notNull(), // per-room monotonic counter — ordering resolver
+    lastVisitedAt: integer('last_visited_at').notNull(), // display/sort key — ordering resolves by `last_visited_at` itself (no rev; ties/clock-stalls acceptable for a recency sort)
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.roomId] }), // upsert target + "my visit to room X"

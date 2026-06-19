@@ -20,10 +20,14 @@
     "bindings": [{ "name": "rooms", "class_name": "AvloDO", "script_name": "avlo-sync" }]
   },
 
-  // step 5 — one consumer, BOTH queues (switch on batch.queue), each with its own DLQ.
+  // step 5 — one consumer, ALL THREE queues (switch on batch.queue), each with its own DLQ.
   //   visits: viral burst = thousands of distinct keys → cap size, low latency.
   //   meta: rare → timeout-driven, size never binds.
+  //   migrate: OAuth adopt overflow/retry — users is BOTH producer (ROOM_MIGRATE) and
+  //     consumer; per-message ack/retry, 5 retries (fully idempotent, completeness > freshness).
+  // DLQ creation is deploy-gated (all three DLQs).
   "queues": {
+    "producers": [{ "binding": "ROOM_MIGRATE", "queue": "avlo-room-migrate" }],
     "consumers": [
       {
         "queue": "avlo-room-visits",
@@ -32,7 +36,14 @@
         "max_retries": 3,
         "dead_letter_queue": "avlo-room-visits-dlq"
       },
-      { "queue": "avlo-room-meta", "max_batch_timeout": 1, "max_retries": 3, "dead_letter_queue": "avlo-room-meta-dlq" }
+      { "queue": "avlo-room-meta", "max_batch_timeout": 1, "max_retries": 3, "dead_letter_queue": "avlo-room-meta-dlq" },
+      {
+        "queue": "avlo-room-migrate",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "avlo-room-migrate-dlq"
+      }
     ]
   },
 

@@ -35,10 +35,12 @@ interface ConnState {
  *  `asRoomId(this.name)` (= `ctx.id.name`, reliable on every entry path — see the class
  *  note). Meta still loads in the constructor so the ownership check + warm cache are
  *  present on the cold raw-RPC path (which skips onStart/onLoad). `rev` is the per-room
- *  monotonic counter: bumped + persisted BEFORE every queue send (both queues share it),
- *  so the D1 consumer resolves ordering with a plain `excluded.rev >` guard and
- *  at-least-once redelivery is a no-op. `deleted` is the persistent tombstone (no delete
- *  flow yet — column + type prep only). */
+ *  monotonic counter: bumped + persisted on EVERY meta mutation (create / permission /
+ *  title / migrate) — NOT on visits anymore (those resolve by `visitedAt`) — so the D1
+ *  consumer resolves ordering with a plain `excluded.rev >` guard and at-least-once
+ *  redelivery is a no-op. Meta-mutation-only rev is what keeps owner rev-LWW reasoning
+ *  clean (`rooms.rev` moves only when ownership/permission/title does). `deletedAt` is the
+ *  nullable persistent tombstone (no delete flow yet — column + type prep only). */
 type RoomMeta = MetaEvent;
 
 // --- Tier-3 WS message limiter (§10/H25) — generous abuse backstop, not an editing throttle.
@@ -167,11 +169,12 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     this.sendCustomMessage(conn, `perm:${this.meta.permission}`);
 
     // 5. PROJECT THE VISIT — fire-and-forget send, error-handled (waitUntil is a no-op in a
-    // DO, §6). The rev bump is made durable BEFORE the send so a DO restart can never
-    // reissue a lower rev — the consumer's ordering guard rides on monotonicity.
-    const rev = ++this.meta.rev;
-    this.db.update(roomMeta).set({ rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-    this.env.ROOM_VISITS.send({ userId, roomId: this.meta.roomId, visitedAt: Date.now(), rev } satisfies z.input<typeof VisitEvent>).catch(
+    // DO, §6). NO rev bump: visits resolve ordering by `visitedAt`, so the per-room rev is
+    // meta-mutation-only now (create / permission / title / migrate). Do NOT restore the
+    // `++this.meta.rev` here — meta-mutation-only rev is what makes owner rev-LWW reasoning
+    // clean (`rooms.rev` is touched by meta events alone), and a visit no longer pays a
+    // DO-SQLite write on every connect.
+    this.env.ROOM_VISITS.send({ userId, roomId: this.meta.roomId, visitedAt: Date.now() } satisfies z.input<typeof VisitEvent>).catch(
       (err) => console.error('visit projection failed', err),
     );
   }
@@ -196,7 +199,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       updatedAt: now,
       title,
       rev: 1,
-      deleted: false,
+      deletedAt: null,
     };
     this.db.insert(roomMeta).values(meta).run(); // authoritative SQLite
     return meta;
@@ -303,6 +306,46 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     for (const c of this.getConnections<ConnState>()) this.sendCustomMessage(c, `title:${title}`);
 
     return this.#projectMeta(this.meta);
+  }
+
+  /**
+   * Owner re-assignment, reached by cross-script raw RPC from `users` during the OAuth ADOPT
+   * migration (§ second-device). Mirrors `#setPermission`'s rev-bump path exactly — the
+   * read-check-write of `this.meta` and the SYNC `db.update().run()` have NO `await` between
+   * them, so they're atomic in the single-threaded DO (the first `await` is inside
+   * `#projectMeta`). Owner becomes rev-LWW here (the only writer of `ownerId` after mint).
+   *
+   * Accepted benign edges (documented, not fixed): a still-open `from`-owner tab (e.g. on
+   * another device) loses the owner badge live and, for a private room, is fully locked out
+   * only on its NEXT reconnect — correct, that anon id no longer owns the room (the signing-in
+   * device itself reconnects as the account = new owner, since its session cookie now resolves
+   * `to`). A concurrent `setPermission(caller=new owner)` racing migration may transiently 403
+   * then succeed on retry. `noop` trace outcome = already owned by `to` (idempotent redelivery).
+   */
+  async migrateOwner(from: UserId, to: UserId): Promise<MetaEvent> {
+    const already = this.meta?.ownerId === to; // captured before the call → drives the trace outcome
+    return traceRpc(
+      this.env,
+      'room.migrateOwner',
+      () => this.#migrateOwner(from, to),
+      () => (already ? 'noop' : 'ok'),
+    );
+  }
+
+  async #migrateOwner(from: UserId, to: UserId): Promise<MetaEvent> {
+    if (!this.meta) throw new Error('forbidden'); // no room to migrate
+    if (this.meta.ownerId === to) return this.meta; // ★ idempotent: already migrated — NO rev bump, NO project
+    if (this.meta.ownerId !== from) throw new Error('forbidden'); // owned by a third party — skip, never force
+    const now = Date.now();
+    const rev = this.meta.rev + 1;
+    this.db.update(roomMeta).set({ ownerId: to, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
+    this.meta = { ...this.meta, ownerId: to, updatedAt: now, rev }; // ★ warm-cache fix
+
+    // Re-push the per-connection owner flag: the new owner's tabs gain the badge live; the
+    // `from`-owner's tabs lose it (full lockout waits for reconnect — its anon id was rotated).
+    for (const c of this.getConnections<ConnState>()) this.sendCustomMessage(c, `owner:${c.state?.userId === to ? '1' : '0'}`);
+
+    return this.#projectMeta(this.meta); // enqueues ROOM_META + returns the SAME snapshot (double-write idempotent by rev)
   }
 
   /**

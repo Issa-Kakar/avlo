@@ -1,1 +1,0 @@
-CREATE INDEX `idx_rooms_owner` ON `rooms` (`owner_id`);

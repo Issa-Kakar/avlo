@@ -2,7 +2,6 @@ CREATE TABLE `room_visits` (
 	`user_id` text NOT NULL,
 	`room_id` text NOT NULL,
 	`last_visited_at` integer NOT NULL,
-	`rev` integer NOT NULL,
 	PRIMARY KEY(`user_id`, `room_id`)
 ) WITHOUT ROWID;
 --> statement-breakpoint
@@ -15,9 +14,10 @@ CREATE TABLE `rooms` (
 	`updated_at` integer NOT NULL,
 	`title` text DEFAULT 'Untitled' NOT NULL,
 	`rev` integer NOT NULL,
-	`deleted` integer DEFAULT false NOT NULL
+	`deleted_at` integer
 ) WITHOUT ROWID;
 --> statement-breakpoint
+CREATE INDEX `idx_rooms_owner` ON `rooms` (`owner_id`) WHERE deleted_at IS NULL;--> statement-breakpoint
 CREATE TABLE `users` (
 	`user_id` text PRIMARY KEY NOT NULL,
 	`google_sub` text NOT NULL,
