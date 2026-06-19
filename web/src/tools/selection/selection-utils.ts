@@ -131,6 +131,12 @@ export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyle
     connectorType: kind === 'connector' ? connType.value : null,
     startCap: kind === 'connector' ? startCap.value : null,
     endCap: kind === 'connector' ? endCap.value : null,
+    // Drives the connector bar's "Add label" ⇄ text-controls swap. fontSize /
+    // fontFamily / labelColor above already fold the label values (hasLabel-gated
+    // accepts), so this flag is the structural counterpart — read straight off the
+    // handle rather than inferring from a nullable style. For connector kind every
+    // handle is a connector, so `handles[0]` is the (sole, for the menu) connector.
+    connectorHasLabel: kind === 'connector' && hasLabel(handles[0].y),
   };
 }
 
@@ -152,7 +158,8 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.codeOutputVisible === b.codeOutputVisible &&
     a.connectorType === b.connectorType &&
     a.startCap === b.startCap &&
-    a.endCap === b.endCap
+    a.endCap === b.endCap &&
+    a.connectorHasLabel === b.connectorHasLabel
   );
 }
 

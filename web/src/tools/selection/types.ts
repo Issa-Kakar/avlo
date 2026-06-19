@@ -82,6 +82,10 @@ export interface SelectedStyles {
   startCap: ConnectorCap | null;
   /** First connector's end cap. Used by connector-only. */
   endCap: ConnectorCap | null;
+  /** The (single) selected connector carries a rich-text label. Used by
+   *  connector-only to swap the "Add label" button for live text controls.
+   *  Reactive: flips when the label is added (editor open) / removed (empty close). */
+  connectorHasLabel: boolean;
 }
 
 export const EMPTY_STYLES: SelectedStyles = {
@@ -102,6 +106,7 @@ export const EMPTY_STYLES: SelectedStyles = {
   connectorType: null,
   startCap: null,
   endCap: null,
+  connectorHasLabel: false,
 };
 
 export interface InlineStyles {

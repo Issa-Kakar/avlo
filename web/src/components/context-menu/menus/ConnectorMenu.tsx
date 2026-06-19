@@ -1,16 +1,29 @@
 import { memo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { ConnectorType } from '@/core/types/objects';
+import { selectTextColor, selectTextSize, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { setSelectedColor, setSelectedEndCap, setSelectedStartCap, setSelectedWidth } from '@/tools/selection/selection-actions';
+import {
+  decrementFontSize,
+  incrementFontSize,
+  setSelectedColor,
+  setSelectedEndCap,
+  setSelectedFontSize,
+  setSelectedStartCap,
+  setSelectedTextColor,
+  setSelectedWidth,
+} from '@/tools/selection/selection-actions';
 import { ButtonGroup } from '../ButtonGroup';
 import { ConnectorCapControl } from '../ConnectorCapControl';
 import { ConnectorTypeControl } from '../ConnectorTypeControl';
+import { FontSizeStepper } from '../FontSizeStepper';
 import { LabelButton } from '../LabelButton';
 import { OUTLINE_WIDTHS } from '../menu-widths';
 import { StrokeColorControl } from '../StrokeColorControl';
 import { StrokeWidthControl } from '../StrokeWidthControl';
+import { TextColorPopover } from '../TextColorPopover';
+import { TypefaceButton } from '../TypefaceButton';
 
 // No-op placeholder for connector-type switching — routing changes require
 // endpoint/anchor recomputation that lives in the connector subsystem; wiring
@@ -28,14 +41,24 @@ const selectConnectorStyles = (s: SelectionStore) => ({
   startCap: s.selectedStyles.startCap,
   endCap: s.selectedStyles.endCap,
   // Labels attach to a single connector — multi-select has no meaningful target,
-  // so the slot stays hidden until exactly one connector is selected.
+  // so the label slot stays hidden until exactly one connector is selected.
   singleConnector: s.kindCounts.total === 1,
+  // hasLabel drives the "Add label" button ⇄ live text controls swap; labelColor
+  // and fontSize feed those controls (fontFamily is self-subscribed by TypefaceButton).
+  hasLabel: s.selectedStyles.connectorHasLabel,
+  labelColor: s.selectedStyles.labelColor,
+  fontSize: s.selectedStyles.fontSize,
 });
 
 export const ConnectorMenu = memo(function ConnectorMenu() {
-  const { color, colorMixed, width, connectorType, startCap, endCap, singleConnector } = useSelectionStore(
+  const { color, colorMixed, width, connectorType, startCap, endCap, singleConnector, hasLabel, labelColor, fontSize } = useSelectionStore(
     useShallow(selectConnectorStyles),
   );
+  // Coalesce for the labeled connector's text controls. A labeled connector always
+  // carries labelColor + fontSize, so these fall back only as a null-safety floor —
+  // sourced from the device-ui text defaults the label would otherwise inherit.
+  const deviceTextColor = useDeviceUIStore(selectTextColor);
+  const deviceTextSize = useDeviceUIStore(selectTextSize);
   return (
     <ButtonGroup>
       <StrokeColorControl color={color} mixed={colorMixed} onSelect={setSelectedColor} />
@@ -49,7 +72,20 @@ export const ConnectorMenu = memo(function ConnectorMenu() {
       {singleConnector && (
         <>
           <div className="ctx-divider" />
-          <LabelButton />
+          {hasLabel ? (
+            <>
+              <TextColorPopover color={labelColor ?? deviceTextColor} onSelect={setSelectedTextColor} />
+              <TypefaceButton />
+              <FontSizeStepper
+                value={fontSize ?? deviceTextSize}
+                onDecrement={decrementFontSize}
+                onIncrement={incrementFontSize}
+                onSelectSize={setSelectedFontSize}
+              />
+            </>
+          ) : (
+            <LabelButton />
+          )}
         </>
       )}
     </ButtonGroup>

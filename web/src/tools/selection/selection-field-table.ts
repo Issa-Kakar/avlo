@@ -365,32 +365,40 @@ export const FILL_COLOR: FieldDescriptor<string | null> = {
   },
 };
 
-// text/shape (only labeled). text → 'color', shape → 'labelColor'.
+// text/shape/connector. text → 'color'; shape + connector → 'labelColor', only
+// when labeled (a connector label stores text color in 'labelColor', exactly
+// like a shape label — 'color' is the connector LINE color, never the text).
 export const TEXT_COLOR: FieldDescriptor<string> = {
   read: {
     text: (h) => getColor(h.y),
     shape: (h) => getLabelColor(h.y),
+    connector: (h) => getLabelColor(h.y),
   },
   write: {
     text: (h, v) => h.y.set('color', v),
     shape: (h, v) => h.y.set('labelColor', v),
+    connector: (h, v) => h.y.set('labelColor', v),
   },
-  accepts: { shape: (h) => hasLabel(h.y) },
-  persist: { text: setTextColor, shape: setTextColor },
+  accepts: { shape: (h) => hasLabel(h.y), connector: (h) => hasLabel(h.y) },
+  // Connector labels seed from the device-ui TEXT defaults (like shape labels),
+  // so a connector text-color change persists to the same sink.
+  persist: { text: setTextColor, shape: setTextColor, connector: setTextColor },
 };
 
-// text/labeled-shape. Notes derive fontSize from scale — skipped.
+// text/labeled-shape/labeled-connector. Notes derive fontSize from scale — skipped.
 export const FONT_SIZE: FieldDescriptor<number> = {
   read: {
     text: (h) => Math.round(getFontSize(h.y)),
     shape: (h) => Math.round(getFontSize(h.y)),
+    connector: (h) => Math.round(getFontSize(h.y)),
   },
   write: {
     text: (h, v) => h.y.set('fontSize', v),
     shape: (h, v) => h.y.set('fontSize', v),
+    connector: (h, v) => h.y.set('fontSize', v),
   },
-  accepts: { shape: (h) => hasLabel(h.y) },
-  persist: { text: setTextSize, shape: setTextSize },
+  accepts: { shape: (h) => hasLabel(h.y), connector: (h) => hasLabel(h.y) },
+  persist: { text: setTextSize, shape: setTextSize, connector: setTextSize },
 };
 
 export const FONT_FAMILY: FieldDescriptor<FontFamily> = {
@@ -398,17 +406,20 @@ export const FONT_FAMILY: FieldDescriptor<FontFamily> = {
     text: (h) => getFontFamily(h.y),
     note: (h) => getFontFamily(h.y),
     shape: (h) => getFontFamily(h.y),
+    connector: (h) => getFontFamily(h.y),
   },
   write: {
     text: (h, v) => h.y.set('fontFamily', v),
     note: (h, v) => h.y.set('fontFamily', v),
     shape: (h, v) => h.y.set('fontFamily', v),
+    connector: (h, v) => h.y.set('fontFamily', v),
   },
-  accepts: { shape: (h) => hasLabel(h.y) },
+  accepts: { shape: (h) => hasLabel(h.y), connector: (h) => hasLabel(h.y) },
   persist: {
     text: setTextFontFamily,
     shape: setTextFontFamily,
     note: setNoteFontFamily,
+    connector: setTextFontFamily,
   },
 };
 

@@ -289,14 +289,19 @@ Sticky notes have a dedicated bar with no text color control (note text color is
 ### `connectorsOnly`
 
 ```
-[Color teardrop] | [Width tier-menu] | [StartCap] [EndCap] | [ConnectorType] | [Label?]
+[Color teardrop] | [Width tier-menu] | [StartCap] [EndCap] | [ConnectorType] | [label slot?]
 ```
+
+The trailing label slot (+ its divider) renders **only for a single connector** (`kindCounts.total === 1`) and is **label-aware**, driven by the reactive `selectedStyles.connectorHasLabel` flag:
+- no label → `[Add label]` (`LabelButton`)
+- has label → `[TextColor] [Typeface] [-FontSize+]` — live label text controls, right-aligned. **No Bold/Italic/Highlight buttons** (deliberate — they'd shift the bar overwhelmingly to text; reachable via keybinds while the label editor is open).
 
 - **Color** — `StrokeColorControl`, same as strokes.
 - **Width** — `StrokeWidthControl`. Outline scale `2 / 4 / 6 / 8` (shared with shapes).
 - **StartCap / EndCap** — `ConnectorCapControl`, one instance per endpoint (`slot='start'` / `'end'`). 32×32 trigger (`.ctx-btn-sq` + `.ctx-btn-engaged`, `--ctx-engaged` ink at rest, engaged-dark fill on open) showing the current cap glyph; popout is a side-by-side two-cell picker (`.ctx-submenu` + inline `flex flex-row gap-1 p-1.5` utilities) — no-arrow + arrow — with 36×36 cells and a 28×28 SVG so the cap glyphs read larger in the picker than at the trigger. Arrow direction mirrors `slot`: start ⇒ left-pointing, end ⇒ right-pointing, both in the trigger and the picker. Active cell fills `--ctx-engaged` with a white icon (no checkmark — the active state IS the cell). Mixed selections collapse to the first connector's cap (no "mixed" affordance — same first-applicable rule as `ConnectorTypeControl`). Wires to `setSelectedStartCap` / `setSelectedEndCap` and persists via `setConnectorStartCap` / `setConnectorEndCap` so a fresh connector picks up the user's most recent choice.
 - **ConnectorType** — `ConnectorTypeControl`. Bars-style trigger with the current type glyph (`#1b1f22` ink at rest, engaged-dark fill on open), opening the tier-menu pattern: two rows (Straight, Orthogonal) with icon · label · inline check, the active row filled `#282e34`. Reads `selectedStyles.connectorType` (first connector's type — routing types don't blend, so no mixed UI affordance). **No-op today** — switching `connectorType` needs route + endpoint geometry adjustments inside the connector subsystem; the action wiring lands separately. `CONNECTOR_TYPE` lives in the field table as a read-only descriptor (empty `write: {}`).
-- **Label** — `LabelButton`. No-op rightmost shell button (`.ctx-btn-sq .ctx-btn-label`, icon ink `--ctx-engaged`). Placeholder for the future "add connector label" entry-point; same role/shape as `LockButton`. **Single-connector only:** the button + its preceding divider render only when `kindCounts.total === 1` — labels attach to a single connector, so the slot stays hidden on a multi-select where there's no meaningful target.
+- **Add label** — `LabelButton` (`.ctx-btn-sq .ctx-btn-label`, icon ink `--ctx-engaged`). Rendered only in the label slot's **no-label** branch; `onMouseDown` → `textTool.startEditing(selectedIds[0])` mounts the rich-text editor and creates the four label fields (`content`/`fontSize`/`fontFamily`/`labelColor`) seeded from the device-ui text defaults. As soon as the editor opens the connector `hasLabel`, so the observer→`refreshStyles` flips `connectorHasLabel` and the button swaps to the text controls in the same beat.
+- **Label text controls** (has-label branch) — `TextColorPopover` + `TypefaceButton` + `FontSizeStepper`, the same components shape labels use. They flow through the **shared field-table actions** (`setSelectedTextColor` / `setSelectedFontFamily` / `setSelectedFontSize` + inc/dec) with zero connector-specific action code: `TEXT_COLOR` / `FONT_SIZE` / `FONT_FAMILY` each gained a `connector` read/write/accepts(`hasLabel`)/persist entry mirroring `shape` (text color lives in `labelColor`, **not** `color` — that's the line). Persist targets the device-ui **text** defaults, so a connector font tweak seeds the next label. `getTextSelectionIds()` already routes the sole connector id (selected, or `textEditingId` while editing), so the controls work both on a selected-but-unedited label and live during editing.
 
 ### `codeOnly`
 
@@ -413,7 +418,7 @@ Computed by `computeStyles(ids, kind, objectsById)`. Tracks different fields per
 |------|--------|
 | `strokesOnly` | color, width |
 | `shapesOnly` | color, width, fillColor, fillColorMixed, fillColorSecond, shapeType, fontSize, fontFamily, labelColor, textAlign, textAlignV |
-| `connectorsOnly` | color, width, connectorType |
+| `connectorsOnly` | color, width, connectorType, startCap, endCap, connectorHasLabel + (when labeled) fontSize, fontFamily, labelColor |
 | `textOnly` | color, fontSize, textAlign, fontFamily, labelColor, fillColor, fillColorMixed, fillColorSecond, shapeType='text' |
 | `notesOnly` | fillColor, fontFamily, textAlign, textAlignV (multi-note mismatch → null for align fields) |
 | `codeOnly` | fontSize, codeLanguage |
@@ -542,7 +547,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `menus/*.tsx` | One self-subscribing menu bar per `SelectionKind` — `StrokeMenu`, `ConnectorMenu`, `ShapeMenu`, `TextMenu`, `NoteMenu`, `CodeMenu`, `MixedMenu`. Each owns its store selector(s) + the JSX for its kind. |
 | `FormatButtons.tsx` | `BoldButton` + `ItalicButton` — shared by `ShapeMenu`/`TextMenu`/`NoteMenu`. |
 | `LockButton.tsx` | Shell lock button — no-op placeholder, leftmost on every bar (incl. image/bookmark where it's the whole bar). `IconLock` 20×20 inside `.ctx-btn-sq .ctx-btn-lock`. |
-| `LabelButton.tsx` | Connector-bar rightmost button — no-op placeholder for the future "add connector label" entry-point. `IconLabel` 20×20 inside `.ctx-btn-sq .ctx-btn-label`. Same shell-button role as `LockButton`. |
+| `LabelButton.tsx` | Connector-bar "Add label" button — `onMouseDown` → `textTool.startEditing(selectedIds[0])`. `IconLabel` 20×20 inside `.ctx-btn-sq .ctx-btn-label`. Rendered only in `ConnectorMenu`'s single-connector **no-label** branch (the has-label branch shows live text controls instead — see `connectorsOnly`). |
 | `MenuButton.tsx` | Base button primitive (`mouseDown preventDefault` keeps canvas focus) |
 | `ButtonGroup.tsx` | Flex row wrapper |
 | `ColorCircle.tsx` | Visual indicator: `filled` / `hollow` / `none` variants, optional `secondColor` split |
