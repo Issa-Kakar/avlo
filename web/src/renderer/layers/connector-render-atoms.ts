@@ -30,11 +30,31 @@ import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } fro
 import { midpointFor } from '@/core/connectors/shape-geometry';
 import type { Dir, SnapTarget } from '@/core/connectors/types';
 import { frameOf } from '@/core/geometry/frame-of';
-import type { FrameTuple, Point } from '@/core/types/geometry';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { isBindableHandle, type ObjectHandle } from '@/core/types/objects';
 import { getHandle } from '@/runtime/room-runtime';
-import { useCameraStore } from '@/stores/camera-store';
+import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { getPath } from '../geometry-cache';
+
+/**
+ * Even-odd clip whose hole is `rect` — a connector polyline stroked under it is
+ * cut out beneath its label, so the rich text reads cleanly on top. The outer
+ * rect is the visible viewport unioned with `rect`, so it always strictly
+ * contains the hole (even-odd needs containment for a complete hole); any route
+ * pixels beyond the viewport aren't painted anyway. Zero alloc — reads the
+ * camera scratch tuple. Caller owns the surrounding `ctx.save()`/`restore()`.
+ */
+function clipOutLabelRect(ctx: CanvasRenderingContext2D, rect: BBoxTuple): void {
+  const vb = getVisibleBoundsTuple();
+  const ox0 = Math.min(vb[0], rect[0]);
+  const oy0 = Math.min(vb[1], rect[1]);
+  const ox1 = Math.max(vb[2], rect[2]);
+  const oy1 = Math.max(vb[3], rect[3]);
+  ctx.beginPath();
+  ctx.rect(ox0, oy0, ox1 - ox0, oy1 - oy0);
+  ctx.rect(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]);
+  ctx.clip('evenodd');
+}
 
 /**
  * Stroke a connector's polyline + fill/stroke its arrow caps in one call.
@@ -44,16 +64,33 @@ import { getPath } from '../geometry-cache';
  * and one in `connector-preview.ts` (in-flight connector during creation) — so
  * the context setup and Path2D drawing live here to keep them in lock-step.
  * Connectors render at full opacity; callers only supply color and width.
+ *
+ * When `labelRect` is non-null the polyline is stroked under an even-odd clip
+ * whose hole is the label rect (route cut out beneath the text); arrow caps
+ * always paint unclipped on top. `null` → identical to the unlabeled path.
  */
-export function paintConnector(ctx: CanvasRenderingContext2D, paths: ConnectorPaths, color: string, width: number): void {
+export function paintConnector(
+  ctx: CanvasRenderingContext2D,
+  paths: ConnectorPaths,
+  color: string,
+  width: number,
+  labelRect: BBoxTuple | null = null,
+): void {
   ctx.save();
 
-  // Pass 1: polyline stroke with rounded caps/joins
+  // Pass 1: polyline stroke with rounded caps/joins — clipped to exclude the label.
   ctx.strokeStyle = color;
   ctx.lineWidth = width;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.stroke(paths.polyline);
+  if (labelRect) {
+    ctx.save();
+    clipOutLabelRect(ctx, labelRect);
+    ctx.stroke(paths.polyline);
+    ctx.restore();
+  } else {
+    ctx.stroke(paths.polyline);
+  }
 
   // Pass 2: arrows (fill + stroke for rounded corners at a fixed width)
   ctx.fillStyle = color;
@@ -86,6 +123,7 @@ export function paintConnectorFromPoints(
   startCap: 'arrow' | 'none',
   endCap: 'arrow' | 'none',
   color: string,
+  labelRect: BBoxTuple | null = null,
 ): void {
   if (count < 2) return;
 
@@ -94,14 +132,17 @@ export function paintConnectorFromPoints(
 
   ctx.save();
 
-  // Pass 1: polyline (matches paintConnector lines 44-49)
+  // Pass 1: polyline (matches paintConnector) — clipped to exclude the label rect.
   ctx.strokeStyle = color;
   ctx.lineWidth = strokeWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  if (labelRect) ctx.save();
+  if (labelRect) clipOutLabelRect(ctx, labelRect);
   ctx.beginPath();
   emitRoundedPolylineIntoSink(ctx, points, count, startTrim, endTrim);
   ctx.stroke();
+  if (labelRect) ctx.restore();
 
   // Pass 2: arrows (matches paintConnector lines 52-63)
   ctx.fillStyle = color;

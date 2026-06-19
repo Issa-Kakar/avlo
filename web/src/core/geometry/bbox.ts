@@ -2,6 +2,7 @@ import type * as Y from 'yjs';
 import { getBookmarkProps, getEndCap, getFrame, getNoteProps, getPoints, getStartCap, getTextProps, getWidth } from '../accessors';
 import { computeBookmarkBBox } from '../bookmark/bookmark-render';
 import { computeCodeBBox } from '../code/code-system';
+import { unionConnectorLabelBBoxInto } from '../connectors/connector-label';
 import { getConnectorRoute } from '../connectors/connector-router';
 import type { ConnectorCap } from '../connectors/types';
 import { ensureImageMeta } from '../image/image-cache';
@@ -127,6 +128,7 @@ export function computeBBoxForInto(id: string, kind: ObjectKind, yMap: Y.Map<unk
         return;
       }
       computeConnectorBBoxFromPointsInto(points, points.length, getWidth(yMap), getStartCap(yMap), getEndCap(yMap), out);
+      unionConnectorLabelBBoxInto(id, yMap, points, points.length, out);
       return;
     }
 

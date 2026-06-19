@@ -284,6 +284,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             if (ev.keysChanged.has('startCap') || ev.keysChanged.has('endCap')) {
               evictGeometry(id);
             }
+            // Label removed (empty-close deleted the four fields) → drop the stranded
+            // text-layout entry. Phase B's computeBBox then unions nothing → bbox shrinks
+            // to the polyline. Add/edit goes through invalidateContent / computeBBox.
+            if (ev.keysChanged.has('content') && !(getContent(yObj) instanceof Y.XmlFragment)) {
+              textLayoutCache.evict(id);
+            }
           } else if (kind === 'shape' && ev.keysChanged.has('shapeType')) {
             evictGeometry(id); // pre-evict Path2D so renderer doesn't re-check per draw
             router.onBindableChanged(id);

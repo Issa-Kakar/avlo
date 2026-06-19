@@ -79,6 +79,19 @@
   display: none;
 }
 
+/* Connector label: auto width, H+V centred on the route midpoint (translate
+   -50%/-50% set by positionEditor), no clamp box, no background. */
+.tiptap[data-width-mode="connector"] {
+  overflow: visible;
+  text-align: var(--text-align, center);
+}
+.tiptap[data-width-mode="connector"] p {
+  margin: 0;
+}
+.tiptap[data-width-mode="connector"] .is-editor-empty:first-child::before {
+  display: none;
+}
+
 .tiptap strong {
   font-weight: 700;
 }

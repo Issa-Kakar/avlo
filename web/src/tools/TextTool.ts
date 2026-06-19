@@ -30,6 +30,8 @@ import {
   getTextWidth,
   hasLabel,
 } from '@/core/accessors';
+import { connectorLabelMidpointInto } from '@/core/connectors/connector-label';
+import { getConnectorRoute } from '@/core/connectors/connector-router';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { computeLabelTextBox } from '@/core/text/shape-label';
 import {
@@ -236,8 +238,9 @@ export class TextTool implements PointerTool {
     const handle = getHandle(objectId);
     if (!handle) return;
 
-    // Create label fields if shape without label
-    const isNewLabel = handle.kind === 'shape' && !hasLabel(handle.y);
+    // Create label fields if a shape/connector without a label. Connectors reuse the
+    // shape-label keys minus align/alignV (anchor-centred on the route midpoint).
+    const isNewLabel = (handle.kind === 'shape' || handle.kind === 'connector') && !hasLabel(handle.y);
     if (isNewLabel) {
       const { text, shape } = useDeviceUIStore.getState();
       transact(() => {
@@ -245,8 +248,10 @@ export class TextTool implements PointerTool {
         handle.y.set('fontSize', text.size);
         handle.y.set('fontFamily', text.fontFamily);
         handle.y.set('labelColor', text.color);
-        handle.y.set('align', shape.align);
-        handle.y.set('alignV', shape.alignV);
+        if (handle.kind === 'shape') {
+          handle.y.set('align', shape.align);
+          handle.y.set('alignV', shape.alignV);
+        }
       });
     }
 
@@ -293,7 +298,10 @@ export class TextTool implements PointerTool {
   isEditingLabel(): boolean {
     if (!this.objectId) return false;
     const kind = getHandleKind(this.objectId);
-    return kind === 'shape' || kind === 'note' || false;
+    // Connectors are label hosts like shapes/notes — the editor sits inside the
+    // padded bbox and handles ride the bbox edge, so hit/cursor stay enabled to
+    // match the overlay (which keeps handles drawn for any non-'text' editor).
+    return kind === 'shape' || kind === 'note' || kind === 'connector';
   }
 
   getEditor(): Editor | null {
@@ -387,14 +395,15 @@ export class TextTool implements PointerTool {
       return;
     }
     const fresh = getHandle(objectId);
-    if (!fresh || (fresh.kind !== 'text' && fresh.kind !== 'note' && fresh.kind !== 'shape')) {
+    if (!fresh || (fresh.kind !== 'text' && fresh.kind !== 'note' && fresh.kind !== 'shape' && fresh.kind !== 'connector')) {
       this.pendingMountId = null;
       if (isNew) this.deleteIfEmptyCreated(objectId);
       return;
     }
 
     // ─── PHASE 4: build off-DOM (reads fresh state) ────────────────────────
-    const isLabel = fresh.kind === 'shape';
+    // Connector labels are labels too — same getContent fragment + Placeholder-skip.
+    const isLabel = fresh.kind === 'shape' || fresh.kind === 'connector';
     const fragment: Y.XmlFragment | null = isLabel
       ? getContent(fresh.y)
       : fresh.kind === 'note'
@@ -476,6 +485,9 @@ export class TextTool implements PointerTool {
     if (handle.kind === 'shape') {
       container.dataset.widthMode = 'label';
       container.style.setProperty('--text-color', getLabelColor(handle.y));
+    } else if (handle.kind === 'connector') {
+      container.dataset.widthMode = 'connector';
+      container.style.setProperty('--text-color', getLabelColor(handle.y));
     } else if (handle.kind === 'note') {
       container.dataset.widthMode = 'note';
       const props = getNoteProps(handle.y);
@@ -508,6 +520,14 @@ export class TextTool implements PointerTool {
         handle.y.delete('labelColor');
         handle.y.delete('align');
         handle.y.delete('alignV');
+      });
+    } else if (handle.kind === 'connector') {
+      // Keep the connector — only the four label fields are this NEW mount's doing.
+      transact(() => {
+        handle.y.delete('content');
+        handle.y.delete('fontSize');
+        handle.y.delete('fontFamily');
+        handle.y.delete('labelColor');
       });
     } else if (handle.kind !== 'note') {
       transact(() => {
@@ -545,7 +565,7 @@ export class TextTool implements PointerTool {
 
       this.commitAndClose();
 
-      if (closingId && (closingKind === 'shape' || closingKind === 'note')) {
+      if (closingId && (closingKind === 'shape' || closingKind === 'note' || closingKind === 'connector')) {
         this.justClosedLabelId = closingId;
       }
 
@@ -614,6 +634,25 @@ export class TextTool implements PointerTool {
       this.container.style.top = `${sy}px`;
       this.container.style.maxWidth = `${tbw * scale}px`;
       this.container.style.maxHeight = `${tbh * scale}px`;
+      this.container.style.fontSize = `${sf}px`;
+      this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
+      this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
+      this.container.style.setProperty('--hl-pad', `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`);
+    } else if (handle.kind === 'connector') {
+      // Anchor-point model: centre the editor (H + V) on the route's arc-length
+      // midpoint via translate(-50%, -50%). Auto width (max-content), no clamp box.
+      const route = getConnectorRoute(this.objectId);
+      if (!route || route.length < 2) return;
+      const fontFamily = getFontFamily(handle.y);
+      const sf = getFontSize(handle.y) * scale;
+      const anchor: [number, number] = [0, 0];
+      connectorLabelMidpointInto(route, route.length, anchor);
+      const [sx, sy] = worldToClient(anchor[0], anchor[1]);
+      this.container.style.setProperty('--text-anchor-tx', '-50%');
+      this.container.style.setProperty('--text-anchor-ty', '-50%');
+      this.container.style.setProperty('--text-align', 'center');
+      this.container.style.left = `${sx}px`;
+      this.container.style.top = `${sy}px`;
       this.container.style.fontSize = `${sf}px`;
       this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
       this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
@@ -699,6 +738,15 @@ export class TextTool implements PointerTool {
               handle.y.delete('align');
               handle.y.delete('alignV');
             });
+          } else if (handle.kind === 'connector') {
+            // Connector label: remove the four label fields, keep the connector.
+            // The deep observer then evicts the stranded text-layout entry.
+            transact(() => {
+              handle.y.delete('content');
+              handle.y.delete('fontSize');
+              handle.y.delete('fontFamily');
+              handle.y.delete('labelColor');
+            });
           } else if (handle.kind !== 'note') {
             // Regular text object: delete entirely
             transact(() => {
@@ -775,6 +823,13 @@ export class TextTool implements PointerTool {
         keys.has('alignV')
       )
         this.positionEditor();
+    } else if (handle.kind === 'connector') {
+      // Connector label undo/redo: re-skin color, reposition on font change. The
+      // editor anchor is the route MIDPOINT (derived, not a stored key) — route
+      // changes reposition via selection-store.onObjectsChanged AFTER the deep
+      // observer reroutes, since this extension observer fires before it (stale route).
+      if (keys.has('labelColor')) this.container.style.setProperty('--text-color', getLabelColor(handle.y));
+      if (keys.has('fontSize') || keys.has('fontFamily')) this.positionEditor();
     } else {
       if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
 

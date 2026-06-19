@@ -32,6 +32,7 @@ import { getConnectorType, getEnd, getEndCap, getStart, getStartCap, getWidth } 
 import { computeConnectorBBoxFromPointsInto } from '../geometry/bbox';
 import type { BBoxTuple, Point } from '../types/geometry';
 import type { ConnectorEndpoint, StoredAnchor, StoredStraightAnchor } from '../types/objects';
+import { unionConnectorLabelBBoxInto } from './connector-label';
 import { bakeCanonicalEndpoint, buildRouteContext, type Pipeline } from './reroute-connector';
 import { remapAnchorBetweenShapeTypes } from './shape-geometry';
 
@@ -200,6 +201,9 @@ export class ConnectorRouter {
     }
     if (buf.length > count) buf.length = count;
     computeConnectorBBoxFromPointsInto(buf, count, ctx.strokeWidth, ctx.startCap, ctx.endCap, outBbox);
+    // Bake the label rect (route-midpoint centred) into the published bbox so the
+    // dirty rect covers the painted glyphs even after a midpoint-shifting reroute.
+    unionConnectorLabelBBoxInto(id, yObj, buf, count, outBbox);
     return true;
   }
 
@@ -211,6 +215,9 @@ export class ConnectorRouter {
     const route = this.routes.get(id);
     if (!route || route.length < 2) return false;
     computeConnectorBBoxFromPointsInto(route, route.length, getWidth(y, 2), getStartCap(y), getEndCap(y), outBbox);
+    // Style-only branch (Phase B) — label content/format edits land here too; union
+    // the (possibly just-changed) label rect so add/remove/resize republishes correctly.
+    unionConnectorLabelBBoxInto(id, y, route, route.length, outBbox);
     return true;
   }
 

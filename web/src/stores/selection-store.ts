@@ -330,6 +330,11 @@ export const useSelectionStore = create<SelectionStore>()(
       if (textEditingId !== null && touched.has(textEditingId)) {
         refresh = true;
         if (bboxChangedIds.has(textEditingId)) reposition = true;
+        // Connector label editor: its anchor is the DERIVED route midpoint, so a
+        // reroute (endpoint edit, attached-shape move, undo/redo) repositions it
+        // here — after the deep observer rebuilt the route cache. The extension
+        // observer (syncProps) fires before that, so it can't see the fresh route.
+        if (getHandle(textEditingId)?.kind === 'connector') textTool.onViewChange();
       }
       if (codeEditingId !== null && touched.has(codeEditingId)) {
         refresh = true;

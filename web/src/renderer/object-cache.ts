@@ -9,7 +9,7 @@
  *
  * Kind-to-cache mapping:
  *   stroke, shape, connector → geometry cache (Path2D / ConnectorPaths)
- *   text, shape, note       → text layout cache (shape labels use text cache too)
+ *   text, shape, note, connector → text layout cache (shape + connector labels reuse it)
  *   code                    → code system cache
  *   bookmark                → bookmark layout cache
  *   image                   → image meta cache
@@ -32,6 +32,10 @@ export function removeObjectCaches(id: string, kind: ObjectKind): void {
     case 'text':
     case 'shape':
     case 'note':
+    case 'connector':
+      // Connectors with a rich-text label reuse the text layout cache (keyed by
+      // connector id). `evict` is a no-op for label-less connectors, so this is
+      // unconditionally safe and drops the entry on deletion.
       textLayoutCache.evict(id);
       break;
     case 'code':

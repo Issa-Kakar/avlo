@@ -20,6 +20,7 @@ import {
   layoutCodeSourceInto,
 } from '@/core/code/code-system';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
+import { unionConnectorLabelRectInto } from '@/core/connectors/connector-label';
 import {
   buildRouteContext,
   type EndpointDragOverride,
@@ -839,7 +840,12 @@ export class TransformController {
     const override: EndpointDragOverride = snap ?? [worldX, worldY];
     const count = rerouteEndpointDragInto(ed.routeCtx, ed.slot, override, ed.entry.currBbox, ed.entry.pointsBuf);
     ed.entry.validCount = count;
-    if (count > 0) invalidateWorldBBox(ed.entry.currBbox); // NEW dirty
+    if (count > 0) {
+      // Union the label rect at the new midpoint so the dirty rect covers the
+      // glyphs as the dragged endpoint reshapes the route.
+      unionConnectorLabelRectInto(ed.entry.id, ed.entry.pointsBuf, count, ed.entry.currBbox);
+      invalidateWorldBBox(ed.entry.currBbox); // NEW dirty
+    }
   }
 
   /**

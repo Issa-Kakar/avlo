@@ -26,6 +26,7 @@
 
 import { getFillColor, getFrame, getPoints, getShapeType, getWidth } from '@/core/accessors';
 import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
+import { getConnectorLabelRect } from '@/core/connectors/connector-label';
 import { getConnectorRoute } from '@/core/connectors/connector-router';
 import {
   circleHitsShape,
@@ -34,6 +35,7 @@ import {
   ellipseIntersectsBBox,
   getDiamondVertices,
   getTriangleVertices,
+  pointInBBox,
   polylineIntersectsBBox,
   shapeHitTest,
   strokeHitTest,
@@ -70,7 +72,11 @@ function strokeHitCircle(h: ObjectHandle, c: Point, r: number): boolean {
 function connectorHitPoint(h: ObjectHandle, p: Point, r: number): Paint | null {
   const points = getConnectorRoute(h.id);
   if (!points || points.length === 0) return null;
-  return strokeHitTest(p, points, r + getWidth(h.y) / 2) ? 'ink' : null;
+  if (strokeHitTest(p, points, r + getWidth(h.y) / 2)) return 'ink';
+  // Clicking the label text also selects the connector — the rich text is never
+  // a dead zone over the polyline it sits on.
+  const labelRect = getConnectorLabelRect(h.id, points, points.length);
+  return labelRect && pointInBBox(p, labelRect) ? 'ink' : null;
 }
 function connectorHitRect(h: ObjectHandle, bbox: BBoxTuple): boolean {
   const points = getConnectorRoute(h.id);

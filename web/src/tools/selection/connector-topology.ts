@@ -31,6 +31,7 @@
  */
 
 import { getHandleShapeType } from '@/core/accessors';
+import { unionConnectorLabelRectInto } from '@/core/connectors/connector-label';
 import {
   type AnchorSource,
   bakeCanonicalEndpoint,
@@ -670,6 +671,9 @@ function publishCount<S>(e: RerouteEntryBase<S>, count: number): void {
   }
   e.validCount = count;
   computeConnectorBBoxFromPointsInto(e.pointsBuf, count, e.routeCtx.strokeWidth, e.routeCtx.startCap, e.routeCtx.endCap, e.currBbox);
+  // Label dims are frozen during a drag — only the midpoint moves; union the live
+  // rect so the dirty rect tracks the label as the route reroutes (zero alloc).
+  unionConnectorLabelRectInto(e.id, e.pointsBuf, count, e.currBbox);
 }
 
 // ============================================================================

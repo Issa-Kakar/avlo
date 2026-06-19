@@ -2,6 +2,8 @@ import { getConnectorType } from '@/core/accessors';
 import { openBookmarkUrl } from '@/core/bookmark/bookmark-actions';
 import { getOpenButtonWorldBBox, hitTestOpenButton } from '@/core/bookmark/bookmark-render';
 import { isAnchored } from '@/core/connectors/anchor-atoms';
+import { getConnectorLabelRect } from '@/core/connectors/connector-label';
+import { getConnectorRoute } from '@/core/connectors/connector-router';
 import type { Slot } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import { pointsToBBoxMut } from '@/core/geometry/bounds';
@@ -487,6 +489,16 @@ export class SelectTool implements PointerTool {
               else textTool.startEditing(hitId, this.downWorld!);
             } else if (handle.kind === 'code' && !codeTool.isEditorMounted()) {
               codeTool.startEditing(hitId, this.downWorld!);
+            } else if (handle.kind === 'connector' && !textTool.isEditorMounted() && this.downWorld) {
+              // Sole-selected connector: a second click strictly inside the label
+              // rect edits it. Label-less connectors (null rect) ignore body clicks —
+              // labels are created via the context-menu "Add label" affordance.
+              const route = getConnectorRoute(hitId);
+              const labelRect = route ? getConnectorLabelRect(hitId, route, route.length) : null;
+              if (labelRect && pointInBBox(this.downWorld, labelRect)) {
+                if (textTool.justClosedLabelId === hitId) textTool.justClosedLabelId = null;
+                else textTool.startEditing(hitId, this.downWorld);
+              }
             }
             break;
           }

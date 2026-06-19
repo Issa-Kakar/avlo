@@ -1,5 +1,8 @@
+import { getLabelColor } from '@/core/accessors';
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
 import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
+import { getConnectorLabelRect, labelOriginYFor } from '@/core/connectors/connector-label';
+import { getConnectorRoute } from '@/core/connectors/connector-router';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { getImageMeta } from '@/core/image/image-cache';
 import { getBitmap } from '@/core/image/image-manager';
@@ -426,7 +429,12 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, bbox: BB
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const r = readConnectorBaseRender(handle.y);
-  paintConnector(ctx, getConnectorPaths(handle.id, handle), r.color, r.width);
+  // Resolve the label rect from the committed route — null for label-less connectors
+  // (no clip, no glyph draw). The route is clipped out beneath the rect; caps on top.
+  const route = getConnectorRoute(handle.id);
+  const labelRect = route ? getConnectorLabelRect(handle.id, route, route.length) : null;
+  paintConnector(ctx, getConnectorPaths(handle.id, handle), r.color, r.width, labelRect);
+  drawConnectorLabelText(ctx, handle, labelRect);
 }
 
 /**
@@ -437,7 +445,26 @@ function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): voi
  */
 function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: Point[], count: number): void {
   const r = readConnectorRender(handle.y);
-  paintConnectorFromPoints(ctx, points, count, r.width, r.startCap, r.endCap, r.color);
+  // Recompute the label rect from the live preview points so it tracks the route.
+  const labelRect = getConnectorLabelRect(handle.id, points, count);
+  paintConnectorFromPoints(ctx, points, count, r.width, r.startCap, r.endCap, r.color, labelRect);
+  drawConnectorLabelText(ctx, handle, labelRect);
+}
+
+/**
+ * Paint the connector's rich-text label — H + V centred on the route-midpoint
+ * anchor (centre of `labelRect`) via `renderTextLayout` with `align='center'`.
+ * No `fillColor` (transparent background); the polyline was already clipped out
+ * beneath the rect by the paint atom. Skipped while editing (DOM overlay owns
+ * the glyphs) — but the clip-out still ran, so the route stays cut behind the editor.
+ */
+function drawConnectorLabelText(ctx: CanvasRenderingContext2D, handle: ObjectHandle, labelRect: BBoxTuple | null): void {
+  if (!labelRect || _textEditingId === handle.id) return;
+  const layout = textLayoutCache.getLayoutById(handle.id);
+  if (!layout) return;
+  const anchorX = (labelRect[0] + labelRect[2]) / 2;
+  const anchorY = (labelRect[1] + labelRect[3]) / 2;
+  renderTextLayout(ctx, layout, anchorX, labelOriginYFor(layout, anchorY), getLabelColor(handle.y), 'center');
 }
 
 // ============================================================================
