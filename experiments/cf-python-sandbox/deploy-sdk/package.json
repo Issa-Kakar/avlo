@@ -1,0 +1,1 @@
+{"name":"avlo-pyexec-sdk","private":true,"dependencies":{"@cloudflare/sandbox":"^0.12.1"},"devDependencies":{"wrangler":"^4.103.0"}}
