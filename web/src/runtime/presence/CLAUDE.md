@@ -29,6 +29,8 @@ The overlay canvas (`z-index: 2`) sits below the editor overlay (`editorHost` `z
 
 `cursorHost` mirrors `editorHost`: owned by React (`Canvas.tsx`), passed through `RuntimeConfig → CanvasRuntime.start → new SurfaceManager(...)`. `SurfaceManager` writes the ref to a module-level `cursorHost`; the renderer reads it lazily via `getCursorHost()` from `@/runtime/SurfaceManager`. CanvasRuntime never imports the renderer — the host plumbing is entirely in the existing SurfaceManager path.
 
+**Refresh race → resync.** `connectRoom` (route `beforeLoad`) attaches awareness *before* `Canvas` mounts and registers `cursorHost`, so a peer can sync in while `getCursorHost()` is still `null` — `allocSlot` drops it (`return -1`, benign, no warn). `CanvasRuntime.start` calls `resyncPeersFromAwareness()` (presence.ts) right after `surfaceManager.start()` registers the host — synchronous, so no awareness `update` can interleave — replaying `awareness.getStates()` to re-add the dropped peers (avatar + last cursor) and flush a parked local cursor. Without this, the refreshed tab thinks it's alone: its own cursor broadcasts stay suppressed (alone-optimization) and the idle peer goes unrendered until that peer next moves. (CanvasRuntime imports `presence.ts` for this call, still never the renderer.)
+
 ### Why the Split
 
 Cursor positions change at 20Hz per peer and project to screen space at 60fps+. Storing them in Zustand would trigger selector re-evaluation every frame for zero benefit (no React component renders cursors). The SoA tables give the rAF loop typed-array indexed reads with no middleware.

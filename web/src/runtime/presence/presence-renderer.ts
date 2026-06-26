@@ -279,9 +279,11 @@ export class PresenceCursorRenderer {
     }
     const host = getCursorHost();
     if (host === null) {
-      // Defensive: under the ordering invariant, host is registered before any
-      // awareness packet arrives. If this ever fires, it's a real bug.
-      console.warn('[PresenceCursorRenderer] cursorHost not registered; dropping peer', clientId);
+      // Refresh race: `connectRoom` (route beforeLoad) wires awareness before
+      // `Canvas` mounts and registers `cursorHost`, so a peer can arrive while
+      // the host is still null. Drop here; `resyncPeersFromAwareness` (called
+      // from `CanvasRuntime.start` once the host is live) replays awareness and
+      // re-adds this peer. Benign + self-healing — no warn on the hot path.
       return -1;
     }
     const slot = this.freeList.pop() as number;

@@ -164,6 +164,38 @@ export function detach(): void {
   cachedLocalClientId = -1;
 }
 
+/**
+ * Replay current awareness state into the renderer. Closes the refresh race:
+ * `connectRoom` (route `beforeLoad`) wires awareness BEFORE `Canvas` mounts and
+ * registers `cursorHost`, so any peer whose state arrived in that window was
+ * dropped by `allocSlot` (host still null). `CanvasRuntime.start` calls this
+ * once the host is live — re-adding those peers (identity → avatar cluster +
+ * their last-known cursor) and flushing a parked local cursor if we'd wrongly
+ * gone solo. Idempotent: an empty room returns early; a live slot is a no-op.
+ */
+export function resyncPeersFromAwareness(): void {
+  const awareness = currentAwareness;
+  if (!awareness || !cursorRenderer) return;
+
+  const states = awareness.getStates();
+  const ids: number[] = [];
+  for (const cid of states.keys()) {
+    if (cid !== cachedLocalClientId) ids.push(cid);
+  }
+  if (ids.length === 0) return;
+
+  const hadActive = cursorRenderer.hasActivePeers();
+  cursorRenderer.processAwarenessBatch(ids, [], [], (cid) => states.get(cid) as Record<string, unknown> | undefined);
+
+  // Solo→Join catch-up: if the pointer moved during the pre-mount window then
+  // stopped, the cursor is parked locally (alone-optimization) — flush it now
+  // that a peer is visible. No-op if the pointer never moved (nothing to send).
+  if (cursorRenderer.hasActivePeers() && !hadActive && hasLocalCursor) {
+    dirty = true;
+    scheduleSend();
+  }
+}
+
 // ─── Send ────────────────────────────────────────────────────────────
 
 export function updateCursor(worldX: number, worldY: number): void {

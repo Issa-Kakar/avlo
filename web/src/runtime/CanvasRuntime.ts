@@ -20,6 +20,7 @@ import { setLastCursorWorld } from './cursor-tracking';
 import { InputManager } from './InputManager';
 import { installUIZoomBlock } from './install-ui-zoom-block';
 import { isSpacebarPanMode } from './keyboard-manager';
+import { resyncPeersFromAwareness } from './presence/presence';
 import { syncPresenceCursorOnCameraMove } from './presence/presence-pointer';
 import { SurfaceManager } from './SurfaceManager';
 import { canStartMMBPan, getCurrentTool, panTool } from './tool-registry';
@@ -55,6 +56,13 @@ export class CanvasRuntime {
     // 1. Surface manager: DOM refs, contexts, resize/DPR
     this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost, cursorHost);
     this.surfaceManager.start();
+
+    // 1b. cursorHost is now registered. `connectRoom` (route beforeLoad) attached
+    //     awareness before this mount, so peers that synced in that window were
+    //     dropped by allocSlot's host-null guard — replay awareness to re-add them
+    //     (avatars + their cursors). Synchronous with start() above: no awareness
+    //     'update' can interleave, so this closes the race with no gap.
+    resyncPeersFromAwareness();
 
     // 2. Render loops
     renderLoop.start();
