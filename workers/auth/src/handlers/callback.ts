@@ -135,12 +135,14 @@ export const handleCallback = factory.createHandlers(zValidator('query', callbac
     );
   }
 
-  // 10b. Anon rotation, promote path ONLY: this sign-in consumed the device's anon id, so
-  //    re-issue a fresh one — the leftover 400-day cookie must never resurrect the account
-  //    identity after sign-out on a shared machine. The adopt path keeps the cookie (its id
-  //    was never linked; rotating would strand that id's rooms). Induction: the anon cookie
-  //    only ever holds never-linked ids.
-  if (anon && linked.userId === anon.userId) {
+  // 10b. Anon rotation — EVERY sign-in that consumed a device anon id (promote AND adopt). Re-issue
+  //    a fresh one so the leftover 400-day cookie can't resurrect the consumed id after sign-out on
+  //    a shared machine. Promote: the anon id BECAME the account. Adopt: the anon id's rooms migrate
+  //    INTO the account (step 11), so its retained room_visits would otherwise re-serve those now-
+  //    account-owned rooms to a "logged-out" anon (the logout purge wipes local data but can't unsee
+  //    the server list). Rotating strands nothing — adopt's rooms followed the user into the account.
+  //    Induction: the anon cookie only ever holds never-linked ids.
+  if (anon) {
     await setSignedCookie(c, ANON_COOKIE, mintAnonToken(generateUserId()), c.env.ANON_SECRET, cookieOpts(c.req.raw, ANON_MAX_AGE_SEC));
   }
 

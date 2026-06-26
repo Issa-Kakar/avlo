@@ -8,7 +8,7 @@ import { readSession, SESSION_COOKIE, SESSION_SLIDE_THRESHOLD_MS, SESSION_TTL_SE
 
 // 400 days — the browser Max-Age ceiling. Sliding (re-bumped every /me), so the
 // anon cookie is effectively permanent for any returning visitor (§3/§11).
-// Exported for the callback's promote-path anon rotation.
+// Exported for the callback's sign-in anon rotation.
 export const ANON_MAX_AGE_SEC = 400 * 24 * 60 * 60;
 
 /**
