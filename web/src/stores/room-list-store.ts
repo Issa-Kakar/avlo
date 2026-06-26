@@ -1,19 +1,29 @@
 /**
- * Local room facts — the client source of truth for per-room data that has no server home
- * yet (or is intentionally local): `createdAt`, `lastVisitedAt`, `starred`. localStorage
- * via Zustand `persist` + `immer` (mirrors device-ui-store): synchronous, so the room
- * route's `recordVisit` and the dashboard merge read it with no async ceremony; reactive;
- * cross-tab via the `storage` event; tiny (one small record per room).
+ * Local room state — the client source of truth for per-room data that has no server home
+ * yet (or is intentionally local). Two orthogonal slices, both localStorage via Zustand
+ * `persist` + `immer` (mirrors device-ui-store): synchronous, so the room route's
+ * `recordVisit` and the dashboard merge read with no async ceremony; reactive; cross-tab
+ * via the `storage` event; tiny.
+ *
+ *   • `rooms` — per-room FACTS for rooms this device has INTERACTED with (created / visited /
+ *     renamed): `createdAt`, `lastVisitedAt`, the local `title` fallback, and the server-fact
+ *     mirrors `permission`/`ownerName`/`isOwner`. Every row is born from a real interaction,
+ *     so its timestamps are always real epoch-ms — never a sentinel (the merge relies on this).
+ *   • `starredIds` — the user's STAR preferences as a plain id set. A star is a preference,
+ *     not a timestamped fact, so it must NOT live in `RoomFacts`: coupling it there forced a
+ *     fabricated created/visited timestamp on every star of a server-only room, jumping the row
+ *     to the top of the date sorts. Kept as a separate overlay the merge reads independently —
+ *     starring touches no timestamp and stars a projection-only room (no local facts) cleanly.
  *
  * The D1 projection (TanStack Query, `query/rooms.ts`) is the OTHER half — server-owned
- * ownership / permission / title. `query/room-list.ts` merges the two by roomId. The
- * optional `permission`/`ownerName`/`isOwner` mirrors below are the persisted local copy
- * of those server facts (stamped by `absorbServerRooms` on every `/rooms` fetch + the
- * room DO's `perm:`/`owner:` pushes), so an offline dashboard renders them too.
+ * ownership / permission / title. `query/room-list.ts` merges projection + facts + stars by
+ * roomId. The optional `permission`/`ownerName`/`isOwner` mirrors below are the persisted local
+ * copy of those server facts (stamped by `absorbServerRooms` on every `/rooms` fetch + the room
+ * DO's `perm:`/`owner:` pushes), so an offline dashboard renders them too.
  *
- * Keyed by room id as a plain `string` — a RoomId is assignable to string, so branded
- * callers pass through frictionlessly, and a local facts map crosses no trust boundary
- * that would need the brand re-narrowed.
+ * Keyed by room id as a plain `string` — a RoomId is assignable to string, so branded callers
+ * pass through frictionlessly, and a local map crosses no trust boundary that would need the
+ * brand re-narrowed.
  */
 import type { RoomListEntry } from '@avlo/api-client';
 import { type Permission, ROOM_ID_RE } from '@avlo/shared';
@@ -22,9 +32,10 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
 export interface RoomFacts {
+  /** Always real epoch-ms — a RoomFacts row is born only from a real interaction
+   *  (create / visit / rename), never from starring, so these are never sentinels. */
   createdAt: number;
   lastVisitedAt: number;
-  starred: boolean;
   /** Last title this device gave the room. Display fallback for LOCAL-ONLY rooms only —
    *  once the room is server-known, the D1 projection's title wins in the merge. */
   title?: string;
@@ -37,14 +48,17 @@ export interface RoomFacts {
 
 interface RoomListState {
   rooms: Record<string, RoomFacts>;
+  /** Star preferences as an id set (presence = starred) — a separate overlay from `rooms`, so a
+   *  star never implies a RoomFacts row or a timestamp. The dashboard merge reads it independently. */
+  starredIds: Record<string, true>;
 }
 
 interface RoomListActions {
   /** Stamp a freshly-created room (New Canvas). Idempotent — never clobbers existing facts. */
   createRoom(roomId: string): void;
-  /** Record a visit (room route). Upserts lastVisitedAt; back-fills createdAt + starred. */
+  /** Record a visit (room route). Upserts lastVisitedAt; back-fills createdAt. */
   recordVisit(roomId: string): void;
-  /** Toggle a room's local star (dashboard). Back-fills facts for a server-only row. */
+  /** Toggle a room's star (dashboard). Flips the `starredIds` overlay only — never touches `rooms`/timestamps. */
   toggleStar(roomId: string): void;
   /** Stamp the last locally-given title (rename mutation). Back-fills facts; `undefined` clears (rollback). */
   setRoomTitleFact(roomId: string, title: string | undefined): void;
@@ -53,17 +67,17 @@ interface RoomListActions {
    * row (creating would stamp `createdAt: Date.now()` and corrupt the Last created/Oldest
    * sorts; server-only rooms read straight off the query entry in the merge). Per-field
    * assignment keeps an unchanged refetch a true no-op (no localStorage churn). Private
-   * rooms the caller doesn't own are PRUNED; returns the pruned ids so the caller can
-   * drop their per-room doc DBs.
+   * rooms the caller doesn't own are PRUNED (facts + any dangling star); returns the pruned
+   * ids so the caller can drop their per-room doc DBs.
    */
   absorbServerRooms(entries: readonly RoomListEntry[]): string[];
   /** Mirror a `perm:` push / optimistic permission flip. Update-only; `undefined` clears (rollback). */
   setRoomPermissionFact(roomId: string, permission: Permission | undefined): void;
   /** Mirror an `owner:` push. Update-only. */
   setRoomOwnerFact(roomId: string, isOwner: boolean): void;
-  /** Drop one room's facts (the 4403 eviction path). */
+  /** Drop one room's facts + star (the 4403 eviction path). */
   removeRoom(roomId: string): void;
-  /** Drop everything (sign-out purge). */
+  /** Drop everything — facts + stars (sign-out purge). */
   clearAllRooms(): void;
 }
 
@@ -73,28 +87,28 @@ export const useRoomListStore = create<RoomListStore>()(
   persist(
     immer((set) => ({
       rooms: {},
+      starredIds: {},
       createRoom: (roomId) =>
         set((s) => {
           if (s.rooms[roomId]) return;
           const now = Date.now();
-          s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, starred: false };
+          s.rooms[roomId] = { createdAt: now, lastVisitedAt: now };
         }),
       recordVisit: (roomId) =>
         set((s) => {
           const now = Date.now();
           const prev = s.rooms[roomId];
           if (prev) prev.lastVisitedAt = now;
-          else s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, starred: false };
+          else s.rooms[roomId] = { createdAt: now, lastVisitedAt: now };
         }),
       toggleStar: (roomId) =>
         set((s) => {
-          const prev = s.rooms[roomId];
-          if (prev) {
-            prev.starred = !prev.starred;
-          } else {
-            const now = Date.now();
-            s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, starred: true };
-          }
+          // A star is a preference overlay, NOT a room fact — flip membership in the id set and touch
+          // nothing in `rooms`. This is the whole point of the separate slice: starring a server-only
+          // room (no local facts) no longer fabricates a created/visited timestamp that would jump the
+          // row to the top of the Last-opened / Last-created sorts.
+          if (s.starredIds[roomId]) delete s.starredIds[roomId];
+          else s.starredIds[roomId] = true;
         }),
       setRoomTitleFact: (roomId, title) =>
         set((s) => {
@@ -103,7 +117,7 @@ export const useRoomListStore = create<RoomListStore>()(
             prev.title = title;
           } else if (title !== undefined) {
             const now = Date.now();
-            s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, starred: false, title };
+            s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, title };
           }
         }),
       absorbServerRooms: (entries) => {
@@ -112,6 +126,7 @@ export const useRoomListStore = create<RoomListStore>()(
           for (const e of entries) {
             if (e.permission === 'private' && !e.isOwner) {
               delete s.rooms[e.roomId];
+              delete s.starredIds[e.roomId]; // lost access → drop the now-dangling star too
               pruned.push(e.roomId);
               continue;
             }
@@ -137,25 +152,40 @@ export const useRoomListStore = create<RoomListStore>()(
       removeRoom: (roomId) =>
         set((s) => {
           delete s.rooms[roomId];
+          delete s.starredIds[roomId];
         }),
       clearAllRooms: () =>
         set((s) => {
           s.rooms = {};
+          s.starredIds = {};
         }),
     })),
     {
-      name: 'avlo.rooms.v1',
-      // v1 = the roomId format pivot (12-char base32 → 14-char base62). Pre-pivot ids
-      // fail the new format gate and would sit as dead dashboard rows that bounce to
-      // /home — purge them once on rehydrate.
-      version: 1,
+      name: 'avlo.rooms.v1', // localStorage key (unrelated to the migration `version` below)
+      // version 2 (v1→v2): stars moved out of `RoomFacts` into the dedicated `starredIds`
+      // slice — a star is a preference, not a timestamped fact. Hoist any legacy `starred:true`
+      // row into the new slice and strip the dead key. v1's job survives: the 12→14-char roomId
+      // format pivot still purges pre-pivot ids (and any star that pointed at one).
+      version: 2,
       migrate: (persisted) => {
-        const s = persisted as RoomListState;
-        for (const id in s.rooms) if (!ROOM_ID_RE.test(id)) delete s.rooms[id];
-        return s;
+        const s = persisted as {
+          rooms?: Record<string, RoomFacts & { starred?: boolean }>;
+          starredIds?: Record<string, true>;
+        };
+        const rooms = s.rooms ?? {};
+        const starredIds = s.starredIds ?? {};
+        for (const id in rooms) {
+          if (!ROOM_ID_RE.test(id)) {
+            delete rooms[id];
+            continue;
+          }
+          if (rooms[id].starred) starredIds[id] = true;
+          delete rooms[id].starred;
+        }
+        return { rooms, starredIds } as RoomListState;
       },
       storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({ rooms: s.rooms }),
+      partialize: (s) => ({ rooms: s.rooms, starredIds: s.starredIds }),
     },
   ),
 );

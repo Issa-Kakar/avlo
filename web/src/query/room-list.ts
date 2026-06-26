@@ -4,13 +4,15 @@
  *
  * Union by roomId. A locally-created/visited room is NEVER dropped when the server
  * list lands (the offline-created-room correctness bug); `openedTs = max(local,
- * server)`, `createdTs = local ?? server`, `starred` is local-only. Private rooms
- * someone else owns are never displayed — their server rows are collected into a
- * hidden set BEFORE the facts loop so the local-only fallback can't resurrect one as
- * owned-by-me. Owner display: self → "Me" (anon) or the account name; other → their
- * account name, "Anonymous" for anon owners. Memoized on its inputs (the projection,
- * the facts slice, and the auth name/isAnon pair — without the latter the owner
- * column would show a stale name until an unrelated re-render after `/me` resolves).
+ * server)`, `createdTs = local ?? server`. `starred` is read from the separate
+ * `starredIds` overlay (a preference, never a fact — it lives outside `RoomFacts`, so
+ * it touches no timestamp and a projection-only room still stars). Private rooms someone
+ * else owns are never displayed — their server rows are collected into a hidden set
+ * BEFORE the facts loop so the local-only fallback can't resurrect one as owned-by-me.
+ * Owner display: self → "Me" (anon) or the account name; other → their account name,
+ * "Anonymous" for anon owners. Memoized on its inputs (projection + facts + stars + the
+ * auth name/isAnon pair — without the last the owner column would show a stale name until
+ * an unrelated re-render after `/me` resolves).
  */
 import type { RoomListEntry } from '@avlo/api-client';
 import { useQuery } from '@tanstack/react-query';
@@ -23,6 +25,7 @@ import { roomsQueryOptions } from './rooms';
 export function mergeRooms(
   serverRooms: readonly RoomListEntry[] | undefined,
   facts: Record<string, RoomFacts>,
+  starredIds: Record<string, true>,
   authName: string,
   isAnon: boolean,
 ): Canvas[] {
@@ -43,7 +46,7 @@ export function mergeRooms(
         owner: r.isOwner ? selfName : (r.ownerName ?? 'Anonymous'),
         isOwner: r.isOwner,
         permission: r.permission,
-        starred: f?.starred ?? false,
+        starred: !!starredIds[r.roomId],
         openedTs: f ? Math.max(r.lastVisitedAt, f.lastVisitedAt) : r.lastVisitedAt,
         createdTs: f?.createdAt ?? r.lastVisitedAt, // no createdAt in the projection — fall back to the visit
       });
@@ -65,7 +68,7 @@ export function mergeRooms(
       owner: isOwner ? selfName : (f.ownerName ?? 'Anonymous'),
       isOwner,
       permission: f.permission ?? 'public',
-      starred: f.starred,
+      starred: !!starredIds[id],
       openedTs: f.lastVisitedAt,
       createdTs: f.createdAt,
     });
@@ -78,7 +81,8 @@ export function mergeRooms(
 export function useRoomList(): Canvas[] {
   const server = useQuery(roomsQueryOptions()).data;
   const facts = useRoomListStore((s) => s.rooms);
+  const starredIds = useRoomListStore((s) => s.starredIds);
   const authName = useAuthStore((s) => s.name);
   const isAnon = useAuthStore((s) => s.isAnon);
-  return useMemo(() => mergeRooms(server?.rooms, facts, authName, isAnon), [server, facts, authName, isAnon]);
+  return useMemo(() => mergeRooms(server?.rooms, facts, starredIds, authName, isAnon), [server, facts, starredIds, authName, isAnon]);
 }
