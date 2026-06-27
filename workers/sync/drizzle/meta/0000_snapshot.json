@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1dfb977f-524a-4d06-8da6-49d2712b4108",
+  "id": "70692d5a-27c2-4e3e-b70a-e82368ce6fa3",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "room_meta": {
@@ -30,13 +30,6 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

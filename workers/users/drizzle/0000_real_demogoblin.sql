@@ -11,7 +11,6 @@ CREATE TABLE `rooms` (
 	`owner_id` text NOT NULL,
 	`permission` text NOT NULL,
 	`created_at` integer NOT NULL,
-	`updated_at` integer NOT NULL,
 	`title` text DEFAULT 'Untitled' NOT NULL,
 	`rev` integer NOT NULL,
 	`deleted_at` integer

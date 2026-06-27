@@ -13,7 +13,6 @@ export const roomMeta = sqliteTable('room_meta', {
   ownerId: text('owner_id').$type<UserId>().notNull(),
   permission: text('permission').$type<Permission>().notNull(),
   createdAt: integer('created_at').notNull(),
-  updatedAt: integer('updated_at').notNull(),
   title: text('title').notNull().default('Untitled'), // owner-only rename via the DO's setTitle RPC
   rev: integer('rev').notNull(), // monotonic per-room counter — bumped on EVERY meta mutation (create/permission/title/migrate), NOT on visits; the projection's ordering resolver
   deletedAt: integer('deleted_at'), // nullable epoch-ms tombstone (NULL = live); persistent (no delete flow yet)

@@ -6,9 +6,11 @@
  * via the `storage` event; tiny.
  *
  *   • `rooms` — per-room FACTS for rooms this device has INTERACTED with (created / visited /
- *     renamed): `createdAt`, `lastVisitedAt`, the local `title` fallback, and the server-fact
- *     mirrors `permission`/`ownerName`/`isOwner`. Every row is born from a real interaction,
- *     so its timestamps are always real epoch-ms — never a sentinel (the merge relies on this).
+ *     renamed): `lastVisitedAt`, the optional `createdAt` (set only by a genuine local create
+ *     or corrected down to server truth via `absorbServerRooms` — a visit/rename is NOT a
+ *     creation), the local `title` fallback, and the server-fact mirrors
+ *     `permission`/`ownerName`/`isOwner`. Every row is born from a real interaction, so its
+ *     timestamps are always real epoch-ms — never a sentinel (the merge relies on this).
  *   • `starredIds` — the user's STAR preferences as a plain id set. A star is a preference,
  *     not a timestamped fact, so it must NOT live in `RoomFacts`: coupling it there forced a
  *     fabricated created/visited timestamp on every star of a server-only room, jumping the row
@@ -32,9 +34,12 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
 export interface RoomFacts {
-  /** Always real epoch-ms — a RoomFacts row is born only from a real interaction
-   *  (create / visit / rename), never from starring, so these are never sentinels. */
-  createdAt: number;
+  /** This device's knowledge of a REAL creation, epoch-ms — set only by a genuine local
+   *  create (`createRoom`), or corrected down to server truth via `absorbServerRooms`
+   *  (`min` with the server `createdAt`). A *visit* or *rename* is NOT a creation, so those
+   *  paths no longer stamp it — hence optional. The merge prefers the earliest known value
+   *  and falls back to `lastVisitedAt` only when this is absent. Never a sentinel. */
+  createdAt?: number;
   lastVisitedAt: number;
   /** Last title this device gave the room. Display fallback for LOCAL-ONLY rooms only —
    *  once the room is server-known, the D1 projection's title wins in the merge. */
@@ -56,7 +61,8 @@ interface RoomListState {
 interface RoomListActions {
   /** Stamp a freshly-created room (New Canvas). Idempotent — never clobbers existing facts. */
   createRoom(roomId: string): void;
-  /** Record a visit (room route). Upserts lastVisitedAt; back-fills createdAt. */
+  /** Record a visit (room route). Upserts lastVisitedAt only — a visit is NOT a creation,
+   *  so it never stamps `createdAt` (server truth flows in via `absorbServerRooms`). */
   recordVisit(roomId: string): void;
   /** Toggle a room's star (dashboard). Flips the `starredIds` overlay only — never touches `rooms`/timestamps. */
   toggleStar(roomId: string): void;
@@ -64,11 +70,12 @@ interface RoomListActions {
   setRoomTitleFact(roomId: string, title: string | undefined): void;
   /**
    * Absorb the `/rooms` projection into the local mirrors. UPDATE-ONLY — never creates a
-   * row (creating would stamp `createdAt: Date.now()` and corrupt the Last created/Oldest
-   * sorts; server-only rooms read straight off the query entry in the merge). Per-field
-   * assignment keeps an unchanged refetch a true no-op (no localStorage churn). Private
-   * rooms the caller doesn't own are PRUNED (facts + any dangling star); returns the pruned
-   * ids so the caller can drop their per-room doc DBs.
+   * row (server-only rooms read straight off the query entry in the merge). Folds the
+   * server FWW `createdAt` into an existing row via `min` — correcting an absent local value
+   * up to server truth while preserving an EARLIER offline-created time. Per-field assignment
+   * keeps an unchanged refetch a true no-op (no localStorage churn). Private rooms the caller
+   * doesn't own are PRUNED (facts + any dangling star); returns the pruned ids so the caller
+   * can drop their per-room doc DBs.
    */
   absorbServerRooms(entries: readonly RoomListEntry[]): string[];
   /** Mirror a `perm:` push / optimistic permission flip. Update-only; `undefined` clears (rollback). */
@@ -99,7 +106,9 @@ export const useRoomListStore = create<RoomListStore>()(
           const now = Date.now();
           const prev = s.rooms[roomId];
           if (prev) prev.lastVisitedAt = now;
-          else s.rooms[roomId] = { createdAt: now, lastVisitedAt: now };
+          // New row from a visit: lastVisitedAt only. A visit is NOT a creation — `createdAt`
+          // stays absent until a genuine local create or the server's FWW value via absorb.
+          else s.rooms[roomId] = { lastVisitedAt: now };
         }),
       toggleStar: (roomId) =>
         set((s) => {
@@ -116,8 +125,9 @@ export const useRoomListStore = create<RoomListStore>()(
           if (prev) {
             prev.title = title;
           } else if (title !== undefined) {
-            const now = Date.now();
-            s.rooms[roomId] = { createdAt: now, lastVisitedAt: now, title };
+            // A rename is NOT a creation — new row carries no `createdAt` (server FWW fills it
+            // in via absorb; the merge falls back to lastVisitedAt meanwhile).
+            s.rooms[roomId] = { lastVisitedAt: Date.now(), title };
           }
         }),
       absorbServerRooms: (entries) => {
@@ -135,6 +145,11 @@ export const useRoomListStore = create<RoomListStore>()(
             if (prev.permission !== e.permission) prev.permission = e.permission;
             if (prev.ownerName !== e.ownerName) prev.ownerName = e.ownerName;
             if (prev.isOwner !== e.isOwner) prev.isOwner = e.isOwner;
+            // Fold server FWW `createdAt`: correct a previously-absent value up to server truth,
+            // but PRESERVE an earlier offline-created time (the device knew the real creation
+            // before the DO minted meta). min() does both.
+            const merged = prev.createdAt != null ? Math.min(prev.createdAt, e.createdAt) : e.createdAt;
+            if (prev.createdAt !== merged) prev.createdAt = merged;
           }
         });
         return pruned;

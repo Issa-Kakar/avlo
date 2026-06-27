@@ -4,7 +4,10 @@
  *
  * Union by roomId. A locally-created/visited room is NEVER dropped when the server
  * list lands (the offline-created-room correctness bug); `openedTs = max(local,
- * server)`, `createdTs = local ?? server`. `starred` is read from the separate
+ * server)`. `createdTs` prefers the EARLIEST known creation — `min(server FWW,
+ * local createdAt)` when both exist (an offline-created room's local time can predate
+ * the DO's meta mint), else whichever is present, falling back to the visit time for a
+ * visit-/rename-born local row that has no creation yet. `starred` is read from the separate
  * `starredIds` overlay (a preference, never a fact — it lives outside `RoomFacts`, so
  * it touches no timestamp and a projection-only room still stars). Private rooms someone
  * else owns are never displayed — their server rows are collected into a hidden set
@@ -48,7 +51,9 @@ export function mergeRooms(
         permission: r.permission,
         starred: !!starredIds[r.roomId],
         openedTs: f ? Math.max(r.lastVisitedAt, f.lastVisitedAt) : r.lastVisitedAt,
-        createdTs: f?.createdAt ?? r.lastVisitedAt, // no createdAt in the projection — fall back to the visit
+        // Server `createdAt` is FWW truth; an offline-created local time may be earlier (the
+        // device knew the real creation before the DO minted meta) — prefer the earliest.
+        createdTs: f?.createdAt != null ? Math.min(r.createdAt, f.createdAt) : r.createdAt,
       });
     }
   }
@@ -70,7 +75,9 @@ export function mergeRooms(
       permission: f.permission ?? 'public',
       starred: !!starredIds[id],
       openedTs: f.lastVisitedAt,
-      createdTs: f.createdAt,
+      // Local-only (not yet projected): genuine create stamped `createdAt`; a visit-/rename-born
+      // row has none yet, so fall back to the visit time until the server FWW value absorbs in.
+      createdTs: f.createdAt ?? f.lastVisitedAt,
     });
   }
 

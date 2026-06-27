@@ -196,7 +196,6 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       ownerId,
       permission,
       createdAt: now,
-      updatedAt: now,
       title,
       rev: 1,
       deletedAt: null,
@@ -248,10 +247,9 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       this.meta = this.#mintMeta(caller, 'Untitled', next);
     } else {
       if (this.meta.ownerId !== caller) throw new Error('forbidden');
-      const now = Date.now();
       const rev = this.meta.rev + 1;
-      this.db.update(roomMeta).set({ permission: next, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-      this.meta = { ...this.meta, permission: next, updatedAt: now, rev }; // ★ warm-cache fix
+      this.db.update(roomMeta).set({ permission: next, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
+      this.meta = { ...this.meta, permission: next, rev }; // ★ warm-cache fix
     }
 
     // Single pass over live connections (the mint path has zero by construction —
@@ -297,10 +295,9 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       this.meta = this.#mintMeta(caller, title);
     } else {
       if (this.meta.ownerId !== caller) throw new Error('forbidden');
-      const now = Date.now();
       const rev = this.meta.rev + 1;
-      this.db.update(roomMeta).set({ title, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-      this.meta = { ...this.meta, title, updatedAt: now, rev }; // ★ warm-cache fix
+      this.db.update(roomMeta).set({ title, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
+      this.meta = { ...this.meta, title, rev }; // ★ warm-cache fix
     }
 
     for (const c of this.getConnections<ConnState>()) this.sendCustomMessage(c, `title:${title}`);
@@ -336,10 +333,9 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     if (!this.meta) throw new Error('forbidden'); // no room to migrate
     if (this.meta.ownerId === to) return this.meta; // ★ idempotent: already migrated — NO rev bump, NO project
     if (this.meta.ownerId !== from) throw new Error('forbidden'); // owned by a third party — skip, never force
-    const now = Date.now();
     const rev = this.meta.rev + 1;
-    this.db.update(roomMeta).set({ ownerId: to, updatedAt: now, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-    this.meta = { ...this.meta, ownerId: to, updatedAt: now, rev }; // ★ warm-cache fix
+    this.db.update(roomMeta).set({ ownerId: to, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
+    this.meta = { ...this.meta, ownerId: to, rev }; // ★ warm-cache fix
 
     // Re-push the per-connection owner flag: the new owner's tabs gain the badge live; the
     // `from`-owner's tabs lose it (full lockout waits for reconnect — its anon id was rotated).

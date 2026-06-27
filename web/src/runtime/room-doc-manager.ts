@@ -565,6 +565,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         queryClient.setQueryData<RoomsQueryData>(ROOMS_QUERY_KEY, (data) =>
           data ? { ...data, rooms: data.rooms.map((r) => (r.roomId === this.roomId ? { ...r, permission: 'private' } : r)) } : data,
         );
+        // Authoritatively refetch the dashboard: the server redacts/prunes the now-forbidden
+        // row, so the in-memory patch above is just the instant-hide; this purges the cache on
+        // rejection instead of leaning on natural staleness (kills a back/forward ghost row).
+        void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
         // y-indexeddb destroy-and-delete: clearData() unhooks the update listener BEFORE
         // deleting, so the live Y.Doc can't re-persist; the dispose chain's later
         // destroy() is a harmless no-op on the nulled field.

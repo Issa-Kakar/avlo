@@ -51,7 +51,6 @@ export function upsertRoomsFromMeta(db: DrizzleD1Database<typeof schema>, rows: 
       set: {
         ownerId: sql`excluded.owner_id`,
         permission: sql`excluded.permission`,
-        updatedAt: sql`excluded.updated_at`,
         title: sql`excluded.title`,
         rev: sql`excluded.rev`,
         deletedAt: sql`excluded.deleted_at`,

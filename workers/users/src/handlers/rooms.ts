@@ -32,6 +32,7 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
         permission: rooms.permission,
         ownerId: rooms.ownerId,
         ownerName: users.name,
+        createdAt: rooms.createdAt, // FWW server truth — the dashboard "Created" column; non-sensitive, surfaced even for redacted rows
         lastVisitedAt: roomVisits.lastVisitedAt,
       })
       .from(roomVisits)
@@ -51,6 +52,7 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
       permission: r.permission,
       isOwner,
       ownerName: redact ? null : r.ownerName,
+      createdAt: r.createdAt, // non-sensitive — surfaced unconditionally (redacted rows are pruned client-side)
       lastVisitedAt: r.lastVisitedAt,
     };
   });

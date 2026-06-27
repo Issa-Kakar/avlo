@@ -38,7 +38,6 @@ export const MetaEvent = z.object({
   ownerId: userId,
   permission: Permission,
   createdAt: z.number(),
-  updatedAt: z.number(),
   title: z.string(),
   rev,
   deletedAt: z.number().nullable(),

@@ -20,6 +20,7 @@ export interface RoomListEntry {
   permission: Permission;
   isOwner: boolean;
   ownerName: string | null; // account directory join — null for anon owners (no `users` row)
+  createdAt: number; // FWW server truth (epoch-ms) — the dashboard "Created" date; surfaced even for redacted rows (non-sensitive)
   lastVisitedAt: number;
 }
 
