@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from 'react';
+import { type MouseEvent, memo, type ReactNode } from 'react';
 import { openImageFilePicker } from '@/core/image/image-actions';
 import {
   isStrokeTool,
@@ -66,12 +66,21 @@ const clickCode = () => setActiveTool('code');
 const clickEraser = () => setActiveTool('eraser');
 const clickImage = () => openImageFilePicker();
 
+// Dock buttons must never pull focus off the canvas (zero-friction pattern):
+// preventDefault on mousedown stops the pressed button from taking DOM focus, so
+// keyboard tool-shortcuts keep working and no stray focus ring can render. One
+// handler on the pill covers every button (tool / inspector / swatch) and any future
+// one; the color picker's hex field is the lone real input in here — let it focus.
+const preventDockFocusSteal = (e: MouseEvent) => {
+  if (!(e.target as HTMLElement).closest('input')) e.preventDefault();
+};
+
 export function Toolbar() {
   const activeTool = useDeviceUIStore((s) => s.tool.active);
   const stickyPanelOpen = useDeviceUIStore(selectStickyPanelOpen);
 
   return (
-    <div className="toolbar-wrap">
+    <div className="toolbar-wrap" onMouseDown={preventDockFocusSteal}>
       <div className="toolbar-main">
         <ToolButton isActive={activeTool === 'select'} tooltip="Select (V)" onClick={clickSelect}>
           <IconSelect className="icon" />

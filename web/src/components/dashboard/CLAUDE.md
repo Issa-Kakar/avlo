@@ -39,8 +39,10 @@ Dashboard            shell — owns view ('home'|'recent'|'starred') + Home filt
                 └── CanvasRow (memo) → Cell      Type cell (permissionLabel + EyeIcon); KebabMenuCell (isOwner rows) + NameCell input while renaming
 ```
 
-The `spine` (max-width 1280, left-aligned) shares the top bar row's left edge + right
-cap, so the New Canvas button lines up with the table's right edge.
+The `spine` is fluid — it fills the available width inside `.dash-content`'s 48px
+gutters at every viewport (no max-width cap). The top bar row shares those same
+gutters, so the New Canvas button still lines up with the table's right edge —
+alignment via the shared gutter, not a shared max-width.
 
 ## Conventions / performance
 

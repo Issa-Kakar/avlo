@@ -584,8 +584,13 @@ defined by their fill + shadow alone, no border.
 
 Every button in the dock (`ToolButton`, `InspectorButton`, `ColorButton`, the
 picker `Swatch`, and the picker action / hex-apply buttons) carries
-`tabIndex={-1}`. None of the toolbar's `*.css` files define a `:focus-visible`
-outline. This is deliberate:
+`tabIndex={-1}`, and `.toolbar-wrap` has a single `onMouseDown` handler
+(`preventDockFocusSteal` in `Toolbar.tsx`) that `preventDefault`s any press whose
+target isn't an `<input>` — so no dock button ever takes DOM focus on click
+(mouse activation still fires `onClick`; the hex field is the lone real input and
+is excluded). One handler covers every current and future button in the pill,
+instead of a per-button `preventFocus`. None of the toolbar's `*.css` files define
+a `:focus-visible` outline. This is deliberate:
 
 - The keyboard surface of this app is the **canvas** — every tool has a
   shortcut (`V`/`P`/`A`/…); keyboard activation never goes through the dock.

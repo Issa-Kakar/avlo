@@ -30,6 +30,7 @@ export const RoomTitle = memo(function RoomTitle() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const cancelled = useRef(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
   const { mutate } = useRenameRoom();
 
   const display = title ?? 'Untitled';
@@ -40,6 +41,21 @@ export const RoomTitle = memo(function RoomTitle() {
       document.title = 'Avlo';
     };
   }, [display]);
+
+  // Commit on outside press. The chrome around the title won't blur it for us — the
+  // canvas preventDefaults its pointerdown, and the dock/topbar buttons refuse focus
+  // — so without this the input stays focused and keystrokes leak into the canvas. A
+  // document `pointerdown` (not mousedown — fires before the canvas's preventDefault)
+  // outside the pill blurs the input, committing through the one onBlur path. Same
+  // pattern as MainMenuTrigger / useDropdown.
+  useEffect(() => {
+    if (!editing) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) wrapRef.current?.querySelector('input')?.blur();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [editing]);
 
   if (!editing) {
     const startEdit = () => {
@@ -66,10 +82,11 @@ export const RoomTitle = memo(function RoomTitle() {
   };
 
   return (
-    <span className="top-bar-name top-bar-name-edit" data-value={draft}>
+    <span ref={wrapRef} className="top-bar-name top-bar-name-edit" data-value={draft}>
       <input
         className="top-bar-name-input"
         value={draft}
+        size={1}
         maxLength={ROOM_TITLE_MAX_LEN}
         autoFocus
         onFocus={(e) => e.currentTarget.select()}

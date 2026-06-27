@@ -55,12 +55,18 @@
     overflow-y: auto;
   }
 
+  /* 48px horizontal padding is the shared left/right gutter — the top bar row uses
+     the same value, which is what lines the New Canvas button up with the table's
+     right edge (alignment via shared gutter, not a shared max-width). */
   .dash-content {
     padding: 36px 48px 56px;
   }
 
+  /* Fluid: fills the available width inside the gutters at every viewport. A list/
+     table reads best edge-to-edge, and no arbitrary max-width cap means no stranded
+     empty space on wide screens. */
   .dash-spine {
-    max-width: 1280px;
+    width: 100%;
   }
 
   /* ----- sidebar ----- */
@@ -137,7 +143,6 @@
     align-items: center;
     gap: 24px;
     width: 100%;
-    max-width: 1280px;
   }
 
   .dash-search {
@@ -402,21 +407,6 @@
     position: relative; /* anchor for the row kebab menu */
   }
 
-  /* Row kebab menu — the shared .dash-dd-menu popover, re-anchored to the kebab's
-     right edge (the kebab is the last column; a left-anchored menu would hang past
-     the table's right cap). */
-  .dash-row-menu {
-    left: auto;
-    right: 4px;
-    min-width: 150px;
-  }
-
-  /* Kebab menu rows — the main-menu row language: one body ink on the row, the
-     20×20 leading icon + label both inherit via currentColor. */
-  .dash-row-menu-item {
-    color: var(--color-chrome-ink-body);
-  }
-
   /* Inline rename input — same type as the static name cell (14/600/-0.01em), framed
      by the chrome's interactive hairline (#818f9c, shared with the topbar title) so
      edit mode is unambiguous. The 9px text inset from padding+border reads as the
@@ -559,5 +549,21 @@
     display: inline-flex;
     flex-shrink: 0;
     color: #fff;
+  }
+
+  /* Row kebab menu — the .dash-dd-menu / .dash-dd-item popover re-anchored to the
+     kebab's right edge (it's the last column; a left-anchored menu would hang past
+     the table's right cap) and recolored to the main-menu body ink. MUST stay after
+     the .dash-dd-* base rules: these are co-class modifiers, so equal specificity
+     means source order decides. Placed before the base, its min-width:100% / left:0
+     win and collapse the menu onto the 56px kebab cell (text overflows the box). */
+  .dash-row-menu {
+    left: auto;
+    right: 4px;
+    min-width: 150px;
+  }
+
+  .dash-row-menu-item {
+    color: var(--color-chrome-ink-body);
   }
 }

@@ -168,6 +168,9 @@
   grid-area: 1 / 1;
 }
 
+/* The input carries `size="1"` in the JSX — without it the control's default ~20ch
+   intrinsic width inflates the grid track past the ::after mirror, so the pill would
+   snap to the 160px cap on edit instead of hugging the name (rest↔edit WYSIWYG). */
 .top-bar-name-input {
   grid-area: 1 / 1;
   width: 100%;
