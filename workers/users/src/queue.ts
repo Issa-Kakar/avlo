@@ -24,7 +24,7 @@ import type { UsersEnv } from './env';
  */
 
 // D1 caps bound parameters at 100 per statement — chunk rows so each multi-row upsert stays
-// under it: visits bind 3 params/row (33×3=99), meta 8 (12×8=96).
+// under it: visits bind 3 params/row (33×3=99), meta 7 (12×7=84; headroom to 14 if needed).
 const VISIT_ROWS_MAX = 33;
 const META_ROWS_MAX = 12;
 
