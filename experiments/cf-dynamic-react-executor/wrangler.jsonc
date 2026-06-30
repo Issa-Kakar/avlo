@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-dynamic-executor",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "worker_loaders": [
+    { "binding": "LOADER" }
+  ],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.txt"] }
+  ]
+}
