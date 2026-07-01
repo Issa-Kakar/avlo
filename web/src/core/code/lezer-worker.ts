@@ -1,15 +1,25 @@
 /**
  * Lezer Worker — Incremental parsing + flat span extraction
  *
- * One of 2 warm pool workers. Owns per-object parse state (Tree + TreeFragments).
- * Main thread never touches parse state.
+ * One of 2 warm pool workers. Owns per-object parse state (Tree + TreeFragments +
+ * text mirror). Main thread never touches parse state.
  *
  * Protocol:
- *   Main → Worker: { type:'parse', id, text, language, version, changes? }
+ *   Main → Worker: { type:'parse', id, language, version, text }   // full seed/reset — mirror = text
+ *   Main → Worker: { type:'parse', id, language, version, edits }  // Yjs delta — splice mirror + incremental parse
  *   Main → Worker: { type:'remove', id }
  *   Main → Worker: { type:'clearAll' }
  *   Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineStart: Uint32Array }
  *                  (both ArrayBuffers transferred zero-copy)
+ *
+ * The worker keeps a per-id text mirror so edits arrive as tiny Yjs deltas
+ * instead of the full re-serialized block text on every keystroke. The mirror
+ * splice and the incremental `ChangedRange[]` both derive from one delta pass.
+ *
+ * Parsers load lazily per language via dynamic `import()` (see REGISTRY) — no
+ * grammar is resident until the first block of that language appears. Steady
+ * state stays synchronous; only the first block of a not-yet-loaded language
+ * buffers (in arrival order) for the ~1-frame load, preserving per-id ordering.
  *
  * Lezer-tag → S mapping lives inline at the bottom of this file as `STYLE_HIGHLIGHTER`
  * (returns the stringified S int directly; `highlightTree` callback recovers via
@@ -22,8 +32,6 @@ import type { Parser, Tree } from '@lezer/common';
 import { TreeFragment } from '@lezer/common';
 import type { Highlighter, Tag } from '@lezer/highlight';
 import { highlightTree, tags } from '@lezer/highlight';
-import { parser as jsParser } from '@lezer/javascript';
-import { parser as pythonParser } from '@lezer/python';
 
 import { S, writePackedTriples } from './code-tokens';
 
@@ -34,21 +42,52 @@ import { S, writePackedTriples } from './code-tokens';
 interface ParseState {
   tree: Tree;
   fragments: readonly TreeFragment[];
+  mirror: string; // worker-side text mirror — spliced per edit delta
 }
 
 const state = new Map<string, ParseState>();
 
 // ============================================================================
-// Cached configured parsers — created once at worker startup
+// Lazy per-language parser registry — dynamic import(), configured on first use
 // ============================================================================
 
-const tsParser = jsParser.configure({ dialect: 'ts jsx' });
-const jsxParser = jsParser.configure({ dialect: 'jsx' });
+// The configurable LR parser type — derived from a grammar module so we don't
+// import `@lezer/lr` directly (pnpm won't resolve it from web; it's only a
+// transitive dep of the grammar packages). `.configure()` lives on this type,
+// not on `@lezer/common`'s abstract `Parser`.
+type LRParser = typeof import('@lezer/javascript')['parser'];
 
-function getParser(language: string): Parser {
-  if (language === 'python') return pythonParser;
-  if (language === 'typescript') return tsParser;
-  return jsxParser;
+// language → { load: dynamic import, configure?: post-load parser config }.
+// `@lezer/javascript` backs both js/ts — the second import() resolves to the
+// same already-fetched module chunk, so only the `.configure()` differs.
+const REGISTRY: Record<string, { load: () => Promise<{ parser: LRParser }>; configure?: (p: LRParser) => Parser }> = {
+  javascript: { load: () => import('@lezer/javascript'), configure: (p) => p.configure({ dialect: 'jsx' }) },
+  typescript: { load: () => import('@lezer/javascript'), configure: (p) => p.configure({ dialect: 'ts jsx' }) },
+  python: { load: () => import('@lezer/python') },
+  // sql / html added later — one entry each (resolve exact grammar pkg then;
+  // @lezer/html for HTML; SQL likely via @codemirror/lang-sql's parser).
+};
+
+const parsers = new Map<string, Parser>(); // loaded, configured
+const loading = new Map<string, Promise<Parser>>(); // in-flight loads
+
+/** Resolve a parser — cached if resident, else start (or join) its dynamic load. */
+function getParser(language: string): Promise<Parser> {
+  const cached = parsers.get(language);
+  if (cached) return Promise.resolve(cached);
+
+  const inFlight = loading.get(language);
+  if (inFlight) return inFlight;
+
+  const entry = REGISTRY[language] ?? REGISTRY.javascript;
+  const promise = entry.load().then((mod) => {
+    const configured = entry.configure ? entry.configure(mod.parser) : mod.parser;
+    parsers.set(language, configured);
+    loading.delete(language);
+    return configured;
+  });
+  loading.set(language, promise);
+  return promise;
 }
 
 // ============================================================================
@@ -62,8 +101,55 @@ interface ChangedRange {
   toB: number;
 }
 
-function parse(id: string, text: string, language: string, changes?: ChangedRange[]): Tree {
-  const parser = getParser(language);
+type DeltaOp = { retain?: number; insert?: string | object; delete?: number };
+
+/**
+ * Splice `mirror` per Yjs delta op AND derive the incremental `ChangedRange[]`
+ * in one pass — both the fresh text and the ranges come from the same walk.
+ * (Ported from the former main-thread `deltaToChangedRanges` + a mirror splice.)
+ */
+function applyEdits(mirror: string, edits: DeltaOp[]): { text: string; changes: ChangedRange[] } {
+  const ranges: ChangedRange[] = [];
+  let result = '';
+  let posOld = 0; // read cursor into `mirror`
+  let posNew = 0; // write cursor into `result`
+
+  for (const op of edits) {
+    if (op.retain) {
+      result += mirror.slice(posOld, posOld + op.retain);
+      posOld += op.retain;
+      posNew += op.retain;
+    } else if (op.delete) {
+      const len = op.delete;
+      ranges.push({ fromA: posOld, toA: posOld + len, fromB: posNew, toB: posNew });
+      posOld += len;
+    } else if (op.insert) {
+      const ins = typeof op.insert === 'string' ? op.insert : '';
+      result += ins;
+      const len = ins.length;
+      ranges.push({ fromA: posOld, toA: posOld, fromB: posNew, toB: posNew + len });
+      posNew += len;
+    }
+  }
+  // Untouched tail (delta ends before the mirror's end — Yjs omits a trailing retain).
+  result += mirror.slice(posOld);
+
+  // Merge adjacent ranges (select+type/paste → delete+insert at same position)
+  let wi = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    if (wi > 0 && ranges[wi - 1].toA === ranges[i].fromA && ranges[wi - 1].toB === ranges[i].fromB) {
+      ranges[wi - 1].toA = ranges[i].toA;
+      ranges[wi - 1].toB = ranges[i].toB;
+    } else {
+      ranges[wi++] = ranges[i];
+    }
+  }
+  ranges.length = wi;
+
+  return { text: result, changes: ranges };
+}
+
+function parse(id: string, parser: Parser, text: string, changes?: ChangedRange[]): Tree {
   const prev = state.get(id);
 
   let tree: Tree;
@@ -78,8 +164,33 @@ function parse(id: string, text: string, language: string, changes?: ChangedRang
     fragments = TreeFragment.addTree(tree);
   }
 
-  state.set(id, { tree, fragments });
+  state.set(id, { tree, fragments, mirror: text });
   return tree;
+}
+
+/**
+ * Resolve text + incremental changes for a parse message, run the parse, and
+ * emit spans. `msg.text` present → full seed/reset; else `msg.edits` (Yjs delta)
+ * splices the existing mirror. The `seeded` guard on the main side ensures an
+ * `edits` message never precedes its full seed, so `prev` is present here.
+ */
+function processParse(msg: { id: string; version: number; text?: string; edits?: DeltaOp[] }, parser: Parser): void {
+  const { id, version } = msg;
+  let text: string;
+  let changes: ChangedRange[] | undefined;
+
+  if (msg.text !== undefined) {
+    text = msg.text;
+  } else {
+    const prev = state.get(id);
+    if (!prev) return; // edits before seed — shouldn't happen (main gates via `seeded`)
+    const applied = applyEdits(prev.mirror, msg.edits as DeltaOp[]);
+    text = applied.text;
+    changes = applied.changes;
+  }
+
+  const tree = parse(id, parser, text, changes);
+  extractAndSendSpans(tree, text, id, version);
 }
 
 // ============================================================================
@@ -300,8 +411,14 @@ const STYLE_HIGHLIGHTER: Highlighter = {
 };
 
 // ============================================================================
-// Message handler
+// Message handler — synchronous steady state, buffer-during-load per language
 // ============================================================================
+
+// Parse messages that arrived before their language's parser finished loading,
+// keyed by language, kept in arrival order. Drained in order once loaded so an
+// id's incremental fragment/mirror state stays consistent (language is fixed
+// per edit, so per-id order is preserved).
+const pending = new Map<string, { id: string; version: number; text?: string; edits?: DeltaOp[] }[]>();
 
 self.onmessage = (e: MessageEvent) => {
   try {
@@ -309,9 +426,32 @@ self.onmessage = (e: MessageEvent) => {
 
     switch (msg.type) {
       case 'parse': {
-        const { id, text, language, version, changes } = msg;
-        const tree = parse(id, text, language, changes);
-        extractAndSendSpans(tree, text, id, version);
+        const language: string = msg.language;
+        const parser = parsers.get(language);
+        if (parser) {
+          // Steady state — parser resident, process inline (no await).
+          processParse(msg, parser);
+          break;
+        }
+        // Parser not loaded — buffer this language's messages in arrival order.
+        const queue = pending.get(language);
+        if (queue) {
+          queue.push(msg); // load already kicked off by the first buffered message
+          break;
+        }
+        pending.set(language, [msg]);
+        getParser(language).then((p) => {
+          const drain = pending.get(language);
+          pending.delete(language);
+          if (!drain) return;
+          for (const m of drain) {
+            try {
+              processParse(m, p);
+            } catch (err) {
+              console.error('[worker] crash (drain)', err);
+            }
+          }
+        });
         break;
       }
       case 'remove':
@@ -319,6 +459,7 @@ self.onmessage = (e: MessageEvent) => {
         break;
       case 'clearAll':
         state.clear();
+        pending.clear(); // stale buffered messages from a torn-down room never drain
         break;
     }
   } catch (err) {

@@ -1,0 +1,21 @@
+# Local dev secrets for the auth worker (workers/auth).
+# Copy this file to `workers/auth/.dev.vars` (gitignored) before running `pnpm dev`:
+#     cp workers/auth/.dev.vars.example workers/auth/.dev.vars
+# Without it, `/me` and Google sign-in return 500 (see scripts/dev-miniflare.mjs).
+#
+# GOOGLE_CLIENT_ID and the prod APP_ORIGIN / OAUTH_REDIRECT_URI already live in
+# workers/auth/wrangler.jsonc as public vars — only the three secrets below and the
+# two localhost dev overrides belong in .dev.vars.
+
+# --- Secrets (required for the worker to boot cleanly) ---
+# Any random string works for local dev. Generate with: openssl rand -hex 32
+ANON_SECRET=replace-with-openssl-rand-hex-32
+OAUTH_PKCE_SECRET=replace-with-openssl-rand-hex-32
+# Anonymous auth works without a real value, but the worker reads this at startup.
+# Set it to a real Google OAuth client secret only if you exercise Google sign-in locally.
+GOOGLE_CLIENT_SECRET=replace-with-google-oauth-client-secret
+
+# --- Dev overrides (point the OAuth flow at localhost instead of prod) ---
+# Match the auth worker's local port (wrangler.jsonc dev comment: :8792).
+APP_ORIGIN=http://localhost:3000
+OAUTH_REDIRECT_URI=http://localhost:8792/callback

@@ -7,7 +7,7 @@ import { getZ, isZKey, Permission, type RoomId, SYNC_WS_PREFIX, type UserId, typ
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { getCodeProps, getContent, getFontFamily, getFontSize } from '@/core/accessors';
+import { getContent, getFontFamily, getFontSize, getLanguage } from '@/core/accessors';
 import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
@@ -313,7 +313,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           const content = yObj.get('content');
           const kind = yObj.get('kind') as string | undefined;
           if (kind === 'code' && ev instanceof Y.YTextEvent) {
-            const lang = getCodeProps(yObj)?.language ?? 'javascript';
+            const lang = getLanguage(yObj);
             codeSystem.handleContentChange(id, ev, lang);
           } else if (content instanceof Y.XmlFragment) {
             textLayoutCache.invalidateContent(id, content);

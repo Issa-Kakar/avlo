@@ -1,143 +1,45 @@
-# Python venv
-.venv/
-
 # Dependencies
 node_modules/
-*.pnp
-.pnp.js
-node_modules
-# Testing
-coverage/
-*.lcov
-.nyc_output
 
-# Production
+# Python venv (scripts/subset-*.py)
+.venv/
+
+# Build output
 dist/
-build/
-server/public/
+*.tsbuildinfo
 
-# Misc
-.DS_Store
+# Logs
+*.log
+
+# Environment variables & secrets
+.env
+.env.*
+.dev.vars
+**/.dev.vars
 *.pem
 
-# Debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-.pnpm-debug.log*
+# Tooling caches (Wrangler/Miniflare, Turborepo, TanStack Router)
+.wrangler/
+*/.wrangler/
+.turbo/
+**/.turbo/
+.tanstack/
+*/.tanstack/
 
-# IDE
+# Editor / IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Wrangler local secrets (per-worker dev secrets, never committed)
-.dev.vars
-**/.dev.vars
-
-# TypeScript
-*.tsbuildinfo
-
-# Optional npm cache directory
-.npm
-
-# Optional eslint cache
-.eslintcache
-
-# Optional stylelint cache
-.stylelintcache
-
-# Optional REPL history
-.node_repl_history
-
-# Output of 'npm pack'
-*.tgz
-
-# Yarn Integrity file
-.yarn-integrity
-
-# dotenv environment variable files
-.env.development
-.env.test
-.env.production
-
-# PWA files
-**/public/workbox-*.js
-**/public/workbox-*.js.map
-**/public/sw.js
-**/public/sw.js.map
-
-# Prisma
-prisma/migrations/
-
-# Playwright
-/test-results/
-/playwright-report/
-/playwright/.cache/
-
-# Vite
-client/dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/
-.idea
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# System Files
+# OS files
 .DS_Store
 Thumbs.db
 
-# Logs
-logs
-*.log
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Environment variables (duplicate entries removed)
-
-# development files
-prompt.md 
-completed_tasks/
-
-# Compiled JavaScript in source directories
-client/src/**/*.js
-!client/src/**/*.config.js
-packages/*/src/**/*.js
-
-completed_tasks
-# Wrangler/Miniflare development artifacts
-.wrangler/
-*/.wrangler/
-
-# Turborepo cache + logs (root + per-workspace)
-.turbo/
-**/.turbo/
-
-# TanStack Router codegen cache
-.tanstack/
-*/.tanstack/
-
-# Personal notes and changelogs
+# Personal notes / local-only
 docs(local)
+completed_tasks/
 .claude/
 PROMPT.MD
-
+prompt.md

@@ -14,9 +14,9 @@ double-click-to-edit).
 | File | Role |
 |------|------|
 | `code-tokens.ts` | `S` enum (16 styles incl. `WHITESPACE` sentinel), `THEME` (palette + chrome — single source of truth for color), spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), length-bucketed keyword tables + `classifyIdent`, sizing ratios, char-code sync tokenizer (`syncTokenizeInto`), play-button geometry (`playButtonGeom`). **Imports `code-system.ts` as `type` only** — see bundle hygiene below |
-| `code-system.ts` | SOA pipeline types (`CodeSource` / `CodeSpans` / `CodeLayout` / `CodeOutput`), pooled `CodeSystemCache`, `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers, worker pool (2 warm workers, hash-routed), delta→ChangedRange, font metrics (derived from text-system) |
+| `code-system.ts` | SOA pipeline types (`CodeSource` / `CodeSpans` / `CodeLayout` / `CodeOutput`), pooled `CodeSystemCache`, `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers, worker pool (2 warm workers, hash-routed) with per-id diff transport (`requestParse` full seed / `requestParseEdits` Yjs delta; pooled message wrappers), font metrics (derived from text-system) |
 | `code-theme.ts` | CodeMirror theme + `HighlightStyle.define` rule list. All `@codemirror/*` AND `@lezer/highlight` imports are **dynamic** (inside `getCodeMirrorExtensions()`) — main bundle stays free of the editor stack |
-| `lezer-worker.ts` | Web Worker. Per-object `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, custom `STYLE_HIGHLIGHTER` over its own `WORKER_RULES`, zero-copy ArrayBuffer transfer |
+| `lezer-worker.ts` | Web Worker. Per-object `Tree` + `TreeFragment` + text-mirror state, **lazily-loaded** per-language parsers (dynamic `import()` via `REGISTRY`; buffer-during-load preserves per-id order), incremental parsing from Yjs-delta diffs (`applyEdits` splices the mirror + derives `ChangedRange[]` in one pass), custom `STYLE_HIGHLIGHTER` over its own `WORKER_RULES`, zero-copy ArrayBuffer transfer |
 | `../../tools/CodeTool.ts` | PointerTool — click-to-place + hit-test + CodeMirror DOM overlay lifecycle + header/output chrome DOM |
 
 ## Y.Doc Schema
@@ -25,7 +25,7 @@ double-click-to-edit).
 {
   id, kind: 'code', ownerId, createdAt,
   origin: [number, number],   // Top-left world coords (NOT baseline, unlike text)
-  content: Y.Text,            // Plain text (NOT Y.XmlFragment); deltas → Lezer ChangedRange
+  content: Y.Text,            // Plain text (NOT Y.XmlFragment); deltas diffed to the worker
   language: 'javascript' | 'typescript' | 'python',
   fontSize: number,           // World units (default 14)
   width: number,              // World units, always stored (no 'auto')
@@ -103,10 +103,25 @@ Y.Text change
     → codeSystem.handleContentChange(id, ev, lang)
         → buildCodeSourceInto + syncTokenizeInto (sync floor — instant color)
         → version++, layoutValid=false, frame=null
-        → deltaToChangedRanges → dispatch worker (hash-routed)
+        → seeded ? requestParseEdits(ev.delta)  : requestParse(fullText) + seeded=true
+                   (tiny Yjs delta, hash-routed)   (cold seed — full text once)
     → same frame: getLayout() reflows in place + canvas paint
     → next frame (typical): worker responds → applyWorkerSpans (Lezer ceiling)
 ```
+
+### Diff transport (no full text per keystroke)
+
+Only the **first** parse of a block (cold miss or language switch) ships the full
+text; every subsequent edit ships just the Yjs delta (`ev.delta`), so N peers
+typing cost N tiny delta copies across the thread boundary, not N full-text
+copies. The worker keeps a per-id `mirror: string`, splices it per delta op, and
+derives the incremental `ChangedRange[]` in the *same* pass (`applyEdits`, ported
+from the old main-side `deltaToChangedRanges`). `CacheEntry.seeded` (false on
+`newEntry`) is the guard: an `edits` message can never reach the worker before
+its full seed, whatever the observer/Yjs ordering. Main-thread `yText.toString()`
+stays (the renderer needs a materialized string for cheap `substring` slices, and
+it only fires on content change). Message objects are pooled module-level
+wrappers — postMessage structured-clones synchronously, so reuse is safe.
 
 **Sync tokenizer** (`syncTokenizeInto`): char-code, allocation-free. Iterates
 `source.fullText` with absolute offsets, pushes line-relative triples to a
@@ -123,8 +138,9 @@ parameter vs variable, destructured aliases.
 
 **Lezer worker pool**: 2 warm workers, hash-routed by `id.charCodeAt(id.length
 - 1) % 2` so the same object always lands on the same worker (preserves
-incremental parse trees). Per-object `{ tree, fragments }`; if `changes` are
-provided, `TreeFragment.applyChanges` enables incremental parsing.
+incremental parse trees **and** the per-id text mirror). Per-object `{ tree,
+fragments, mirror }`; when the delta yields non-empty `changes`,
+`TreeFragment.applyChanges` enables incremental parsing.
 
 **Span extraction**: `highlightTree(tree, STYLE_HIGHLIGHTER, callback)` walks
 the tree. `STYLE_HIGHLIGHTER.style()` returns the stringified `S` int directly
@@ -134,10 +150,24 @@ per-line triples via `writePackedTriples` into the reusable `_workerSpanData`.
 Used prefix is sliced into a fresh `Uint16Array` for transfer — main thread
 swaps refs zero-copy.
 
-**Language → parser**: `python` → `@lezer/python`; `typescript` →
-`@lezer/javascript` configured with `dialect: 'ts jsx'`; `javascript` →
-`@lezer/javascript` configured with `dialect: 'jsx'`. Both configured parsers
-cached at worker startup.
+**Language → parser (lazy)**: a module-level `REGISTRY` maps each language to a
+`{ load: () => import(pkg), configure? }` entry — `python` → `@lezer/python`;
+`typescript` / `javascript` → `@lezer/javascript` configured `dialect: 'ts jsx'`
+/ `'jsx'` (same chunk, cached by the browser after the first `import()`, so no
+double download — just two `.configure()` calls). Parsers load **on first use**,
+not at worker boot, so a new language is a one-line `REGISTRY` entry that pays
+nothing until its first block appears. `getParser` is async: steady state (parser
+resident) processes inline; a not-yet-loaded language buffers that language's
+messages in arrival order and drains them once loaded (per-id order preserved —
+an id's language is fixed per edit). SQL/HTML drop in here later.
+
+> **Offline note.** Dynamic `import()` in the module worker emits separate Rollup
+> chunks fetched at runtime under `/assets/*`, which `sw.ts` serves **cache-first
+> (lazy)** — cached after the first *online* fetch, not precached. js/ts/python
+> chunks fetch as soon as the first block of that language renders, so they're
+> warm well before a typical offline session. A first-ever offline load of a
+> never-fetched grammar (only reachable once SQL/HTML land) can't load — accepted
+> pre-production; revisit with precache if it matters.
 
 ### Sync ↔ Lezer alignment
 
@@ -208,7 +238,8 @@ var(--c-tri-w) / 3)` — keep in sync. Single source of truth:
 ## Cache (`CodeSystemCache`)
 
 Singleton `codeSystem`. Per-object `CacheEntry` carries the four pooled SOA
-buffers, plus version + language + frame + layout cache keys.
+buffers, plus version + language + frame + `seeded` (worker-mirror seed guard) +
+layout cache keys.
 
 ### Invalidation rules
 
@@ -231,8 +262,8 @@ itself floors `cap = max(s.spanCap, 16)`.
 
 | Method | Purpose |
 |--------|---------|
-| `getLayout(id, yText, fontSize, width, lang, lineNumbers?)` | Cold-miss builds full entry + dispatches worker; otherwise returns cached layout (handles language/dims change) |
-| `handleContentChange(id, ev, lang)` | Called by deep observer on Y.Text change |
+| `getLayout(id, yText, fontSize, width, lang, lineNumbers?)` | Cold-miss builds full entry + full-seeds worker (`seeded=true`); language change re-seeds; otherwise returns cached layout (handles dims change) |
+| `handleContentChange(id, ev, lang)` | Deep-observer Y.Text hook — sync floor + dispatch: full seed if `!seeded`, else `requestParseEdits(ev.delta)` |
 | `applyWorkerSpans(id, spanData, spanLineStart, forVersion)` | Worker response, viewport-cull invalidate |
 | `getSpans(id)` / `getSource(id)` / `getOutputCache(id, output)` | Renderer accessors |
 | `getFrame(id)` / `setFrame(id, frame)` | Hit testing / selection / bbox |
@@ -364,8 +395,10 @@ throws.
 - **`code-theme.ts` has NO top-level `@codemirror/*` or `@lezer/highlight`
   imports** — everything is inside the async `getCodeMirrorExtensions()`.
   Static imports here bleed `Modifier`/`TagName`/`Tag` into the main bundle
-  (~30–40 kB). Verify with `grep -l "Modifier\|TagName" dist/assets/main-*.js`
-  after each build.
+  (~30–40 kB). Verify with
+  `grep -c "highlightTree\|tagHighlighter\|defineModifier" dist/assets/main-*.js`
+  after each build — that must be `0`. (Don't grep bare `Modifier`/`TagName`:
+  benign `getElementsByTagName` + unrelated vendor `hasAddModifier` false-match.)
 - **Rule tables duplicated, deliberately** (`code-theme.ts` rule list +
   `lezer-worker.ts` `WORKER_RULES`) — see "Lezer-tag → S mapping" above.
 
