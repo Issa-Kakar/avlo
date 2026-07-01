@@ -33,6 +33,10 @@ Requires **Node 24+** and **pnpm 11+** (enable via `corepack enable`). [Turborep
 ```bash
 pnpm install
 
+# Auth worker dev secrets — copy the template, then fill in the blanks.
+# Without workers/auth/.dev.vars, /me and Google sign-in return 500.
+cp workers/auth/.dev.vars.example workers/auth/.dev.vars
+
 pnpm dev          # Vite (web) :3000 + workers via Miniflare (sync :8787, images/unfurl/auth/users :8790–8793)
 pnpm typecheck    # tsgo — web app + workers (run from repo root)
 pnpm build        # turbo run build — production web bundle + worker builds
