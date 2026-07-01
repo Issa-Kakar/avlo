@@ -1,8 +1,9 @@
 /**
  * ImageManager — Thin main-thread coordinator for image assets.
  *
- * All heavy work (IDB, CDN fetch, hashing, upload, decode) runs in a hardware-
- * scaled pool of identical image-worker instances. Decode COMMANDS travel through
+ * All heavy work (IDB, CDN fetch, hashing, upload, decode) runs in a demand-scaled
+ * pool of identical image-worker instances (one baseline, grows under decode backlog
+ * to a hardware ceiling, idle extras self-retire). Decode COMMANDS travel through
  * a SharedArrayBuffer control plane (`image-sab.ts`) — this thread writes desired
  * `{gen, level, w, h}` into a slot and pushes the slot onto a work-stealing ring;
  * any idle worker grabs it. There is no per-decode message and no static routing:
@@ -52,12 +53,31 @@ import type { WorkerInbound, WorkerOutbound } from './image-worker';
 // Workers + SAB control plane
 // ============================================================
 
-// A hardware-scaled pool of identical image-worker instances (loop-spawned from one URL —
-// Vite bundles it once). Created lazily via ensureImageWorkers() (from RoomDocManager
-// construction) so a bare module import spawns NO workers. Worker 0 is also "primary"
-// (ingest + upload + unfurl + prefetch). Workers persist for the session and drain the IDB
-// upload queue across rooms.
-let workers: Worker[] = [];
+// A demand-scaled pool of identical image-worker instances (loop-spawned from one URL — Vite
+// bundles it once). Created lazily via ensureImageWorkers() (from RoomDocManager construction)
+// so a bare module import spawns NO workers. Worker 0 is "primary" (ingest + upload + unfurl +
+// prefetch) and permanent; extras spawn under decode backlog and self-retire when idle.
+//
+// Baseline is a SINGLE worker: decode-loop stealing, ingest, upload, unfurl and prefetch all
+// bottom out in async / off-thread primitives (createImageBitmap, crypto.subtle.digest, fetch,
+// Cache API, IndexedDB), and the futex keeps the event loop live while parked — so they
+// cooperatively interleave on one event loop with no job blocking another. Correctness is
+// independent of worker count (work-stealing + slot-table-as-truth); extra workers only add
+// PARALLEL decode throughput, which growPoolToBacklog() restores on demand. Steady state is one
+// idle isolate instead of a hardware-max pool of them. Flip BASE_WORKERS to 2 to trade an idle
+// isolate for zero cold-burst spin-up latency on the first parallel decode.
+const BASE_WORKERS = 1;
+// Ceiling reached only under load: same clamp the old fixed pool used, now demand-gated.
+const MAX_WORKERS = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+// An extra worker idle (no decode) for this long self-terminates back toward the base.
+const IDLE_EXIT_MS = 10_000;
+
+/** Index-stable pool. `workers[0]` is permanent; `null` = a retired/never-spawned extra slot. */
+let workers: (Worker | null)[] = [];
+/** === workers[0]. Permanent, non-null after ensureImageWorkers(); target of all message-driven work. */
+let primary!: Worker;
+/** Count of live (non-null) workers — grow/retire bookkeeping, floored at BASE_WORKERS. */
+let liveWorkers = 0;
 let workersReady = false;
 
 /** The shared command/cancel/staleness plane. Allocated once in ensureImageWorkers(). */
@@ -89,26 +109,55 @@ export function ensureImageWorkers(): void {
   queuedGen = new Int32Array(SLOT_COUNT);
   resetFreeList();
 
-  // N = cores − 1, clamped to [2, 4]. Identical decode workers; whoever is idle steals the
-  // next slot off the ring — no static hash routing, no imbalance on hydration.
-  const N = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
   workers = [];
-  for (let i = 0; i < N; i++) {
-    const w = new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' });
-    w.onmessage = handleWorkerMessage;
-    w.onerror = (ev) => console.error('[image-worker] onerror', i, ev.message);
-    w.onmessageerror = (ev) => console.error('[image-worker] onmessageerror', i, ev);
-    // SAB is shared by reference (not transferred / neutered) — every worker maps the same memory.
-    w.postMessage({ type: 'init', index: i, sab: imageSab.sab } satisfies WorkerInbound);
-    workers.push(w);
-  }
+  liveWorkers = 0;
+  for (let i = 0; i < BASE_WORKERS; i++) spawnWorker(i);
+  primary = workers[0] as Worker;
   // Drain uploads queued in a prior session, now that a room exists.
-  workers[0].postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);
+  primary.postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);
+}
+
+/**
+ * Spawn one work-stealing worker at `index` and wire it to the shared SAB. Base workers
+ * (`index < BASE_WORKERS`) get `idleExitMs = 0` (permanent); extras get IDLE_EXIT_MS so they
+ * self-retire when idle. The SAB is shared by reference (never transferred / neutered) — every
+ * worker maps the same memory.
+ */
+function spawnWorker(index: number): void {
+  const w = new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' });
+  w.onmessage = handleWorkerMessage;
+  w.onerror = (ev) => console.error('[image-worker] onerror', index, ev.message);
+  w.onmessageerror = (ev) => console.error('[image-worker] onmessageerror', index, ev);
+  const idleExitMs = index >= BASE_WORKERS ? IDLE_EXIT_MS : 0;
+  w.postMessage({ type: 'init', index, sab: imageSab.sab, idleExitMs } satisfies WorkerInbound);
+  workers[index] = w;
+  liveWorkers++;
+}
+
+/**
+ * Grow the pool toward the current decode backlog — called after each dispatch (peak ring
+ * depth). Spawns extra work-stealing workers, up to MAX_WORKERS, so a media-heavy hydration or
+ * a big scroll-in fans out instead of draining single-file. The `pending > liveWorkers` gate
+ * skips trivial backlog the live workers clear promptly (no thrash on casual single-image
+ * scroll-in) yet fires on any real burst — or on a stalled worker, whose undrained backlog trips
+ * it next frame. Extras self-retire once idle, returning to BASE_WORKERS. Cheap when maxed or
+ * caught up (two atomic loads + early return).
+ */
+function growPoolToBacklog(): void {
+  if (liveWorkers >= MAX_WORKERS) return;
+  const pending = imageSab.highRing.depth() + imageSab.lowRing.depth();
+  if (pending <= liveWorkers) return; // the live workers can absorb this backlog promptly
+  const target = Math.min(MAX_WORKERS, pending);
+  let index = BASE_WORKERS;
+  while (liveWorkers < target) {
+    while (workers[index]) index++; // first free slot (reuses indices left by retired extras)
+    spawnWorker(index);
+  }
 }
 
 /** Post a message to the primary worker (worker 0). Used by bookmark-unfurl for unfurl commands. */
 export function postToPrimary(msg: WorkerInbound): void {
-  workers[0].postMessage(msg);
+  primary.postMessage(msg);
 }
 
 function resetFreeList(): void {
@@ -287,6 +336,15 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
 
     case 'uploaded': {
       // Informational — no action needed on main thread
+      break;
+    }
+
+    case 'worker-exit': {
+      // An idle extra self-terminated. Free its slot so growPoolToBacklog can reuse the index.
+      if (workers[msg.index]) {
+        workers[msg.index] = null;
+        liveWorkers--;
+      }
       break;
     }
 
@@ -581,6 +639,10 @@ export function manageImageViewport(): void {
   }
   if (signal) imageSab.futex.signal();
 
+  // Fan out to more workers if a backlog is building; unconditional (not gated on `signal`) so a
+  // stalled worker's undrained ring still trips growth. Cheap when caught up or maxed.
+  growPoolToBacklog();
+
   // Reposition bookmark loading placeholders to follow camera
   repositionAllPlaceholders();
 }
@@ -594,7 +656,7 @@ export function ingest(file: Blob): Promise<IngestResult> {
   const id = String(++ingestIdCounter);
   return new Promise<IngestResult>((resolve, reject) => {
     inflightIngests.set(id, { resolve, reject });
-    workers[0].postMessage({ type: 'ingest', id, blob: file } satisfies WorkerInbound);
+    primary.postMessage({ type: 'ingest', id, blob: file } satisfies WorkerInbound);
   });
 }
 
@@ -658,12 +720,14 @@ export function hydrateImages(): void {
     }
   }
   if (signal) imageSab.futex.signal();
-  if (prefetch) workers[0].postMessage({ type: 'prefetch', assetIds: prefetch } satisfies WorkerInbound);
+  if (prefetch) primary.postMessage({ type: 'prefetch', assetIds: prefetch } satisfies WorkerInbound);
+  // A room join can surface many visible assets at once — fan out immediately for the burst.
+  growPoolToBacklog();
 }
 
 /** Enqueue asset for upload. Fire-and-forget. */
 export function enqueue(assetId: string): void {
-  workers[0].postMessage({ type: 'enqueue-upload', assetId } satisfies WorkerInbound);
+  primary.postMessage({ type: 'enqueue-upload', assetId } satisfies WorkerInbound);
 }
 
 /**
@@ -700,5 +764,5 @@ export function clear(): void {
 // opened this session there's no pool and nothing in-memory to drain (prior-session IDB uploads
 // drain when the first RoomDocManager calls ensureImageWorkers()).
 window.addEventListener('online', () => {
-  if (workersReady) workers[0].postMessage({ type: 'online' } satisfies WorkerInbound);
+  if (workersReady) primary.postMessage({ type: 'online' } satisfies WorkerInbound);
 });

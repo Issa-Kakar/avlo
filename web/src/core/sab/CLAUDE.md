@@ -19,8 +19,8 @@ GPU-backed results (ImageBitmap) **cannot** live in a SAB, so they keep travelli
 
 | File | Responsibility |
 |------|----------------|
-| `futex.ts` | `Futex` over one i32 seq cell: `signal()` (bump + `Atomics.notify` — wakes ALL idle workers), `loadSeq()`, `wait(expected)` (`Atomics.waitAsync`). |
-| `ring.ts` | `SpmcRing` — single-producer / multi-consumer lock-free ring of fixed-width i32 records. `tryPush` (producer), `tryPop` (consumer, CAS on head), `isEmpty`, `reset`. |
+| `futex.ts` | `Futex` over one i32 seq cell: `signal()` (bump + `Atomics.notify` — wakes ALL idle workers), `loadSeq()`, `wait(expected, timeoutMs?)` (`Atomics.waitAsync`; returns `'ok'` / `'timed-out'` / `'not-equal'` — a bounded wait lets a consumer self-retire on idle). |
+| `ring.ts` | `SpmcRing` — single-producer / multi-consumer lock-free ring of fixed-width i32 records. `tryPush` (producer), `tryPop` (consumer, CAS on head), `isEmpty`, `depth` (producer-side backlog hint for pool scaling), `reset`. |
 | `slot-table.ts` | `SlotTable` — `slotCount × slotWords` atomic i32 fields + a parallel per-slot byte side-region (the image plane stores the 32-byte hash there). Generic `load`/`store`/`bump` + `setHash`/`hashView`. |
 | `index.ts` | Barrel + `assertCrossOriginIsolated()` + `allocControlSab(layout)` / `mapControlSab(sab, layout)` — carve one SAB into header + slot table + rings + hash region, return typed views + offsets. |
 
@@ -50,3 +50,5 @@ A consumer module (e.g. `image-sab.ts`) names the header indices and slot fields
   If the producer pushes + `signal()`s between the snapshot and the wait, `waitAsync` returns `not-equal` synchronously and the consumer re-loops instead of sleeping through the wake. `signal()` always follows a push batch.
 
 - **`waitAsync` keeps the loop live.** It does NOT block the agent (the blocking `Atomics.wait` is illegal on a window agent anyway). A parked worker still services `postMessage` and runs async work — so on the same worker, the decode loop can park while ingest/upload/unfurl handlers still fire.
+
+- **Self-retire is safe only from the parked-empty branch.** A demand-scaled consumer that closes itself (`self.close()`) must do so ONLY after a `wait(seq, timeoutMs)` returns `'timed-out'` with the rings still empty — the one point where it holds no popped-but-unfinished work, so no slot is stranded with `doneGen` behind `needGen`. Because `signal()` wakes ALL parked consumers, a record pushed in the gap between the empty-check and the close is picked up by whatever permanent consumer remains. The producer reconciles its pool bookkeeping off the consumer's exit message. Never terminate a consumer from the producer side while it may be mid-job — that would strand its slot.

@@ -2,7 +2,7 @@
 
 > **Maintenance:** Architectural overview, not a changelog. Match surrounding detail level when updating — don't inflate coverage of one change at the expense of the big picture.
 
-Offline-first image objects with content-addressed asset storage, Service Worker for app shell + asset caching, a hardware-scaled work-stealing pool of web workers for parallel decode (hash, decode, upload), persistent upload queue, a **SharedArrayBuffer control plane** for instant lock-free decode commands / cancellation / mip superseding, and viewport-driven memory management. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
+Offline-first image objects with content-addressed asset storage, Service Worker for app shell + asset caching, a **demand-scaled** work-stealing pool of web workers for parallel decode (hash, decode, upload) — one baseline worker, grows under decode backlog to a hardware ceiling, idle extras self-retire — a persistent upload queue, a **SharedArrayBuffer control plane** for instant lock-free decode commands / cancellation / mip superseding, and viewport-driven memory management. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
 
 ---
 
@@ -19,7 +19,7 @@ Main Thread (image-manager.ts)              SharedArrayBuffer control plane (ima
 │       push [slot,gen] high/low lane ──────▶└────────────────────────────────────────────┘
 │       ONE futex.signal() for the batch          │ read intent + hash (workers)
 ├── clear(): bump epoch + reset rings/lists       ▼
-└── worker.onmessage → bitmap/ingested/...   Worker pool (image-worker.ts × N)      Service Worker
+└── worker.onmessage → bitmap/ingested/...   Worker pool (image-worker.ts × 1..MAX)  Service Worker
        (results via postMessage+Transferable)┌──────────────────────────────────┐   ┌──────────────┐
                                              │ decodeLoop: tryPop high→low,     │   │ sw.ts        │
                                              │   decodeSlot (3 Atomics          │   │ Cache-first: │
@@ -32,7 +32,7 @@ Main Thread (image-manager.ts)              SharedArrayBuffer control plane (ima
 ```
 
 **Key principles:**
-- **Hardware-scaled work-stealing pool.** `N = clamp(hardwareConcurrency − 1, 2, 4)` identical instances of `image-worker.ts` (loop-spawned from one URL — Vite bundles it once). Decode commands are NOT messages: the main thread writes desired `{gen, level, w, h}` into a SAB slot and pushes the slot onto a shared priority ring; whichever worker is idle `tryPop`s it. No static hash routing → no imbalance on hydration or skewed viewports. Worker 0 is also "primary" (ingest + upload + unfurl + prefetch).
+- **Demand-scaled work-stealing pool.** `BASE_WORKERS = 1` permanent instance of `image-worker.ts` (loop-spawned from one URL — Vite bundles it once); `growPoolToBacklog()` spawns extras up to `MAX_WORKERS = clamp(hardwareConcurrency − 1, 2, 4)` when the ring backlog exceeds the live worker count, and idle extras self-retire after `IDLE_EXIT_MS` (the futex wait-timeout doubles as the idle detector). Steady state is one idle isolate, not a hardware-max pool of them. **Correctness is independent of worker count** — the slot table is the source of truth and any idle worker `tryPop`s any slot; a single worker interleaves decode + ingest + upload + unfurl on one event loop because all of them bottom out in async / off-thread primitives. Extra workers add only PARALLEL decode throughput. Decode commands are NOT messages: the main thread writes desired `{gen, level, w, h}` into a SAB slot and pushes the slot onto a shared priority ring; whichever worker is idle `tryPop`s it. No static hash routing → no imbalance on hydration or skewed viewports. Worker 0 is also "primary" (ingest + upload + unfurl + prefetch) and never retires.
 - **SAB control plane, instant lock-free cancellation.** Command / cancel / staleness live in one SharedArrayBuffer (`image-sab.ts` over the `core/sab/` toolkit), re-read at every checkpoint. Eviction = `needLevel = −1` + bump the slot's gen; superseding mip = new level + bump gen; room teardown = bump the global `epoch`. The worker sees the latest intent at its next `Atomics.load`, so a burst of would-be cancels collapses into **one read** — no `cancel`/`clear` messages. Three staleness checkpoints (before fetch, after fetch, after decode) discard superseded work. The decoded ImageBitmap (GPU-backed, can't live in a SAB) still returns by `postMessage` + Transferable — already zero-copy. See `core/sab/CLAUDE.md` for the toolkit + memory-ordering rules.
 - **SW owns fetch/cache.** Intercepts all GET `/api/assets/*`. Cache-first for reads (immutable, content-addressed). Also caches app shell for offline.
 - **Workers are self-sufficient.** `readAssetBlob()` checks Cache API directly first, then falls back to `fetch()` (SW intercepts in prod; direct to server in dev). Works with or without SW — critical for dev mode where SW isn't built.
@@ -236,10 +236,13 @@ Multiple objects sharing an assetId: use MAX ppsp → highest quality level.
 ## Main Thread State (image-manager.ts)
 
 ```typescript
-let workers: Worker[]             // N = clamp(hardwareConcurrency-1, 2, 4); ensureImageWorkers() (RDM ctor)
+let workers: (Worker | null)[]    // index-stable pool; BASE_WORKERS=1, grows to MAX_WORKERS=clamp(hc-1,2,4)
+let primary: Worker               // === workers[0]; permanent, target of all message-driven work
+let liveWorkers = 0               // live (non-null) count; grow/retire bookkeeping
 let workersReady = false
 let imageSab: ImageSab            // the shared command/cancel/staleness plane (image-sab.ts)
-// worker 0 is also "primary" (ingest + upload + unfurl + prefetch); all N steal decodes off the rings
+// worker 0 is "primary" (ingest + upload + unfurl + prefetch) + permanent; extras spawn under
+// backlog (growPoolToBacklog) and self-retire when idle; all live workers steal decodes off the rings
 
 // SAB registry (replaces the old `pending` map + global genCounter)
 registry:          Map<assetId, slot>    // which slot-table row holds this asset's gen/level/dims/hash
@@ -287,12 +290,14 @@ clear(): void                                        // Room teardown: close all
 
 ### Worker creation (lazy) + module-level init
 
-Workers are NOT created at import. `ensureImageWorkers()` (idempotent) **asserts `crossOriginIsolated`** (the SAB + `Atomics.waitAsync` contract — a throw means the isolation headers are missing, not a runtime fallback), allocates the control SAB, builds the free-list + `queuedGen`, loop-spawns `N = clamp(hardwareConcurrency-1, 2, 4)` workers from the one URL, wires `onmessage`/`onerror`, posts `init` (carrying `{index, sab}` — the SAB is shared by reference, not transferred) to each, and `drain-uploads` to worker 0. It is called from `RoomDocManager`'s constructor (synchronously, in parallel with its async init), so a bare module import — e.g. a future landing/dashboard entry that transitively pulls this file — spawns nothing. Workers persist for the session (they drain the IDB upload queue across rooms); never terminated on room leave.
+Workers are NOT created at import. `ensureImageWorkers()` (idempotent) **asserts `crossOriginIsolated`** (the SAB + `Atomics.waitAsync` contract — a throw means the isolation headers are missing, not a runtime fallback), allocates the control SAB, builds the free-list + `queuedGen`, and spawns just the `BASE_WORKERS` (1) permanent worker(s) from the one URL. `spawnWorker(index)` wires `onmessage`/`onerror` and posts `init` (carrying `{index, sab, idleExitMs}` — the SAB is shared by reference, not transferred; `idleExitMs = 0` for base workers, `IDLE_EXIT_MS` for extras); `drain-uploads` goes to worker 0. Called from `RoomDocManager`'s constructor (synchronously, in parallel with its async init), so a bare module import — e.g. a future landing/dashboard entry that transitively pulls this file — spawns nothing.
+
+**Demand scaling.** `growPoolToBacklog()` runs after each dispatch (`manageImageViewport` / `hydrateImages` — peak ring depth): if `highRing.depth() + lowRing.depth() > liveWorkers` it spawns extras up to `MAX_WORKERS`, reusing indices freed by retired extras. The `> liveWorkers` gate skips trivial backlog (no thrash on a single-image scroll-in) yet fires on any real burst — and on a stalled worker, whose undrained ring trips it next frame (self-healing). An **extra self-retires** in `decodeLoop`: it parks with the `idleExitMs` futex timeout, and a `'timed-out'` wake with both rings still empty (the one branch where it provably holds no in-flight decode — no stuck slot) → `postMessage('worker-exit')` + `self.close()`. The main thread nulls that slot + decrements `liveWorkers`. A push racing the exit is safe: `futex.signal()` wakes the permanent base worker(s). Worker 0 is permanent (`idleExitMs = 0`, parks forever) and drains the IDB upload queue across rooms; only extras retire.
 
 The only module-scope side effect is the `online` listener, guarded on `workersReady` so it no-ops until a room has built the pool:
 ```typescript
 window.addEventListener('online', () => {
-  if (workersReady) workers[0].postMessage({ type: 'online' })
+  if (workersReady) primary.postMessage({ type: 'online' })
 })
 ```
 
@@ -304,6 +309,7 @@ No CanvasRuntime coupling for upload queue or invalidation — self-managed.
 
 ```typescript
 workerIndex: number                                  // 0 ⇒ also "primary" (ingest+upload+unfurl+prefetch); set by 'init'
+idleExitMs: number                                    // 0 ⇒ permanent (parks forever); >0 ⇒ extra that self-retires after this idle span
 fetchPromises: Map<assetId, Promise<Blob | null>>    // Fetch dedup (concurrent calls coalesce)
 uploading: boolean                                    // Guard against concurrent drain loops (worker 0)
 resetBackoff: boolean                                 // Skip backoff delays on 'online' event (worker 0)
@@ -410,7 +416,7 @@ On `'ingested'` message: same targeted invalidation. The ingest resolve also tri
 
 Main → Worker:
 ```typescript
-| { type: 'init', index: number, sab: SharedArrayBuffer }                              // all workers
+| { type: 'init', index: number, sab: SharedArrayBuffer, idleExitMs: number }          // all workers (idleExitMs>0 ⇒ self-retiring extra)
 | { type: 'ingest', id: string, blob: Blob }                                           // worker 0
 | { type: 'prefetch', assetIds: string[] }                                             // worker 0 — cache-warm offscreen
 | { type: 'enqueue-upload', assetId: string }                                          // worker 0
@@ -430,6 +436,7 @@ Worker → Main:
 | { type: 'unfurled', objectId, data: { title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId?, faviconSvgBase64? } }
 | { type: 'unfurl-failed', objectId, permanent: boolean }
 | { type: 'error', id?, assetId?, message: string, gen?: number }
+| { type: 'worker-exit', index: number }   // a self-retiring extra is closing — main nulls its pool slot
 ```
 
 All bitmaps transferred via `Transferable[]` (zero-copy). Bitmap is neutered in the worker after transfer. `gen` enables main thread staleness check on receipt.

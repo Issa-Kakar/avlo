@@ -38,6 +38,11 @@ export class SpmcRing {
     return Atomics.load(this.ctrl, this.headIndex) >= Atomics.load(this.ctrl, this.tailIndex);
   }
 
+  /** Live record count (`tail − head`, never negative). A producer-side hint for pool scaling. */
+  depth(): number {
+    return Atomics.load(this.ctrl, this.tailIndex) - Atomics.load(this.ctrl, this.headIndex);
+  }
+
   /**
    * Producer-only. Append `rec[0..recWords)`. Returns false if full — the caller
    * retries next frame, the slot table still holding the desired state.

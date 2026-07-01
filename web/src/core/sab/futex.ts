@@ -38,9 +38,14 @@ export class Futex {
     return Atomics.load(this.ctrl, this.seqIndex);
   }
 
-  /** Park until seq moves off `expected`. Resolves immediately if it already has. */
-  async wait(expected: number): Promise<void> {
-    const r = Atomics.waitAsync(this.ctrl, this.seqIndex, expected);
-    if (r.async) await r.value;
+  /**
+   * Park until seq moves off `expected`, or `timeoutMs` elapses (omit ⇒ park forever).
+   * Resolves immediately if seq already moved. Returns why it woke: `'ok'` (signalled),
+   * `'timed-out'` (deadline hit), or `'not-equal'` (seq had already moved) — a self-retiring
+   * consumer treats a `'timed-out'` with no work as its cue to exit.
+   */
+  async wait(expected: number, timeoutMs?: number): Promise<'ok' | 'timed-out' | 'not-equal'> {
+    const r = Atomics.waitAsync(this.ctrl, this.seqIndex, expected, timeoutMs);
+    return r.async ? await r.value : r.value;
   }
 }

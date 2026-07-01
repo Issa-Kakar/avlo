@@ -39,7 +39,7 @@ import {
 // ============================================================
 
 export type WorkerInbound =
-  | { type: 'init'; index: number; sab: SharedArrayBuffer }
+  | { type: 'init'; index: number; sab: SharedArrayBuffer; idleExitMs: number } // idleExitMs>0 ⇒ self-retiring extra
   | { type: 'ingest'; id: string; blob: Blob } // worker 0
   | { type: 'prefetch'; assetIds: string[] } // worker 0 — cache-warm offscreen assets (no decode)
   | { type: 'enqueue-upload'; assetId: string } // worker 0
@@ -75,7 +75,8 @@ export type WorkerOutbound =
       };
     }
   | { type: 'unfurl-failed'; objectId: string; permanent: boolean }
-  | { type: 'error'; id?: string; assetId?: string; message: string; gen?: number };
+  | { type: 'error'; id?: string; assetId?: string; message: string; gen?: number }
+  | { type: 'worker-exit'; index: number }; // a self-retiring extra is closing — free its pool slot
 
 // ============================================================
 // IDB Layer (upload queue only)
@@ -211,6 +212,7 @@ async function getAssetBlob(assetId: string): Promise<Blob | null> {
 // ============================================================
 
 let workerIndex = -1; // 0 ⇒ also "primary" (ingest + upload + unfurl + prefetch)
+let idleExitMs = 0; // 0 ⇒ permanent (base worker, parks forever); >0 ⇒ extra that self-retires after this idle span
 
 // ============================================================
 // Helpers
@@ -287,6 +289,13 @@ async function decodeSlot(s: ImageSab, slot: number, gen: number): Promise<void>
  * park on the futex (non-blocking — `postMessage` and `createImageBitmap` keep
  * running) until the producer signals. The seq snapshot + empty re-check before
  * waiting closes the lost-wakeup gap.
+ *
+ * A self-retiring extra (`idleExitMs > 0`) parks with that timeout: a `'timed-out'`
+ * wake with both rings still empty means it sat idle the full span with no work, so it
+ * closes — the pool falls back to its permanent base. This is the one branch where the
+ * worker provably holds no in-flight decode (the last `decodeSlot` fully awaited before
+ * we looped), so no slot is left stuck. A push racing the empty-check is safe: the
+ * producer's `futex.signal()` wakes the parked base worker(s), which steal it.
  */
 async function decodeLoop(s: ImageSab): Promise<void> {
   const rec = new Int32Array(2); // reused [slot, gen]
@@ -301,7 +310,12 @@ async function decodeLoop(s: ImageSab): Promise<void> {
     }
     const seq = s.futex.loadSeq();
     if (!s.highRing.isEmpty() || !s.lowRing.isEmpty()) continue;
-    await s.futex.wait(seq);
+    const status = await s.futex.wait(seq, idleExitMs || undefined);
+    if (idleExitMs && status === 'timed-out' && s.highRing.isEmpty() && s.lowRing.isEmpty()) {
+      post({ type: 'worker-exit', index: workerIndex });
+      self.close();
+      return;
+    }
   }
 }
 
@@ -414,9 +428,10 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
   switch (msg.type) {
     case 'init': {
       workerIndex = msg.index;
+      idleExitMs = msg.idleExitMs;
       const sab = mapImageSab(msg.sab);
       if (workerIndex === 0) setInterval(drainUploads, SAFETY_INTERVAL_MS);
-      void decodeLoop(sab); // steal decodes forever
+      void decodeLoop(sab); // steal decodes forever (base) / until idle (extra)
       break;
     }
 
