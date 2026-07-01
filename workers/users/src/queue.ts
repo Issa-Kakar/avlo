@@ -52,89 +52,102 @@ export async function consume(batch: MessageBatch, env: UsersEnv['Bindings']): P
   let dropped = 0; // poison messages ack-discarded
   let applied: number | null = null; // rows D1 actually wrote (the rest superseded by the rev guard)
   try {
-    if (batch.queue === 'avlo-room-visits') {
-      const visits = new Map<string, VisitEvent>();
-      for (const m of batch.messages) {
-        const p = VisitEvent.safeParse(m.body);
-        if (!p.success) {
-          m.ack(); // discard poison (not DLQ — see header)
-          dropped++;
-          continue;
-        }
-        const e = p.data;
-        const k = `${e.userId}|${e.roomId}`;
-        const prev = visits.get(k);
-        if (!prev || e.visitedAt > prev.visitedAt) visits.set(k, e); // coalesce by recency (no rev on visits)
-      }
-      const v = [...visits.values()];
-      coalesced = v.length;
-      if (v.length) {
-        const stmts = chunk(v, VISIT_ROWS_MAX).map((rows) =>
-          db
-            .insert(roomVisits)
-            .values(rows.map((e) => ({ userId: e.userId, roomId: e.roomId, lastVisitedAt: e.visitedAt })))
-            .onConflictDoUpdate({
-              target: [roomVisits.userId, roomVisits.roomId],
-              set: { lastVisitedAt: sql`excluded.last_visited_at` },
-              setWhere: sql`excluded.last_visited_at > ${roomVisits.lastVisitedAt}`,
-            }),
-        );
-        applied = readChanges(await db.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]));
-      }
-      batch.ackAll();
-    } else if (batch.queue === 'avlo-room-meta') {
-      // room creation (createdAt) + permission/title/owner mutations.
-      const metas = new Map<string, MetaEvent>();
-      for (const m of batch.messages) {
-        const p = MetaEvent.safeParse(m.body);
-        if (!p.success) {
-          m.ack();
-          dropped++;
-          continue;
-        }
-        const e = p.data;
-        const prev = metas.get(e.roomId);
-        if (!prev || e.rev > prev.rev) metas.set(e.roomId, e);
-      }
-      const ms = [...metas.values()];
-      coalesced = ms.length;
-      if (ms.length) {
-        // Shared rev-guarded upsert (@avlo/db) — same statement the §8 PATCH handlers use
-        // for their direct read-your-writes write; createdAt first-write-wins, ownerId rev-LWW.
-        const stmts = chunk(ms, META_ROWS_MAX).map((rows) => upsertRoomsFromMeta(db, rows));
-        applied = readChanges(await db.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]));
-      }
-      batch.ackAll();
-    } else {
-      // avlo-room-migrate — OAuth adopt overflow/retry. INDEPENDENT rooms → PER-MESSAGE
-      // ack/retry (never ackAll/retryAll). `migrateOwner` is idempotent (owner-already-`to`
-      // no-ops) and enqueues a ROOM_META the meta consumer projects, so redelivery converges;
-      // the visit-copy for the room rides the same handling. `forbidden` (room owned by a
-      // third party) is a TERMINAL skip — ack so it can't loop to the DLQ.
-      let processed = 0;
-      for (const m of batch.messages) {
-        const p = MigrateEvent.safeParse(m.body);
-        if (!p.success) {
-          m.ack();
-          dropped++;
-          continue;
-        }
-        const { roomId, from, to } = p.data;
-        try {
-          await env.rooms.getByName(roomId).migrateOwner(from, to);
-          await visitCopyStmt(db, from, to, [roomId]);
-          m.ack();
-          processed++;
-        } catch (err) {
-          if (err instanceof Error && err.message === 'forbidden') {
-            m.ack(); // terminal skip — never our migration's room
+    switch (batch.queue) {
+      case 'avlo-room-visits': {
+        const visits = new Map<string, VisitEvent>();
+        for (const m of batch.messages) {
+          const p = VisitEvent.safeParse(m.body);
+          if (!p.success) {
+            m.ack(); // discard poison (not DLQ — see header)
+            dropped++;
             continue;
           }
-          console.error('migrate consume failed', err);
-          m.retry(); // transient → redeliver → DLQ after max_retries
+          const e = p.data;
+          const k = `${e.userId}|${e.roomId}`;
+          const prev = visits.get(k);
+          if (!prev || e.visitedAt > prev.visitedAt) visits.set(k, e); // coalesce by recency (no rev on visits)
         }
+        const v = [...visits.values()];
+        coalesced = v.length;
+        if (v.length) {
+          const stmts = chunk(v, VISIT_ROWS_MAX).map((rows) =>
+            db
+              .insert(roomVisits)
+              .values(rows.map((e) => ({ userId: e.userId, roomId: e.roomId, lastVisitedAt: e.visitedAt })))
+              .onConflictDoUpdate({
+                target: [roomVisits.userId, roomVisits.roomId],
+                set: { lastVisitedAt: sql`excluded.last_visited_at` },
+                setWhere: sql`excluded.last_visited_at > ${roomVisits.lastVisitedAt}`,
+              }),
+          );
+          applied = readChanges(await db.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]));
+        }
+        batch.ackAll();
+        break;
       }
-      coalesced = processed;
+      case 'avlo-room-meta': {
+        // room creation (createdAt) + permission/title/owner mutations.
+        const metas = new Map<string, MetaEvent>();
+        for (const m of batch.messages) {
+          const p = MetaEvent.safeParse(m.body);
+          if (!p.success) {
+            m.ack();
+            dropped++;
+            continue;
+          }
+          const e = p.data;
+          const prev = metas.get(e.roomId);
+          if (!prev || e.rev > prev.rev) metas.set(e.roomId, e);
+        }
+        const ms = [...metas.values()];
+        coalesced = ms.length;
+        if (ms.length) {
+          // Shared rev-guarded upsert (@avlo/db) — same statement the §8 PATCH handlers use
+          // for their direct read-your-writes write; createdAt first-write-wins, ownerId rev-LWW.
+          const stmts = chunk(ms, META_ROWS_MAX).map((rows) => upsertRoomsFromMeta(db, rows));
+          applied = readChanges(await db.batch(stmts as [(typeof stmts)[number], ...(typeof stmts)[number][]]));
+        }
+        batch.ackAll();
+        break;
+      }
+      case 'avlo-room-migrate': {
+        // OAuth adopt overflow/retry. INDEPENDENT rooms → PER-MESSAGE ack/retry (never
+        // ackAll/retryAll). `migrateOwner` is idempotent (owner-already-`to` no-ops) and
+        // enqueues a ROOM_META the meta consumer projects, so redelivery converges; the
+        // visit-copy for the room rides the same handling. `forbidden` (room owned by a
+        // third party) is a TERMINAL skip — ack so it can't loop to the DLQ.
+        let processed = 0;
+        for (const m of batch.messages) {
+          const p = MigrateEvent.safeParse(m.body);
+          if (!p.success) {
+            m.ack();
+            dropped++;
+            continue;
+          }
+          const { roomId, from, to } = p.data;
+          try {
+            await env.rooms.getByName(roomId).migrateOwner(from, to);
+            await visitCopyStmt(db, from, to, [roomId]);
+            m.ack();
+            processed++;
+          } catch (err) {
+            if (err instanceof Error && err.message === 'forbidden') {
+              m.ack(); // terminal skip — never our migration's room
+              continue;
+            }
+            console.error('migrate consume failed', err);
+            m.retry(); // transient → redeliver → DLQ after max_retries
+          }
+        }
+        coalesced = processed;
+        break;
+      }
+      default:
+        // Unhandled queue — a new consumer bound without a case here. Drop with a clearly
+        // labeled log so it never masquerades as a migrate failure or reaches a real DLQ.
+        console.error(`[queue] unexpected queue ${batch.queue} — dropping ${batch.messages.length} msg(s)`);
+        batch.ackAll();
+        return;
     }
     // Always-on projection heartbeat (H10-safe — counts + timing, no ids/bodies). `rows < msgs`
     // is in-batch coalescing (or migrate retries/skips); `superseded` is rows the D1 rev guard

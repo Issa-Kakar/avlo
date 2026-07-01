@@ -8,7 +8,7 @@ import type { SyncEnv } from './env';
  * passes the Hono context as the 3rd arg, giving `c.env.AUTH`. Returns a mutated `Request`
  * that partyserver forwards to the DO (`ctx.request.headers` in `onConnect`).
  *
- * - CSWSH guard FIRST: now that sync is cross-origin from the SPA (`sync.avlo.io`), an Origin
+ * - CSWSH guard FIRST: sync is cross-origin from the SPA (`sync.avlo.io`), so an Origin
  *   allowlist gates the upgrade. Reuses the shared `isAllowedOrigin`/`isDevHost` predicate
  *   (`avlo.io`/`www.avlo.io` for prod, `http://localhost:*` gated to dev-by-Host) — the SAME
  *   set CORS reflection + the csrf guard read, so there's no allowlist drift. Browsers can't

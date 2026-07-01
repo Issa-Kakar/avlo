@@ -31,16 +31,13 @@ interface ConnState {
 }
 
 /** The room DO's authoritative meta — the one `room_meta` row, shape-identical to the
- *  `MetaEvent` projection it emits. `roomId` is the PK; the DO's self-identity is just
- *  `asRoomId(this.name)` (= `ctx.id.name`, reliable on every entry path — see the class
- *  note). Meta still loads in the constructor so the ownership check + warm cache are
- *  present on the cold raw-RPC path (which skips onStart/onLoad). `rev` is the per-room
- *  monotonic counter: bumped + persisted on EVERY meta mutation (create / permission /
- *  title / migrate) — NOT on visits anymore (those resolve by `visitedAt`) — so the D1
- *  consumer resolves ordering with a plain `excluded.rev >` guard and at-least-once
- *  redelivery is a no-op. Meta-mutation-only rev is what keeps owner rev-LWW reasoning
- *  clean (`rooms.rev` moves only when ownership/permission/title does). `deletedAt` is the
- *  nullable persistent tombstone (no delete flow yet — column + type prep only). */
+ *  `MetaEvent` projection it emits. `roomId` is the PK; self-identity is `asRoomId(this.name)`
+ *  and meta loads in the constructor (see the class note). `rev` is the per-room monotonic
+ *  counter, bumped + persisted on every meta mutation (create / permission / title / migrate),
+ *  so the D1 consumer orders with a plain `excluded.rev >` guard and at-least-once redelivery
+ *  no-ops; `rooms.rev` moves only when ownership/permission/title does, keeping owner rev-LWW
+ *  clean. `deletedAt` is the nullable persistent tombstone (no delete flow yet — column + type
+ *  prep only). */
 type RoomMeta = MetaEvent;
 
 // --- Tier-3 WS message limiter (§10/H25) — generous abuse backstop, not an editing throttle.
@@ -58,18 +55,15 @@ class RateState {
 }
 
 // YServer lifecycle: awaits onStart(), then onLoad(), installs debounced onSave(), then
-// accepts sockets — so hydration always completes before the first sync step. The DO
-// constructor loads this.meta (NOT onLoad) so the ownership check + warm cache are present
-// on EVERY entry point including the cold raw cross-script RPC (setPermission/setTitle),
-// which bypasses onStart/onLoad (§5).
+// accepts sockets — so hydration always completes before the first sync step. (Meta loads
+// in the constructor, not onLoad — see the constructor.)
 //
 // Identity is uniform: `asRoomId(this.name)`. partyserver resolves `this.name` from
 // `ctx.id.name`, which the runtime populates for any stub addressed via getByName/idFromName
 // on EVERY entry path — the cold raw-RPC wake and the constructor included (workerd ≥
 // 2026-03). So the meta RPCs need no room-id argument and no identity proof: the
 // `getByName(validatedId)` addressing already binds this object to that id. (Dev parity: the
-// single-Miniflare orchestrator populates `this.name` exactly as prod does, so the meta RPCs
-// resolve their room id identically under `pnpm dev`.)
+// single-Miniflare orchestrator populates `this.name` exactly as prod does.)
 export class AvloDO extends YServer<Env> implements RoomDoRpc {
   // R2-friendly cadence: fewer, bigger writes
   static override callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
@@ -89,9 +83,8 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.db = drizzle(ctx.storage, { schema: schemaDo, logger: devDrizzleLogger(env, '[room-do]') });
-    // Hibernation observability: the constructor runs on EVERY entry incl. a hibernation wake —
-    // retained hibernatable sockets ⇒ woke with live connections, zero ⇒ a cold start (first
-    // touch / cross-script RPC). Dev-only (dormant in prod).
+    // Hibernation observability (dev-only): retained hibernatable sockets ⇒ woke with live
+    // connections, zero ⇒ a cold start (first touch / cross-script RPC).
     if (isDevLogs(env)) {
       const retained = ctx.getWebSockets().length;
       console.warn(`[room] DO instantiated — ${retained > 0 ? `hibernation wake (${retained} ws retained)` : 'cold start'}`);
@@ -169,11 +162,8 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     this.sendCustomMessage(conn, `perm:${this.meta.permission}`);
 
     // 5. PROJECT THE VISIT — fire-and-forget send, error-handled (waitUntil is a no-op in a
-    // DO, §6). NO rev bump: visits resolve ordering by `visitedAt`, so the per-room rev is
-    // meta-mutation-only now (create / permission / title / migrate). Do NOT restore the
-    // `++this.meta.rev` here — meta-mutation-only rev is what makes owner rev-LWW reasoning
-    // clean (`rooms.rev` is touched by meta events alone), and a visit no longer pays a
-    // DO-SQLite write on every connect.
+    // DO, §6). NO rev bump: visits resolve ordering by `visitedAt`, so rev stays
+    // meta-mutation-only (which keeps owner rev-LWW clean) and a connect pays no DO-SQLite write.
     this.env.ROOM_VISITS.send({ userId, roomId: this.meta.roomId, visitedAt: Date.now() } satisfies z.input<typeof VisitEvent>).catch(
       (err) => console.error('visit projection failed', err),
     );
@@ -186,8 +176,8 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
 
   /**
    * First-write mint — the authenticated first toucher owns the room (single-threaded DO).
-   * Self-identity is `asRoomId(this.name)` (= `ctx.id.name`); builds + persists the row and
-   * RETURNS it so the caller assigns `this.meta` inline (TS narrowing survives).
+   * Builds + persists the row and RETURNS it so the caller assigns `this.meta` inline (TS
+   * narrowing survives).
    */
   #mintMeta(ownerId: UserId, title: string, permission: Permission = 'public'): RoomMeta {
     const now = Date.now();
@@ -200,7 +190,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       rev: 1,
       deletedAt: null,
     };
-    this.db.insert(roomMeta).values(meta).run(); // authoritative SQLite
+    this.db.insert(roomMeta).values(meta).run();
     return meta;
   }
 
@@ -222,7 +212,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
 
   /**
    * Owner-only permission flip, reached by cross-script raw RPC from `users` (§8). Cold-DO
-   * safe: meta loads in the constructor and identity is `asRoomId(this.name)`. Meta absent →
+   * safe (see the class note). Meta absent →
    * mint exactly like setTitle (offline-created room shared from the dashboard pre-first-
    * connect; the authenticated caller IS the creator). Otherwise updates SQLite + mutates
    * this.meta in memory (★ warm-cache fix — warm DOs don't re-run onStart/onLoad, so the
@@ -249,7 +239,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       if (this.meta.ownerId !== caller) throw new Error('forbidden');
       const rev = this.meta.rev + 1;
       this.db.update(roomMeta).set({ permission: next, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-      this.meta = { ...this.meta, permission: next, rev }; // ★ warm-cache fix
+      this.meta = { ...this.meta, permission: next, rev };
     }
 
     // Single pass over live connections (the mint path has zero by construction —
@@ -277,7 +267,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
    * renamer's own tabs included — idempotent there). If meta doesn't exist yet (offline-
    * created room renamed from the dashboard before its first connect, replayed on
    * reconnect), mint it exactly like onConnect would — the authenticated renamer IS the
-   * creator, and `asRoomId(this.name)` supplies the identity.
+   * creator.
    */
   async setTitle(caller: UserId, raw: string): Promise<MetaEvent> {
     return traceRpc(
@@ -297,7 +287,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       if (this.meta.ownerId !== caller) throw new Error('forbidden');
       const rev = this.meta.rev + 1;
       this.db.update(roomMeta).set({ title, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-      this.meta = { ...this.meta, title, rev }; // ★ warm-cache fix
+      this.meta = { ...this.meta, title, rev };
     }
 
     for (const c of this.getConnections<ConnState>()) this.sendCustomMessage(c, `title:${title}`);
@@ -335,7 +325,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     if (this.meta.ownerId !== from) throw new Error('forbidden'); // owned by a third party — skip, never force
     const rev = this.meta.rev + 1;
     this.db.update(roomMeta).set({ ownerId: to, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
-    this.meta = { ...this.meta, ownerId: to, rev }; // ★ warm-cache fix
+    this.meta = { ...this.meta, ownerId: to, rev };
 
     // Re-push the per-connection owner flag: the new owner's tabs gain the badge live; the
     // `from`-owner's tabs lose it (full lockout waits for reconnect — its anon id was rotated).
@@ -387,9 +377,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     // If the room is now empty, flush the doc immediately (non-debounced). This runs on the
     // fresh instance after a hibernation wake too — onLoad re-hydrates the doc before onClose,
     // so the snapshot is whole. getConnections() yields only OPEN sockets; after super.onClose()
-    // the departing socket is already excluded. We flush on ANY empty close (the pre-permissions
-    // behavior) — tracking whether an authorized editor attached, just to skip one R2 write on a
-    // forbidden-only isolate, isn't worth the state to keep correct across hibernation.
+    // the departing socket is already excluded. We flush on ANY empty close.
     if (this.getConnections()[Symbol.iterator]().next().done) {
       // Hibernation observability: last socket gone ⇒ the DO is idle and eligible to hibernate
       // shortly. uptime = lifetime of THIS instance (since construct/wake). Dev-only.

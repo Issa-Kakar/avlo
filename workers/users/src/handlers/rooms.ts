@@ -52,7 +52,7 @@ export const handleGetRooms = factory.createHandlers(async (c) => {
       permission: r.permission,
       isOwner,
       ownerName: redact ? null : r.ownerName,
-      createdAt: r.createdAt, // non-sensitive — surfaced unconditionally (redacted rows are pruned client-side)
+      createdAt: r.createdAt, // deliberately not redacted (non-sensitive — see the select)
       lastVisitedAt: r.lastVisitedAt,
     };
   });

@@ -22,7 +22,7 @@ import { UsersRpc } from './rpc';
 // before we spend an AUTH RPC → verify the session into c.get('userId') → tier-1 RL_ROOMS → routes.
 const app = new Hono<UsersEnv>()
   .use('*', createCors({ methods: ['GET', 'PATCH'], allowHeaders: ['Content-Type', 'x-d1-bookmark'], exposeHeaders: ['x-d1-bookmark'] }))
-  .use('*', devRequestLogger()) // dev-only request lines (/rooms, PATCH); dormant in prod
+  .use('*', devRequestLogger()) // dev-only request log — dormant in prod (DEV_LOGS unset)
   .use('*', cspHeaders('api-json'))
   .use('*', csrf({ origin: (o, c) => isAllowedOrigin(o, isDevHost(c.req.header('host'))) !== null }))
   .use('*', requireAuth<UsersEnv>())
@@ -38,8 +38,7 @@ const app = new Hono<UsersEnv>()
 // re-applies the profile to thrown responses (and keeps Hono's log + 500 for unexpected errors).
 app.onError(cspError('api-json'));
 
-// Drift guard — keeps the real app's path × method surface aligned with the
-// public mock in ./app-type. See @avlo/worker-shared/surface-drift.
+// Drift guard vs the ./app-type mock (see @avlo/worker-shared/surface-drift).
 assertSurfaceMatch<typeof app, PublicSurface>(true);
 
 // Default export carries BOTH the Hono fetch handler and the queue consumer (§5/§6) —

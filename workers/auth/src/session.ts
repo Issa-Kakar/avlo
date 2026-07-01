@@ -11,9 +11,9 @@ import { SessionRecord, type SessionRecordT } from './zod/session';
  */
 
 export const SESSION_COOKIE = 'avlo_session';
-export const SESSION_TTL_SEC = 30 * 24 * 60 * 60; // 30 d, sliding
+export const SESSION_TTL_SEC = 400 * 24 * 60 * 60; // 400 d, sliding (browser Max-Age ceiling)
 /** Re-put the KV record when remaining lifetime < this — at most one slide write / 5 d. */
-export const SESSION_SLIDE_THRESHOLD_MS = 25 * 24 * 60 * 60 * 1000;
+export const SESSION_SLIDE_THRESHOLD_MS = 395 * 24 * 60 * 60 * 1000;
 
 // 32 random bytes → base64url, 43 chars, no padding.
 export function mintSessionToken(): string {

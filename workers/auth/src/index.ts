@@ -33,7 +33,7 @@ const rl = ipRateLimiter<AuthEnv>((c) => c.env.RL_AUTH);
 
 const app = new Hono<AuthEnv>()
   .use('*', createCors({ methods: ['GET', 'POST'] }))
-  .use('*', devRequestLogger()) // dev-only request lines (/me, /login, /callback, /logout); dormant in prod
+  .use('*', devRequestLogger()) // dev-only request log — dormant in prod (DEV_LOGS unset)
   .use('*', cspHeaders('api-json'))
   .use('*', noStore)
   // Skips GET/HEAD (the cross-site callback is unaffected); guards POST /logout against
@@ -49,8 +49,7 @@ const app = new Hono<AuthEnv>()
 // re-applies the profile to thrown responses (and keeps Hono's log + 500 for the rest).
 app.onError(cspError('api-json'));
 
-// Drift guard — keeps the real app's path × method surface aligned with the
-// public mock in ./app-type. See @avlo/worker-shared/surface-drift.
+// Drift guard vs the ./app-type mock (see @avlo/worker-shared/surface-drift).
 assertSurfaceMatch<typeof app, PublicSurface>(true);
 
 export default app;

@@ -14,9 +14,9 @@ export const ANON_MAX_AGE_SEC = 400 * 24 * 60 * 60;
 /**
  * `GET /me` — the single identity resolver (§2). Account branch first: a valid
  * `avlo_session` KV record wins; its cookie re-sets on every hit (header-only slide) and
- * the KV record re-puts only when < 25 d remain. KV infrastructure failure degrades to
- * the anon path (availability over fail-closed — same documented tradeoff as
- * `verifySession`). Anon path: verify `avlo_anon`; present → re-bump Max-Age
+ * the KV record re-puts only when it's within the slide threshold. KV infrastructure
+ * failure degrades to the anon path (see `verifySession`). Anon path: verify `avlo_anon`;
+ * present → re-bump Max-Age
  * (header-only); absent/invalid → mint a fresh `userId`. `name`/`color` are
  * deterministic from `userId` for anon; an account carries its Google name + avatar.
  */
