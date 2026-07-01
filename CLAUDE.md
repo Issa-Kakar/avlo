@@ -1,10 +1,10 @@
 # AVLO Codebase Guide
 **Purpose:** Offline-first collaborative whiteboard with Yjs CRDT sync.
-**Stack:** React/TS/Canvas + Yjs + Cloudflare Workers/R2
+**Stack:** React / TS / Canvas + Yjs (CRDT) + Vite. Server: Cloudflare Workers (Hono + Zod) — Durable Objects (SQLite), D1, R2, KV, Queues; Drizzle ORM. Build: pnpm workspaces + Turborepo.
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `renderer/grid`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `routes`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -69,6 +69,7 @@ All paths relative to `web/src/` unless noted.
 |------|----------------|
 | `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,All}` |
 | `OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
+| `grid/` | Third canvas — standalone WebGPU/Canvas2D dot grid below content ('G' toggles). See CLAUDE.md |
 | `types.ts` | `FRAME_CONFIG`, Perfect Freehand options, `getSvgPathFromStroke` |
 | `geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache; observer-driven eviction (bbox change, `shapeType` / `startCap` / `endCap` keychange) |
 | `render-accessors.ts` | Per-kind `_map.get` readers (`readXxxRender(y)`) + per-kind module scratches. Two helpers split by Content subclass — `readPrim` (ContentAny via `arr[0]`) and `readY` (ContentType via `type`). Both check `!val.deleted` (tombstones survive `.delete(key)`). Zero alloc, monomorphic per subclass. Hot path only |
@@ -176,7 +177,7 @@ Six independently-deployed Cloudflare Workers. Full architecture, hardening inva
 `@avlo/db` (server-only) owns the D1 + DO-SQLite Drizzle schemas. Identity is **server-resolved only** (`/me`) — the client never mints a userId. Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client,db}/CLAUDE.md` cover the shared backend primitives, typed-RPC clients, and DB schemas.
 
 ### Routes + UI
-`routes/__root.tsx` (queryClient context + `QueryClientProvider` — the IDB cache restore happens in `main.tsx` BEFORE the router mounts), `routes/index.tsx` (→ `/home` redirect), `routes/home.tsx` (dashboard — `useRoomList`), `routes/room.$roomId.tsx` (`connectRoom` in `beforeLoad`).
+`routes/` (own CLAUDE.md) — `__root.tsx` (queryClient context + `QueryClientProvider`), `index.tsx` (→ `/home` redirect), `home.tsx` (dashboard — `useRoomList`), `room.$roomId.tsx` (`connectRoom` in `beforeLoad`).
 `components/`: top-level `Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`; subsystem dirs with own CLAUDE.md — `topbar/` (TopBar, RoomTitle, ShareModal, MainMenu, HistoryButtons), `toolbar/`, `dashboard/`, `context-menu/`.
 Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
 
@@ -190,6 +191,7 @@ Canvas.tsx (thin React wrapper — mounts DOM, creates runtime)
 
 CanvasRuntime (the brain)
   ├── SurfaceManager   — DOM refs + resize/DPR + deferred canvas resize
+  ├── gridLoop         — standalone dot-grid canvas below content (own sizing + on-demand rAF; see renderer/grid/CLAUDE.md)
   ├── renderLoop       — base canvas, dirty-rect optimized (native rAF)
   ├── overlayLoop      — tool preview + animation jobs, full clear each frame (peer cursors render as DOM, not here)
   ├── InputManager     — pointer + keyboard + modifier state
@@ -229,12 +231,7 @@ Document pointer → InputManager → presence-pointer.ts:
 
 ## Routing (TanStack Router)
 
-File-based with auto code splitting; auto-generated `routeTree.gen.ts`. `/` redirects to `/home` (dashboard); `/room/$roomId` is the canvas.
-- `main.tsx` consumes any `?auth=` OAuth marker FIRST (`query/auth-redirect.ts` — raw `history.replaceState` strip before the router exists; `out` additionally purges all local room data — mutation queue, facts, per-room doc DBs — then `ok`/`out` boots remove the me+rooms caches after restore and force one `/me`, raced 4 s, before mount), then awaits `restoreQueryCache()` (concurrent with fonts) BEFORE `<RouterProvider/>` — load-bearing: `beforeLoad`/loaders fire during router mount, and the me query's restored `dataUpdatedAt` is the `/me` slide-throttle clock. `void resumePausedMutations()` fires LAST before mount on every boot path (after the marker branch — see Query Layer). `__root` supplies the `queryClient` via router context + wraps plain `QueryClientProvider`; its `beforeLoad` warms `/me` (non-blocking `void ensureIdentity()` — a true no-op while fresh).
-- `/home` loader: fully non-blocking — `void prefetchQuery(roomsQueryOptions())`; identity resolves INSIDE the rooms queryFn (cookie ordered before `/rooms`; cold visitors still paint the dashboard instantly).
-- `/room/$roomId` `beforeLoad`: `normalizeRoomId` (validate-only — base62 is case-sensitive, no canonicalize rewrite) → `await ensureIdentity()` → `connectRoom(roomId)` → seed session-store title/isOwner/permission from the rooms cache + facts (skipped on same-room re-nav so WS truth isn't clobbered) → `recordVisit(roomId)` (visit recorded AFTER connect so the dashboard doesn't re-sort on the way out; skipped on a same-room re-nav to a `forbidden` room — it would recreate the facts row the 4403 path just pruned). connectRoom creates the Y.Doc, starts providers, restores camera.
-- `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount; `key={roomId}` forces full remount on room switch.
-- `getRouteApi('/room/$roomId').useParams()` for `roomId` in components.
+File-based, auto code-split (`routeTree.gen.ts`); `/` → `/home` (dashboard), `/room/$roomId` is the canvas. `/room/$roomId` `beforeLoad` drives `connectRoom(roomId)` (after `await ensureIdentity()`, then seeds session-store title/owner/permission + `recordVisit`); `RoomPage` cleanup calls `disconnectRoom` with `key={roomId}` forcing a full remount. `connectRoom` is destructive, so `defaultPreload: false` — never preload a room link. Components read `roomId` via `getRouteApi('/room/$roomId').useParams()`. See `routes/CLAUDE.md`; identity/cache boot ordering in `query/CLAUDE.md`.
 
 ---
 
@@ -386,10 +383,10 @@ computeBBoxForInto(id, kind, y, out) {
 **Handle exists ⇒ caches populated.** Frame getters (`getTextFrame` / `getCodeFrame` / `getBookmarkFrame`) return `null` only on a genuine Map-miss — an id never observed or already deleted (its cache entry was removed alongside the handle). Within an id's lifetime its caches stay populated.
 
 **Lazy exceptions** (populated on first read, not via observer):
-- `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common). Connector cap toggles (`startCap` / `endCap` keychange) pre-evict in the observer because the arrowhead bakes into the cached Path2D and cap-only toggles don't always shift the bbox.
+- `renderer/geometry-cache.ts` — Path2D (stroke/shape), ConnectorPaths (connector). Evicted on bbox change in `upsertHandle`; `alwaysEvict=true` on every connector reroute (route-changed-but-bbox-same is common).
 - **Shape label layouts.** The `shape` branch of `computeBBoxForInto` reads frame only — the label layout populates on first `drawShapeLabel`.
 
-**Async exceptions** (cross a worker boundary — coarser fallback meanwhile, self-publish dirty rects): image bitmaps (`getBitmap(assetId)` → `null` until worker decode) and code tier-2 Lezer spans (eager sync color floor in-observer, worker upgrade via `codeSystem.applyWorkerSpans`; layout is already eager). See `core/image/` + `core/code/`.
+**Async exceptions** (cross a worker boundary — coarser fallback meanwhile, self-publish dirty rects): image bitmap decoding and Lezer syntax parsing. See `core/image/` + `core/code/`.
 
 | Subsystem cache | Owner | Read API |
 |---|---|---|
@@ -409,9 +406,10 @@ computeBBoxForInto(id, kind, y, out) {
 
 ## Rendering Pipeline
 
-### Two-canvas architecture
-- **Base canvas:** World content, dirty-rect optimized, native rAF.
-- **Overlay canvas:** Full clear each invalidation — tool preview, selection UI, animation jobs (eraser trail). Peer cursors are NOT on the overlay canvas — they're rendered as DOM `<img>` elements by `PresenceCursorRenderer` so they sit above the editor overlay.
+### Three-canvas architecture
+- **Grid canvas (z:0):** Standalone WebGPU/Canvas2D dot grid below all content — own loop + sizing, 0×0 (near-zero memory) when off. The base canvas clears transparent so the grid shows through; the container div supplies the `#fafafa` fill. See `renderer/grid/CLAUDE.md`.
+- **Base canvas (z:1):** World content, dirty-rect optimized, native rAF.
+- **Overlay canvas (z:2):** Full clear each invalidation — tool preview, selection UI, animation jobs (eraser trail). Peer cursors are NOT on the overlay canvas — they're rendered as DOM `<img>` elements by `PresenceCursorRenderer` so they sit above the editor overlay.
 - `SelectTool` renders transformed objects on the base canvas for correct Z-order during translate/scale.
 
 ### Object dispatch (`renderer/layers/objects.ts`)
@@ -420,7 +418,7 @@ computeBBoxForInto(id, kind, y, out) {
 ### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
 Each leaf `draw*` calls one `readXxxRender(y)` that reads only the keys it paints straight off Yjs's `_map` (~10 ns/key vs ~109 for `y.get()`) into a per-kind module scratch. The mechanism — `readPrim`/`readY` split by Content subclass, the `!deleted` tombstone guard, the `arr[0]` length-1 invariant, scratch-consumed-before-the-next-reader — is documented in the file.
 
-Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById` / `codeSystem.getLayoutById` / `noteCachedLayout` / `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls; populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, …)` signature. **Handle in `objectsById` ⇒ layout cache populated** (observer guarantee; see Cache Architecture). The hot path trusts its caches — geometry-cache entries (observer pre-evicts on keychange), populated layouts, the observer's frame/asset contracts — and drops the re-validation guards that would otherwise repeat that work.
+Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById` / `codeSystem.getLayoutById` / `noteCachedLayout` / `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls; populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, …)` signature.
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
@@ -449,17 +447,17 @@ Imperative getters: `setCursorOverride`, `applyCursor`. Constants: `TEXT_FONT_SI
 
 ## Query Layer (`query/` — TanStack Query) — see `query/CLAUDE.md`
 
-Server-projection reads (`/me` identity, `GET /rooms` dashboard) + offline mutations (`rename-room`, `set-permission`), IndexedDB-persisted, `networkMode: 'offlineFirst'`. The cache is restored BEFORE the router mounts (`main.tsx` awaits `restoreQueryCache()`) — load-bearing: `beforeLoad`/loaders fire during mount and the me query's restored `dataUpdatedAt` is the anon-cookie slide-throttle clock. The `/me` queryFn is the **sole writer of `auth-store`**. `query/CLAUDE.md` owns the file map + boot ordering (`?auth=` marker, paused-mutation replay-after-marker, mutation-default registration before `init()`).
+Server-projection reads (`/me` identity, `GET /rooms` dashboard) + offline mutations (`rename-room`, `set-permission` → worker `PATCH /rooms/:id/{title,permission}`), IndexedDB-persisted, `networkMode: 'offlineFirst'`. File map, boot ordering, the `?auth=` OAuth-marker flow, and the `auth-store` write path all live in `query/CLAUDE.md`.
 
 ## Selection System
 
-Detailed in `tools/selection/CLAUDE.md` (state machine, per-kind transform, connector topology, hit testing, text/code reflow, dirty-rect, commit paths). Entry points: `SelectTool` (state machine + commits + marquee), `transform.ts` (TransformController + dispatch tables + built topology), `selection-store.ts`; shared spatial/geometry: `core/spatial/object-query.ts` (picker facade, also Eraser/Text/Code/snap), `core/spatial/handle-hit.ts`, `core/geometry/scale-system.ts`, `core/types/handles.ts`; rendering in `renderer/layers/{objects,selection-overlay}.ts`.
+Detailed in `tools/selection/CLAUDE.md` (state machine, per-kind transform, connector topology, hit testing, text/code reflow, dirty-rect, commit paths). Entry points: `SelectTool` (state machine + commits + marquee), `transform.ts` (TransformController + dispatch tables + built topology), `core/geometry/scale-system.ts`, `selection-store.ts`.
 
 ---
 
 ## Other Tools
 
-Beyond `SelectTool` (see Selection System), all tools sit in the Tools file map, each pointing to its subsystem `CLAUDE.md`. Non-obvious notes: `DrawingTool` freezes settings at `begin()` and click-places a 180wu shape; the **note tool maps to `TextTool`** (shape labels + sticky notes share its engine); `CodeTool` renders screen-space (world × scale) with a per-session `UndoManager`; `ConnectorTool` Ctrl-suppresses snapping; `PanTool` also serves MMB + spacebar pan; `EraserTool` deletes all kinds via geometry-aware hit testing.
+Beyond `SelectTool` (see Selection System), all tools sit in the Tools file map. `DrawingTool` — pen, highlighter, and shape drawing; `PanTool` also serves MMB + spacebar pan; `EraserTool` deletes all kinds via geometry-aware hit testing; `ConnectorTool` → `core/connectors/CLAUDE.md`; `CodeTool` → `core/code/CLAUDE.md`.
 
 ---
 
