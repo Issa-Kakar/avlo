@@ -97,6 +97,13 @@ export default defineConfig({
     proxy: proxyConfig,
     headers: isolationHeaders,
   },
+  // ES-module worker output. The lezer worker uses dynamic `import()` to
+  // lazy-load per-language grammars, which requires code-splitting — unsupported
+  // by the default 'iife' worker format. Both workers are instantiated with
+  // `{ type: 'module' }` at runtime, so ES output matches.
+  worker: {
+    format: 'es',
+  },
   build: {
     rollupOptions: {
       input: {

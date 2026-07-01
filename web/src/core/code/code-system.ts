@@ -112,6 +112,10 @@ interface CacheEntry {
   language: CodeLanguage;
   frame: FrameTuple | null;
 
+  // Guards the cold full-text seed to the worker: an `edits` (delta) message
+  // must never precede the first full seed, whatever the observer/Yjs ordering.
+  seeded: boolean;
+
   // Layout cache keys
   layoutFontSize: number;
   layoutWidth: number;
@@ -119,22 +123,12 @@ interface CacheEntry {
   layoutValid: boolean;
 }
 
-export interface ChangedRange {
-  fromA: number;
-  toA: number;
-  fromB: number;
-  toB: number;
-}
+/** Yjs Y.Text delta op — referenced (not copied) straight into the edits message. */
+type DeltaOp = { retain?: number; insert?: string | object; delete?: number };
 
 type WorkerRequest =
-  | {
-      type: 'parse';
-      id: string;
-      text: string;
-      language: CodeLanguage;
-      version: number;
-      changes?: ChangedRange[];
-    }
+  | { type: 'parse'; id: string; language: CodeLanguage; version: number; text: string } // full seed/reset
+  | { type: 'parse'; id: string; language: CodeLanguage; version: number; edits: DeltaOp[] } // Yjs delta
   | { type: 'remove'; id: string }
   | { type: 'clearAll' };
 
@@ -546,8 +540,40 @@ function handleWorkerMessage(e: MessageEvent<WorkerResponse>): void {
   codeSystem.applyWorkerSpans(id, spanData, spanLineStart, version);
 }
 
-function requestParse(id: string, text: string, language: CodeLanguage, version: number, changes?: ChangedRange[]): void {
-  dispatch({ type: 'parse', id, text, language, version, changes });
+// Pooled message wrappers — one per parse form. postMessage structured-clones
+// synchronously during the `dispatch` call, so reusing a single object across
+// calls is safe. `edits` just references `ev.delta` (Yjs already allocated it).
+const _fullMsg: { type: 'parse'; id: string; language: CodeLanguage; version: number; text: string } = {
+  type: 'parse',
+  id: '',
+  language: 'javascript',
+  version: 0,
+  text: '',
+};
+const _editsMsg: { type: 'parse'; id: string; language: CodeLanguage; version: number; edits: DeltaOp[] } = {
+  type: 'parse',
+  id: '',
+  language: 'javascript',
+  version: 0,
+  edits: [],
+};
+
+/** Full-text seed/reset — cold miss + language change (worker resets its mirror). */
+function requestParse(id: string, text: string, language: CodeLanguage, version: number): void {
+  _fullMsg.id = id;
+  _fullMsg.language = language;
+  _fullMsg.version = version;
+  _fullMsg.text = text;
+  dispatch(_fullMsg);
+}
+
+/** Incremental edit — posts the Yjs delta; the worker splices its mirror + parses. */
+function requestParseEdits(id: string, language: CodeLanguage, version: number, edits: DeltaOp[]): void {
+  _editsMsg.id = id;
+  _editsMsg.language = language;
+  _editsMsg.version = version;
+  _editsMsg.edits = edits;
+  dispatch(_editsMsg);
 }
 
 function requestRemove(id: string): void {
@@ -572,50 +598,7 @@ export function terminateCodeWorkers(): void {
 }
 
 // ============================================================================
-// §7 DELTA CONVERSION
-// ============================================================================
-
-/**
- * Convert Y.Text delta to ChangedRange[] for incremental Lezer parsing.
- */
-export function deltaToChangedRanges(delta: { insert?: string | object; delete?: number; retain?: number }[]): ChangedRange[] {
-  const ranges: ChangedRange[] = [];
-  let posOld = 0;
-  let posNew = 0;
-
-  for (const op of delta) {
-    if (op.retain) {
-      posOld += op.retain;
-      posNew += op.retain;
-    } else if (op.delete) {
-      const len = op.delete;
-      ranges.push({ fromA: posOld, toA: posOld + len, fromB: posNew, toB: posNew });
-      posOld += len;
-    } else if (op.insert) {
-      const text = typeof op.insert === 'string' ? op.insert : '';
-      const len = text.length;
-      ranges.push({ fromA: posOld, toA: posOld, fromB: posNew, toB: posNew + len });
-      posNew += len;
-    }
-  }
-
-  // Merge adjacent ranges (select+type/paste → delete+insert at same position)
-  let wi = 0;
-  for (let i = 0; i < ranges.length; i++) {
-    if (wi > 0 && ranges[wi - 1].toA === ranges[i].fromA && ranges[wi - 1].toB === ranges[i].fromB) {
-      ranges[wi - 1].toA = ranges[i].toA;
-      ranges[wi - 1].toB = ranges[i].toB;
-    } else {
-      ranges[wi++] = ranges[i];
-    }
-  }
-  ranges.length = wi;
-
-  return ranges;
-}
-
-// ============================================================================
-// §8 CACHE
+// §7 CACHE
 // ============================================================================
 
 class CodeSystemCache {
@@ -630,6 +613,7 @@ class CodeSystemCache {
       version: 0,
       language,
       frame: null,
+      seeded: false,
       layoutFontSize: 0,
       layoutWidth: 0,
       layoutLineNumbers: true,
@@ -654,10 +638,12 @@ class CodeSystemCache {
       e.layoutValid = true;
       this.entries.set(id, e);
       requestParse(id, text, language, e.version);
+      e.seeded = true;
       return e.layout;
     }
 
-    // Language changed — re-tokenize spans only, keep layout if dims unchanged
+    // Language changed — re-tokenize spans only, keep layout if dims unchanged.
+    // Full seed resets the worker's mirror to the current text; `seeded` stays true.
     if (e.language !== language) {
       syncTokenizeInto(e.source, language, e.spans);
       e.language = language;
@@ -710,8 +696,15 @@ class CodeSystemCache {
     e.layoutValid = false;
     e.frame = null;
 
-    const changes = deltaToChangedRanges(ev.delta as { insert?: string | object; delete?: number; retain?: number }[]);
-    requestParse(id, text, language, e.version, changes.length > 0 ? changes : undefined);
+    // First edit to an unseeded entry sends the full text (seeds the worker mirror);
+    // every subsequent edit sends only the Yjs delta — no full text crosses the
+    // thread boundary, so N peers typing cost N tiny delta copies, not N full copies.
+    if (!e.seeded) {
+      requestParse(id, text, language, e.version);
+      e.seeded = true;
+    } else {
+      requestParseEdits(id, language, e.version, ev.delta as DeltaOp[]);
+    }
   }
 
   /**
