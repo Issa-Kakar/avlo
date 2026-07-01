@@ -25,7 +25,14 @@ import {
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { bringSelectedForward, bringSelectedToFront, sendSelectedBackward, sendSelectedToBack } from '@/core/z-order/z-actions';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { type ShapeVariant, setCursorOverride, setShapeMode, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
+import {
+  type ShapeVariant,
+  setCursorOverride,
+  setShapeMode,
+  type Tool,
+  toggleGridEnabled,
+  useDeviceUIStore,
+} from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { deleteSelected, setSelectedHighlight, toggleSelectedBold, toggleSelectedItalic } from '@/tools/selection/selection-actions';
 import { computeUniformInlineStyles } from '@/tools/selection/selection-utils';
@@ -258,6 +265,13 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
   if (key === 'i') {
     e.preventDefault();
     openImageFilePicker();
+    return;
+  }
+
+  // Background dot grid toggle (persisted in device-ui-store; grid loop repaints on the change)
+  if (key === 'g') {
+    e.preventDefault();
+    toggleGridEnabled();
     return;
   }
 

@@ -11,6 +11,7 @@
 import { cleanupOnRoomTeardown } from '@/core/bookmark/bookmark-unfurl';
 import { createImageFromBlob, exceedsBatchLimit } from '@/core/image/image-actions';
 import { clear as clearImageManager } from '@/core/image/image-manager';
+import { gridLoop } from '@/renderer/grid/GridRenderLoop';
 import { overlayLoop } from '@/renderer/OverlayRenderLoop';
 import { renderLoop } from '@/renderer/RenderLoop';
 import { capturePointer, releasePointer, screenToCanvas, screenToWorld, subscribeCamera, useCameraStore } from '@/stores/camera-store';
@@ -29,6 +30,7 @@ import { calculateZoomTransform, cancelZoom } from './viewport/zoom';
 
 export interface RuntimeConfig {
   container: HTMLElement;
+  gridCanvas: HTMLCanvasElement;
   baseCanvas: HTMLCanvasElement;
   overlayCanvas: HTMLCanvasElement;
   editorHost: HTMLDivElement;
@@ -51,7 +53,7 @@ export class CanvasRuntime {
   private wheelTimestamps: number[] = [];
 
   start(config: RuntimeConfig): void {
-    const { container, baseCanvas, overlayCanvas, editorHost, cursorHost } = config;
+    const { container, gridCanvas, baseCanvas, overlayCanvas, editorHost, cursorHost } = config;
 
     // 1. Surface manager: DOM refs, contexts, resize/DPR
     this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost, cursorHost);
@@ -67,6 +69,8 @@ export class CanvasRuntime {
     // 2. Render loops
     renderLoop.start();
     overlayLoop.start();
+    // Grid loop is standalone (owns its own canvas sizing + on-demand rAF); no-op while off.
+    gridLoop.start(gridCanvas);
 
     // 3. Input manager: pointer events, modifier state, keyboard lifecycle
     this.inputManager = new InputManager(this, baseCanvas, container);
@@ -109,6 +113,7 @@ export class CanvasRuntime {
 
     renderLoop.stop();
     overlayLoop.stop();
+    gridLoop.stop();
 
     this.surfaceManager?.stop();
 
