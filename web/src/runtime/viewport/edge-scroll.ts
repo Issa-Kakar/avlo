@@ -9,7 +9,7 @@
 
 import { getCanvasRect, screenToWorld, useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { setLastCursorWorld } from '../cursor-tracking';
+import { setLastCursorWorld } from '../input/cursor-tracking';
 import { getCurrentTool } from '../tool-registry';
 
 const EDGE_ZONE = 40; // CSS px from each viewport edge

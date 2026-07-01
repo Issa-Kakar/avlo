@@ -294,18 +294,18 @@ Paste extensions (Document/Paragraph/Text/Bold/Italic/Highlight-multicolor) are 
 
 ## Integration Points
 
-### Keyboard Manager (`runtime/keyboard-manager.ts`)
+### Keyboard Manager (`runtime/input/keyboard-manager.ts`)
 - `Cmd+C` → `copySelected()`
 - `Cmd+X` → `cutSelected()` (blocked during active gesture)
 - `Cmd+D` → `duplicateSelected()` (blocked during active gesture)
 - `Cmd+A` → `selectAll()` (cancels non-select tool gesture first)
 - `Cmd+V` handled via DOM paste event → `handlePaste()` → `pasteFromClipboard()`
 
-### InputManager (`runtime/InputManager.ts`)
+### InputManager (`runtime/input/InputManager.ts`)
 - Registers `document` paste listener → forwards to `handlePaste()` in keyboard-manager
 - OS file paste (Finder copy) → `clipboardData.files` → `pasteImage()`
 
-### Cursor Tracking (`runtime/cursor-tracking.ts`)
+### Cursor Tracking (`runtime/input/cursor-tracking.ts`)
 - `getLastCursorWorld()` provides paste target position
 - Updated by `CanvasRuntime.handlePointerMove()`
 

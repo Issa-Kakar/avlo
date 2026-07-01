@@ -21,7 +21,7 @@ import type { ConnectorCap, ConnectorType, SnapTarget } from '@/core/connectors/
 import type { Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { isCtrlHeld } from '@/runtime/InputManager';
+import { isCtrlHeld } from '@/runtime/input/InputManager';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import type { ConnectorPreview, PointerTool, PreviewData } from './types';
 

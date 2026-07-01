@@ -12,7 +12,7 @@ import { generateNZAtTop, generateZAtTop, normalizeUrl } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getLastCursorWorld } from '@/runtime/cursor-tracking';
+import { getLastCursorWorld } from '@/runtime/input/cursor-tracking';
 import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { animateToFit } from '@/runtime/viewport/zoom';

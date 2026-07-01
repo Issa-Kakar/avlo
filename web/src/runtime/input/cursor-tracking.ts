@@ -6,7 +6,7 @@
  *
  * Modifier key state lives in InputManager (not here).
  *
- * @module runtime/cursor-tracking
+ * @module runtime/input/cursor-tracking
  */
 
 let lastCursorWorld: [number, number] | null = null;

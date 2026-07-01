@@ -1,5 +1,5 @@
 import { type FC, type PointerEvent, type SVGProps, useCallback, useState } from 'react';
-import { beginShapePlace } from '@/runtime/toolbar-place';
+import { beginShapePlace } from '@/runtime/input/toolbar-place';
 import { type ShapeVariant, selectShape, setShapeVariant, setShapeWidth, useDeviceUIStore } from '@/stores/device-ui-store';
 import { IconShapeDiamond, IconShapeEllipse, IconShapeRect, IconShapeRoundedRect, IconShapeTriangle } from '../icons/ShapeVariantIcons';
 import { SHAPE_WEIGHTS } from '../weights';
@@ -40,7 +40,7 @@ const VARIANT_HANDLERS: Record<ShapeVariant, () => void> = {
 };
 
 // Drag-place entry — pointerdown applies the variant and starts a capture-retargeted
-// placing gesture (runtime/toolbar-place.ts). The onClick above survives as the
+// placing gesture (runtime/input/toolbar-place.ts). The onClick above survives as the
 // fallback for guard-refused presses (the captured click never reaches the button).
 const VARIANT_DOWN_HANDLERS: Record<ShapeVariant, (e: PointerEvent<HTMLButtonElement>) => void> = {
   rectangle: (e) => beginShapePlace(e, 'rectangle'),

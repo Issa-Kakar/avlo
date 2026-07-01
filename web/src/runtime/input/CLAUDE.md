@@ -1,18 +1,18 @@
-# Input, Keyboard & Viewport Subsystem
+# Input & Keyboard Subsystem
 
-Imperative modules for keyboard shortcuts, DOM event registration, modifier state tracking, viewport control (zoom, edge scroll, arrow key pan), and cursor tracking. No React — all module-level singletons and pure functions.
+Imperative modules for keyboard-shortcut dispatch, DOM event registration, modifier-state tracking, toolbar drag-place entry, browser-zoom blocking, and cursor tracking. No React — all module-level singletons and pure functions. Camera motion (zoom / edge-scroll / arrow-key pan) lives in `../viewport`; this layer only *triggers* it.
 
 ## File Map
 
 | File | Purpose |
 |------|---------|
-| `runtime/keyboard-manager.ts` | All keybinding dispatch: tool switches, modifiers, spacebar pan, paste routing |
-| `runtime/InputManager.ts` | Sole DOM event registrar + modifier state owner (shift/ctrl/meta) |
-| `runtime/install-ui-zoom-block.ts` | Page-zoom block: window-capture wheel+ctrl, Cmd/Ctrl + plus/minus/equal/0, Safari gesturestart; install/dispose by CanvasRuntime, scoped to canvas-room |
-| `runtime/cursor-tracking.ts` | Last cursor world position for paste placement |
-| `runtime/viewport/zoom.ts` | Animated zoom: step, fit-to-bounds, reset, center-preserving transforms |
-| `runtime/viewport/edge-scroll.ts` | Auto-pan near viewport edges during qualifying drags |
-| `runtime/viewport/arrow-key-pan.ts` | Continuous arrow key panning with easeInQuad acceleration |
+| `keyboard-manager.ts` | All keybinding dispatch: tool switches, modifiers, spacebar pan, paste routing |
+| `InputManager.ts` | Sole DOM event registrar + modifier state owner (shift/ctrl/meta) |
+| `toolbar-place.ts` | Drag-place entry from inspector buttons — applies selection, `beginPlace` on the tool singleton, pointer capture to canvas |
+| `install-ui-zoom-block.ts` | Page-zoom block: window-capture wheel+ctrl, Cmd/Ctrl + plus/minus/equal/0, Safari gesturestart; install/dispose by CanvasRuntime, scoped to canvas-room |
+| `cursor-tracking.ts` | Last cursor world position for paste placement |
+
+Camera motion: `../viewport/{zoom,edge-scroll,arrow-key-pan}.ts` — see `../viewport/CLAUDE.md`.
 
 ---
 
@@ -92,7 +92,7 @@ Layered cancel: active gesture → `tool.cancel()`, else selected objects → `c
 Activates ephemeral pan mode. Guards: not key repeat, not already in pan mode, no active gesture, not editing text.
 
 **Guard 6 — Arrow Keys:**
-Starts continuous pan. Guards: not repeat, no active gesture, not editing, not in spacebar pan.
+Starts continuous pan (`../viewport/arrow-key-pan.ts`). Guards: not repeat, no active gesture, not editing, not in spacebar pan.
 
 **Guard 7 — Gesture/Editing Block:**
 If gesture active OR text editing → return. Blocks all remaining bare keys.
@@ -134,8 +134,8 @@ Tool switches, shape variants, delete, enter-to-edit, image picker.
 | `Cmd+B` | Toggle bold | Blocked during gesture |
 | `Cmd+I` | Toggle italic | Blocked during gesture |
 | `Cmd+H` | Toggle highlight | Blocked during gesture; uses `computeUniformInlineStyles()` for toggle detection |
-| `Cmd+=` / `Cmd++` | Zoom in | `e.preventDefault()` blocks browser zoom |
-| `Cmd+-` | Zoom out | `e.preventDefault()` blocks browser zoom |
+| `Cmd+=` / `Cmd++` | Zoom in (`../viewport/zoom.ts`) | `e.preventDefault()` blocks browser zoom |
+| `Cmd+-` | Zoom out (`../viewport/zoom.ts`) | `e.preventDefault()` blocks browser zoom |
 | `Cmd+0` | Reset zoom to 100% | Animated |
 
 #### Action Keys (Bare)
@@ -146,7 +146,7 @@ Tool switches, shape variants, delete, enter-to-edit, image picker.
 | `Enter` | Edit selected text/shape/note/code | Single selection, select tool only. text/shape/note → textTool; code → codeTool |
 | `Escape` | Cancel gesture → clear selection | Layered: gesture first, then selection |
 | `Space` (hold) | Ephemeral pan mode | See spacebar pan section |
-| `Arrow keys` (hold) | Continuous pan | See arrow key pan section |
+| `Arrow keys` (hold) | Continuous pan | `../viewport/arrow-key-pan.ts` |
 
 ### Paste Handler
 
@@ -210,133 +210,20 @@ Keyboard-manager computes `computeUniformInlineStyles(selectedIds)` live — doe
 
 ---
 
+## Toolbar Drag-Place (`toolbar-place.ts`)
+
+Entry points for placing a shape / sticky note by dragging off an inspector button (`beginShapePlace`, `beginNotePlace`). Each: applies the selection (variant / fill) up front so a sub-threshold release degrades to click semantics, guards on `isSpacebarPanMode()` + `tool.canBegin()`, then `beginPlace` on the tool singleton and captures the pointer to the canvas — every subsequent move/up retargets through the normal InputManager → CanvasRuntime → tool dispatch. Imported by `components/toolbar/inspectors/{ShapeInspector,StickyNotePanel}.tsx`.
+
+---
+
 ## Cursor Tracking
 
 Minimal module: `lastCursorWorld: [number, number] | null`.
 
-- `setLastCursorWorld(pos)` — called by `CanvasRuntime.handlePointerMove()` after screenToWorld conversion, and by `edge-scroll.ts` after each auto-pan tick
+- `setLastCursorWorld(pos)` — called by `CanvasRuntime.handlePointerMove()` after screenToWorld conversion, and by `../viewport/edge-scroll.ts` after each auto-pan tick
 - `getLastCursorWorld()` — read by clipboard paste for cursor-position placement
 
 Returns null if the cursor has never entered the canvas (paste falls back to viewport center).
-
----
-
-## Zoom System (`viewport/zoom.ts`)
-
-Animated zoom with easeOutCubic easing over 180ms. Module-level RAF animation state with seamless mid-animation retargeting.
-
-### Zoom Steps
-Predefined log-spaced percentages: `[0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 5]`
-
-Step tolerance (STEP_EPS): 0.005 for "at this step" comparisons.
-
-### Rapid Click Accumulation
-`pendingStep` stores the target from the last step request. Rapid `zoomIn()`/`zoomOut()` calls use `pendingStep` as the base (if ahead/behind current scale), allowing fast clicks to jump multiple steps without waiting for animation completion.
-
-### Center Preservation
-`calculateZoomTransform(currentScale, currentPan, zoomFactor, zoomCenter)` computes new scale + pan such that world coordinates under the zoom center remain fixed. Used by both step zoom (viewport center) and pinch zoom (pinch midpoint).
-
-### Public API
-
-| Function | Behavior |
-|----------|----------|
-| `zoomIn()` | Next step from current/pending scale, centered on viewport |
-| `zoomOut()` | Previous step, centered on viewport |
-| `zoomTo(targetScale)` | Animate to specific scale, centered on viewport |
-| `animateZoomReset()` | Animate to scale=1, pan={0,0} |
-| `animateToFit(bounds, padding, maxScale, minScale)` | Fit world bounds in viewport. Floor applied first, then cap — "never zoom in" always wins. |
-| `animateZoom(toScale, toPan)` | Low-level: animate to target. Retargets seamlessly mid-animation. |
-| `cancelZoom()` | Cancel in-progress animation |
-| `clampScale(scale)` | Clamp to MIN_ZOOM/MAX_ZOOM from camera store |
-
-### Fit-to-Bounds
-
-`animateToFit(bounds, padding=80, maxScale=Infinity, minScale=0)`:
-- Computes fitting scale: `min((width - 2*padding) / boundsW, (height - 2*padding) / boundsH)`
-- Applies: `clampScale(min(max(fitScale, minScale), maxScale))`
-- Centers camera on bounds midpoint
-- Used by clipboard paste (`ensureVisible`) with maxScale=currentScale (only zoom out), minScale=0.25
-
----
-
-## Edge Scrolling (`viewport/edge-scroll.ts`)
-
-Auto-pan when pointer nears viewport edge during qualifying tool drags.
-
-### Eligibility
-Only active during `select`, `connector`, or `shape` tool drags (tool must be active). Pen, highlighter, eraser, text, pan, code, note are excluded.
-
-### Proximity Model
-
-40px edge zone from each viewport edge. `computeProximity(pos, size)` returns a signed normalized value:
-- `0` — pointer in interior (no scroll)
-- `-1` to `0` — pointer approaching min edge (left/top)
-- `0` to `1` — pointer approaching max edge (right/bottom)
-- Beyond viewport bounds: clamped at ±1
-
-Proximity is **squared** before applying to speed — fine-grained control at low proximity (entering zone at 0.25 → 0.0625 factor), steeper at edge (1.0 → 1.0 factor).
-
-### Timing
-
-| Phase | Duration | Behavior |
-|-------|----------|----------|
-| **Delay** | 50ms | No scrolling — prevents accidental trigger |
-| **Ramp** | 100ms | easeInQuad acceleration (t² curve) |
-| **Full speed** | After 150ms | Proximity² × BASE_SPEED at full easing |
-
-### Speed
-
-`BASE_SPEED = 9.5` CSS px per 16ms tick (~570 CSS px/s max at proximity=1, full easing).
-
-All speeds are screen-space (÷ scale for world delta) — consistent visual speed regardless of zoom level.
-
-**Small screen factor**: 0.65× per axis when viewport dimension < 1000px.
-
-### Tool Re-dispatch
-
-After each pan, the module:
-1. Calls `screenToWorld(lastClientX, lastClientY)` to get updated world coordinates
-2. Updates cursor tracking via `setLastCursorWorld(world)`
-3. Calls `getCurrentTool()?.move(world[0], world[1])` to update the active tool
-
-Safe for all eligible tools — SelectTool translate/scale/marquee, ConnectorTool snap+routing, DrawingTool shape preview all update naturally.
-
-### CanvasRuntime Integration
-
-| Call Site | Action |
-|-----------|--------|
-| `handlePointerMove` | `updateEdgeScroll(clientX, clientY)` — updates proximity + starts/stops RAF |
-| `handlePointerUp` | `stopEdgeScroll()` |
-| `handlePointerCancel` | `stopEdgeScroll()` |
-| `handleLostPointerCapture` | `stopEdgeScroll()` |
-| `stop()` (runtime teardown) | `stopEdgeScroll()` |
-| Camera subscription | `isEdgeScrolling()` guard prevents redundant `tool.onViewChange()` calls (tool already re-dispatched immediately after pan) |
-
-### Stop Conditions
-Pointer up/cancel/lost-capture, runtime stop, eligibility loss (tool change, gesture end), or pointer returning to interior (delay resets on re-entry).
-
----
-
-## Arrow Key Pan (`viewport/arrow-key-pan.ts`)
-
-Smooth continuous canvas pan while arrow keys are held. Own RAF loop, independent from edge scroll.
-
-### Speed & Acceleration
-- **Base speed**: 800 CSS px/s at full acceleration
-- **Start fraction**: 25% of base speed (200 CSS px/s)
-- **Ramp**: easeInQuad over 400ms from 25% → 100%
-- **Scale-adjusted**: world speed = computed speed ÷ camera scale
-- **Diagonal normalization**: direction vector normalized per-tick to prevent 1.41× speed
-
-### Guards (in keyboard-manager)
-- Key repeat events ignored (only initial keydown starts a direction)
-- Blocked during: active gesture, text editing, spacebar pan mode
-- `stopDirection(key)` on keyup, `stopAll()` on window blur (clears stale held-key state)
-
-### Direction Tracking
-Module-level `Set<string>` of held direction keys. RAF loop runs while set is non-empty. Delta time capped at 50ms to prevent large jumps after tab-away.
-
-Pan direction matches "grab" semantics: ArrowRight → content moves right (pan.x increases).
 
 ---
 
@@ -362,4 +249,3 @@ User Input → InputManager (DOM events)
   │
   └── Paste event → keyboard-manager.handlePaste → clipboard-actions
 ```
-

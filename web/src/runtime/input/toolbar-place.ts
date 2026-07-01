@@ -11,8 +11,8 @@
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { capturePointer, screenToWorld } from '@/stores/camera-store';
 import { type ShapeVariant, setActiveTool, setCursorOverride, setNoteFillColor, setShapeVariant } from '@/stores/device-ui-store';
+import { drawingTool, textTool } from '../tool-registry';
 import { isSpacebarPanMode } from './keyboard-manager';
-import { drawingTool, textTool } from './tool-registry';
 
 export function beginShapePlace(e: ReactPointerEvent, variant: ShapeVariant): void {
   if (e.button !== 0) return;

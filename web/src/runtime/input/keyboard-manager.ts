@@ -11,7 +11,7 @@
  * 3. Gesture-active → blocks tool switches + delete
  * 4. Bare-key → tool switches, delete, enter, escape
  *
- * @module runtime/keyboard-manager
+ * @module runtime/input/keyboard-manager
  */
 
 import {
@@ -36,10 +36,10 @@ import {
 import { useSelectionStore } from '@/stores/selection-store';
 import { deleteSelected, setSelectedHighlight, toggleSelectedBold, toggleSelectedItalic } from '@/tools/selection/selection-actions';
 import { computeUniformInlineStyles } from '@/tools/selection/selection-utils';
-import { getHandle, hasActiveRoom, redo, undo } from './room-runtime';
-import { codeTool, getCurrentTool, panTool, textTool } from './tool-registry';
-import { startDirection, stopAll as stopArrowPan, stopDirection } from './viewport/arrow-key-pan';
-import { animateZoomReset, zoomIn, zoomOut } from './viewport/zoom';
+import { getHandle, hasActiveRoom, redo, undo } from '../room-runtime';
+import { codeTool, getCurrentTool, panTool, textTool } from '../tool-registry';
+import { startDirection, stopAll as stopArrowPan, stopDirection } from '../viewport/arrow-key-pan';
+import { animateZoomReset, zoomIn, zoomOut } from '../viewport/zoom';
 
 // === Spacebar Pan State ===
 

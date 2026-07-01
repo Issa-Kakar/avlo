@@ -12,12 +12,12 @@
  * `liveCtrl` tracks ctrlKey only (not metaKey) for connector snap suppression,
  * because Cmd conflicts with clipboard shortcuts on macOS.
  *
- * @module runtime/InputManager
+ * @module runtime/input/InputManager
  */
 
-import type { CanvasRuntime } from './CanvasRuntime';
+import type { CanvasRuntime } from '../CanvasRuntime';
+import { handlePresenceBlur, handlePresencePointerMove, handlePresencePointerOut } from '../presence/presence-pointer';
 import { handleBlur, handleKeyDown, handleKeyUp, handlePaste } from './keyboard-manager';
-import { handlePresenceBlur, handlePresencePointerMove, handlePresencePointerOut } from './presence/presence-pointer';
 
 // ============================================
 // MODIFIER STATE

@@ -201,7 +201,7 @@ Iterates Z-order via `pickTopmostBindable`. Connectable kinds = `BINDABLE_KINDS`
 2. Midpoint stickiness — within 16px → `midpointSide: Dir, interior: false` (it's an edge anchor).
 3. Clamped interior — anchor = clamped cursor, `[0.01, 0.99]` per axis.
 
-**Ctrl held** → `isCtrlHeld()` (live, from `runtime/InputManager.ts`) forces `snap = null` before every `findBestSnapTarget` call.
+**Ctrl held** → `isCtrlHeld()` (live, from `runtime/input/InputManager.ts`) forces `snap = null` before every `findBestSnapTarget` call.
 
 `position` on every `SnapTarget` is the **un-offset** visual dot AND the un-offset routing endpoint. Per-type offset (elbow cardinal / straight along-line) runs in routing — snap never bakes offsets into `position`.
 

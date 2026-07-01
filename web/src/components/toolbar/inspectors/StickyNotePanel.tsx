@@ -1,5 +1,5 @@
 import { type CSSProperties, useEffect } from 'react';
-import { beginNotePlace } from '@/runtime/toolbar-place';
+import { beginNotePlace } from '@/runtime/input/toolbar-place';
 import { closeStickyPanel, NOTE_COLOR_PALETTE, setNoteFillColor } from '@/stores/device-ui-store';
 import { isDark } from '../color/palette';
 import './StickyNotePanel.css';

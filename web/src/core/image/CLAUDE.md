@@ -183,8 +183,8 @@ Four ways to create an image:
 | Trigger | Handler | Location |
 |---------|---------|----------|
 | Drag-drop files onto canvas | `CanvasRuntime.handleDrop()` | `runtime/CanvasRuntime.ts` |
-| Clipboard paste (Cmd+V) | DOM `paste` event → `pasteImage()` or `pasteFromClipboard()` | `runtime/keyboard-manager.ts` |
-| Keyboard shortcut `i` | `openImageFilePicker()` | `runtime/keyboard-manager.ts` |
+| Clipboard paste (Cmd+V) | DOM `paste` event → `pasteImage()` or `pasteFromClipboard()` | `runtime/input/keyboard-manager.ts` |
+| Keyboard shortcut `i` | `openImageFilePicker()` | `runtime/input/keyboard-manager.ts` |
 | Toolbar Image button | `openImageFilePicker()` | `components/toolbar/Toolbar.tsx` |
 
 All entry points converge to `createImageFromBlob(blob, worldX, worldY, opts?)`.

@@ -4,7 +4,7 @@
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence}`, `query`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -48,16 +48,15 @@ All paths relative to `web/src/` unless noted.
 |------|----------------|
 | `CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch |
 | `SurfaceManager.ts` | DOM refs (contexts, editorHost, cursorHost) + resize/DPR + deferred canvas resize |
-| `InputManager.ts` | DOM event forwarder + modifier state (shift/ctrl/meta) |
 | `tool-registry.ts` | Self-constructing tool singletons + lookup helpers (pen/highlighter/shape→drawingTool, text/note→textTool, image→one-shot file picker, rest→own singleton) |
 | `room-runtime.ts` | Module-level room context — `connectRoom`/`disconnectRoom` + imperative getters |
 | `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring. WS provider → `wss://sync.avlo.io/sync/rooms/<id>` (prod; host = `SYNC_HOST_PROD`, prefix = `SYNC_WS_PREFIX`) — cross-origin to the SPA, gated server-side by the CSWSH Origin allowlist in sync's `on-before-connect` |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
-| `keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
-| `toolbar-place.ts` | Drag-place entry from inspector buttons — applies the selection, `beginPlace` on the tool singleton, pointer capture to canvas + grabbing cursor; move/up then flow through the normal dispatch |
-| `cursor-tracking.ts` | Last cursor world position (for paste placement) |
-| `history-bridge.ts` | Binds a `Y.UndoManager`'s stack events → `history-store` (`canUndo`/`canRedo`); disposer resets to `(false,false)` |
-| `install-ui-zoom-block.ts` | Window capture-phase block of browser page-zoom (Ctrl/⌘ wheel/±/0, Safari pinch) on canvas routes only; toggles `html.canvas-room` |
+| `input/InputManager.ts` | DOM event forwarder + modifier state (shift/ctrl/meta) |
+| `input/keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
+| `input/toolbar-place.ts` | Drag-place entry from inspector buttons — applies the selection, `beginPlace` on the tool singleton, pointer capture to canvas + grabbing cursor; move/up then flow through the normal dispatch |
+| `input/cursor-tracking.ts` | Last cursor world position (for paste placement) |
+| `input/install-ui-zoom-block.ts` | Window capture-phase block of browser page-zoom (Ctrl/⌘ wheel/±/0, Safari pinch) on canvas routes only; toggles `html.canvas-room` |
 | `presence/presence.ts` | Awareness lifecycle, cursor send (throttle + backpressure), receive dispatch. Delegates peer state to the renderer. |
 | `presence/presence-renderer.ts` | `PresenceCursorRenderer` — SoA peer state, slot pool, self-driven rAF, DOM `<img>` cursors (host at z:4, above editor overlay) |
 | `presence/presence-pointer.ts` | Pure dispatch for the `document`-level local-cursor input path (move/out/blur/camera-sync) |
@@ -142,7 +141,7 @@ All paths relative to `web/src/` unless noted.
 | `presence-store.ts` | Peer identities + count (Zustand, for React components only) |
 | `room-list-store.ts` | Two local slices. **`rooms`** — per-room facts for interacted rooms (createdAt/lastVisitedAt + `title` fact — local-only-room display fallback, stamped by the rename mutation; born only from a real create/visit/rename, so timestamps are always real, never sentinels) PLUS persisted server-fact mirrors `permission`/`ownerName`/`isOwner` (update-only — stamped by `absorbServerRooms` in the rooms queryFn and the `perm:`/`owner:` pushes; private-not-owned entries PRUNED, ids returned for doc-DB deletion). **`starredIds`** — the star-preference id set, DECOUPLED from facts so `toggleStar` flips membership only and never fabricates a timestamp (the merge reads it as an independent overlay). `removeRoom` (4403 path), `clearAllRooms` (sign-out purge) clear both; `absorbServerRooms`'s prune drops the dangling star too. localStorage (persist v2 hoists legacy in-`RoomFacts` stars); merged with the D1 projection in `query/room-list.ts` (immer) |
 | `room-session-store.ts` | Server-delivered room session state (immer): mode/access (`mode:` custom message; 4401/4403 close codes) + `title`/`isOwner`/`permission` (`title:`/`owner:`/`perm:` pushes, seeded from the rooms cache in the room route's beforeLoad — `title` drives the TopBar name + tab title, `isOwner` gates the rename affordance + the Share modal's permission dropdown, `permission` is that dropdown's current value) |
-| `history-store.ts` | Undo/redo availability (`canUndo`/`canRedo`) for toolbar buttons |
+| `history-store.ts` | Undo/redo availability (`canUndo`/`canRedo`) for toolbar buttons + `bindUndoManagerToHistoryStore` (subscribes a `Y.UndoManager`'s stack events → the store; disposer resets to `(false,false)`; called by `room-doc-manager`) |
 
 ### Utils + Shared
 | File | Responsibility |

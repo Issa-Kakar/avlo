@@ -25,12 +25,12 @@ import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { router } from '@/router';
 import { getUserId } from '@/stores/auth-store';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
+import { bindUndoManagerToHistoryStore } from '@/stores/history-store';
 import { removeRoom, setRoomOwnerFact, setRoomPermissionFact } from '@/stores/room-list-store';
 import { resetRoomSession, setRoomAccess, setRoomIsOwner, setRoomMode, setRoomPermission, setRoomTitle } from '@/stores/room-session-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import { ROOM_DOC_DB_PREFIX } from '@/utils/room-local-data';
-import { bindUndoManagerToHistoryStore } from './history-bridge';
 import { attach, detach } from './presence/presence';
 
 /** Viewport-cull then publish a dirty rect. `vp` is a scratch tuple from `getVisibleBoundsTuple()`. */

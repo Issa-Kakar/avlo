@@ -48,7 +48,7 @@ import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint, ObjectHandle, StoredElbowAnchor } from '@/core/types/objects';
 import { isBindableKind } from '@/core/types/objects';
-import { isCtrlHeld } from '@/runtime/InputManager';
+import { isCtrlHeld } from '@/runtime/input/InputManager';
 import { getAttachedConnectors, getHandle, getObjects, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
 import { getUserId } from '@/stores/auth-store';
