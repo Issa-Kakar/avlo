@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "avlo", // bare name preserved — canonical app identity; the asymmetry is load-bearing
-  "compatibility_date": "2026-05-01", // pinned per-worker; bump uniformly when needed
+  "compatibility_date": "2026-06-30", // pinned per-worker; bump uniformly when needed
 
   // Pure site worker: Static Assets only, NO worker script. The SPA + the _headers CSP are
   // served by Cloudflare's Static Assets layer directly (no `main`, no ASSETS binding — that
