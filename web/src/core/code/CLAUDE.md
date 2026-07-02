@@ -13,7 +13,8 @@ double-click-to-edit).
 
 | File | Role |
 |------|------|
-| `code-tokens.ts` | `S` enum (16 styles incl. `WHITESPACE` sentinel), `THEME` (palette + chrome — single source of truth for color), spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), length-bucketed keyword tables + `classifyIdent`, sizing ratios, char-code sync tokenizer (`syncTokenizeInto`), play-button geometry (`playButtonGeom`). **Imports `code-system.ts` as `type` only** — see bundle hygiene below |
+| `code-tokens.ts` | Shared codec/theme/plumbing: `S` enum (16 styles incl. `WHITESPACE` sentinel), `THEME` (palette + chrome — single source of truth for color), spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), sizing ratios, play-button geometry (`playButtonGeom`). **Imports `code-system.ts` as `type` only** — see bundle hygiene below |
+| `code-tokenizer.ts` | The sync-floor highlighter: length-bucketed keyword tables + `classifyIdent`, stateless char-code scan atoms (`scanNumber` / `scanQuotedString` / `scanTripleStringBody` / `scanTemplateLiteral` / `scanEscape`), and `syncTokenizeInto` — a thin **driver** that dispatches by language to a per-language whole-source tokenizer (`tokenizeCLike` covers JS/TS/Python; JSON/SQL/HTML slot in as one function + one dispatch arm — **the seam**). Imported **only by `code-system.ts`**; keeps `code-system` a `type`-only import (bundle hygiene) |
 | `code-system.ts` | SOA pipeline types (`CodeSource` / `CodeSpans` / `CodeLayout` / `CodeOutput`), pooled `CodeSystemCache`, `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers, worker pool (2 warm workers, hash-routed) with per-id diff transport (`requestParse` full seed / `requestParseEdits` Yjs delta; pooled message wrappers), font metrics (derived from text-system) |
 | `code-theme.ts` | CodeMirror theme + `HighlightStyle.define` rule list. All `@codemirror/*` AND `@lezer/highlight` imports are **dynamic** (inside `getCodeMirrorExtensions()`) — main bundle stays free of the editor stack |
 | `lezer-worker.ts` | Web Worker. Per-object `Tree` + `TreeFragment` + text-mirror state, **lazily-loaded** per-language parsers (dynamic `import()` via `REGISTRY`; buffer-during-load preserves per-id order), incremental parsing from Yjs-delta diffs (`applyEdits` splices the mirror + derives `ChangedRange[]` in one pass), custom `STYLE_HIGHLIGHTER` over its own `WORKER_RULES`, zero-copy ArrayBuffer transfer |
@@ -38,8 +39,9 @@ double-click-to-edit).
 ```
 
 No stored frame — derived via `getCodeFrame(id)` from
-`code-system.ts`. Height = `blockHeight(layout, fs, headerVisible,
-outputVisible, output)`. Title fallback uses `??` (not `||`) to preserve `''`.
+`code-system.ts`. Height = `blockHeight(layout, headerVisible, outputVisible,
+output)` (reads cached px metrics off `layout` — no `fontSize` param). Title
+fallback uses `??` (not `||`) to preserve `''`.
 Typed accessor: `getCodeProps(y)`.
 
 ## Architecture — SOA Pipeline
@@ -70,11 +72,21 @@ single `style === S.WHITESPACE` compare on a register-held value — no parallel
 buffer, no extra cache line. `THEME.palette[S.WHITESPACE]` mirrors `DEFAULT` so
 defensive blind reads return a defined value.
 
-### Cached font strings
+### Cached font strings + pixel metrics
 
 `CodeLayout.normalFont` / `chromeFont` are recomputed only when `fontSize`
 changes (gated in `layoutCodeSourceInto`) — saves three template-string
 allocations per render call.
+
+`layoutCodeSourceInto` also caches every `fs * ratio` product + the measured-ratio
+Map lookups onto the layout (`charWidthPx` / `baselineOffsetPx` / `contentLeftPx`
+/ `lineHeightPx` / `pad{Top,Bottom,Left,Right}Px` / `chromeFontSizePx` /
+`headerBarHeightPx` / `borderRadiusPx` / `gutterDigits`) — computed **every**
+layout call (not `fontSize`-gated, so it self-heals across the font-load
+boundary), read by `renderCodeLayout` / `blockHeight` / `computeCodeBBoxInto`
+instead of recomputed per frame. Both `renderCodeLayout` and `blockHeight`
+therefore take **no `fontSize` param** (`fontSize === layout.fontSize` at every
+call site). `digitCount(n)` replaces `String(n).length` for the gutter width.
 
 ### Frame & sizing
 
@@ -123,15 +135,34 @@ stays (the renderer needs a materialized string for cheap `substring` slices, an
 it only fires on content change). Message objects are pooled module-level
 wrappers — postMessage structured-clones synchronously, so reuse is safe.
 
-**Sync tokenizer** (`syncTokenizeInto`): char-code, allocation-free. Iterates
-`source.fullText` with absolute offsets, pushes line-relative triples to a
-pooled `_syncBuf`, then `packRunSpansInto` writes flat triples per line. Two
-pieces of function-local state across the whole pass:
+**Sync tokenizer** (`code-tokenizer.ts`): char-code, allocation-free.
+`syncTokenizeInto(source, language, out)` is a thin **driver** — it writes the
+shared spans prologue (`ensureSpansLineCap` + line-0 offset) then dispatches by
+language. JS/TS/Python route to `tokenizeCLike` (they differ only by keyword
+table + `isPython`); structurally-distinct languages (JSON/SQL/HTML) slot in as
+one `tokenizeXxx` + one dispatch arm — **the seam** in `syncTokenizeInto`.
+`tokenizeCLike` iterates `source.fullText` with absolute offsets, pushes
+line-relative triples to a pooled `_syncBuf`, then `flushLine` (`packRunSpansInto`
++ the per-line span-start write) packs each line. All per-pass state is
+function-local — no shared struct, monomorphic, zero-alloc. Two carry pieces:
 - `lastDefIsFunc` — set by definer kw (`function`/`class`/`def`/`type`/
-  `interface`/`enum`, via the kw table's `definesNext` flag). Next ident
+  `interface`/`enum`, via the kw table's `definesNext` flag; `classifyIdent`
+  returns the matched `KwEntry` or `null`, no side-channel global). Next ident
   consumes it and renders as `S.FUNCTION_DEF`. Persists across whitespace/comments.
 - `lastSignificantChar` — last non-ws non-comment char code, drives `obj.foo`
   → `S.TYPE` classification.
+
+The stateless scan atoms (`scanNumber` / `scanQuotedString` / `scanTripleStringBody`
+/ `scanTemplateLiteral` / `scanEscape`) **return their end index** (no scanner
+globals), so a future language can reuse them directly. The identifier emit +
+its `lastDefIsFunc`/`lastSignificantChar` write-back stays inline (a 6-way
+read-and-write decision — hoisting it would risk a silent lost write-back with
+no type error).
+
+Alignment invariants (a silent break has no type error): comment/whitespace
+branches must NOT update `lastSignificantChar` (so `obj /* */ .foo` still
+resolves `foo` → TYPE); `lastDefIsFunc` persists across ws/comments, resets on
+other emits; the number branch keeps its deliberate `lastSignificantChar = 0`.
 
 Out of scope (needs AST): JSX HTML/Component split, regex-delimiter split,
 parameter vs variable, destructured aliases.
@@ -213,8 +244,9 @@ obj-literal keys, class fields, method shorthand, and class methods.
 
 ## Canvas Renderer (`renderCodeLayout`)
 
-Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, spans,
-source, title?, output?, outputCache?)`. `title`/`output` undefined hides the
+Signature: `renderCodeLayout(ctx, layout, originX, originY, spans, source,
+title?, output?, outputCache?)` — all size/color metrics read off `layout`'s
+cached px fields, so no `fontSize` param. `title`/`output` undefined hides the
 respective chrome section; present string shows it. Callers (`drawCode` +
 scale-time paths in `objects.ts`) eagerly build `outputCache` so the renderer
 has no fallback branch.
@@ -270,7 +302,9 @@ itself floors `cap = max(s.spanCap, 16)`.
 | `evict(id)` / `clear()` | Deletion / room change |
 
 Helpers exported from `code-system.ts` and consumed externally: `getCodeFrame`,
-`getCodeSource`, `computeCodeBBox`, `terminateCodeWorkers` (kills the warm pool on room teardown — see Integration).
+`getCodeSource`, `computeCodeBBoxInto` (observer hot path — writes into a pooled
+bbox + reuses `e.frame` in place via `setFrameXYWH`; `computeCodeBBox` is the
+allocating cold-path wrapper), `terminateCodeWorkers` (kills the warm pool on room teardown — see Integration).
 
 ## DOM Editor (CodeTool)
 
@@ -384,11 +418,14 @@ throws.
 
 ## Bundle Hygiene (critical invariants)
 
-- **`code-tokens.ts` imports `code-system.ts` as `type` only**. A value import
-  would chain `code-tokens → code-system → RenderLoop → image-manager`,
+- **`code-tokens.ts` AND `code-tokenizer.ts` import `code-system.ts` as `type`
+  only**. A value import would chain `→ code-system → RenderLoop → image-manager`,
   dragging image-manager's top-level `window.addEventListener(...)` into
   the lezer worker — module-load aborts before `onmessage` is installed and
-  parse requests silently drop. The spans cap helpers
+  parse requests silently drop. The worker imports `{ S, writePackedTriples }`
+  from `code-tokens.ts` **only** — it never reaches `code-tokenizer.ts`, and
+  `code-tokens.ts` must never gain a *value* import of `code-tokenizer.ts` (only
+  `code-system.ts` imports the tokenizer). The spans cap helpers
   (`ensureSpansDataCap` / `ensureSpansLineCap`) live in `code-tokens.ts`
   specifically to keep this chain broken. `w.onerror` / `w.onmessageerror`
   surface any regression.
@@ -405,8 +442,8 @@ throws.
 ## Integration
 
 **`room-doc-manager.ts`** deep observer: code-kind Y.Text events route to
-`codeSystem.handleContentChange(id, ev, lang)`. `computeCodeBBox(id, yObj)` is
-called for code in hydration and incremental update paths. Object deletion →
+`codeSystem.handleContentChange(id, ev, lang)`. `computeCodeBBoxInto(id, yObj, out)`
+is called for code in hydration and incremental update paths. Object deletion →
 `codeSystem.evict(id)`. Room change → `codeSystem.clear()` (broadcasts to
 ALL workers). Room teardown (`RoomDocManager.destroy()`) additionally calls
 `terminateCodeWorkers()` — the lazy pool is killed and re-created on demand in

@@ -1,7 +1,7 @@
 import type * as Y from 'yjs';
 import { getBookmarkProps, getEndCap, getFrame, getNoteProps, getPoints, getStartCap, getTextProps, getWidth } from '../accessors';
 import { computeBookmarkBBox } from '../bookmark/bookmark-render';
-import { computeCodeBBox } from '../code/code-system';
+import { computeCodeBBoxInto } from '../code/code-system';
 import { unionConnectorLabelBBoxInto } from '../connectors/connector-label';
 import { getConnectorRoute } from '../connectors/connector-router';
 import type { ConnectorCap } from '../connectors/types';
@@ -96,7 +96,7 @@ export function computeBBoxForInto(id: string, kind: ObjectKind, yMap: Y.Map<unk
     }
 
     case 'code':
-      copyBbox(computeCodeBBox(id, yMap), out);
+      computeCodeBBoxInto(id, yMap, out);
       return;
 
     case 'image': {

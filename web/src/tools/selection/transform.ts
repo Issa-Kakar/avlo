@@ -294,7 +294,7 @@ function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
   o.width = layout.totalWidth;
   o.layout = layout;
   o.fontSize = f.fontSize!;
-  const nh = codeBlockHeight(layout, f.fontSize!, f.headerVisible!, f.outputVisible!, f.output);
+  const nh = codeBlockHeight(layout, f.headerVisible!, f.outputVisible!, f.output);
   setBBoxXYWH(o.bbox, newLeft, f.bbox[1], targetWidth, nh);
 }
 

@@ -390,7 +390,7 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
   const output = r.outputVisible ? (r.output ?? '') : undefined;
   const outputCache = output !== undefined ? (codeSystem.getOutputCache(id, output) ?? undefined) : undefined;
-  renderCodeLayout(ctx, layout, r.originX, r.originY, r.fontSize, spans, source, title, output, outputCache);
+  renderCodeLayout(ctx, layout, r.originX, r.originY, spans, source, title, output, outputCache);
 }
 
 /**
@@ -552,18 +552,7 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
         const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
         const output = r.outputVisible ? (r.output ?? '') : undefined;
         const outputCache = output !== undefined ? (codeSystem.getOutputCache(handle.id, output) ?? undefined) : undefined;
-        renderCodeLayout(
-          ctx,
-          entry.out.layout,
-          entry.out.origin[0],
-          entry.out.origin[1],
-          r.fontSize,
-          spans,
-          source,
-          title,
-          output,
-          outputCache,
-        );
+        renderCodeLayout(ctx, entry.out.layout, entry.out.origin[0], entry.out.origin[1], spans, source, title, output, outputCache);
       } else if (behavior === 'uniform') {
         const layout = codeSystem.getLayoutById(handle.id);
         if (!layout) break;
@@ -579,7 +568,7 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
         ctx.save();
         ctx.translate(b[0], b[1]);
         ctx.scale(ratio, ratio);
-        renderCodeLayout(ctx, layout, 0, 0, r.fontSize, spans, source, title, output, outputCache);
+        renderCodeLayout(ctx, layout, 0, 0, spans, source, title, output, outputCache);
         ctx.restore();
       } else {
         renderTranslatedEntry(ctx, handle, entry);

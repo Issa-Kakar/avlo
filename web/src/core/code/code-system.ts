@@ -25,6 +25,7 @@ import { getCodeProps } from '../accessors';
 import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-measure';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 
+import { syncTokenizeInto } from './code-tokenizer';
 import {
   CHROME_FONT_RATIO,
   CODE_FONT_FAMILY,
@@ -36,7 +37,6 @@ import {
   OUTPUT_PAD_BOTTOM_RATIO,
   playButtonGeom,
   S,
-  syncTokenizeInto,
   THEME,
 } from './code-tokens';
 
@@ -92,6 +92,25 @@ export interface CodeLayout {
   // Cached font strings — recomputed by `layoutCodeSourceInto` only when fontSize changes.
   normalFont: string;
   chromeFont: string;
+
+  // Cached pixel metrics — the `fs * ratio` products + measured-ratio Map lookups
+  // that used to be recomputed every frame per block. Populated each
+  // `layoutCodeSourceInto` call (self-healing across font load); read by
+  // `renderCodeLayout` / `blockHeight` / `computeCodeBBoxInto`. Stable order,
+  // init 0 in `createCodeLayout` so V8 keeps one hidden class (the transform
+  // reflow buffer shares the factory).
+  charWidthPx: number;
+  baselineOffsetPx: number;
+  contentLeftPx: number;
+  lineHeightPx: number;
+  padTopPx: number;
+  padBottomPx: number;
+  padLeftPx: number;
+  padRightPx: number;
+  chromeFontSizePx: number;
+  headerBarHeightPx: number;
+  borderRadiusPx: number;
+  gutterDigits: number;
 }
 
 /** Small cache for output panel. Rebuilt only when the `output` Y.Map field changes. */
@@ -214,6 +233,15 @@ export function getDefaultWidth(fontSize: number): number {
   return DEFAULT_CHARS * charWidth(fontSize) + contentLeft(2, fontSize, true) + padRight(fontSize);
 }
 
+/** Allocation-free decimal-digit count for a positive line count (replaces `String(n).length`). */
+function digitCount(n: number): number {
+  if (n < 10) return 1;
+  if (n < 100) return 2;
+  if (n < 1000) return 3;
+  if (n < 10000) return 4;
+  return (Math.log10(n) | 0) + 1;
+}
+
 // ============================================================================
 // §4 SOURCE BUFFER — buildCodeSourceInto + capacity helpers
 // ============================================================================
@@ -297,6 +325,18 @@ export function createCodeLayout(): CodeLayout {
     vlLen: new Uint32Array(16),
     normalFont: '',
     chromeFont: '',
+    charWidthPx: 0,
+    baselineOffsetPx: 0,
+    contentLeftPx: 0,
+    lineHeightPx: 0,
+    padTopPx: 0,
+    padBottomPx: 0,
+    padLeftPx: 0,
+    padRightPx: 0,
+    chromeFontSizePx: 0,
+    headerBarHeightPx: 0,
+    borderRadiusPx: 0,
+    gutterDigits: 0,
   };
 }
 
@@ -353,10 +393,32 @@ export function layoutCodeSourceInto(
   out.totalWidth = width;
   out.sourceLineCount = source.lineCount;
 
-  const digits = Math.max(2, String(source.lineCount).length);
+  const digits = Math.max(2, digitCount(source.lineCount));
   const cl = contentLeft(digits, fontSize, lineNumbers);
   const cw = charWidth(fontSize);
-  const maxChars = Math.max(1, Math.floor((width - cl - padRight(fontSize)) / cw));
+  const pr = padRight(fontSize);
+  const maxChars = Math.max(1, Math.floor((width - cl - pr) / cw));
+
+  // Cache pixel metrics for the render hot path (also read by blockHeight +
+  // computeCodeBBoxInto). Computed EVERY call (not gated on fontSize) so it
+  // self-heals across the font-load boundary — charWidthPx / baselineOffsetPx
+  // depend on measured font ratios that fall back before fonts load. Safe
+  // because main.tsx awaits ensureFontsLoaded() + resetFontMetrics() BEFORE the
+  // canvas mounts (every layout is post-font-load); computing each call makes it
+  // self-healing even if that ordering ever changed. `cw`/`cl` reuse the products
+  // above. (`normalFont`/`chromeFont` keep their own fontSize gate below.)
+  out.charWidthPx = cw;
+  out.baselineOffsetPx = baselineOffset(fontSize);
+  out.contentLeftPx = cl;
+  out.lineHeightPx = lineHeight(fontSize);
+  out.padTopPx = padTop(fontSize);
+  out.padBottomPx = padBottom(fontSize);
+  out.padLeftPx = padLeft(fontSize);
+  out.padRightPx = pr;
+  out.chromeFontSizePx = chromeFontSize(fontSize);
+  out.headerBarHeightPx = headerBarHeight(fontSize);
+  out.borderRadiusPx = borderRadius(fontSize);
+  out.gutterDigits = digits;
 
   const fullText = source.fullText;
   const lineStart = source.lineStart;
@@ -391,11 +453,6 @@ export function layoutCodeSourceInto(
   }
 
   return out;
-}
-
-/** Compute total height from layout + fontSize — not stored. */
-export function totalHeight(layout: CodeLayout, fontSize: number): number {
-  return padTop(fontSize) + layout.visualLineCount * lineHeight(fontSize) + padBottom(fontSize);
 }
 
 // ============================================================================
@@ -433,22 +490,28 @@ export function outputPanelHeight(fs: number, output: string | undefined, cache?
   return labelH + outputLineCount(output, cache) * outputLH + padB;
 }
 
-/** Full block height including header + code content + output panel. */
+/**
+ * Full block height including header + code content + output panel. Reads the
+ * cached px metrics off `layout` — no `fontSize` param (redundant with
+ * `layout.fontSize`). The output-panel branch inlines `outputPanelHeight`'s math
+ * (that function keeps its `fs` signature for external callers) using the cached
+ * `chromeFontSizePx`.
+ */
 export function blockHeight(
   layout: CodeLayout,
-  fontSize: number,
   headerVisible: boolean,
   outputVisible: boolean,
   output: string | undefined,
   outputCache?: CodeOutput,
 ): number {
-  return (
-    (headerVisible ? headerBarHeight(fontSize) : 0) +
-    padTop(fontSize) +
-    layout.visualLineCount * lineHeight(fontSize) +
-    padBottom(fontSize) +
-    (outputVisible ? outputPanelHeight(fontSize, output, outputCache) : 0)
-  );
+  let h =
+    (headerVisible ? layout.headerBarHeightPx : 0) + layout.padTopPx + layout.visualLineCount * layout.lineHeightPx + layout.padBottomPx;
+  if (outputVisible) {
+    const labelH = layout.fontSize * OUTPUT_LABEL_H_RATIO;
+    const padB = layout.fontSize * OUTPUT_PAD_BOTTOM_RATIO;
+    h += output ? labelH + outputLineCount(output, outputCache) * (layout.chromeFontSizePx * OUTPUT_LINE_H_MULT) + padB : labelH + padB;
+  }
+  return h;
 }
 
 // ============================================================================
@@ -759,6 +822,27 @@ class CodeSystemCache {
     if (e) e.frame = frame;
   }
 
+  /**
+   * In-place frame writer for the observer hot path — mutates the 4 slots of the
+   * pooled `e.frame` (allocs once if null). Safe because every `frameOf`/`getCodeFrame`
+   * consumer clones before retaining (connector-topology, transform) or reads
+   * transiently within one synchronous pass; no `===` identity check on frames
+   * exists anywhere.
+   */
+  setFrameXYWH(id: string, x: number, y: number, w: number, h: number): void {
+    const e = this.entries.get(id);
+    if (!e) return;
+    const f = e.frame;
+    if (f) {
+      f[0] = x;
+      f[1] = y;
+      f[2] = w;
+      f[3] = h;
+    } else {
+      e.frame = [x, y, w, h];
+    }
+  }
+
   getFrame(id: string): FrameTuple | null {
     return this.entries.get(id)?.frame ?? null;
   }
@@ -807,20 +891,38 @@ export function getCodeSpans(id: string): CodeSpans | null {
   return codeSystem.getSpans(id);
 }
 
-/** Compute bbox for a code object — frame→bbox conversion. */
-export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
+/**
+ * Compute bbox for a code object into a pooled `out` — observer hot path. Reuses
+ * the cached `e.frame` in place (`setFrameXYWH`), so the observer fire allocates
+ * zero (was a `FrameTuple` + a `BBoxTuple` per fire).
+ */
+export function computeCodeBBoxInto(id: string, yObj: Y.Map<unknown>, out: BBoxTuple): void {
   const props = getCodeProps(yObj);
   if (!props) {
     const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
-    return [origin[0], origin[1], origin[0] + 1, origin[1] + 1];
+    out[0] = origin[0];
+    out[1] = origin[1];
+    out[2] = origin[0] + 1;
+    out[3] = origin[1] + 1;
+    return;
   }
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const outputCache = codeSystem.getOutputCache(id, props.output) ?? undefined;
   const [ox, oy] = props.origin;
-  const bh = blockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output, outputCache);
-  const frame: FrameTuple = [ox, oy, layout.totalWidth, bh];
-  codeSystem.setFrame(id, frame);
-  return [ox, oy, ox + layout.totalWidth, oy + bh];
+  const w = layout.totalWidth;
+  const bh = blockHeight(layout, props.headerVisible, props.outputVisible, props.output, outputCache);
+  codeSystem.setFrameXYWH(id, ox, oy, w, bh);
+  out[0] = ox;
+  out[1] = oy;
+  out[2] = ox + w;
+  out[3] = oy + bh;
+}
+
+/** Cold-path wrapper: allocates a fresh bbox tuple. Hot paths call `computeCodeBBoxInto`. */
+export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
+  const out: BBoxTuple = [0, 0, 0, 0];
+  computeCodeBBoxInto(id, yObj, out);
+  return out;
 }
 
 // ============================================================================
@@ -836,31 +938,36 @@ export function renderCodeLayout(
   layout: CodeLayout,
   originX: number,
   originY: number,
-  fontSize: number,
   spans: CodeSpans,
   source: CodeSource,
   title?: string,
   output?: string,
   outputCache?: CodeOutput,
 ): void {
-  const lh = lineHeight(fontSize);
-  const cw = charWidth(fontSize);
-  const pt = padTop(fontSize);
-  const pl = padLeft(fontSize);
-  const hh = title !== undefined ? headerBarHeight(fontSize) : 0;
-  const bgH = blockHeight(layout, fontSize, title !== undefined, output !== undefined, output, outputCache);
-  const digits = Math.max(2, String(layout.sourceLineCount).length);
-  const cl = contentLeft(digits, fontSize, layout.lineNumbers);
-  // Pre-cached on the layout — recomputed only when fontSize changes.
+  // All px metrics are cached on the layout (populated by layoutCodeSourceInto).
+  // No fontSize param — fontSize === layout.fontSize at every call site.
+  const lh = layout.lineHeightPx;
+  const cw = layout.charWidthPx;
+  const pt = layout.padTopPx;
+  const pl = layout.padLeftPx;
+  const hh = title !== undefined ? layout.headerBarHeightPx : 0;
+  const bgH = blockHeight(layout, title !== undefined, output !== undefined, output, outputCache);
+  const digits = layout.gutterDigits;
+  const cl = layout.contentLeftPx;
   const { normalFont, chromeFont } = layout;
-  const cfs = chromeFontSize(fontSize);
+  const cfs = layout.chromeFontSizePx;
+
+  // Hoist THEME reads out of the visual-line loop (idiomatic here — the function
+  // already hoists spanData / vlFrom / normalFont).
+  const palette = THEME.palette;
+  const gutterColor = THEME.chrome.gutter;
 
   ctx.save();
 
   // 1. Background
   ctx.fillStyle = THEME.chrome.bg;
   ctx.beginPath();
-  ctx.roundRect(originX, originY, layout.totalWidth, bgH, borderRadius(fontSize));
+  ctx.roundRect(originX, originY, layout.totalWidth, bgH, layout.borderRadiusPx);
   ctx.fill();
 
   // Helper: pixel-snapped hairline (1 CSS px, device-aligned)
@@ -889,8 +996,8 @@ export function renderCodeLayout(
     ctx.fillText(title, originX + pl, originY + hh / 2);
 
     // Play button — green circle with white triangle (centroid-centered)
-    const { btnR, triW, triH, triXOffset } = playButtonGeom(fontSize);
-    const btnCx = originX + layout.totalWidth - padRight(fontSize) - btnR;
+    const { btnR, triW, triH, triXOffset } = playButtonGeom(layout.fontSize);
+    const btnCx = originX + layout.totalWidth - layout.padRightPx - btnR;
     const btnCy = originY + hh / 2;
 
     ctx.fillStyle = THEME.chrome.playBg;
@@ -911,7 +1018,7 @@ export function renderCodeLayout(
   // 3. Code content — shifted down by header height
   const codeTop = originY + hh;
   ctx.textBaseline = 'alphabetic';
-  const bl = baselineOffset(fontSize);
+  const bl = layout.baselineOffsetPx;
   // Hoist normalFont out of the inner loop — Sweet Dracula has no bold tokens,
   // so the per-span branch that used to switch between bold/normal is gone.
   // Chrome blocks (header above, output below) set chromeFont explicitly.
@@ -934,8 +1041,8 @@ export function renderCodeLayout(
 
     // Gutter — only on first segment of source line, when lineNumbers enabled
     if (layout.lineNumbers && vFrom === 0) {
-      ctx.fillStyle = THEME.chrome.gutter;
-      const lineNum = String(srcIdx + 1);
+      ctx.fillStyle = gutterColor;
+      const lineNum = String(srcIdx + 1); // needed for fillText — kept
       ctx.fillText(lineNum, originX + pl + (digits - lineNum.length) * cw, baseY);
     }
 
@@ -970,7 +1077,7 @@ export function renderCodeLayout(
         continue;
       }
 
-      ctx.fillStyle = THEME.palette[style];
+      ctx.fillStyle = palette[style];
 
       const absFrom = lineStartChar + drawFrom;
       const absTo = lineStartChar + drawTo;
@@ -982,16 +1089,16 @@ export function renderCodeLayout(
   // Placeholder — empty block shows grey hint text at first line position.
   // ctx.font is still normalFont from the hoist above.
   if (source.lineCount === 1 && source.fullText.length === 0) {
-    ctx.fillStyle = THEME.chrome.gutter;
+    ctx.fillStyle = gutterColor;
     ctx.fillText('Type something...', originX + cl, codeTop + pt + bl);
   }
 
   // 4. Output panel
   if (output !== undefined) {
-    const codeBottomY = codeTop + pt + visualLineCount * lh + padBottom(fontSize);
+    const codeBottomY = codeTop + pt + visualLineCount * lh + layout.padBottomPx;
     drawSep(codeBottomY);
 
-    const labelH = fontSize * OUTPUT_LABEL_H_RATIO;
+    const labelH = layout.fontSize * OUTPUT_LABEL_H_RATIO;
     const outputLH = cfs * OUTPUT_LINE_H_MULT;
 
     // "Output" label
