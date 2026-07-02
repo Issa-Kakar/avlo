@@ -105,7 +105,12 @@ export default defineConfig({
     format: 'es',
   },
   build: {
-    rollupOptions: {
+    // JS + CSS lower to Vite 8's default target ('baseline-widely-available'), which also
+    // drives Lightning CSS minification (the v8 default CSS minifier). The support floor is
+    // documented in `.browserslistrc` (Baseline "widely available") for Tailwind v4's engine
+    // and other browserslist-aware tooling. We deliberately do NOT flip `css.transformer` to
+    // 'lightningcss': that combo (Rolldown + @tailwindcss/vite) has known `@theme`-dropping bugs.
+    rolldownOptions: {
       input: {
         main: path.resolve(__dirname_local, 'index.html'),
         sw: path.resolve(__dirname_local, 'src/sw.ts'),
@@ -114,16 +119,17 @@ export default defineConfig({
         entryFileNames: (chunk) => (chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js'),
         // Split the EAGER big vendors out of `main` for cross-deploy cache stability —
         // otherwise any app-code edit re-hashes all ~359 KB gzip. Lazy editor libs
-        // (@tiptap/@codemirror/@lezer/prosemirror/y-prosemirror/y-codemirror) MUST stay
-        // auto so Rollup keeps them in their async chunks — the early return is
-        // belt-and-suspenders against a future regex collision. Everything else falls
-        // through to `undefined` → Rollup auto (small vendors + lazy libs placed right).
-        manualChunks(id) {
-          if (!id.includes('node_modules')) return;
-          if (/[\\/](@tiptap|@codemirror|@lezer|prosemirror-|y-prosemirror|y-codemirror)[\\/]/.test(id)) return;
-          if (/[\\/](react-dom|react|scheduler)[\\/]/.test(id)) return 'vendor-react';
-          if (/[\\/](yjs|lib0|y-protocols|y-indexeddb|y-partyserver)[\\/]/.test(id)) return 'vendor-yjs';
-          if (/[\\/]@tanstack[\\/]/.test(id)) return 'vendor-tanstack';
+        // (@tiptap/@codemirror/@lezer/prosemirror/y-prosemirror/y-codemirror) are left
+        // UNGROUPED, so Rolldown keeps them in their async chunks; app code is ungrouped too
+        // → Rolldown's default placement (small vendors + lazy libs land right). Rolldown's
+        // `codeSplitting.groups` replaces Rollup's `manualChunks` (dropped in Vite 8); each
+        // group's `test` matches the module id (`[\\/]` per Rolldown's Windows-path guidance).
+        codeSplitting: {
+          groups: [
+            { name: 'vendor-react', test: /[\\/]node_modules[\\/](react-dom|react|scheduler)[\\/]/ },
+            { name: 'vendor-yjs', test: /[\\/]node_modules[\\/](yjs|lib0|y-protocols|y-indexeddb|y-partyserver)[\\/]/ },
+            { name: 'vendor-tanstack', test: /[\\/]node_modules[\\/]@tanstack[\\/]/ },
+          ],
         },
       },
     },

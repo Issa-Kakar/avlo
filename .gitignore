@@ -26,6 +26,11 @@ dist/
 .tanstack/
 */.tanstack/
 
+# Verification harness output + future Playwright artifacts
+.verify/
+test-results/
+playwright-report/
+
 # Editor / IDE
 .vscode/
 .idea/

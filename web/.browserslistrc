@@ -1,0 +1,12 @@
+# Browser support floor for the web app.
+#
+# "Baseline widely available" = features supported across all core browsers for
+# ~30 months — a modern, safe evergreen floor. This MIRRORS Vite's default
+# `build.target: 'baseline-widely-available'`, which lowers JS (Oxc) and CSS, and
+# drives Lightning CSS minification targets (the Vite 8 default CSS minifier).
+#
+# Vite core does not read this file directly; it's the conventional, tool-agnostic
+# source of truth consumed by Tailwind v4's Lightning CSS engine and any future
+# browserslist-aware tooling. Keep it conceptually in step with vite.config.ts's
+# build target if you ever pin a different floor.
+baseline widely available

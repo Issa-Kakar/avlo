@@ -108,6 +108,16 @@
           }
         }
       }
+    },
+    {
+      "includes": ["scripts/verify/**", "web/src/dev/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
     }
   ]
 }

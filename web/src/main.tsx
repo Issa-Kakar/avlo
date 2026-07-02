@@ -12,6 +12,10 @@ import { setPendingRoomsBookmark } from './query/rooms';
 import './query/room-rename';
 import './query/room-permission';
 
+// Dev-only: attach the `window.__avlo` verification bridge. The static condition is
+// replaced at build time, so this import is tree-shaken out of production bundles.
+if (import.meta.env.DEV) void import('./dev/test-bridge');
+
 async function loadFonts() {
   try {
     // CRITICAL: Load fonts before React renders
