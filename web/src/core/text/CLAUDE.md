@@ -617,19 +617,19 @@ Key differences from `renderTextLayout`:
 
 ### Shadow System — Directional Drop Shadow, Single-Entry Cache
 
-Real drop shadows under gravity reach *long below*, *barely on the sides*, *not above*. Native canvas `shadowBlur` is gaussian + isotropic — blur alone always spreads side-to-side. Two knobs make it directional:
+Real drop shadows under gravity reach *long below*, *barely on the sides*, *not above*. A gaussian blur is isotropic — blur alone always spreads side-to-side. Two knobs make it directional:
 
 1. **Small blur (`0.04·w`)** — keeps side spread tight.
 2. **OffsetY > blur (`0.045·w` vs `0.04·w`)** — pushes the gaussian's mass below the body. Above-extent collapses to ~0.
 
 Spread (à la CSS `box-shadow`) was tried and abandoned: the only way to fake it in canvas is to draw a wider rounded-rect fill, but then either you leave the expanded fill in (visible black ring around the body) or you punch the expanded silhouette (transparent ring around the body where the real body fill doesn't reach). Both visibly broken. Instead, a **contact layer** is filled on top of the drop layer using the *same* body path — it anchors the shadow at the body edge so the visible halo reads as connected to the body even when drop's near edge is faint.
 
-Crucial: both layers fill the **identical** body path. The final `destination-out` punch on that same path removes every black pixel deposited by the fills, leaving only the gaussian halo. No mismatched paths → no surviving opaque pixels → no black AA stroke.
+Both layers are computed analytically by `bakeRoundRectShadow` (`core/geometry/shadow-bake.ts`): the blurred rounded-rect alpha via an erf-based SDF (`0.5 − 0.5·erf(d/(σ√2))`, `σ = blur/2`), composited contact-over-drop, written straight into an `ImageData`. **No `ctx.shadowBlur`, no `destination-out` punch**, so the bake is deterministic and bit-identical across engines (Skia Graphite, Skia raster, Firefox). This replaced an opaque-fill-then-punch bake whose `destination-out` left an engine-dependent `c·(1−c)` black residual on AA edges — invisible on Graphite, a visible corner/edge fringe on raster-Skia + Firefox. Straight edges match the old tuned look exactly; only corners differ microscopically.
 
-| Layer | blur ratio | offsetY ratio | color |
+| Layer | blur ratio | offsetY ratio | alpha |
 |-------|-----------|--------------|-------|
-| Drop | 0.04 | 0.045 | `rgba(0,0,0,0.11)` |
-| Contact | 0.013 | 0.008 | `rgba(0,0,0,0.07)` |
+| Drop | 0.04 | 0.045 | `0.11` |
+| Contact | 0.013 | 0.008 | `0.07` |
 
 **Single-entry cache.** Notes always render inside `ctx.scale(noteScale)` at fixed base dimensions `(NOTE_WIDTH, NOTE_WIDTH)`, so the cache content is dimension-invariant — one DPR-scaled `OffscreenCanvas` (`_noteShadow`), baked once by `ensureNoteShadow(dpr)`, drawn with a single `drawImage` per note. `_noteShadowDpr` tracks the DPR; a mismatch re-bakes. No keying, no LRU, no eviction. Bookmarks keep their own 3-slice cache (`core/bookmark/CLAUDE.md`) since their height varies — the two no longer share shadow code.
 
@@ -643,9 +643,9 @@ The cache uses an **asymmetric pad** — top/sides hold a tight halo, bottom hol
 
 `computeNoteBBox` pads the bbox by these ratios (via `getNoteShadowPad*`) — the dirty-rect invariant requires bbox pad ≥ painted shadow pad on every side.
 
-Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punch matches the body's `roundRect` **exactly** — because the cached canvas is sized at the body's exact dimensions, the punched silhouette aligns 1:1 with the body fill drawn next by `renderNoteBody`. No corner wedge possible.
+Why analytic (not `ctx.shadowBlur` + punch): the browser shadow primitive needs an opaque caster that then has to be removed, and `destination-out` on an AA silhouette can't cancel cleanly — the leftover is engine-dependent. Computing the alpha directly sidesteps the whole class: nothing opaque is ever deposited, so there's nothing to subtract. The bake is sized at the body's exact dimensions, so the body fill drawn next by `renderNoteBody` lands 1:1 over the shadow's body region.
 
-**`renderNoteBody(ctx, x, y, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `NOTE_CORNER_R`. The cached shadow's punched body silhouette is at the destination's exact dimensions, so the subsequent body fill covers any AA fringe at the body edge. Exported — `renderer/layers/tool-preview.ts` reuses it for the toolbar drag-place note preview (empty note at scale 1 = exact WYSIWYG). Not shared with bookmarks.
+**`renderNoteBody(ctx, x, y, fillColor)`:** `drawNoteShadow` (single drawImage) + `roundRect` fill at `NOTE_CORNER_R`. The cached shadow holds only the soft halo (no opaque body) at the destination's exact dimensions, so the subsequent body fill lands cleanly over the shadow's body region. Exported — `renderer/layers/tool-preview.ts` reuses it for the toolbar drag-place note preview (empty note at scale 1 = exact WYSIWYG). Not shared with bookmarks.
 
 ### Alignment System
 

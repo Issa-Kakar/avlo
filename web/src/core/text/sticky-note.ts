@@ -11,6 +11,7 @@
 import type * as Y from 'yjs';
 import { readNoteRender } from '@/renderer/render-accessors';
 import type { FontFamily, NoteProps } from '../accessors';
+import { bakeRoundRectShadow } from '../geometry/shadow-bake';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import type { ObjectHandle } from '../types/objects';
 import { FONT_FAMILIES } from './font-config';
@@ -442,18 +443,19 @@ export function getNoteDerivedFontSize(objectId: string): number {
 // so the cache content is dimension-invariant — one canvas, baked once per DPR,
 // drawn with one `drawImage` per note. No LRU, no keying.
 //
-// Shadow design: dual gaussian (drop + contact) over the same body path, then
-// punched with the same path. The matching paths eliminate AA stroke fringe.
-// Asymmetric pad — bottom holds the long downward tail, top/sides hold a tight
-// halo. Drop offset > blur pushes the gaussian's mass below the body so the
-// above-body extent collapses to ~0.
+// Shadow design: dual gaussian (drop + contact), computed analytically via
+// `bakeRoundRectShadow` (erf-based SDF — no `ctx.shadowBlur`, no `destination-out`)
+// so the bake is bit-identical across engines (the old opaque-fill + punch bake left
+// an engine-dependent `c·(1−c)` black residual on AA edges). Asymmetric pad — bottom
+// holds the long downward tail, top/sides hold a tight halo. Drop offset > blur pushes
+// the gaussian's mass below the body so the above-body extent collapses to ~0.
 
 const SHADOW_DROP_BLUR_RATIO = 0.04;
 const SHADOW_DROP_OFFSET_RATIO = 0.045;
-const SHADOW_DROP_COLOR = 'rgba(0,0,0,0.11)';
+const SHADOW_DROP_ALPHA = 0.11;
 const SHADOW_CONTACT_BLUR_RATIO = 0.013;
 const SHADOW_CONTACT_OFFSET_RATIO = 0.008;
-const SHADOW_CONTACT_COLOR = 'rgba(0,0,0,0.07)';
+const SHADOW_CONTACT_ALPHA = 0.07;
 
 let _noteShadow: OffscreenCanvas | null = null;
 let _noteShadowDpr = 0;
@@ -465,45 +467,22 @@ function ensureNoteShadow(dpr: number): OffscreenCanvas {
   const padTop = w * NOTE_SHADOW_TOP_RATIO;
   const padSide = w * NOTE_SHADOW_SIDE_RATIO;
   const padBottom = w * NOTE_SHADOW_BOTTOM_RATIO;
-  const totalW = w + 2 * padSide;
-  const totalH = w + padTop + padBottom;
   const r = getNoteCornerRadius(w);
 
-  const canvas = new OffscreenCanvas(Math.ceil(totalW * dpr), Math.ceil(totalH * dpr));
-  const ctx = canvas.getContext('2d')!;
-  ctx.scale(dpr, dpr);
-  ctx.fillStyle = '#000';
-
-  // Single body path — used for both shadow casters and the punch. Identical
-  // path each time means the punch removes every black pixel deposited by the
-  // fills, leaving only the gaussian halo around the original body silhouette.
-  ctx.beginPath();
-  ctx.roundRect(padSide, padTop, w, w, r);
-
-  // Drop — the long downward tail.
-  ctx.shadowColor = SHADOW_DROP_COLOR;
-  ctx.shadowBlur = w * SHADOW_DROP_BLUR_RATIO;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = w * SHADOW_DROP_OFFSET_RATIO;
-  ctx.fill();
-
-  // Contact — tight halo anchored at the body edge.
-  ctx.shadowColor = SHADOW_CONTACT_COLOR;
-  ctx.shadowBlur = w * SHADOW_CONTACT_BLUR_RATIO;
-  ctx.shadowOffsetY = w * SHADOW_CONTACT_OFFSET_RATIO;
-  ctx.fill();
-
-  // Punch the body — removes every opaque fill pixel, leaving only the halo.
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.fill();
-  ctx.globalCompositeOperation = 'source-over';
-
-  _noteShadow = canvas;
+  _noteShadow = bakeRoundRectShadow(
+    w + 2 * padSide, // bakeW
+    w + padTop + padBottom, // bakeH
+    padSide, // bodyX
+    padTop, // bodyY
+    w, // bodyW
+    w, // bodyH
+    r,
+    { blur: w * SHADOW_DROP_BLUR_RATIO, offsetX: 0, offsetY: w * SHADOW_DROP_OFFSET_RATIO, alpha: SHADOW_DROP_ALPHA },
+    { blur: w * SHADOW_CONTACT_BLUR_RATIO, offsetX: 0, offsetY: w * SHADOW_CONTACT_OFFSET_RATIO, alpha: SHADOW_CONTACT_ALPHA },
+    dpr,
+  );
   _noteShadowDpr = dpr;
-  return canvas;
+  return _noteShadow;
 }
 
 // Pre-computed pad values for hot path — all derived from NOTE_WIDTH (constant).

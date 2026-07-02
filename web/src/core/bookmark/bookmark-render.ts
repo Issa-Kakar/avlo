@@ -2,6 +2,7 @@ import { prettifyDomain } from '@avlo/shared';
 import { readBookmarkRender } from '@/renderer/render-accessors';
 import { getHandle } from '@/runtime/room-runtime';
 import { getBookmarkProps } from '../accessors';
+import { bakeRoundRectShadow } from '../geometry/shadow-bake';
 import { getBitmap } from '../image/image-manager';
 import { buildFontString, measureTextCached } from '../text/text-measure';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
@@ -90,10 +91,10 @@ const OPEN_BTN_FONT = '600 13px Inter, sans-serif'; // 600 isn't in our normal/b
 
 const BOOKMARK_SHADOW_DROP_BLUR_RATIO = 0.04;
 const BOOKMARK_SHADOW_DROP_OFFSET_RATIO = 0.045;
-const BOOKMARK_SHADOW_DROP_COLOR = 'rgba(0,0,0,0.11)';
+const BOOKMARK_SHADOW_DROP_ALPHA = 0.11;
 const BOOKMARK_SHADOW_CONTACT_BLUR_RATIO = 0.013;
 const BOOKMARK_SHADOW_CONTACT_OFFSET_RATIO = 0.008;
-const BOOKMARK_SHADOW_CONTACT_COLOR = 'rgba(0,0,0,0.07)';
+const BOOKMARK_SHADOW_CONTACT_ALPHA = 0.07;
 
 const SHADOW_PAD_TOP = BOOKMARK_WIDTH * BOOKMARK_SHADOW_TOP_RATIO; //         18
 const SHADOW_PAD_SIDE = BOOKMARK_WIDTH * BOOKMARK_SHADOW_SIDE_RATIO; //       22.5
@@ -123,43 +124,29 @@ let _bookmarkShadowDpr = 0;
 function ensureBookmarkShadow(dpr: number): OffscreenCanvas {
   if (_bookmarkShadow && _bookmarkShadowDpr === dpr) return _bookmarkShadow;
 
-  const canvas = new OffscreenCanvas(Math.ceil(SHADOW_BAKE_W * dpr), Math.ceil(SHADOW_BAKE_H * dpr));
-  const ctx = canvas.getContext('2d')!;
-  ctx.scale(dpr, dpr);
-  ctx.fillStyle = '#000';
-
-  // Single body path — used for both shadow casters AND the punch. The
-  // destination body fill in `renderBookmarkBody` uses the SAME radius
-  // (BOOKMARK_CORNER_RADIUS), so the cache's punched silhouette and the
-  // destination body silhouette coincide pixel-perfectly.
-  ctx.beginPath();
-  ctx.roundRect(SHADOW_PAD_SIDE, SHADOW_PAD_TOP, BOOKMARK_WIDTH, SHADOW_BAKE_BODY_H, BOOKMARK_CORNER_RADIUS);
-
-  // Drop — the long downward tail.
-  ctx.shadowColor = BOOKMARK_SHADOW_DROP_COLOR;
-  ctx.shadowBlur = SHADOW_DROP_BLUR;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = BOOKMARK_WIDTH * BOOKMARK_SHADOW_DROP_OFFSET_RATIO;
-  ctx.fill();
-
-  // Contact — tight halo anchored at the body edge.
-  ctx.shadowColor = BOOKMARK_SHADOW_CONTACT_COLOR;
-  ctx.shadowBlur = BOOKMARK_WIDTH * BOOKMARK_SHADOW_CONTACT_BLUR_RATIO;
-  ctx.shadowOffsetY = BOOKMARK_WIDTH * BOOKMARK_SHADOW_CONTACT_OFFSET_RATIO;
-  ctx.fill();
-
-  // Punch — same path, no expansion. Removes every opaque fill pixel; only the
-  // gaussian halo around the body silhouette survives.
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.fill();
-  ctx.globalCompositeOperation = 'source-over';
-
-  _bookmarkShadow = canvas;
+  // Analytic bake (erf-based SDF — no `ctx.shadowBlur`, no `destination-out`), so the
+  // cache is bit-identical across engines. Body geometry uses BOOKMARK_CORNER_RADIUS —
+  // matching the destination body fill in `renderBookmarkBody` 1:1 — and is exactly
+  // translation-invariant along the straight side edges the 3-slice stretches.
+  _bookmarkShadow = bakeRoundRectShadow(
+    SHADOW_BAKE_W,
+    SHADOW_BAKE_H,
+    SHADOW_PAD_SIDE, // bodyX
+    SHADOW_PAD_TOP, // bodyY
+    BOOKMARK_WIDTH, // bodyW
+    SHADOW_BAKE_BODY_H, // bodyH
+    BOOKMARK_CORNER_RADIUS,
+    { blur: SHADOW_DROP_BLUR, offsetX: 0, offsetY: BOOKMARK_WIDTH * BOOKMARK_SHADOW_DROP_OFFSET_RATIO, alpha: BOOKMARK_SHADOW_DROP_ALPHA },
+    {
+      blur: BOOKMARK_WIDTH * BOOKMARK_SHADOW_CONTACT_BLUR_RATIO,
+      offsetX: 0,
+      offsetY: BOOKMARK_WIDTH * BOOKMARK_SHADOW_CONTACT_OFFSET_RATIO,
+      alpha: BOOKMARK_SHADOW_CONTACT_ALPHA,
+    },
+    dpr,
+  );
   _bookmarkShadowDpr = dpr;
-  return canvas;
+  return _bookmarkShadow;
 }
 
 function drawBookmarkShadow(ctx: CanvasRenderingContext2D, x: number, y: number, h: number): void {
