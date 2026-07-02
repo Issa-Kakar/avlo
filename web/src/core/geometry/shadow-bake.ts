@@ -37,11 +37,15 @@ function erf(x: number): number {
 }
 
 // Signed distance to a rounded rect centered at (cx,cy), half-extents (hx,hy), corner radius r.
-// Negative inside, positive outside. Standard IQ rounded-box SDF.
+// Negative inside, positive outside. Standard IQ rounded-box SDF. Uses `sqrt(x²+y²)` rather than
+// `Math.hypot` (2×/pixel here): inputs are bounded world-space distances so overflow is impossible,
+// making hypot's overflow-safe scaling dead weight.
 function sdRoundRect(px: number, py: number, cx: number, cy: number, hx: number, hy: number, r: number): number {
   const dx = Math.abs(px - cx) - (hx - r);
   const dy = Math.abs(py - cy) - (hy - r);
-  return Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) + Math.min(Math.max(dx, dy), 0) - r;
+  const ex = Math.max(dx, 0);
+  const ey = Math.max(dy, 0);
+  return Math.sqrt(ex * ex + ey * ey) + Math.min(Math.max(dx, dy), 0) - r;
 }
 
 /**
@@ -74,18 +78,31 @@ export function bakeRoundRectShadow(
   const cy = bodyY + bodyH / 2;
   const hx = bodyW / 2;
   const hy = bodyH / 2;
-  const dropDen = (drop.blur / 2) * Math.SQRT2;
-  const contactDen = (contact.blur / 2) * Math.SQRT2;
 
+  // Hoist per-layer scalars + reciprocals out of the pixel loop: scalar locals stay in registers
+  // (no per-pixel property loads), and the three per-pixel divisions become multiplies —
+  // `sd/(σ√2)` → `sd·invDen`, device→world `(i+0.5)/dpr` → `·invDpr`.
+  const invDpr = 1 / dpr;
+  const invDropDen = 1 / ((drop.blur / 2) * Math.SQRT2);
+  const invContactDen = 1 / ((contact.blur / 2) * Math.SQRT2);
+  const dOffX = drop.offsetX;
+  const dOffY = drop.offsetY;
+  const dAlpha = drop.alpha;
+  const cOffX = contact.offsetX;
+  const cOffY = contact.offsetY;
+  const cAlpha = contact.alpha;
+
+  // Only the alpha byte is written (RGB stays 0 from createImageData); the Uint8ClampedArray store
+  // clamps to [0,255] and rounds, so no Math.round is needed. `p` walks the alpha bytes (+4/px).
+  let p = 3;
   for (let j = 0; j < H; j++) {
-    const py = (j + 0.5) / dpr;
+    const py = (j + 0.5) * invDpr;
     for (let i = 0; i < W; i++) {
-      const px = (i + 0.5) / dpr;
-      const aDrop = drop.alpha * (0.5 - 0.5 * erf(sdRoundRect(px - drop.offsetX, py - drop.offsetY, cx, cy, hx, hy, radius) / dropDen));
-      const aContact =
-        contact.alpha * (0.5 - 0.5 * erf(sdRoundRect(px - contact.offsetX, py - contact.offsetY, cx, cy, hx, hy, radius) / contactDen));
-      const a = aContact + aDrop * (1 - aContact);
-      data[(j * W + i) * 4 + 3] = Math.round(a * 255);
+      const px = (i + 0.5) * invDpr;
+      const aDrop = dAlpha * (0.5 - 0.5 * erf(sdRoundRect(px - dOffX, py - dOffY, cx, cy, hx, hy, radius) * invDropDen));
+      const aContact = cAlpha * (0.5 - 0.5 * erf(sdRoundRect(px - cOffX, py - cOffY, cx, cy, hx, hy, radius) * invContactDen));
+      data[p] = (aContact + aDrop * (1 - aContact)) * 255;
+      p += 4;
     }
   }
 
