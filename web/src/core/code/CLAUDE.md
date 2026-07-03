@@ -13,11 +13,11 @@ double-click-to-edit).
 
 | File | Role |
 |------|------|
-| `code-tokens.ts` | Shared codec/theme/plumbing: `S` enum (16 styles incl. `WHITESPACE` sentinel), `THEME` (palette + chrome — single source of truth for color), spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), sizing ratios, play-button geometry (`playButtonGeom`). **Imports `code-system.ts` as `type` only** — see bundle hygiene below |
+| `code-tokens.ts` | Shared codec/theme/plumbing: `S` enum (16 styles incl. `WHITESPACE` sentinel), `THEME` (palette + chrome — single source of truth for color), spans-SAB layout constants (`SAB_H_VERSION` / `SAB_H_LINE_COUNT` / `SAB_H_LINE_CAP` / `SAB_HDR_BYTES`), spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`, `isAllWs`), sizing ratios, play-button geometry (`playButtonGeom`). **Imports `code-system.ts` as `type` only** — see bundle hygiene below |
 | `code-tokenizer.ts` | The sync-floor highlighter: length-bucketed keyword tables + `classifyIdent`, stateless char-code scan atoms (`scanNumber` / `scanQuotedString` / `scanTripleStringBody` / `scanTemplateLiteral` / `scanEscape`), and `syncTokenizeInto` — a thin **driver** that dispatches by language to a per-language whole-source tokenizer (`tokenizeCLike` covers JS/TS/Python; JSON/SQL/HTML slot in as one function + one dispatch arm — **the seam**). Imported **only by `code-system.ts`**; keeps `code-system` a `type`-only import (bundle hygiene) |
-| `code-system.ts` | SOA pipeline types (`CodeSource` / `CodeSpans` / `CodeLayout` / `CodeOutput`), pooled `CodeSystemCache`, `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers, worker pool (2 warm workers, hash-routed) with per-id diff transport (`requestParse` full seed / `requestParseEdits` Yjs delta; pooled message wrappers), font metrics (derived from text-system) |
+| `code-system.ts` | SOA pipeline types (`CodeSource` / `CodeSpans` / `CodeLayout` / `CodeOutput`), pooled `CodeSystemCache` (incl. the per-block in-flight parse gate), `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers, worker pool (2 warm workers, least-loaded seed pins) with per-id diff transport (`requestParse` full seed / `requestParseEdits` Yjs delta batches; pooled message wrappers) and the spans-SAB doorbell consumer, font metrics (derived from text-system) |
 | `code-theme.ts` | CodeMirror theme + `HighlightStyle.define` rule list. All `@codemirror/*` AND `@lezer/highlight` imports are **dynamic** (inside `getCodeMirrorExtensions()`) — main bundle stays free of the editor stack |
-| `lezer-worker.ts` | Web Worker. Per-object `Tree` + `TreeFragment` + text-mirror state, **lazily-loaded** per-language parsers (dynamic `import()` via `REGISTRY`; buffer-during-load preserves per-id order), incremental parsing from Yjs-delta diffs (`applyEdits` splices the mirror + derives `ChangedRange[]` in one pass), custom `STYLE_HIGHLIGHTER` over its own `WORKER_RULES`, zero-copy ArrayBuffer transfer |
+| `lezer-worker.ts` | Web Worker. Per-object `Tree` + `TreeFragment` + text-mirror state + spans SAB, **lazily-loaded** per-language parsers (dynamic `import()` via `REGISTRY`; buffer-during-load preserves per-id order), incremental parsing from Yjs-delta batches (`applyEdits` splices the mirror + derives `ChangedRange[]` in one pass; `TreeFragment.applyChanges` chains across batches, one parse per message), custom `STYLE_HIGHLIGHTER` over its own `WORKER_RULES`, fused `extractSpans` walk, per-block SAB publish + postMessage doorbell |
 | `../../tools/CodeTool.ts` | PointerTool — click-to-place + hit-test + CodeMirror DOM overlay lifecycle + header/output chrome DOM |
 
 ## Y.Doc Schema
@@ -52,7 +52,7 @@ Four pooled buffers per id (`CacheEntry`); hot paths allocate zero.
 Y.Text.toString()
     ↓ buildCodeSourceInto
 CodeSource     fullText + Uint32Array lineStart (sentinel: text.length+1)
-    ↓ syncTokenizeInto (sync floor) / lezer-worker (Lezer ceiling, transfer-swaps refs)
+    ↓ syncTokenizeInto (sync floor) / lezer-worker (Lezer ceiling, SAB → copy-in on doorbell)
 CodeSpans      flat Uint16Array spanData (triples [off, len, style]) + Uint32Array spanLineStart
     ↓ layoutCodeSourceInto
 CodeLayout     parallel Uint32Arrays vlSrcIdx / vlFrom / vlLen + cached normalFont/chromeFont
@@ -114,26 +114,66 @@ Y.Text change
     → deep observer fires sync
     → codeSystem.handleContentChange(id, ev, lang)
         → buildCodeSourceInto + syncTokenizeInto (sync floor — instant color)
-        → version++, layoutValid=false, frame=null
-        → seeded ? requestParseEdits(ev.delta)  : requestParse(fullText) + seeded=true
-                   (tiny Yjs delta, hash-routed)   (cold seed — full text once)
+        → version = ++_nextVersion (global monotonic), layoutValid=false, frame=null
+        → !seeded  → requestParse(fullText) + seeded=true + inFlight=true
+          !inFlight → requestParseEdits([ev.delta]) + inFlight=true
+          in flight → pending.push(ev.delta)          (pendingSeed subsumes deltas)
     → same frame: getLayout() reflows in place + canvas paint
-    → next frame (typical): worker responds → applyWorkerSpans (Lezer ceiling)
+    → worker: mirror splices per batch → ONE incremental parse → fused extract
+      → SAB write → Atomics.store(version) → doorbell postMessage {id, sab}
+    → main doorbell: applyWorkerSpans — acquire version, gate, COPY into e.spans,
+      viewport-cull invalidate, THEN flush pending (order is load-bearing)
 ```
 
-### Diff transport (no full text per keystroke)
+### Diff transport + in-flight gate (no full text, ≤1 parse in flight per block)
 
 Only the **first** parse of a block (cold miss or language switch) ships the full
-text; every subsequent edit ships just the Yjs delta (`ev.delta`), so N peers
-typing cost N tiny delta copies across the thread boundary, not N full-text
-copies. The worker keeps a per-id `mirror: string`, splices it per delta op, and
-derives the incremental `ChangedRange[]` in the *same* pass (`applyEdits`, ported
-from the old main-side `deltaToChangedRanges`). `CacheEntry.seeded` (false on
-`newEntry`) is the guard: an `edits` message can never reach the worker before
-its full seed, whatever the observer/Yjs ordering. Main-thread `yText.toString()`
-stays (the renderer needs a materialized string for cheap `substring` slices, and
-it only fires on content change). Message objects are pooled module-level
-wrappers — postMessage structured-clones synchronously, so reuse is safe.
+text; every subsequent edit ships just the Yjs delta, so N peers typing cost N
+tiny delta copies across the thread boundary, not N full-text copies. The worker
+keeps a per-id `mirror: string`, splices it per delta op, and derives the
+incremental `ChangedRange[]` in the *same* pass (`applyEdits`). `CacheEntry.seeded`
+(false on `newEntry`) is the guard: an `edits` message can never reach the worker
+before its full seed, whatever the observer/Yjs ordering.
+
+**Gate.** At most one parse is in flight per block (`CacheEntry.inFlight`). The
+first edit posts immediately (zero added latency); edits during a flight batch
+into `pending: DeltaOp[][]` and flush as ONE message when the doorbell arrives —
+an N-keystroke burst costs N cheap mirror splices + 1 parse instead of N parses
+(previously each burst keystroke ran a full parse whose result the version gate
+then discarded). Batches apply **sequentially** on the worker (each batch's
+retains are relative to the post-previous-batch text — never concatenate);
+`TreeFragment.applyChanges` chains across batches without an intervening parse.
+A language change mid-flight sets `pendingSeed` (and clears `pending` — the
+flush-time full text subsumes the deltas). A worker crash posts
+`{type:'parse-failed', id}` → gate released, `seeded=false` so the next edit
+re-seeds (also healing a desynced mirror). Versions come from a module-level
+**global monotonic counter** so a stale doorbell can never falsely match a
+re-created entry (evict + undo-recreate, clearAll + rehydrate).
+
+Main-thread `yText.toString()` stays (the renderer needs a materialized string
+for cheap `substring` slices, and it only fires on content change). Message
+objects are pooled module-level wrappers — postMessage structured-clones
+synchronously, so reuse is safe.
+
+### Spans SAB (worker → main, zero steady-state allocation)
+
+Each block owns one **SharedArrayBuffer**, allocated by its worker at first
+publish, exact-sized with pow2 headroom + a 4 KB floor, doubled on overflow
+(never shrinks; GC'd when both sides drop refs on evict/clearAll). Layout
+(constants in `code-tokens.ts`): `[8×Int32 header][spanLineStart (lineCap+1)
+u32][spanData u16…]`. `SAB_H_VERSION` is the **only** Atomics-accessed lane —
+the worker's release store covers the plain body writes; the doorbell
+`postMessage({type:'spans', id, sab})` carries the SAB **in every message** (a
+handle, not a copy — kills stale-view ordering across re-pins/incarnations).
+
+Main (`applyWorkerSpans`): acquire-load version → strict-equality gate against
+`e.version` (stale publishes are never read — the gate doubles as a seqlock) →
+copy into the pooled `e.spans` buffers via `ensureSpans*Cap` + `.set` (renderer
+and `CodeSpans` shape untouched; buffer identity stable) → viewport-cull →
+`invalidateWorldBBox` (module scratch tuple) → **then** flush `pending`. The
+copy-before-flush order is load-bearing: the worker starts overwriting the
+single-buffer SAB the moment the flushed parse message lands. Single buffer is
+safe because the gate serializes worker-write vs main-copy (strict alternation).
 
 **Sync tokenizer** (`code-tokenizer.ts`): char-code, allocation-free.
 `syncTokenizeInto(source, language, out)` is a thin **driver** — it writes the
@@ -167,19 +207,24 @@ other emits; the number branch keeps its deliberate `lastSignificantChar = 0`.
 Out of scope (needs AST): JSX HTML/Component split, regex-delimiter split,
 parameter vs variable, destructured aliases.
 
-**Lezer worker pool**: 2 warm workers, hash-routed by `id.charCodeAt(id.length
-- 1) % 2` so the same object always lands on the same worker (preserves
-incremental parse trees **and** the per-id text mirror). Per-object `{ tree,
-fragments, mirror }`; when the delta yields non-empty `changes`,
-`TreeFragment.applyChanges` enables incremental parsing.
+**Lezer worker pool**: 2 warm workers. An id **pins** to a worker at seed time
+— chosen by lowest outstanding-parse count (so hydrate bursts / multi-block
+pastes split across the pool) — and stays pinned (preserves incremental parse
+trees, the per-id text mirror, **and** the per-id SAB). `ensureWorkers` asserts
+cross-origin isolation (spans travel via SAB). Per-object `{ tree, fragments,
+mirror }`; non-empty `changes` enable incremental parsing via
+`TreeFragment.applyChanges` (chained per batch).
 
-**Span extraction**: `highlightTree(tree, STYLE_HIGHLIGHTER, callback)` walks
-the tree. `STYLE_HIGHLIGHTER.style()` returns the stringified `S` int directly
-(no `TAG_STYLE_INDEX` lookup); callback recovers via `+classes | 0`. Highlights
-collected into a flat `_hlBuf` quad buffer, then a sequential cursor scan packs
-per-line triples via `writePackedTriples` into the reusable `_workerSpanData`.
-Used prefix is sliced into a fresh `Uint16Array` for transfer — main thread
-swaps refs zero-copy.
+**Span extraction (fused)**: ONE `highlightTree(tree, STYLE_HIGHLIGHTER,
+_onHighlight)` walk packs gap-filled line-relative triples **directly** into the
+persistent scratches with a monotonic line cursor — no quad buffer, no binary
+search, no second pass, no per-parse allocation. Relies on `highlightTree`'s
+ascending non-overlapping emission order (DEV-asserted; the old two-pass cursor
+scan depended on the same order). `STYLE_HIGHLIGHTER.style()` returns the
+stringified `S` int; the callback decodes the **trailing** int (inherited scopes
+join classes as `"inherited own"` — last is most specific). Publish copies the
+scratch prefixes into the block's SAB and release-stores the version — see
+"Spans SAB" above.
 
 **Language → parser (lazy)**: a module-level `REGISTRY` maps each language to a
 `{ load: () => import(pkg), configure? }` entry — `python` → `@lezer/python`;
@@ -277,26 +322,26 @@ layout cache keys.
 
 | Trigger | Source/Spans | Layout | Frame | Version |
 |---------|--------------|--------|-------|---------|
-| `handleContentChange` | rebuilt in place | invalidated | nulled | ++ |
-| `applyWorkerSpans` (version match) | refs swapped (colors only) | unchanged | unchanged | unchanged |
+| `handleContentChange` | rebuilt in place | invalidated | nulled | `++_nextVersion` |
+| `applyWorkerSpans` (version match) | SAB copied into pooled buffers (colors only) | unchanged | unchanged | unchanged |
 | fontSize/width/lineNumbers change (in `getLayout`) | — | reflowed in place | nulled | unchanged |
-| Language change (in `getLayout`) | re-tokenized in place | **preserved** if dims unchanged | preserved | ++ |
+| Language change (in `getLayout`) | re-tokenized in place | **preserved** if dims unchanged | preserved | `++_nextVersion` |
 
-`applyWorkerSpans` is version-gated (discard stale). It **viewport-culls**
-before invalidating: intersects `e.frame` with `getVisibleBoundsTuple()` (shared
-scratch tuple) — off-screen blocks (remote edits while panned away) skip the
-dirty rect entirely; the next pan/zoom into view repaints from scratch. Floors
-`spanCap = max(spanData.length, 48)` so an empty-content response can't trip
-`ensureSpansDataCap`'s `cap *= 2` loop. Belt-and-suspenders: `ensureSpansDataCap`
-itself floors `cap = max(s.spanCap, 16)`.
+`applyWorkerSpans` is version-gated (discard stale; global monotonic counter).
+It **viewport-culls** before invalidating: intersects `e.frame` with
+`getVisibleBoundsTuple()` (shared scratch tuple) — off-screen blocks (remote
+edits while panned away) skip the dirty rect entirely; the next pan/zoom into
+view repaints from scratch. It always runs the pending flush, even on a stale
+gate — that's what advances the in-flight state machine.
 
 ### Public API
 
 | Method | Purpose |
 |--------|---------|
 | `getLayout(id, yText, fontSize, width, lang, lineNumbers?)` | Cold-miss builds full entry + full-seeds worker (`seeded=true`); language change re-seeds; otherwise returns cached layout (handles dims change) |
-| `handleContentChange(id, ev, lang)` | Deep-observer Y.Text hook — sync floor + dispatch: full seed if `!seeded`, else `requestParseEdits(ev.delta)` |
-| `applyWorkerSpans(id, spanData, spanLineStart, forVersion)` | Worker response, viewport-cull invalidate |
+| `handleContentChange(id, ev, lang)` | Deep-observer Y.Text hook — sync floor + gated dispatch: full seed if `!seeded`, post `[ev.delta]` if idle, else batch into `pending` |
+| `applyWorkerSpans(id, sab)` | Spans doorbell — acquire+gate, copy-in, viewport-cull invalidate, flush pending |
+| `onParseFailed(id)` | Gate release on worker crash — clears pending, `seeded=false` (next edit re-seeds) |
 | `getSpans(id)` / `getSource(id)` / `getOutputCache(id, output)` | Renderer accessors |
 | `getFrame(id)` / `setFrame(id, frame)` | Hit testing / selection / bbox |
 | `evict(id)` / `clear()` | Deletion / room change |
@@ -422,7 +467,7 @@ throws.
   only**. A value import would chain `→ code-system → RenderLoop → image-manager`,
   dragging image-manager's top-level `window.addEventListener(...)` into
   the lezer worker — module-load aborts before `onmessage` is installed and
-  parse requests silently drop. The worker imports `{ S, writePackedTriples }`
+  parse requests silently drop. The worker imports `{ S, isAllWs, SAB_* }`
   from `code-tokens.ts` **only** — it never reaches `code-tokenizer.ts`, and
   `code-tokens.ts` must never gain a *value* import of `code-tokenizer.ts` (only
   `code-system.ts` imports the tokenizer). The spans cap helpers

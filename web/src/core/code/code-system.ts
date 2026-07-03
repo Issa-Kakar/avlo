@@ -22,13 +22,15 @@ import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import type { CodeLanguage } from '../accessors';
 import { getCodeProps } from '../accessors';
+import { assertCrossOriginIsolated } from '../sab';
 import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-measure';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
-
 import { syncTokenizeInto } from './code-tokenizer';
 import {
   CHROME_FONT_RATIO,
   CODE_FONT_FAMILY,
+  ensureSpansDataCap,
+  ensureSpansLineCap,
   HEADER_HEIGHT_RATIO,
   LINE_HEIGHT_MULT,
   MAX_OUTPUT_CANVAS_LINES,
@@ -37,6 +39,10 @@ import {
   OUTPUT_PAD_BOTTOM_RATIO,
   playButtonGeom,
   S,
+  SAB_H_LINE_CAP,
+  SAB_H_LINE_COUNT,
+  SAB_H_VERSION,
+  SAB_HDR_BYTES,
   THEME,
 } from './code-tokens';
 
@@ -135,6 +141,15 @@ interface CacheEntry {
   // must never precede the first full seed, whatever the observer/Yjs ordering.
   seeded: boolean;
 
+  // Worker-parse gating — at most ONE parse in flight per block. Edits during
+  // flight batch into `pending` (flushed as one message on doorbell receipt);
+  // a language change mid-flight queues a full reseed instead, which subsumes
+  // any batched deltas. This is also what serializes worker-SAB writes against
+  // the doorbell handler's copy (single-buffer safety).
+  inFlight: boolean;
+  pending: DeltaOp[][]; // delta batches, in edit order (array reused via length=0)
+  pendingSeed: boolean;
+
   // Layout cache keys
   layoutFontSize: number;
   layoutWidth: number;
@@ -147,17 +162,13 @@ type DeltaOp = { retain?: number; insert?: string | object; delete?: number };
 
 type WorkerRequest =
   | { type: 'parse'; id: string; language: CodeLanguage; version: number; text: string } // full seed/reset
-  | { type: 'parse'; id: string; language: CodeLanguage; version: number; edits: DeltaOp[] } // Yjs delta
+  | { type: 'parse'; id: string; language: CodeLanguage; version: number; edits: DeltaOp[][] } // Yjs delta batches
   | { type: 'remove'; id: string }
   | { type: 'clearAll' };
 
-interface WorkerResponse {
-  type: 'spans';
-  id: string;
-  version: number;
-  spanData: Uint16Array;
-  spanLineStart: Uint32Array;
-}
+type WorkerResponse =
+  | { type: 'spans'; id: string; sab: SharedArrayBuffer } // doorbell — payload lives in the SAB
+  | { type: 'parse-failed'; id: string }; // gate-release on worker crash/desync
 
 // ============================================================================
 // §2 CONSTANTS
@@ -563,20 +574,29 @@ function ensureOutputCache(entry: CacheEntry, output: string | undefined): void 
 }
 
 // ============================================================================
-// §6 WORKER POOL — Warm, Persistent, Hash-Based Routing
+// §6 WORKER POOL — Warm, Persistent, Least-Loaded Seed Routing (sticky pins)
 // ============================================================================
 
 const POOL_SIZE = 2;
 const workers: Worker[] = [];
 let workersReady = false;
 
-/** Deterministic hash: same object always goes to the same worker (preserves incremental parse trees). */
-function workerFor(id: string): number {
-  return id.charCodeAt(id.length - 1) % POOL_SIZE;
+// An id pins to one worker at seed time (its incremental Tree + fragments +
+// text mirror live there) — chosen by lowest outstanding-parse count so
+// hydrate bursts / multi-block pastes split across the pool instead of
+// skewing on an id hash. Counters are a balancing heuristic only: inc on
+// parse post, dec on any doorbell (floored), settled on evict-mid-flight.
+const _pinned = new Map<string, number>();
+const _outstanding: number[] = new Array(POOL_SIZE).fill(0);
+
+function settleOutstanding(id: string): void {
+  const w = _pinned.get(id);
+  if (w !== undefined && _outstanding[w] > 0) _outstanding[w]--;
 }
 
 function ensureWorkers(): void {
   if (workersReady) return;
+  assertCrossOriginIsolated(); // spans travel via SharedArrayBuffer
   workersReady = true;
   for (let i = 0; i < POOL_SIZE; i++) {
     const w = new Worker(new URL('./lezer-worker.ts', import.meta.url), { type: 'module' });
@@ -592,15 +612,34 @@ function dispatch(msg: WorkerRequest): void {
   if (msg.type === 'clearAll') {
     // Broadcast to ALL workers (fixes bug where only one got cleared)
     for (const w of workers) w.postMessage(msg);
+    _pinned.clear();
+    _outstanding.fill(0);
     return;
   }
-  // Route by object ID hash for parse/remove
-  workers[workerFor(msg.id)].postMessage(msg);
+  if (msg.type === 'remove') {
+    const w = _pinned.get(msg.id);
+    if (w !== undefined) {
+      workers[w].postMessage(msg);
+      _pinned.delete(msg.id);
+    }
+    return; // never pinned ⇒ no worker ever saw the id — nothing to remove
+  }
+  // parse — pin on first dispatch (seed), sticky thereafter.
+  let w = _pinned.get(msg.id);
+  if (w === undefined) {
+    w = 0;
+    for (let i = 1; i < POOL_SIZE; i++) if (_outstanding[i] < _outstanding[w]) w = i;
+    _pinned.set(msg.id, w);
+  }
+  _outstanding[w]++;
+  workers[w].postMessage(msg);
 }
 
 function handleWorkerMessage(e: MessageEvent<WorkerResponse>): void {
-  const { id, version, spanData, spanLineStart } = e.data;
-  codeSystem.applyWorkerSpans(id, spanData, spanLineStart, version);
+  const msg = e.data;
+  settleOutstanding(msg.id);
+  if (msg.type === 'spans') codeSystem.applyWorkerSpans(msg.id, msg.sab);
+  else codeSystem.onParseFailed(msg.id);
 }
 
 // Pooled message wrappers — one per parse form. postMessage structured-clones
@@ -613,13 +652,17 @@ const _fullMsg: { type: 'parse'; id: string; language: CodeLanguage; version: nu
   version: 0,
   text: '',
 };
-const _editsMsg: { type: 'parse'; id: string; language: CodeLanguage; version: number; edits: DeltaOp[] } = {
+const _editsMsg: { type: 'parse'; id: string; language: CodeLanguage; version: number; edits: DeltaOp[][] } = {
   type: 'parse',
   id: '',
   language: 'javascript',
   version: 0,
   edits: [],
 };
+
+// Pooled single-batch wrapper for the not-in-flight fast path (one delta per
+// message). Safe to reuse: dispatch structured-clones synchronously.
+const _singleBatch: DeltaOp[][] = [[]];
 
 /** Full-text seed/reset — cold miss + language change (worker resets its mirror). */
 function requestParse(id: string, text: string, language: CodeLanguage, version: number): void {
@@ -630,8 +673,8 @@ function requestParse(id: string, text: string, language: CodeLanguage, version:
   dispatch(_fullMsg);
 }
 
-/** Incremental edit — posts the Yjs delta; the worker splices its mirror + parses. */
-function requestParseEdits(id: string, language: CodeLanguage, version: number, edits: DeltaOp[]): void {
+/** Incremental edits — posts Yjs delta batches; the worker splices its mirror per batch + parses once. */
+function requestParseEdits(id: string, language: CodeLanguage, version: number, edits: DeltaOp[][]): void {
   _editsMsg.id = id;
   _editsMsg.language = language;
   _editsMsg.version = version;
@@ -658,11 +701,21 @@ export function terminateCodeWorkers(): void {
   for (const w of workers) w.terminate();
   workers.length = 0;
   workersReady = false;
+  _pinned.clear();
+  _outstanding.fill(0);
 }
 
 // ============================================================================
 // §7 CACHE
 // ============================================================================
+
+// Globally monotonic parse version — never reused across entry incarnations,
+// so a stale doorbell can never falsely match a re-created entry (evict +
+// undo-recreate, clearAll + rehydrate) whose per-entry counter would restart.
+let _nextVersion = 0;
+
+// Scratch for the doorbell's viewport-culled dirty rect — no per-response literal.
+const _invalidateScratch: BBoxTuple = [0, 0, 0, 0];
 
 class CodeSystemCache {
   private entries = new Map<string, CacheEntry>();
@@ -677,6 +730,9 @@ class CodeSystemCache {
       language,
       frame: null,
       seeded: false,
+      inFlight: false,
+      pending: [],
+      pendingSeed: false,
       layoutFontSize: 0,
       layoutWidth: 0,
       layoutLineNumbers: true,
@@ -694,7 +750,7 @@ class CodeSystemCache {
       buildCodeSourceInto(text, e.source);
       syncTokenizeInto(e.source, language, e.spans);
       layoutCodeSourceInto(e.source, fontSize, width, lineNumbers, e.layout);
-      e.version = 1;
+      e.version = ++_nextVersion;
       e.layoutFontSize = fontSize;
       e.layoutWidth = width;
       e.layoutLineNumbers = lineNumbers;
@@ -702,6 +758,7 @@ class CodeSystemCache {
       this.entries.set(id, e);
       requestParse(id, text, language, e.version);
       e.seeded = true;
+      e.inFlight = true;
       return e.layout;
     }
 
@@ -710,8 +767,15 @@ class CodeSystemCache {
     if (e.language !== language) {
       syncTokenizeInto(e.source, language, e.spans);
       e.language = language;
-      e.version++;
-      requestParse(id, e.source.fullText, language, e.version);
+      e.version = ++_nextVersion;
+      if (e.inFlight) {
+        // Reseed at flush time — the full text subsumes any batched deltas.
+        e.pendingSeed = true;
+        e.pending.length = 0;
+      } else {
+        requestParse(id, e.source.fullText, language, e.version);
+        e.inFlight = true;
+      }
       // Only recompute layout if fontSize/width/lineNumbers also changed
       if (!e.layoutValid || e.layoutFontSize !== fontSize || e.layoutWidth !== width || e.layoutLineNumbers !== lineNumbers) {
         layoutCodeSourceInto(e.source, fontSize, width, lineNumbers, e.layout);
@@ -755,50 +819,101 @@ class CodeSystemCache {
 
     buildCodeSourceInto(text, e.source);
     syncTokenizeInto(e.source, language, e.spans);
-    e.version++;
+    e.version = ++_nextVersion;
     e.layoutValid = false;
     e.frame = null;
 
-    // First edit to an unseeded entry sends the full text (seeds the worker mirror);
-    // every subsequent edit sends only the Yjs delta — no full text crosses the
-    // thread boundary, so N peers typing cost N tiny delta copies, not N full copies.
+    // First edit to an unseeded entry sends the full text (seeds the worker
+    // mirror); after that only Yjs deltas cross the thread boundary. The
+    // in-flight gate keeps at most one parse outstanding: deltas that land
+    // during a flight batch into `pending` and flush as ONE message when the
+    // doorbell arrives — an N-keystroke burst costs N mirror splices + 1 parse
+    // on the worker instead of N parses. A queued reseed subsumes deltas.
     if (!e.seeded) {
       requestParse(id, text, language, e.version);
       e.seeded = true;
-    } else {
-      requestParseEdits(id, language, e.version, ev.delta as DeltaOp[]);
+      e.inFlight = true;
+    } else if (!e.inFlight) {
+      _singleBatch[0] = ev.delta as DeltaOp[];
+      requestParseEdits(id, language, e.version, _singleBatch);
+      e.inFlight = true;
+    } else if (!e.pendingSeed) {
+      e.pending.push(ev.delta as DeltaOp[]);
     }
   }
 
   /**
-   * Apply Lezer worker spans (ceiling upgrade). Version-gated to discard stale results.
-   * Swaps the spans buffers directly — zero-copy from the worker's transferred ArrayBuffers.
+   * Spans doorbell (ceiling upgrade). The payload lives in the block's SAB;
+   * this acquire-loads the published version, gates it against `e.version`
+   * (strict equality — stale publishes are never read), copies into the
+   * pooled `e.spans` buffers, then flushes any batched edits. ORDER IS
+   * LOAD-BEARING: the flush post must come AFTER the copy — the worker starts
+   * overwriting the (single-buffer) SAB the moment the next parse message
+   * lands.
    */
-  applyWorkerSpans(id: string, spanData: Uint16Array, spanLineStart: Uint32Array, forVersion: number): void {
+  applyWorkerSpans(id: string, sab: SharedArrayBuffer): void {
     const e = this.entries.get(id);
-    if (!e || forVersion !== e.version) return;
-    e.spans.spanData = spanData;
-    // Floor spanCap so a worker response with empty spanData (length 0) doesn't
-    // trip ensureSpansDataCap's `while (cap < n) cap *= 2` infinite loop the
-    // next time the sync tokenizer needs to grow the buffer. Belt-and-suspenders
-    // with the floor inside ensureSpansDataCap itself.
-    e.spans.spanCap = Math.max(spanData.length, 48);
-    e.spans.spanLineStart = spanLineStart;
-    e.spans.lineCap = spanLineStart.length - 1;
-    e.spans.lineCount = spanLineStart.length - 1;
-    // Layout dimensions unchanged — only colors differ. No layout invalidation.
-    // Viewport-cull: a code block edited remotely while it's fully off-screen
-    // doesn't need to mark a dirty rect — the next pan/zoom into view will
-    // repaint it from scratch anyway. Saves dirty-rect bookkeeping + an empty
-    // repaint pass on long docs.
-    if (e.frame) {
-      const [fx, fy, fw, fh] = e.frame;
-      const bx1 = fx + fw;
-      const by1 = fy + fh;
-      const vis = getVisibleBoundsTuple();
-      if (bx1 >= vis[0] && fx <= vis[2] && by1 >= vis[1] && fy <= vis[3]) {
-        invalidateWorldBBox([fx, fy, bx1, by1]);
+    if (!e) return; // evicted mid-flight — worker cleanup rode the 'remove'
+    const hdr = new Int32Array(sab, 0, 8);
+    const ver = Atomics.load(hdr, SAB_H_VERSION); // acquire — covers the plain writes
+    if (ver === e.version) {
+      const lineCap = hdr[SAB_H_LINE_CAP];
+      const lineCount = hdr[SAB_H_LINE_COUNT];
+      const ls = new Uint32Array(sab, SAB_HDR_BYTES, lineCap + 1);
+      const used = ls[lineCount];
+      const sp = new Uint16Array(sab, SAB_HDR_BYTES + (lineCap + 1) * 4, used);
+      const s = e.spans;
+      ensureSpansLineCap(s, lineCount);
+      ensureSpansDataCap(s, used);
+      s.spanLineStart.set(ls.subarray(0, lineCount + 1));
+      s.spanData.set(sp);
+      s.lineCount = lineCount;
+      if (import.meta.env.DEV && Atomics.load(hdr, SAB_H_VERSION) !== ver) {
+        console.error('[code] spans SAB overwritten during copy — gating broken', id);
       }
+      // Layout dimensions unchanged — only colors differ. No layout invalidation.
+      // Viewport-cull: a code block edited remotely while it's fully off-screen
+      // doesn't need to mark a dirty rect — the next pan/zoom into view will
+      // repaint it from scratch anyway.
+      if (e.frame) {
+        const [fx, fy, fw, fh] = e.frame;
+        const bx1 = fx + fw;
+        const by1 = fy + fh;
+        const vis = getVisibleBoundsTuple();
+        if (bx1 >= vis[0] && fx <= vis[2] && by1 >= vis[1] && fy <= vis[3]) {
+          _invalidateScratch[0] = fx;
+          _invalidateScratch[1] = fy;
+          _invalidateScratch[2] = bx1;
+          _invalidateScratch[3] = by1;
+          invalidateWorldBBox(_invalidateScratch);
+        }
+      }
+    }
+    this.flushPending(e, id);
+  }
+
+  /** Gate-release for a parse that will never publish. `seeded=false` forces the
+   *  next edit to full-seed, which also heals a possibly-desynced worker mirror. */
+  onParseFailed(id: string): void {
+    const e = this.entries.get(id);
+    if (!e) return;
+    e.inFlight = false;
+    e.pending.length = 0;
+    e.pendingSeed = false;
+    e.seeded = false;
+  }
+
+  /** Doorbell tail — post the queued work (reseed subsumes batches) or release the gate. */
+  private flushPending(e: CacheEntry, id: string): void {
+    if (e.pendingSeed) {
+      e.pendingSeed = false;
+      e.pending.length = 0;
+      requestParse(id, e.source.fullText, e.language, e.version);
+    } else if (e.pending.length > 0) {
+      requestParseEdits(id, e.language, e.version, e.pending);
+      e.pending.length = 0; // safe — dispatch structured-clones synchronously
+    } else {
+      e.inFlight = false;
     }
   }
 
@@ -859,6 +974,8 @@ class CodeSystemCache {
   }
 
   evict(id: string): void {
+    const e = this.entries.get(id);
+    if (e?.inFlight) settleOutstanding(id); // the doorbell that would settle it gets dropped
     this.entries.delete(id);
     requestRemove(id);
   }

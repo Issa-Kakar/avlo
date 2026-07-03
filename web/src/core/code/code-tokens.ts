@@ -45,6 +45,23 @@ export function ensureSpansDataCap(s: CodeSpans, n: number): void {
 }
 
 // ============================================================================
+// SPANS SAB LAYOUT — per-block SharedArrayBuffer carrying the worker's packed
+// spans. Defined here because this is the one module both sides import.
+//
+//   [hdr: 8 Int32 lanes = 32 B][spanLineStart: (lineCap+1) u32][spanData: u16…]
+//
+// SAB_H_VERSION is the ONLY Atomics-accessed lane: the worker's release store
+// on it covers every plain body/lane write before it; the main thread's
+// acquire load makes them visible. dataCap is derived on the main side:
+// (byteLength - SAB_HDR_BYTES - (lineCap+1)*4) / 2.
+// ============================================================================
+
+export const SAB_H_VERSION = 0; // Atomics.store (worker) / Atomics.load (main)
+export const SAB_H_LINE_COUNT = 1; // plain — covered by the release edge
+export const SAB_H_LINE_CAP = 2; // plain — written once at alloc
+export const SAB_HDR_BYTES = 32;
+
+// ============================================================================
 // STYLE ENUM — 16 styles incl. WHITESPACE sentinel, fits in a byte
 // ============================================================================
 
@@ -194,7 +211,7 @@ export function countPackedTriples(lineLen: number, buf: number[], count: number
   return runCount;
 }
 
-function isAllWs(text: string, fromAbs: number, toAbs: number): boolean {
+export function isAllWs(text: string, fromAbs: number, toAbs: number): boolean {
   for (let ci = fromAbs; ci < toAbs; ci++) {
     const cc = text.charCodeAt(ci);
     if (cc !== 32 && cc !== 9) return false;

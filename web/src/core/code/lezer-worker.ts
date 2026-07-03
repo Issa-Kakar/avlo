@@ -1,16 +1,29 @@
 /**
- * Lezer Worker — Incremental parsing + flat span extraction
+ * Lezer Worker — Incremental parsing + fused span extraction into per-block SABs
  *
  * One of 2 warm pool workers. Owns per-object parse state (Tree + TreeFragments +
- * text mirror). Main thread never touches parse state.
+ * text mirror) AND each object's spans SharedArrayBuffer. Main thread never
+ * touches parse state; it only copies out of the SAB on doorbell receipt.
  *
  * Protocol:
- *   Main → Worker: { type:'parse', id, language, version, text }   // full seed/reset — mirror = text
- *   Main → Worker: { type:'parse', id, language, version, edits }  // Yjs delta — splice mirror + incremental parse
+ *   Main → Worker: { type:'parse', id, language, version, text }    // full seed/reset — mirror = text
+ *   Main → Worker: { type:'parse', id, language, version, edits }   // Yjs delta BATCHES (DeltaOp[][]) —
+ *                  applied sequentially: each batch's retains are relative to the
+ *                  post-previous-batch doc. One parse + one publish per message.
  *   Main → Worker: { type:'remove', id }
  *   Main → Worker: { type:'clearAll' }
- *   Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineStart: Uint32Array }
- *                  (both ArrayBuffers transferred zero-copy)
+ *   Worker → Main: { type:'spans', id, sab }          // doorbell — payload lives in the SAB
+ *   Worker → Main: { type:'parse-failed', id }        // gate-release on crash/desync
+ *
+ * SAB publish protocol (single buffer per block — safe because main posts at
+ * most one parse per block and only after consuming the previous doorbell, so
+ * worker-write and main-copy strictly alternate; independently, the version
+ * gate is a seqlock — a stale publish is never read):
+ *   write spanLineStart + spanData + H_LINE_COUNT (plain)
+ *   → Atomics.store(H_VERSION, version)   // release — covers the plain writes
+ *   → postMessage doorbell (SAB rides as a handle; nothing is copied or transferred)
+ * The SAB is (re)allocated by THIS worker, exact-sized from actual content with
+ * pow2 headroom and a 4 KB floor, and freed by GC once both sides drop refs.
  *
  * The worker keeps a per-id text mirror so edits arrive as tiny Yjs deltas
  * instead of the full re-serialized block text on every keystroke. The mirror
@@ -22,10 +35,11 @@
  * buffers (in arrival order) for the ~1-frame load, preserving per-id ordering.
  *
  * Lezer-tag → S mapping lives inline at the bottom of this file as `STYLE_HIGHLIGHTER`
- * (returns the stringified S int directly; `highlightTree` callback recovers via
- * `+classes | 0`). `code-theme.ts` carries its own copy of the same mapping for
- * the CodeMirror DOM theme — deliberate duplication so the main bundle never has
- * to import `@lezer/highlight`.
+ * (returns the stringified S int directly; the highlight callback decodes the
+ * TRAILING int — inherited scopes join classes as "inherited own", so the last
+ * one is the most specific). `code-theme.ts` carries its own copy of the same
+ * mapping for the CodeMirror DOM theme — deliberate duplication so the main
+ * bundle never has to import `@lezer/highlight`.
  */
 
 import type { Parser, Tree } from '@lezer/common';
@@ -33,7 +47,11 @@ import { TreeFragment } from '@lezer/common';
 import type { Highlighter, Tag } from '@lezer/highlight';
 import { highlightTree, tags } from '@lezer/highlight';
 
-import { S, writePackedTriples } from './code-tokens';
+import { isAllWs, S, SAB_H_LINE_CAP, SAB_H_LINE_COUNT, SAB_H_VERSION, SAB_HDR_BYTES } from './code-tokens';
+
+// Resolves to a boolean in Vite builds; false under the node parity harness
+// (where import.meta.env is undefined).
+const DEV = typeof import.meta.env !== 'undefined' && import.meta.env.DEV === true;
 
 // ============================================================================
 // Per-object state
@@ -80,12 +98,18 @@ function getParser(language: string): Promise<Parser> {
   if (inFlight) return inFlight;
 
   const entry = REGISTRY[language] ?? REGISTRY.javascript;
-  const promise = entry.load().then((mod) => {
-    const configured = entry.configure ? entry.configure(mod.parser) : mod.parser;
-    parsers.set(language, configured);
-    loading.delete(language);
-    return configured;
-  });
+  const promise = entry.load().then(
+    (mod) => {
+      const configured = entry.configure ? entry.configure(mod.parser) : mod.parser;
+      parsers.set(language, configured);
+      loading.delete(language);
+      return configured;
+    },
+    (err) => {
+      loading.delete(language); // don't cache the rejection — a later parse retries the load
+      throw err;
+    },
+  );
   loading.set(language, promise);
   return promise;
 }
@@ -149,188 +173,278 @@ function applyEdits(mirror: string, edits: DeltaOp[]): { text: string; changes: 
   return { text: result, changes: ranges };
 }
 
-function parse(id: string, parser: Parser, text: string, changes?: ChangedRange[]): Tree {
-  const prev = state.get(id);
-
-  let tree: Tree;
-  let fragments: readonly TreeFragment[];
-
-  if (prev && changes && changes.length > 0) {
-    const updatedFragments = TreeFragment.applyChanges(prev.fragments, changes);
-    tree = parser.parse(text, updatedFragments);
-    fragments = TreeFragment.addTree(tree, updatedFragments);
-  } else {
-    tree = parser.parse(text);
-    fragments = TreeFragment.addTree(tree);
-  }
-
-  state.set(id, { tree, fragments, mirror: text });
-  return tree;
+interface ParseMsg {
+  id: string;
+  version: number;
+  text?: string;
+  edits?: DeltaOp[][];
 }
 
 /**
- * Resolve text + incremental changes for a parse message, run the parse, and
- * emit spans. `msg.text` present → full seed/reset; else `msg.edits` (Yjs delta)
- * splices the existing mirror. The `seeded` guard on the main side ensures an
- * `edits` message never precedes its full seed, so `prev` is present here.
+ * Resolve text + incremental changes for a parse message, run ONE parse over
+ * the final text, and publish spans. `msg.text` present → full seed/reset;
+ * else `msg.edits` (Yjs delta batches) splices the mirror batch by batch —
+ * `TreeFragment.applyChanges` chains across batches without an intervening
+ * parse (pure coordinate surgery on fragment offsets).
  */
-function processParse(msg: { id: string; version: number; text?: string; edits?: DeltaOp[] }, parser: Parser): void {
+function processParse(msg: ParseMsg, parser: Parser): void {
   const { id, version } = msg;
   let text: string;
-  let changes: ChangedRange[] | undefined;
+  let fragments: readonly TreeFragment[] | undefined;
 
   if (msg.text !== undefined) {
     text = msg.text;
   } else {
     const prev = state.get(id);
-    if (!prev) return; // edits before seed — shouldn't happen (main gates via `seeded`)
-    const applied = applyEdits(prev.mirror, msg.edits as DeltaOp[]);
-    text = applied.text;
-    changes = applied.changes;
+    if (!prev) {
+      // Edits before seed — shouldn't happen (main gates via `seeded`), but the
+      // gate must still release; main's next edit re-seeds from scratch.
+      postParseFailed(id);
+      return;
+    }
+    text = prev.mirror;
+    fragments = prev.fragments;
+    for (const batch of msg.edits as DeltaOp[][]) {
+      const applied = applyEdits(text, batch);
+      text = applied.text;
+      if (applied.changes.length > 0) fragments = TreeFragment.applyChanges(fragments, applied.changes);
+    }
   }
 
-  const tree = parse(id, parser, text, changes);
-  extractAndSendSpans(tree, text, id, version);
+  const tree = fragments ? parser.parse(text, fragments) : parser.parse(text);
+  state.set(id, { tree, fragments: TreeFragment.addTree(tree, fragments), mirror: text });
+
+  publishSpans(id, version, extractSpans(tree, text));
 }
 
 // ============================================================================
-// Span extraction — walks tree, packs flat spanData / spanLineStart
+// Span extraction — ONE fused highlightTree walk packs gap-filled triples
+// directly (no quad buffer, no binary search, no second pass). Relies on
+// highlightTree's contract of ascending, non-overlapping ranges — the same
+// order the old two-pass packer's cursor scan already depended on.
 // ============================================================================
 
-// Reusable buffers — persisted across calls, zero allocation per parse beyond transfer.
-let _workerLineOffsets = new Uint32Array(64); // [lineCap + 1]; sentinel slot included
-const _hlBuf: number[] = [];
-let _hlCount = 0;
-const _lineBuf: number[] = [];
-let _workerSpanData = new Uint16Array(256);
+// Reusable scratches — persisted across parses, grow-only, zero allocation
+// steady-state. The walk targets these (not the SAB) so overflow handling is a
+// plain grow-with-copy and the publish copy happens once with sizes known.
+let _workerLineOffsets = new Uint32Array(64); // [lineCount + 1] incl. sentinel
+let _workerSpanLineStart = new Uint32Array(64); // [lineCount + 1] u16-slot offsets
+let _workerSpanData = new Uint16Array(256); // packed [off, len, style] triples
 
-function ensureLineOffsetsCap(n: number): void {
-  // Need slots [0..n] inclusive (n+1 slots), so the sentinel at index n always fits.
+function ensureLineCaps(n: number): void {
+  // Need slots [0..n] inclusive (n+1 slots) so the sentinel/total entry fits.
   if (_workerLineOffsets.length >= n + 1) return;
   let cap = _workerLineOffsets.length;
   while (cap < n + 1) cap *= 2;
-  _workerLineOffsets = new Uint32Array(cap);
+  const next = new Uint32Array(cap);
+  next.set(_workerLineOffsets); // may grow mid-offsets-pass — preserve prefix
+  _workerLineOffsets = next;
+  _workerSpanLineStart = new Uint32Array(cap); // stamped after sizing — no preserve
 }
 
 function ensureWorkerSpanCap(n: number): void {
   if (_workerSpanData.length >= n) return;
   let cap = _workerSpanData.length;
   while (cap < n) cap *= 2;
-  _workerSpanData = new Uint16Array(cap);
+  const next = new Uint16Array(cap);
+  next.set(_workerSpanData); // grows mid-walk — preserve the packed prefix
+  _workerSpanData = next;
 }
 
-function binarySearchLine(offsets: Uint32Array, lineCount: number, pos: number): number {
-  let lo = 0;
-  let hi = lineCount - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (offsets[mid] <= pos) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
+// Fused-walk cursor state — module-level so the highlightTree callback is a
+// hoisted function (no per-parse closure). Consumed within one extractSpans call.
+let _text = '';
+let _lineCount = 0;
+let _line = 0;
+let _lineStart = 0;
+let _lineLen = 0;
+let _posInLine = 0;
+let _write = 0;
+let _lastFrom = -1; // DEV ascending-order tripwire
+
+function _emit(off: number, len: number, style: number): void {
+  if (_write + 3 > _workerSpanData.length) ensureWorkerSpanCap(_write + 3);
+  const sp = _workerSpanData;
+  sp[_write] = off;
+  sp[_write + 1] = len;
+  sp[_write + 2] = style;
+  _write += 3;
 }
 
-/** Walk the tree, build flat span buffers, post + transfer in one go. */
-function extractAndSendSpans(tree: Tree, text: string, id: string, version: number): void {
-  // 1. Build line-offset table via charCode-10 scan.
-  let lineCount = 1;
-  for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) === 10) lineCount++;
+/** Trailing gap for the current line — no-op on empty or fully-covered lines. */
+function _emitTrailingGap(): void {
+  if (_posInLine < _lineLen) {
+    _emit(_posInLine, _lineLen - _posInLine, isAllWs(_text, _lineStart + _posInLine, _lineStart + _lineLen) ? S.WHITESPACE : S.DEFAULT);
   }
-  ensureLineOffsetsCap(lineCount);
-  const lineOffsets = _workerLineOffsets;
-  lineOffsets[0] = 0;
+}
+
+/** Finish the current line (trailing gap) and advance the cursor one line. */
+function _finishLine(): void {
+  _emitTrailingGap();
+  _line++;
+  _lineStart = _workerLineOffsets[_line];
+  _lineLen = _workerLineOffsets[_line + 1] - _lineStart - 1;
+  _posInLine = 0;
+  _workerSpanLineStart[_line] = _write;
+}
+
+const _onHighlight = (from: number, to: number, classes: string): void => {
+  if (!classes) return;
+  // Trailing-int decode: STYLE_HIGHLIGHTER returns a bare stringified S value,
+  // but highlightTree space-joins an inherited class BEFORE the own one — the
+  // last int is the most specific style.
+  let style = 0;
+  for (let i = classes.lastIndexOf(' ') + 1; i < classes.length; i++) style = style * 10 + (classes.charCodeAt(i) - 48);
+
+  if (DEV) {
+    if (from < _lastFrom) console.error('[worker] highlightTree emitted non-ascending range', _lastFrom, from);
+    _lastFrom = from;
+  }
+
+  // Pointer 1: advance the line cursor to the highlight's starting line,
+  // finishing each line passed (trailing gap + spanLineStart stamp).
+  while (from >= _lineStart + _lineLen && _line + 1 < _lineCount) _finishLine();
+
+  // Pointer 2: emit line-relative, clamped segments across the lines spanned.
+  for (;;) {
+    const tokenFrom = from > _lineStart ? from - _lineStart : 0;
+    const rel = to - _lineStart;
+    const tokenTo = rel < _lineLen ? rel : _lineLen;
+    if (tokenFrom < tokenTo) {
+      if (tokenFrom > _posInLine) {
+        _emit(
+          _posInLine,
+          tokenFrom - _posInLine,
+          isAllWs(_text, _lineStart + _posInLine, _lineStart + tokenFrom) ? S.WHITESPACE : S.DEFAULT,
+        );
+      }
+      _emit(tokenFrom, tokenTo - tokenFrom, style);
+      _posInLine = tokenTo;
+    }
+    if (to <= _lineStart + _lineLen || _line + 1 >= _lineCount) break;
+    _finishLine();
+  }
+};
+
+/** Pooled extraction result — `ls`/`sp` reference the live scratches (valid until
+ *  the next extractSpans call); triples for line i live at `sp[ls[i] .. ls[i+1])`. */
+export interface ExtractResult {
+  lineCount: number;
+  used: number;
+  ls: Uint32Array;
+  sp: Uint16Array;
+}
+const _extractResult: ExtractResult = { lineCount: 0, used: 0, ls: _workerSpanLineStart, sp: _workerSpanData };
+
+/**
+ * Fused extraction into the module scratches. Exported for the DEV parity
+ * harness — pure w.r.t. everything but the scratches + pooled result.
+ */
+export function extractSpans(tree: Tree, text: string): ExtractResult {
+  // 1. Line-offset table — single pass over the vectorized native indexOf.
+  _workerLineOffsets[0] = 0;
   let li = 1;
-  for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) === 10) lineOffsets[li++] = i + 1;
+  for (let nl = text.indexOf('\n'); nl !== -1; nl = text.indexOf('\n', nl + 1)) {
+    ensureLineCaps(li + 1);
+    _workerLineOffsets[li++] = nl + 1;
   }
+  const lineCount = li;
+  ensureLineCaps(lineCount);
   // Sentinel: text.length + 1 so lineLen(i) = lineOffsets[i+1] - lineOffsets[i] - 1
-  lineOffsets[lineCount] = text.length + 1;
+  _workerLineOffsets[lineCount] = text.length + 1;
 
-  // 2. First pass: collect highlights into flat quad buffer [lineIdx, from, to, style].
-  _hlCount = 0;
-  highlightTree(tree, STYLE_HIGHLIGHTER, (from, to, classes) => {
-    if (!classes) return;
-    // STYLE_HIGHLIGHTER returns the stringified S enum value directly.
-    const style = +classes | 0;
+  // 2. Reset cursors, stamp line 0, run the fused walk.
+  _text = text;
+  _lineCount = lineCount;
+  _line = 0;
+  _lineStart = 0;
+  _lineLen = _workerLineOffsets[1] - 1;
+  _posInLine = 0;
+  _write = 0;
+  _lastFrom = -1;
+  _workerSpanLineStart[0] = 0;
 
-    let lineIdx = binarySearchLine(lineOffsets, lineCount, from);
+  highlightTree(tree, STYLE_HIGHLIGHTER, _onHighlight);
 
-    while (lineIdx < lineCount) {
-      const lineStart = lineOffsets[lineIdx];
-      const lineLen = lineOffsets[lineIdx + 1] - lineStart - 1;
-      const lineEnd = lineStart + lineLen;
-
-      if (from >= lineEnd) {
-        lineIdx++;
-        continue;
-      }
-      if (to <= lineStart) break;
-
-      const tokenFrom = from > lineStart ? from - lineStart : 0;
-      const tokenTo = to - lineStart < lineLen ? to - lineStart : lineLen;
-
-      if (tokenFrom < tokenTo) {
-        const idx = _hlCount * 4;
-        if (idx + 3 >= _hlBuf.length) _hlBuf.length = idx + 64;
-        _hlBuf[idx] = lineIdx;
-        _hlBuf[idx + 1] = tokenFrom;
-        _hlBuf[idx + 2] = tokenTo;
-        _hlBuf[idx + 3] = style;
-        _hlCount++;
-      }
-
-      if (to <= lineEnd) break;
-      lineIdx++;
-    }
-  });
-
-  // 3. Pre-grow working span buffer to upper bound (each highlight contributes ≤ 2 triples,
-  //    each line ≤ 1 trailing-gap triple, plus 1 default-fill for highlight-free lines).
-  const upperBoundTriples = _hlCount * 2 + lineCount + 1;
-  ensureWorkerSpanCap(upperBoundTriples * 3);
-
-  // 4. Allocate exact-sized spanLineStart for transfer.
-  const spanLineStart = new Uint32Array(lineCount + 1);
-
-  // 5. Sequential cursor scan — pack each line's triples into _workerSpanData.
-  let writeOffset = 0;
-  let cursor = 0;
-
-  for (let i = 0; i < lineCount; i++) {
-    spanLineStart[i] = writeOffset;
-    const lineLen = lineOffsets[i + 1] - lineOffsets[i] - 1;
-    const lineFrom = lineOffsets[i];
-
-    if (cursor >= _hlCount || _hlBuf[cursor * 4] !== i) {
-      // No highlights on this line — packs to 0 triples (empty) or 1 default-fill
-      // (which becomes S.WHITESPACE for pure-ws lines via writePackedTriples).
-      writeOffset = writePackedTriples(_workerSpanData, lineLen, _emptyBuf, 0, writeOffset, text, lineFrom);
-      continue;
-    }
-
-    let count = 0;
-    while (cursor < _hlCount && _hlBuf[cursor * 4] === i) {
-      const base = cursor * 4;
-      const tripleBase = count * 3;
-      if (tripleBase + 2 >= _lineBuf.length) _lineBuf.length = tripleBase + 30;
-      _lineBuf[tripleBase] = _hlBuf[base + 1];
-      _lineBuf[tripleBase + 1] = _hlBuf[base + 2];
-      _lineBuf[tripleBase + 2] = _hlBuf[base + 3];
-      count++;
-      cursor++;
-    }
-    writeOffset = writePackedTriples(_workerSpanData, lineLen, _lineBuf, count, writeOffset, text, lineFrom);
-  }
-  spanLineStart[lineCount] = writeOffset;
-
-  // 6. Copy used prefix into a fresh transfer buffer (zero-copy on postMessage).
-  const spanData = _workerSpanData.slice(0, writeOffset);
-
-  (self as unknown as Worker).postMessage({ type: 'spans', id, version, spanData, spanLineStart }, [spanData.buffer, spanLineStart.buffer]);
+  // 3. Drain the remaining lines, finish the last line's trailing gap, stamp
+  //    the total-slots sentinel.
+  while (_line + 1 < _lineCount) _finishLine();
+  _emitTrailingGap();
+  _workerSpanLineStart[lineCount] = _write;
+  _text = '';
+  _extractResult.lineCount = lineCount;
+  _extractResult.used = _write;
+  _extractResult.ls = _workerSpanLineStart;
+  _extractResult.sp = _workerSpanData;
+  return _extractResult;
 }
 
-const _emptyBuf: number[] = [];
+// ============================================================================
+// Per-object SAB slots — worker-owned, exact-sized, realloc-on-overflow.
+// Same lifecycle as `state` (dropped on remove/clearAll → GC frees the SAB
+// once main's entry is gone too).
+// ============================================================================
+
+interface SabSlot {
+  sab: SharedArrayBuffer;
+  hdr: Int32Array;
+  ls: Uint32Array; // spanLineStart region — lineCap+1 u32 entries
+  sp: Uint16Array; // spanData region — dataCap u16 slots
+  lineCap: number;
+  dataCap: number;
+}
+
+const sabSlots = new Map<string, SabSlot>();
+
+// Floor so an empty seed doesn't guarantee a realloc on first typing (and SABs
+// are page-granular anyway).
+const MIN_SAB_BYTES = 4096;
+
+function ensureSlot(id: string, lineCount: number, used: number): SabSlot {
+  let slot = sabSlots.get(id);
+  if (slot && lineCount <= slot.lineCap && used <= slot.dataCap) return slot;
+  let lineCap = slot ? slot.lineCap : 16;
+  while (lineCap < lineCount) lineCap *= 2;
+  let dataCap = slot ? slot.dataCap : 512;
+  while (dataCap < used) dataCap *= 2;
+  const lsBytes = (lineCap + 1) * 4;
+  const minData = (MIN_SAB_BYTES - SAB_HDR_BYTES - lsBytes) >> 1;
+  if (dataCap < minData) dataCap = minData;
+  const sab = new SharedArrayBuffer(SAB_HDR_BYTES + lsBytes + dataCap * 2);
+  const hdr = new Int32Array(sab, 0, 8);
+  hdr[SAB_H_LINE_CAP] = lineCap; // plain — covered by the first publish's release
+  slot = {
+    sab,
+    hdr,
+    ls: new Uint32Array(sab, SAB_HDR_BYTES, lineCap + 1),
+    sp: new Uint16Array(sab, SAB_HDR_BYTES + lsBytes, dataCap),
+    lineCap,
+    dataCap,
+  };
+  sabSlots.set(id, slot);
+  return slot;
+}
+
+// Pooled doorbell — postMessage structured-clones synchronously; the SAB rides
+// as a handle (shared by reference), never copied or transferred.
+const _spansMsg: { type: 'spans'; id: string; sab: SharedArrayBuffer | null } = { type: 'spans', id: '', sab: null };
+
+function publishSpans(id: string, version: number, r: ExtractResult): void {
+  const { lineCount, used } = r;
+  const slot = ensureSlot(id, lineCount, used);
+  slot.ls.set(r.ls.subarray(0, lineCount + 1));
+  slot.sp.set(r.sp.subarray(0, used));
+  slot.hdr[SAB_H_LINE_COUNT] = lineCount; // plain — covered by the release below
+  Atomics.store(slot.hdr, SAB_H_VERSION, version); // publish (release edge)
+  _spansMsg.id = id;
+  _spansMsg.sab = slot.sab;
+  (self as unknown as Worker).postMessage(_spansMsg);
+}
+
+/** Gate-release doorbell — a parse that produced no publish must still answer. */
+function postParseFailed(id: string): void {
+  (self as unknown as Worker).postMessage({ type: 'parse-failed', id });
+}
 
 // ============================================================================
 // Lezer-tag → S mapping  (worker-side copy; the theme has its own — keep in sync)
@@ -418,29 +532,34 @@ const STYLE_HIGHLIGHTER: Highlighter = {
 // keyed by language, kept in arrival order. Drained in order once loaded so an
 // id's incremental fragment/mirror state stays consistent (language is fixed
 // per edit, so per-id order is preserved).
-const pending = new Map<string, { id: string; version: number; text?: string; edits?: DeltaOp[] }[]>();
+const pending = new Map<string, ParseMsg[]>();
 
 self.onmessage = (e: MessageEvent) => {
-  try {
-    const msg = e.data;
+  const msg = e.data;
 
-    switch (msg.type) {
-      case 'parse': {
-        const language: string = msg.language;
-        const parser = parsers.get(language);
-        if (parser) {
-          // Steady state — parser resident, process inline (no await).
+  switch (msg.type) {
+    case 'parse': {
+      const language: string = msg.language;
+      const parser = parsers.get(language);
+      if (parser) {
+        // Steady state — parser resident, process inline (no await).
+        try {
           processParse(msg, parser);
-          break;
+        } catch (err) {
+          console.error('[worker] crash', err);
+          postParseFailed(msg.id);
         }
-        // Parser not loaded — buffer this language's messages in arrival order.
-        const queue = pending.get(language);
-        if (queue) {
-          queue.push(msg); // load already kicked off by the first buffered message
-          break;
-        }
-        pending.set(language, [msg]);
-        getParser(language).then((p) => {
+        break;
+      }
+      // Parser not loaded — buffer this language's messages in arrival order.
+      const queue = pending.get(language);
+      if (queue) {
+        queue.push(msg); // load already kicked off by the first buffered message
+        break;
+      }
+      pending.set(language, [msg]);
+      getParser(language)
+        .then((p) => {
           const drain = pending.get(language);
           pending.delete(language);
           if (!drain) return;
@@ -449,20 +568,34 @@ self.onmessage = (e: MessageEvent) => {
               processParse(m, p);
             } catch (err) {
               console.error('[worker] crash (drain)', err);
+              postParseFailed(m.id);
             }
           }
+        })
+        .catch((err) => {
+          // Grammar chunk failed to load (e.g. first-ever offline fetch) —
+          // release the gates so blocks stay live on the sync floor.
+          console.error('[worker] parser load failed', language, err);
+          const drain = pending.get(language);
+          pending.delete(language);
+          if (drain) for (const m of drain) postParseFailed(m.id);
         });
-        break;
-      }
-      case 'remove':
-        state.delete(msg.id);
-        break;
-      case 'clearAll':
-        state.clear();
-        pending.clear(); // stale buffered messages from a torn-down room never drain
-        break;
+      break;
     }
-  } catch (err) {
-    console.error('[worker] crash', err);
+    case 'remove': {
+      state.delete(msg.id);
+      sabSlots.delete(msg.id);
+      // Scrub buffered parses for the removed id — a later drain would
+      // otherwise resurrect state + a SAB for a dead object.
+      for (const q of pending.values()) {
+        for (let i = q.length - 1; i >= 0; i--) if (q[i].id === msg.id) q.splice(i, 1);
+      }
+      break;
+    }
+    case 'clearAll':
+      state.clear();
+      sabSlots.clear();
+      pending.clear(); // stale buffered messages from a torn-down room never drain
+      break;
   }
 };
