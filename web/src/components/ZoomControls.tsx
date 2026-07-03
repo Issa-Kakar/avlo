@@ -2,6 +2,8 @@ import { type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from 'r
 import { getObjectsById } from '@/runtime/room-runtime';
 import { animateToFit, zoomIn, zoomOut, zoomTo } from '@/runtime/viewport/zoom';
 import { useCameraStore } from '@/stores/camera-store';
+import { type PointerInputKind, selectPointerInput, setPointerInput, useDeviceUIStore } from '@/stores/device-ui-store';
+import { IconCheck } from './context-menu/icons';
 import { IconHelp, IconMouseSettings, IconZoomMinus, IconZoomPlus, IconZoomToFit } from './icons';
 
 import './ZoomControls.css';
@@ -52,20 +54,29 @@ function useZoomPercentLabel() {
 
 export function ZoomControls() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
   const pctRef = useZoomPercentLabel();
+  // Rare change → a plain subscription is fine (not a hot path).
+  const pointerInput = useDeviceUIStore(selectPointerInput);
 
-  // Close menu on outside click
+  // Close either popover on outside click.
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !modeMenuOpen) return;
     function handlePointerDown(e: PointerEvent) {
       if (barRef.current && !barRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
+        setModeMenuOpen(false);
       }
     }
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [menuOpen]);
+  }, [menuOpen, modeMenuOpen]);
+
+  function selectPointerMode(kind: PointerInputKind) {
+    setPointerInput(kind);
+    setModeMenuOpen(false);
+  }
 
   function handleZoomToFit() {
     const objectsById = getObjectsById();
@@ -95,7 +106,15 @@ export function ZoomControls() {
 
   return (
     <div className="zoom-bar" ref={barRef}>
-      <button className="zoom-bar-btn" title="Mouse settings" onMouseDown={preventFocus}>
+      <button
+        className={`zoom-bar-btn${modeMenuOpen ? ' active' : ''}`}
+        title={pointerInput === 'trackpad' ? 'Input: Trackpad' : 'Input: Mouse'}
+        onMouseDown={preventFocus}
+        onClick={() => {
+          setModeMenuOpen((prev) => !prev);
+          setMenuOpen(false);
+        }}
+      >
         <IconMouseSettings />
       </button>
 
@@ -108,7 +127,10 @@ export function ZoomControls() {
       <button
         className={`zoom-bar-pct${menuOpen ? ' active' : ''}`}
         onMouseDown={preventFocus}
-        onClick={() => setMenuOpen((prev) => !prev)}
+        onClick={() => {
+          setMenuOpen((prev) => !prev);
+          setModeMenuOpen(false);
+        }}
         title="Zoom presets"
       >
         <span ref={pctRef} />
@@ -141,6 +163,27 @@ export function ZoomControls() {
           </button>
           <button className="zoom-menu-item" onMouseDown={preventFocus} onClick={() => handlePreset(2)}>
             Zoom to 200%
+          </button>
+        </div>
+      )}
+
+      {modeMenuOpen && (
+        <div className="zoom-menu zoom-menu-mode">
+          <button
+            className={`zoom-menu-item${pointerInput === 'mouse' ? ' active' : ''}`}
+            onMouseDown={preventFocus}
+            onClick={() => selectPointerMode('mouse')}
+          >
+            Mouse
+            {pointerInput === 'mouse' && <IconCheck className="zoom-menu-check" />}
+          </button>
+          <button
+            className={`zoom-menu-item${pointerInput === 'trackpad' ? ' active' : ''}`}
+            onMouseDown={preventFocus}
+            onClick={() => selectPointerMode('trackpad')}
+          >
+            Trackpad
+            {pointerInput === 'trackpad' && <IconCheck className="zoom-menu-check" />}
           </button>
         </div>
       )}

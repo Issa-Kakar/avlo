@@ -9,6 +9,7 @@ Animated camera motion — zoom, edge auto-pan, arrow-key pan. No React; module-
 | `zoom.ts` | Animated zoom: step, fit-to-bounds, reset, center-preserving transforms |
 | `edge-scroll.ts` | Auto-pan near viewport edges during qualifying tool drags |
 | `arrow-key-pan.ts` | Continuous arrow-key panning with easeInQuad acceleration |
+| `trackpad-pan.ts` | Two-finger wheel-scroll panning, direct 1:1 (trackpad input mode); momentum is the OS's, we synthesize none |
 
 External consumers beyond runtime: `ZoomControls.tsx` and `clipboard-actions.ts` import from `zoom.ts` (`zoomIn`/`zoomOut`/`zoomTo`/`animateToFit`).
 
@@ -130,3 +131,25 @@ Smooth continuous canvas pan while arrow keys are held. Own RAF loop, independen
 Module-level `Set<string>` of held direction keys. RAF loop runs while set is non-empty. Delta time capped at 50ms to prevent large jumps after tab-away.
 
 Pan direction matches "grab" semantics: ArrowRight → content moves right (pan.x increases).
+
+---
+
+## Trackpad Pan (`trackpad-pan.ts`)
+
+Two-finger scroll panning for **trackpad** input mode (`device-ui-store.pointerInput === 'trackpad'`). A single pure function — **no state, no RAF, no momentum code**. `applyTrackpadPan(dX, dY)` pans via `setPanXY` directly and returns. Touches **no** tool/panTool/cursor/capture state (it's a viewport scroll, unlike an MMB grab: never swaps the cursor, never captures the pointer).
+
+Driven by `CanvasRuntime.handleWheel`: in trackpad mode a plain (non-ctrl) wheel event routes here after a forward guard (`getCurrentTool()?.isActive()` → bail) + `panTool.cancelCoast()` (kills an in-flight MMB coast the top `panTool.isActive()` guard misses while coasting).
+
+### Direction
+Straight pass-through of the browser delta — **both axes `+`, no inversion** (`setPanXY(pan + delta/scale)`). This is the *opposite* sign of PanTool's `−` (cursor-derived, not delta-derived). Respects the OS natural-scroll setting exactly like a web page (macOS natural-scroll → grab-like; Windows default → page-scroll).
+
+### Momentum is the OS's, not ours
+Panning is **direct 1:1** per wheel event. Momentum comes for free on platforms that emit a post-liftoff momentum phase (macOS trackpads, Windows Precision Touchpads keep sending decaying wheel events after your fingers leave — we just keep panning on them). Platforms with no OS inertia (native Linux) stop dead on release. We **deliberately synthesize nothing** — a fabricated coast was removed because it was unfixable here:
+- Stacked on OS inertia it double-counts → the canvas flies away.
+- There is no "wheel-up" event, so it had to infer stream-end via a ~120ms idle timeout → a freeze that then lurched back into motion = a visible **stutter on settle** (reproduced on Windows Chrome, i.e. platform-independent).
+- Telling a trackpad from a mouse needs a device signal the `wheel` event doesn't carry: integer/vertical-only deltas are ambiguous on Linux, and browser zoom / display scaling makes even a **mouse** report fractional deltas (false positives).
+
+`PanTool` can coast cleanly only because a pointer gives it `pointerup` (a real release) + `pointerType` (a real device) for free; the wheel path has neither, so it doesn't try.
+
+### Mutual exclusion
+Trackpad pan and a pointer gesture are never active at once, enforced by (a) the top `panTool.isActive()` early-return in `handleWheel` and (b) the forward guard — with no input ever swallowed. Because trackpad pan calls only `setPanXY` (like arrow-key pan / wheel-zoom) and never re-dispatches `tool.move()`, it must **not** be added to the `isEdgeScrolling()` guard on the camera subscription — it needs `onViewChange()` to fire so hover cursor / mounted editors / context menu / peer cursors stay correct as content scrolls.

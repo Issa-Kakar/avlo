@@ -15,7 +15,7 @@ import { gridLoop } from '@/renderer/grid/GridRenderLoop';
 import { overlayLoop } from '@/renderer/OverlayRenderLoop';
 import { renderLoop } from '@/renderer/RenderLoop';
 import { capturePointer, releasePointer, screenToCanvas, screenToWorld, subscribeCamera, useCameraStore } from '@/stores/camera-store';
-import { setCursorOverride } from '@/stores/device-ui-store';
+import { setCursorOverride, useDeviceUIStore } from '@/stores/device-ui-store';
 import { contextMenuController } from './ContextMenuController';
 import { setLastCursorWorld } from './input/cursor-tracking';
 import { InputManager } from './input/InputManager';
@@ -26,6 +26,7 @@ import { syncPresenceCursorOnCameraMove } from './presence/presence-pointer';
 import { SurfaceManager } from './SurfaceManager';
 import { canStartMMBPan, getCurrentTool, panTool } from './tool-registry';
 import { isEdgeScrolling, stopEdgeScroll, updateEdgeScroll } from './viewport/edge-scroll';
+import { applyTrackpadPan } from './viewport/trackpad-pan';
 import { calculateZoomTransform, cancelZoom } from './viewport/zoom';
 
 export interface RuntimeConfig {
@@ -42,8 +43,10 @@ const WHEEL_BASE = 1.15;
 const VELOCITY_WINDOW_MS = 200;
 const MIN_RATE = 3;
 const RAMP_DIVISOR = 16;
-const MAX_BOOST = 2.0;
+const WHEEL_BOOST_ENABLED = true; // A/B toggle — false disables fast-spin zoom acceleration entirely
+const MAX_BOOST = 1.4; // fast-spin wheel-zoom acceleration ceiling (1.0 ⇒ no boost)
 const PINCH_SENSITIVITY = 0.01;
+const PINCH_MAX_DELTA = 10; // clamp |delta| into the pinch exponent — tames a real mouse ctrl-wheel (deltaY ≈ 120)
 
 export class CanvasRuntime {
   private surfaceManager: SurfaceManager | null = null;
@@ -249,23 +252,44 @@ export class CanvasRuntime {
   }
 
   handleWheel(e: WheelEvent): void {
-    e.preventDefault();
-    if (panTool.isActive()) return;
+    e.preventDefault(); // always — also suppresses back/forward history swipe
+    if (panTool.isActive()) return; // MMB/spacebar drag locks out ALL wheel (incl. trackpad pan)
     cancelZoom();
 
     const canvas = screenToCanvas(e.clientX, e.clientY);
     if (!canvas) return;
 
-    let delta = e.deltaY;
-    if (e.deltaMode === 1) delta *= 40;
-    else if (e.deltaMode === 2) delta *= 800;
+    // Normalize BOTH axes by deltaMode (lines → ×40, pages → ×800).
+    let dX = e.deltaX;
+    let dY = e.deltaY;
+    if (e.deltaMode === 1) {
+      dX *= 40;
+      dY *= 40;
+    } else if (e.deltaMode === 2) {
+      dX *= 800;
+      dY *= 800;
+    }
 
     const pivot = { x: canvas[0], y: canvas[1] };
+    const ctrl = e.ctrlKey || e.metaKey;
 
-    if (e.ctrlKey || e.metaKey) {
-      this.handlePinchZoom(delta, pivot);
+    if (ctrl) {
+      // Ctrl/⌘ + wheel is ALWAYS a zoom, both modes. A trackpad pinch always
+      // arrives as ctrl+wheel (browser convention), so routing by device mode
+      // would force a pinch through the mouse-notch formula and make it crawl.
+      // handlePinchZoom's clamp degrades a real mouse ctrl-wheel (deltaY ≈ 120)
+      // to a gentle per-notch step, so one path serves both devices.
+      this.handlePinchZoom(dY, pivot);
+    } else if (useDeviceUIStore.getState().pointerInput === 'mouse') {
+      this.handleWheelZoom(dY, pivot); // plain mouse wheel → zoom
     } else {
-      this.handleWheelZoom(delta, pivot);
+      // Trackpad two-finger pan (direct 1:1; momentum, if any, is the OS's — see
+      // trackpad-pan.ts). Forward guard: don't fight a live tool gesture.
+      if (getCurrentTool()?.isActive()) return;
+      // Kill an in-flight MMB coast — isActive() is false while coasting, so the
+      // top guard misses it.
+      panTool.cancelCoast();
+      applyTrackpadPan(dX, dY);
     }
   }
 
@@ -281,7 +305,11 @@ export class CanvasRuntime {
   }
 
   private handlePinchZoom(delta: number, pivot: { x: number; y: number }): void {
-    const factor = 2 ** (-delta * PINCH_SENSITIVITY);
+    // Serves both a trackpad pinch (tiny deltas) and a real mouse ctrl-wheel: the
+    // clamp caps a mouse notch (deltaY ≈ 120) to a gentle 2^-0.1 ≈ 0.93 step
+    // instead of teleporting (2^-1.2 ≈ 0.44).
+    const clamped = Math.max(-PINCH_MAX_DELTA, Math.min(PINCH_MAX_DELTA, delta));
+    const factor = 2 ** (-clamped * PINCH_SENSITIVITY);
 
     const { scale, pan } = useCameraStore.getState();
     const target = calculateZoomTransform(scale, pan, factor, pivot);
@@ -289,6 +317,7 @@ export class CanvasRuntime {
   }
 
   private getWheelBoost(now: number): number {
+    if (!WHEEL_BOOST_ENABLED) return 1; // A/B toggle — flip WHEEL_BOOST_ENABLED to compare
     while (this.wheelTimestamps.length && this.wheelTimestamps[0] < now - VELOCITY_WINDOW_MS) {
       this.wheelTimestamps.shift();
     }

@@ -235,7 +235,7 @@ User Input → InputManager (DOM events)
   │     ├── handlePointerDown → spacebar pan check → MMB pan → tool dispatch
   │     ├── handlePointerMove → cursor tracking + edge scroll + tool.move()
   │     ├── handlePointerUp → tool.end() + stopEdgeScroll
-  │     └── handleWheel → zoom (velocity boost + Ctrl pinch)
+  │     └── handleWheel → ctrl: pinch-zoom (both modes) / plain: mouse→wheel-zoom, trackpad→pan
   │
   ├── Document presence pointer → presence-pointer.*
   │     ├── handlePresencePointerMove → screenToWorldInto → updateCursor
