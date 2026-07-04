@@ -346,7 +346,12 @@ export class CodeTool implements PointerTool {
         }
       });
       if (edits.length === 0) return tr;
-      return [tr, { changes: edits }];
+      // `edits` carry post-`tr` (B-side) coordinates from iterChanges, so this
+      // follow-up spec MUST be `sequential` — without it CM resolves the range
+      // against the *pre*-`tr` doc length and throws `RangeError: Invalid change
+      // range N to M (in doc of length …)` on any multi-char insert whose end
+      // exceeds the old length (e.g. pasting tabbed drizzle SQL into a block).
+      return [tr, { changes: edits, sequential: true }];
     });
 
     // Backspace at 4-space indent boundaries deletes the unit
