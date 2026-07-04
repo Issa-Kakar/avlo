@@ -13,6 +13,8 @@
       "!**/.cache",
       "!**/.turbo",
       "!web/src/routeTree.gen.ts",
+      "!web/src/core/code/vendor/sql/sql.grammar.js",
+      "!web/src/core/code/vendor/sql/sql.grammar.terms.js",
       "!workers/**/worker-configuration.d.ts",
       "!pnpm-lock.yaml"
     ]
@@ -110,11 +112,21 @@
       }
     },
     {
-      "includes": ["scripts/verify/**", "web/src/dev/**"],
+      "includes": ["scripts/verify/**", "web/scripts/**", "web/src/dev/**"],
       "linter": {
         "rules": {
           "suspicious": {
             "noConsole": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["web/src/core/code/vendor/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noShadowRestrictedNames": "off"
           }
         }
       }

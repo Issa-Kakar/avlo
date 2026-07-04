@@ -14,11 +14,12 @@ double-click-to-edit).
 | File | Role |
 |------|------|
 | `code-tokens.ts` | Shared codec/theme/plumbing: `S` enum (16 styles incl. `WHITESPACE` sentinel), `THEME` (palette + chrome — single source of truth for color), spans-SAB layout constants (`SAB_H_VERSION` / `SAB_H_LINE_COUNT` / `SAB_H_LINE_CAP` / `SAB_HDR_BYTES`), spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`, `isAllWs`), sizing ratios, play-button geometry (`playButtonGeom`). **Imports `code-system.ts` as `type` only** — see bundle hygiene below |
-| `code-tokenizer.ts` | The sync-floor highlighter: length-bucketed keyword tables + `classifyIdent`, stateless char-code scan atoms (`scanNumber` / `scanQuotedString` / `scanTripleStringBody` / `scanTemplateLiteral` / `scanEscape`), and `syncTokenizeInto` — a thin **driver** that dispatches by language to a per-language whole-source tokenizer (`tokenizeCLike` covers JS/TS/Python; JSON/SQL/HTML slot in as one function + one dispatch arm — **the seam**). Imported **only by `code-system.ts`**; keeps `code-system` a `type`-only import (bundle hygiene) |
+| `code-tokenizer.ts` | The sync-floor highlighter: length-bucketed keyword tables + `classifyIdent` (+ case-insensitive `classifyIdentCI` via `\|32` fold for SQL), stateless char-code scan atoms (`scanNumber` / `scanQuotedString` / `scanTripleStringBody` / `scanTemplateLiteral` / `scanEscape`), and `syncTokenizeInto` — a thin **driver** dispatching by language: `tokenizeCLike` (JS/TS/Python), `tokenizeJson`, `tokenizeSql`, `tokenizeCss`, `tokenizeHtml`. CSS's core is `scanCssSegment` over a module scratch, and HTML drives it (plus `scanJsSegment`) for real embedded `<style>`/`<script>` floor highlighting. Parity vs the worker is machine-checked — see `web/scripts/token-parity.mjs`. Imported **only by `code-system.ts`**; keeps `code-system` a `type`-only import (bundle hygiene) |
 | `code-system.ts` | SOA pipeline types (`CodeSource` / `CodeSpans` / `CodeLayout` / `CodeOutput`), pooled `CodeSystemCache` (incl. the per-block in-flight parse gate), `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers, worker pool (2 warm workers, least-loaded seed pins) with per-id diff transport (`requestParse` full seed / `requestParseEdits` Yjs delta batches; pooled message wrappers) and the spans-SAB doorbell consumer, font metrics (derived from text-system) |
 | `code-theme.ts` | CodeMirror theme + `HighlightStyle.define` rule list. All `@codemirror/*` AND `@lezer/highlight` imports are **dynamic** (inside `getCodeMirrorExtensions()`) — main bundle stays free of the editor stack |
-| `lezer-worker.ts` | Web Worker. Per-object `Tree` + `TreeFragment` + text-mirror state + spans SAB, **lazily-loaded** per-language parsers (dynamic `import()` via `REGISTRY`; buffer-during-load preserves per-id order), incremental parsing from Yjs-delta batches (`applyEdits` splices the mirror + derives `ChangedRange[]` in one pass; `TreeFragment.applyChanges` chains across batches, one parse per message), custom `STYLE_HIGHLIGHTER` over its own `WORKER_RULES`, fused `extractSpans` walk, per-block SAB publish + postMessage doorbell |
-| `../../tools/CodeTool.ts` | PointerTool — click-to-place + hit-test + CodeMirror DOM overlay lifecycle + header/output chrome DOM |
+| `lezer-worker.ts` | Web Worker. Per-object `Tree` + `TreeFragment` + text-mirror state + spans SAB, **lazily-loaded** per-language parsers (dynamic `import()` via `REGISTRY`, each entry's `load()` returns the fully-configured `Parser`; buffer-during-load preserves per-id order), incremental parsing from Yjs-delta batches (`applyEdits` splices the mirror + derives `ChangedRange[]` in one pass; `TreeFragment.applyChanges` chains across batches, one parse per message), custom `STYLE_HIGHLIGHTER` over its own `WORKER_RULES`, fused `extractSpans` walk, per-block SAB publish + postMessage doorbell |
+| `vendor/sql/` | Vendored standard-SQL Lezer grammar (@codemirror/lang-sql@6.10.0, MIT — no `@lezer/sql` exists and lang-sql's dist would drag `@codemirror/language` into the worker). `sql.grammar` (verbatim) + generated `sql.grammar{,.terms}.js` (checked in; regen: `pnpm gen:sql-grammar`) + hand `.d.ts`s + `tokens.ts` (external tokenizer **constant-folded to the standard dialect**, 128-entry char-class table) + `keywords.ts` (pure strings, shared with the sync floor) + `index.ts` (styleTags-configured parser — **worker-safe**, `@lezer/lr` + `@lezer/highlight` only) + `support.ts` (editor `LanguageSupport`; main-thread only, dynamic-import-only). One grammar drives BOTH the worker and the CM editor — parity by construction, zero dialect machinery |
+| `../../tools/CodeTool.ts` | PointerTool — click-to-place + hit-test + CodeMirror DOM overlay lifecycle + header/output chrome DOM. `loadLangExt(language)` loads only the needed CM lang pack per mount/switch |
 
 ## Y.Doc Schema
 
@@ -27,7 +28,7 @@ double-click-to-edit).
   id, kind: 'code', ownerId, createdAt,
   origin: [number, number],   // Top-left world coords (NOT baseline, unlike text)
   content: Y.Text,            // Plain text (NOT Y.XmlFragment); deltas diffed to the worker
-  language: 'javascript' | 'typescript' | 'python',
+  language: 'javascript' | 'typescript' | 'python' | 'html' | 'css' | 'json' | 'sql',
   fontSize: number,           // World units (default 14)
   width: number,              // World units, always stored (no 'auto')
   lineNumbers: boolean,       // Gutter visibility, collaborative (default true)
@@ -179,12 +180,12 @@ safe because the gate serializes worker-write vs main-copy (strict alternation).
 `syncTokenizeInto(source, language, out)` is a thin **driver** — it writes the
 shared spans prologue (`ensureSpansLineCap` + line-0 offset) then dispatches by
 language. JS/TS/Python route to `tokenizeCLike` (they differ only by keyword
-table + `isPython`); structurally-distinct languages (JSON/SQL/HTML) slot in as
-one `tokenizeXxx` + one dispatch arm — **the seam** in `syncTokenizeInto`.
-`tokenizeCLike` iterates `source.fullText` with absolute offsets, pushes
-line-relative triples to a pooled `_syncBuf`, then `flushLine` (`packRunSpansInto`
-+ the per-line span-start write) packs each line. All per-pass state is
-function-local — no shared struct, monomorphic, zero-alloc. Two carry pieces:
+table + `isPython`); JSON/SQL/CSS/HTML each have their own whole-source
+tokenizer (see the per-language notes below). `tokenizeCLike` iterates
+`source.fullText` with absolute offsets, pushes line-relative triples to a
+pooled `_syncBuf`, then `flushLine` (`packRunSpansInto` + the per-line
+span-start write) packs each line. All per-pass state is function-local — no
+shared struct, monomorphic, zero-alloc. Two carry pieces:
 - `lastDefIsFunc` — set by definer kw (`function`/`class`/`def`/`type`/
   `interface`/`enum`, via the kw table's `definesNext` flag; `classifyIdent`
   returns the matched `KwEntry` or `null`, no side-channel global). Next ident
@@ -205,7 +206,33 @@ resolves `foo` → TYPE); `lastDefIsFunc` persists across ws/comments, resets on
 other emits; the number branch keeps its deliberate `lastSignificantChar = 0`.
 
 Out of scope (needs AST): JSX HTML/Component split, regex-delimiter split,
-parameter vs variable, destructured aliases.
+parameter vs variable, destructured aliases, TS type-position names
+(`: string`), template/f-string interpolation bodies.
+
+**Per-language tokenizers** (each mirrors its grammar's styleTags ∘
+`WORKER_RULES`; parity machine-checked by `web/scripts/token-parity.mjs` —
+js/json/sql/css/html hold PERFECT per-char parity on the harness corpus):
+- `tokenizeJson` — key-vs-value by `"…"`+lookahead-`:`; strict JSON number
+  syntax (a `0x1` stays unstyled like Lezer's error node); **unterminated
+  strings emit nothing** (the grammar requires the close quote). No cross-line
+  state.
+- `tokenizeSql` — mirrors `vendor/sql/tokens.ts` branch-for-branch:
+  case-insensitive kw tables (`classifyIdentCI`, both sides `|32`-folded so
+  `_`/digits stay consistent), dot-adjacency rule (`order.date` → plain
+  Identifier), `'`/`"` literals **span lines** (carry: `strQuote`+`strEscapes`),
+  **nested** block comments (carry: `commentDepth`), `E'…'`/bits/hex forms.
+- `tokenizeCss` — context machine (SELECTOR/BLOCK/VALUE/@-PRELUDE + brace
+  depth) in `scanCssSegment` over the `_cssScan` module scratch; BLOCK ident
+  disambiguation = bounded lookahead ('{' before ';'/'}' ⇒ nested selector);
+  CallTag literals (`url`/`url-prefix`/`domain`/`regexp`) → purple, other
+  callees pink; number+Unit split; `#hex` vs `#id` by context.
+- `tokenizeHtml` — markup modes (TEXT/TAG/ATTRVAL/COMMENT/META/RAWTEXT) with
+  **real embedded highlighting**: `<script>` bodies run `scanJsSegment`
+  (simplified C-like over the shared atoms + JS kw table), `<style>` bodies run
+  the SAME `scanCssSegment` css blocks use — typing inside them doesn't
+  shimmer. Case-insensitive tag matching (`|32`), entity refs, doctype/PI →
+  purple. Floor does NOT emulate `type=`-attr dialect switches or style/on*
+  attribute nesting (worker corrects, ~1 frame).
 
 **Lezer worker pool**: 2 warm workers. An id **pins** to a worker at seed time
 — chosen by lowest outstanding-parse count (so hydrate bursts / multi-block
@@ -227,38 +254,57 @@ scratch prefixes into the block's SAB and release-stores the version — see
 "Spans SAB" above.
 
 **Language → parser (lazy)**: a module-level `REGISTRY` maps each language to a
-`{ load: () => import(pkg), configure? }` entry — `python` → `@lezer/python`;
-`typescript` / `javascript` → `@lezer/javascript` configured `dialect: 'ts jsx'`
-/ `'jsx'` (same chunk, cached by the browser after the first `import()`, so no
-double download — just two `.configure()` calls). Parsers load **on first use**,
-not at worker boot, so a new language is a one-line `REGISTRY` entry that pays
-nothing until its first block appears. `getParser` is async: steady state (parser
-resident) processes inline; a not-yet-loaded language buffers that language's
-messages in arrival order and drains them once loaded (per-id order preserved —
-an id's language is fixed per edit). SQL/HTML drop in here later.
+`{ load: () => Promise<Parser> }` entry — each `load()` does the dynamic
+import(s) AND configuration, returning the ready parser. `python` →
+`@lezer/python`; `typescript` / `javascript` → `@lezer/javascript` configured
+`dialect: 'ts jsx'` / `'jsx'` (same chunk, cached after the first `import()`);
+`json` / `css` → `@lezer/json` / `@lezer/css` (highlight props baked into the
+packages); `sql` → `./vendor/sql/index` (vendored standard dialect, styleTags
+pre-applied); `html` → `@lezer/html` wrapped with `configureNesting` over raw
+`@lezer/css` + `@lezer/javascript` parsers, **mirroring
+@codemirror/lang-html@6.4.11's `defaultNesting`/`defaultAttrs` verbatim**
+(script `type=` dialect predicates, style tag/attr, `on*` event attributes) —
+the editor runs lang-html's `html()`, so the two sides MUST stay in lockstep.
+Parsers load **on first use**, not at worker boot, so a new language pays
+nothing until its first block appears. `getParser` is async: steady state
+(parser resident) processes inline; a not-yet-loaded language buffers that
+language's messages in arrival order and drains them once loaded (per-id order
+preserved — an id's language is fixed per edit).
 
 > **Offline note.** Dynamic `import()` in the module worker emits separate Rollup
 > chunks fetched at runtime under `/assets/*`, which `sw.ts` serves **cache-first
-> (lazy)** — cached after the first *online* fetch, not precached. js/ts/python
-> chunks fetch as soon as the first block of that language renders, so they're
-> warm well before a typical offline session. A first-ever offline load of a
-> never-fetched grammar (only reachable once SQL/HTML land) can't load — accepted
-> pre-production; revisit with precache if it matters.
+> (lazy)** — cached after the first *online* fetch, not precached. Grammar chunks
+> (js/ts, python, json, css, html — which also pulls the css+js chunks — and the
+> vendored sql) fetch as soon as the first block of that language renders, so
+> they're warm well before a typical offline session. A first-ever offline load
+> of a never-fetched grammar can't load (worker posts `parse-failed`, block stays
+> on the sync floor) — accepted pre-production; revisit with precache if it
+> matters.
 
 ### Sync ↔ Lezer alignment
 
 The sync tokenizer's classifications match the worker's tag output so there is
-no color flip when the parse arrives. Keyword tables bake reclassifications
-at build time:
+no color flip when the parse arrives — machine-checked per character by
+`web/scripts/token-parity.mjs` (run from `web/`: `pnpm dlx tsx
+scripts/token-parity.mjs`; it carries a copy of `WORKER_RULES` — keep in sync).
+Keyword tables bake reclassifications at build time:
 - `true` / `false` / `null` / `True` / `False` / `None` → `S.NUMBER`
-- `this` / `super` / `self` → `S.LANG_VAR`
+  (SQL adds `unknown`; SQL tables are case-insensitive)
+- `this` / `super` → `S.LANG_VAR` (Python `self` is deliberately ABSENT —
+  @lezer/python tags it as a plain VariableName, fg)
 - `function` / `class` / `def` / `type` / `interface` / `enum` →
-  `S.STORAGE` with `definesNext: true`
+  `S.STORAGE` with `definesNext: true`; `extends` → `S.STORAGE` (Lezer
+  definitionKeyword), no promote
+- property-access `.` → `S.OPERATOR` (derefOperator, pink); template `${` /
+  `}` delimiters → `S.STRING` (InterpolationStart/End → special(brace))
 
 Acceptable flickers (sync emits one color → Lezer corrects ~1 frame later):
 `{ method() {} }` shorthand (sync green → Lezer white), `const foo =
-function() {}` (sync white → Lezer green). Over-painting alternatives would be
-worse.
+function() {}` (sync white → Lezer green), TS type-position names (`: string`
+white → cyan), template/f-string interpolation bodies (white → real tokens),
+JS statement labels (white → green via the labelName row), HTML `type=`-attr
+script dialects + style/on* attribute nesting (floor scans plain JS / plain
+attr string). Over-painting alternatives would be worse.
 
 ## Theme
 
@@ -278,14 +324,25 @@ properties — see below).
 
 The mapping is duplicated between `code-theme.ts` (passed to
 `HighlightStyle.define`) and `lezer-worker.ts` (`WORKER_RULES` → custom
-`STYLE_HIGHLIGHTER`). **Reason:** keeps `@lezer/highlight` (and its
+`STYLE_HIGHLIGHTER`) — plus a third test-only copy in
+`web/scripts/token-parity.mjs`. **Reason:** keeps `@lezer/highlight` (and its
 `Modifier`/`Tag` machinery, ~30–40 kB) out of the main bundle. A shared file
-would force a static import somewhere it'd bleed in. **Invariant:** the two
-rule tables MUST stay in sync — same row order, same tag groupings, so a diff
+would force a static import somewhere it'd bleed in. **Invariant:** the rule
+tables MUST stay in sync — same row order, same tag groupings, so a diff
 is trivial. Modifier-set walk semantics (`definition` < `function` Modifier.id)
 must be preserved: that's how `definition(propertyName)` → `S.DEFAULT` wins
 over `function(propertyName)` → `S.FUNCTION_CALL` for one row covering
 obj-literal keys, class fields, method shorthand, and class methods.
+
+Cross-language row notes (the table is GLOBAL — one highlighter for all
+languages): `tags.atom` must stay in the NUMBER row (JS `super` emits it, so
+CSS value keywords like `block` are purple by consequence); `tags.labelName`
+sits in the ATTRIBUTE row (CSS `#id` + `@keyframes` names green; rare JS
+labels ride along); `tags.attributeValue` in the STRING row (HTML attr values
++ JSX attr values); `tags.unit` → KEYWORD (CSS `px`/`%` pink); `tags.color` in
+the NUMBER row; `tags.function(tags.punctuation)` in the deref row (JS `=>`
+pink — also what the sync floor paints); `tags.separator` deliberately
+unmapped (JS/PY/JSON/CSS separators all fg).
 
 ## Canvas Renderer (`renderCodeLayout`)
 

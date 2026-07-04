@@ -9,7 +9,7 @@
 import { generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import { getCodeOutput, getCodeProps, getHeaderVisible, getLineNumbers, getOutputVisible } from '@/core/accessors';
+import { type CodeLanguage, getCodeOutput, getCodeProps, getHeaderVisible, getLineNumbers, getOutputVisible } from '@/core/accessors';
 import {
   borderRadius,
   charWidth,
@@ -45,6 +45,31 @@ import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { dispose } from '@/utils/dispose';
 import type { PointerTool, PreviewData } from './types';
+
+/**
+ * Load ONLY the requested language's CodeMirror pack — each is its own lazy
+ * chunk, so opening a JS editor never fetches the SQL/HTML/CSS/JSON packs.
+ * SQL is the vendored standard-dialect parser (`vendor/sql/support`) — the
+ * same grammar the lezer worker runs, so editor and canvas tokenize
+ * identically by construction.
+ */
+async function loadLangExt(language: CodeLanguage): Promise<import('@codemirror/language').LanguageSupport> {
+  switch (language) {
+    case 'python':
+      return (await import('@codemirror/lang-python')).python();
+    case 'json':
+      return (await import('@codemirror/lang-json')).json();
+    case 'css':
+      return (await import('@codemirror/lang-css')).css();
+    case 'html':
+      return (await import('@codemirror/lang-html')).html();
+    case 'sql':
+      return (await import('@/core/code/vendor/sql/support')).sql();
+    default:
+      // javascript + typescript share one pack, both dialects enabled
+      return (await import('@codemirror/lang-javascript')).javascript({ typescript: true, jsx: true });
+  }
+}
 
 export class CodeTool implements PointerTool {
   private gestureActive = false;
@@ -300,13 +325,12 @@ export class CodeTool implements PointerTool {
     this.pendingMountId = objectId;
 
     // ─── PHASE 2: lazy CM imports (the only async window) ──────────────────
-    const [cmState, cmView, cmCommands, cmLang, cmJS, cmPython, cmYCollab, cmAutocomplete, themeExts] = await Promise.all([
+    const [cmState, cmView, cmCommands, cmLang, langExt, cmYCollab, cmAutocomplete, themeExts] = await Promise.all([
       import('@codemirror/state'),
       import('@codemirror/view'),
       import('@codemirror/commands'),
       import('@codemirror/language'),
-      import('@codemirror/lang-javascript'),
-      import('@codemirror/lang-python'),
+      loadLangExt(props.language),
       import('y-codemirror.next'),
       import('@codemirror/autocomplete'),
       getCodeMirrorExtensions(),
@@ -374,7 +398,6 @@ export class CodeTool implements PointerTool {
     // Language extension in compartment for dynamic reconfiguration
     const langCompartment = new cmState.Compartment();
     this.langCompartment = langCompartment;
-    const langExt = props.language === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
 
     // Line numbers in compartment for dynamic toggle
     const lineNumbersCompartment = new cmState.Compartment();
@@ -683,10 +706,9 @@ export class CodeTool implements PointerTool {
 
   private async switchLanguage(yMap: Y.Map<unknown>): Promise<void> {
     if (!this.editorView || !this.langCompartment) return;
-    const lang = yMap.get('language') as string;
-    const [cmJS, cmPython] = await Promise.all([import('@codemirror/lang-javascript'), import('@codemirror/lang-python')]);
+    const lang = yMap.get('language') as CodeLanguage;
+    const ext = await loadLangExt(lang);
     if (!this.editorView || !this.langCompartment) return;
-    const ext = lang === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
     // biome-ignore lint/suspicious/noExplicitAny: CodeMirror dispatch accepts loosely typed state effects
     (this.editorView as any).dispatch({
       // biome-ignore lint/suspicious/noExplicitAny: compartment reconfigure is loosely typed

@@ -12,12 +12,20 @@ const LANGUAGES: { key: CodeLanguage; label: string }[] = [
   { key: 'javascript', label: 'JavaScript' },
   { key: 'typescript', label: 'TypeScript' },
   { key: 'python', label: 'Python' },
+  { key: 'html', label: 'HTML' },
+  { key: 'css', label: 'CSS' },
+  { key: 'json', label: 'JSON' },
+  { key: 'sql', label: 'SQL' },
 ];
 
 const LANGUAGE_LABELS: Record<CodeLanguage, string> = {
   javascript: 'JavaScript',
   typescript: 'TypeScript',
   python: 'Python',
+  html: 'HTML',
+  css: 'CSS',
+  json: 'JSON',
+  sql: 'SQL',
 };
 
 export function LanguageDropdown() {

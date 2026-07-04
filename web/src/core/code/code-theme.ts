@@ -117,11 +117,14 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       { tag: [tags.moduleKeyword, tags.modifier], color: THEME.palette[S.MODIFIER] },
       { tag: [tags.meta], color: THEME.palette[S.LANG_VAR] },
       {
-        tag: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.regexp, tags.character],
+        tag: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.regexp, tags.character, tags.attributeValue],
         color: THEME.palette[S.STRING],
       },
       { tag: [tags.escape], color: THEME.palette[S.OPERATOR] },
-      { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], color: THEME.palette[S.NUMBER] },
+      {
+        tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.color],
+        color: THEME.palette[S.NUMBER],
+      },
       { tag: [tags.lineComment, tags.blockComment, tags.docComment], color: THEME.palette[S.COMMENT] },
       {
         tag: [tags.function(tags.definition(tags.variableName)), tags.className, tags.definition(tags.typeName)],
@@ -137,9 +140,10 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         color: THEME.palette[S.FUNCTION_CALL],
       },
       { tag: [tags.self], color: THEME.palette[S.LANG_VAR] },
-      { tag: [tags.variableName, tags.definition(tags.variableName), tags.labelName], color: THEME.palette[S.VARIABLE] },
+      { tag: [tags.variableName, tags.definition(tags.variableName)], color: THEME.palette[S.VARIABLE] },
       { tag: [tags.typeName, tags.propertyName, tags.namespace], color: THEME.palette[S.TYPE] },
       { tag: [tags.tagName, tags.angleBracket], color: THEME.palette[S.KEYWORD] },
+      { tag: [tags.unit], color: THEME.palette[S.KEYWORD] },
       {
         tag: [
           tags.operator,
@@ -154,9 +158,9 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         ],
         color: THEME.palette[S.OPERATOR],
       },
-      { tag: [tags.derefOperator], color: THEME.palette[S.OPERATOR] },
+      { tag: [tags.derefOperator, tags.function(tags.punctuation)], color: THEME.palette[S.OPERATOR] },
       { tag: [tags.bracket, tags.squareBracket, tags.paren, tags.brace], color: THEME.palette[S.DEFAULT] },
-      { tag: [tags.attributeName], color: THEME.palette[S.ATTRIBUTE] },
+      { tag: [tags.attributeName, tags.labelName], color: THEME.palette[S.ATTRIBUTE] },
       { tag: [tags.invalid], color: THEME.palette[S.INVALID] },
     ]),
   );

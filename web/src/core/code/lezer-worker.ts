@@ -69,21 +69,79 @@ const state = new Map<string, ParseState>();
 // Lazy per-language parser registry — dynamic import(), configured on first use
 // ============================================================================
 
-// The configurable LR parser type — derived from a grammar module so we don't
-// import `@lezer/lr` directly (pnpm won't resolve it from web; it's only a
-// transitive dep of the grammar packages). `.configure()` lives on this type,
-// not on `@lezer/common`'s abstract `Parser`.
-type LRParser = typeof import('@lezer/javascript')['parser'];
+// `on<event>` attributes whose values lang-html nests as JavaScript — copied
+// from @codemirror/lang-html@6.4.11 `eventAttributes` (src/complete.ts).
+const EVENT_ATTRIBUTES = (
+  'beforeunload copy cut dragstart dragover dragleave dragenter dragend ' +
+  'drag paste focus blur change click load mousedown mouseenter mouseleave ' +
+  'mouseup keydown keyup resize scroll unload'
+)
+  .split(' ')
+  .map((n) => `on${n}`);
 
-// language → { load: dynamic import, configure?: post-load parser config }.
-// `@lezer/javascript` backs both js/ts — the second import() resolves to the
-// same already-fetched module chunk, so only the `.configure()` differs.
-const REGISTRY: Record<string, { load: () => Promise<{ parser: LRParser }>; configure?: (p: LRParser) => Parser }> = {
-  javascript: { load: () => import('@lezer/javascript'), configure: (p) => p.configure({ dialect: 'jsx' }) },
-  typescript: { load: () => import('@lezer/javascript'), configure: (p) => p.configure({ dialect: 'ts jsx' }) },
-  python: { load: () => import('@lezer/python') },
-  // sql / html added later — one entry each (resolve exact grammar pkg then;
-  // @lezer/html for HTML; SQL likely via @codemirror/lang-sql's parser).
+/**
+ * HTML with nested CSS/JS — mirrors @codemirror/lang-html@6.4.11's
+ * `defaultNesting` / `defaultAttrs` (src/html.ts) with RAW lezer parsers. The
+ * editor overlay runs lang-html's `html()`, which applies this exact config,
+ * so the two sides MUST stay in lockstep or <script>/<style> bodies (and
+ * style/on* attributes) would flip colors between canvas and editor.
+ */
+async function loadHtmlParser(): Promise<Parser> {
+  const [html, css, js] = await Promise.all([import('@lezer/html'), import('@lezer/css'), import('@lezer/javascript')]);
+  const jsParser = js.parser;
+  const cssParser = css.parser;
+  return html.parser.configure({
+    wrap: html.configureNesting(
+      [
+        {
+          tag: 'script',
+          attrs: (a) => a.type === 'text/typescript' || a.lang === 'ts',
+          parser: jsParser.configure({ dialect: 'ts' }),
+        },
+        {
+          tag: 'script',
+          attrs: (a) => a.type === 'text/babel' || a.type === 'text/jsx',
+          parser: jsParser.configure({ dialect: 'jsx' }),
+        },
+        {
+          tag: 'script',
+          attrs: (a) => a.type === 'text/typescript-jsx',
+          parser: jsParser.configure({ dialect: 'jsx ts' }),
+        },
+        {
+          tag: 'script',
+          attrs: (a) => /^(importmap|speculationrules|application\/(.+\+)?json)$/i.test(a.type),
+          parser: jsParser.configure({ top: 'SingleExpression' }),
+        },
+        {
+          tag: 'script',
+          attrs: (a) => !a.type || /^(?:text|application)\/(?:x-)?(?:java|ecma)script$|^module$|^$/i.test(a.type),
+          parser: jsParser,
+        },
+        {
+          tag: 'style',
+          attrs: (a) => (!a.lang || a.lang === 'css') && (!a.type || /^(text\/)?(x-)?(stylesheet|css)$/i.test(a.type)),
+          parser: cssParser,
+        },
+      ],
+      [{ name: 'style', parser: cssParser.configure({ top: 'Styles' }) }, ...EVENT_ATTRIBUTES.map((name) => ({ name, parser: jsParser }))],
+    ),
+  });
+}
+
+// language → lazy loader returning the fully-configured parser. Parsers load
+// on first use, not at worker boot — a new language pays nothing until its
+// first block appears. `@lezer/javascript` backs js/ts/html-nesting — repeat
+// import() calls resolve the same already-fetched module chunk. SQL is the
+// vendored standard-dialect grammar (styleTags pre-applied in vendor/sql).
+const REGISTRY: Record<string, { load: () => Promise<Parser> }> = {
+  javascript: { load: () => import('@lezer/javascript').then((m) => m.parser.configure({ dialect: 'jsx' })) },
+  typescript: { load: () => import('@lezer/javascript').then((m) => m.parser.configure({ dialect: 'ts jsx' })) },
+  python: { load: () => import('@lezer/python').then((m) => m.parser) },
+  json: { load: () => import('@lezer/json').then((m) => m.parser) },
+  css: { load: () => import('@lezer/css').then((m) => m.parser) },
+  sql: { load: () => import('./vendor/sql/index').then((m) => m.parser) },
+  html: { load: loadHtmlParser },
 };
 
 const parsers = new Map<string, Parser>(); // loaded, configured
@@ -99,11 +157,10 @@ function getParser(language: string): Promise<Parser> {
 
   const entry = REGISTRY[language] ?? REGISTRY.javascript;
   const promise = entry.load().then(
-    (mod) => {
-      const configured = entry.configure ? entry.configure(mod.parser) : mod.parser;
-      parsers.set(language, configured);
+    (parser) => {
+      parsers.set(language, parser);
       loading.delete(language);
-      return configured;
+      return parser;
     },
     (err) => {
       loading.delete(language); // don't cache the rejection — a later parse retries the load
@@ -456,6 +513,12 @@ function postParseFailed(id: string): void {
 //
 // Notable rules:
 //   - `tags.separator` is deliberately unmapped → falls through to DEFAULT.
+//   - `tags.labelName` sits in the ATTRIBUTE (green) row for CSS `#id`
+//     selectors + `@keyframes` names; JS statement labels (rare) ride along.
+//   - `tags.atom` stays in the NUMBER (purple) row — JS `super` emits it, so
+//     CSS value keywords (`block`, `flex`) are purple by consequence.
+//   - `tags.unit` / `tags.color` / `tags.attributeValue` are CSS/HTML-only
+//     (JSX attribute values also emit attributeValue — same yellow as sync).
 //   - `tags.definition(tags.propertyName)` → DEFAULT explicitly: `definition` has
 //     lower Modifier.id than `function`, so for
 //     `function(definition(propertyName))` the walk hits this entry BEFORE the
@@ -467,9 +530,12 @@ const WORKER_RULES: readonly { tags: Tag[]; style: S }[] = [
   { tags: [tags.definitionKeyword], style: S.STORAGE },
   { tags: [tags.moduleKeyword, tags.modifier], style: S.MODIFIER },
   { tags: [tags.meta], style: S.LANG_VAR },
-  { tags: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.regexp, tags.character], style: S.STRING },
+  {
+    tags: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.regexp, tags.character, tags.attributeValue],
+    style: S.STRING,
+  },
   { tags: [tags.escape], style: S.OPERATOR },
-  { tags: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], style: S.NUMBER },
+  { tags: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.color], style: S.NUMBER },
   { tags: [tags.lineComment, tags.blockComment, tags.docComment], style: S.COMMENT },
   {
     tags: [tags.function(tags.definition(tags.variableName)), tags.className, tags.definition(tags.typeName)],
@@ -481,9 +547,10 @@ const WORKER_RULES: readonly { tags: Tag[]; style: S }[] = [
     style: S.FUNCTION_CALL,
   },
   { tags: [tags.self], style: S.LANG_VAR },
-  { tags: [tags.variableName, tags.definition(tags.variableName), tags.labelName], style: S.VARIABLE },
+  { tags: [tags.variableName, tags.definition(tags.variableName)], style: S.VARIABLE },
   { tags: [tags.typeName, tags.propertyName, tags.namespace], style: S.TYPE },
   { tags: [tags.tagName, tags.angleBracket], style: S.KEYWORD },
+  { tags: [tags.unit], style: S.KEYWORD },
   {
     tags: [
       tags.operator,
@@ -498,9 +565,9 @@ const WORKER_RULES: readonly { tags: Tag[]; style: S }[] = [
     ],
     style: S.OPERATOR,
   },
-  { tags: [tags.derefOperator], style: S.OPERATOR },
+  { tags: [tags.derefOperator, tags.function(tags.punctuation)], style: S.OPERATOR }, // '.' + JS '=>' (Arrow)
   { tags: [tags.bracket, tags.squareBracket, tags.paren, tags.brace], style: S.DEFAULT },
-  { tags: [tags.attributeName], style: S.ATTRIBUTE },
+  { tags: [tags.attributeName, tags.labelName], style: S.ATTRIBUTE },
   { tags: [tags.invalid], style: S.INVALID },
 ];
 

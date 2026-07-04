@@ -156,7 +156,7 @@ export interface TextProps {
 // CODE TYPES
 // ============================================================================
 
-export type CodeLanguage = 'javascript' | 'typescript' | 'python';
+export type CodeLanguage = 'javascript' | 'typescript' | 'python' | 'html' | 'css' | 'json' | 'sql';
 
 export interface CodeProps {
   content: Y.Text;

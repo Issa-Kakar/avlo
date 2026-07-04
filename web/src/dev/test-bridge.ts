@@ -72,6 +72,18 @@ interface NoteOpts {
   fontFamily?: string;
 }
 
+interface CodeOpts {
+  x?: number;
+  y?: number;
+  text?: string;
+  language?: 'javascript' | 'typescript' | 'python' | 'html' | 'css' | 'json' | 'sql';
+  fontSize?: number;
+  width?: number;
+  lineNumbers?: boolean;
+  title?: string;
+  headerVisible?: boolean;
+}
+
 // ── Helpers -----------------------------------------------------------------
 
 /** Seed a Y.XmlFragment with a single `<paragraph>` of plain text (ProseMirror shape). */
@@ -176,6 +188,32 @@ function createNote(opts: NoteOpts = {}): string {
   return id;
 }
 
+function createCode(opts: CodeOpts = {}): string {
+  const id = ulid();
+  const userId = getUserId();
+  transact(() => {
+    const m = new Y.Map<unknown>();
+    m.set('id', id);
+    m.set('kind', 'code');
+    m.set('origin', [opts.x ?? 120, opts.y ?? 120]);
+    const yText = new Y.Text();
+    if (opts.text) yText.insert(0, opts.text);
+    m.set('content', yText);
+    m.set('language', opts.language ?? 'typescript');
+    m.set('fontSize', opts.fontSize ?? 14);
+    m.set('width', opts.width ?? 480);
+    m.set('lineNumbers', opts.lineNumbers ?? true);
+    m.set('headerVisible', opts.headerVisible ?? true);
+    m.set('outputVisible', false);
+    m.set('title', opts.title ?? 'Untitled');
+    m.set('ownerId', userId);
+    m.set('createdAt', Date.now());
+    m.set('z', generateZAtTop(getZOrder().maxZ()));
+    getObjects().set(id, m);
+  });
+  return id;
+}
+
 // ── Bulk / mutation ---------------------------------------------------------
 
 function remove(...ids: string[]): void {
@@ -244,6 +282,7 @@ const bridge = {
   createShape,
   createText,
   createNote,
+  createCode,
   // mutate
   remove,
   clearAll,
