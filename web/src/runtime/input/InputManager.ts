@@ -79,6 +79,7 @@ export class InputManager {
     this.container.addEventListener('pointerdown', this.onOverlayPointerDown, { passive: false });
     this.canvas.addEventListener('dragover', this.onDragOver, { passive: false });
     this.canvas.addEventListener('drop', this.onDrop, { passive: false });
+    this.canvas.addEventListener('contextmenu', this.onContextMenu, { passive: false });
 
     // Keyboard events (document/window)
     document.addEventListener('keydown', this.onKeyDown);
@@ -102,6 +103,7 @@ export class InputManager {
     this.container.removeEventListener('pointerdown', this.onOverlayPointerDown);
     this.canvas.removeEventListener('dragover', this.onDragOver);
     this.canvas.removeEventListener('drop', this.onDrop);
+    this.canvas.removeEventListener('contextmenu', this.onContextMenu);
 
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('keyup', this.onKeyUp);
@@ -144,6 +146,9 @@ export class InputManager {
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
   };
   private onDrop = (e: DragEvent) => this.runtime.handleDrop(e);
+  // Suppress the native context menu on the canvas so right-drag pan owns the right button.
+  // The app's own right-click menu (future) is triggered from CanvasRuntime's pointer path.
+  private onContextMenu = (e: MouseEvent) => e.preventDefault();
 
   // === Keyboard events — update modifiers, forward to keyboard-manager ===
 
