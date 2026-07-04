@@ -399,8 +399,15 @@ export class CodeTool implements PointerTool {
         cmAutocomplete.closeBrackets(),
         langCompartment.of(langExt),
         cmLang.indentUnit.of('    '),
+        // Re-indent the current line as you type a language closer (`}`, etc.).
+        // CM's own filter — returns `[tr, { changes, sequential: true }]`, so it
+        // composes with tabNormalizer; both emit indentUnit spaces, never tabs.
+        cmLang.indentOnInput(),
         cmView.keymap.of([
           backspaceIndent,
+          // Enter: language-aware auto-indent + bracket explode (cursor between
+          // a matched pair opens an indented line with the closer pushed down).
+          { key: 'Enter', run: cmCommands.insertNewlineAndIndent },
           ...cmAutocomplete.closeBracketsKeymap,
           cmCommands.indentWithTab,
           ...cmYCollab.yUndoManagerKeymap,
