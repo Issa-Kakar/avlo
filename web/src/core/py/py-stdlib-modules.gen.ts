@@ -275,7 +275,6 @@ export const PACKAGE_TO_SET: Readonly<Record<string, string>> = {
   pyparsing: 'numpy+matplotlib',
   pytz: 'numpy+pandas',
   six: 'numpy+pandas',
-  src: 'numpy+matplotlib',
 };
 
 /** Package import roots the current artifact set actually provides. */

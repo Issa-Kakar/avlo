@@ -1,0 +1,4 @@
+# kiwisolver prune list — paths relative to the site-packages root.
+#
+# reason: build-tree leftover in the recipes wheel (a stray version.h) — not a module
+src/
