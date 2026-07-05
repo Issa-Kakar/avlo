@@ -1,0 +1,14 @@
+--- a/dateutil/zoneinfo/__init__.py	2026-07-05 16:50:56.094917077 -0700
++++ b/dateutil/zoneinfo/__init__.py	2026-07-05 16:50:56.151726715 -0700
+@@ -22,8 +22,9 @@
+ def getzoneinfofile_stream():
+     try:
+         return BytesIO(get_data(__name__, ZONEFILENAME))
+-    except IOError as e:  # TODO  switch to FileNotFoundError?
+-        warnings.warn("I/O error({0}): {1}".format(e.errno, e.strerror))
++    except IOError:
++        # avlo: the embedded tz tarball is deliberately pruned — pytz's TZif
++        # tree is the runtime tz database. Silent None keeps user output clean.
+         return None
+ 
+ 

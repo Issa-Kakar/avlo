@@ -18,29 +18,69 @@ import sys
 
 
 class _AvloPrunedFinder:
-    """Raises a friendly error for modules stripped from this build."""
+    """Raises a friendly error for modules stripped from this build.
 
-    _registry = None
+    Registry keys are EXACT dotted prune paths ('xml.sax', 'pandas.io.sas') —
+    find_spec walks fullname's dotted prefixes longest-first, so a pruned
+    subtree tombstones without claiming its (shipped) parents. The merged
+    registry = _avlo_pruned (stdlib, pack-stdlib.py) + every
+    _avlo_pruned_<bundle> module found on site-packages paths
+    (pack-package.py, one per mounted bundle). Discovery re-runs per lookup:
+    this finder is LAST in meta_path, so only imports every other finder
+    already failed to resolve reach it — a MEMFS listdir there is noise.
+    """
+
+    _cache = ({}, None)  # (merged registry, discovery signature)
+    _busy = False  # registry imports must not re-enter this finder
 
     @classmethod
-    def _load_registry(cls):
-        if cls._registry is None:
+    def _registries(cls):
+        import os
+
+        mods = ["_avlo_pruned"]
+        for p in sys.path:
+            if not p.endswith("site-packages"):
+                continue
             try:
-                from _avlo_pruned import PRUNED  # generated at pack time
-            except ImportError:
-                PRUNED = {}
-            cls._registry = PRUNED
-        return cls._registry
+                names = os.listdir(p)
+            except OSError:
+                continue
+            mods.extend(
+                sorted(
+                    f.rsplit(".", 1)[0]
+                    for f in names
+                    if f.startswith("_avlo_pruned_") and f.endswith((".py", ".pyc"))
+                )
+            )
+        sig = tuple(mods)
+        if cls._cache[1] == sig:
+            return cls._cache[0]
+        merged = {}
+        cls._busy = True
+        try:
+            for mod in mods:
+                try:
+                    merged.update(__import__(mod).PRUNED)
+                except ImportError:
+                    pass  # baseline zip before the registry exists
+        finally:
+            cls._busy = False
+        cls._cache = (merged, sig)
+        return merged
 
     def find_spec(self, fullname, path=None, target=None):
-        registry = self._load_registry()
-        top = fullname.partition(".")[0]
-        reason = registry.get(fullname) or registry.get(top)
-        if reason is not None:
-            raise ModuleNotFoundError(
-                f"'{fullname}' is not available in AVLO's Python runtime ({reason})",
-                name=fullname,
-            )
+        if self._busy:
+            return None
+        registry = self._registries()
+        name = fullname
+        while name:
+            reason = registry.get(name)
+            if reason is not None:
+                raise ModuleNotFoundError(
+                    f"'{fullname}' is not available in AVLO's Python runtime ({reason})",
+                    name=fullname,
+                )
+            name = name.rpartition(".")[0]
         return None
 
 

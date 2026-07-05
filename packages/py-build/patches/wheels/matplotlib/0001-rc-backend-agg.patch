@@ -1,0 +1,11 @@
+--- a/matplotlib/mpl-data/matplotlibrc	2026-07-05 16:26:43.947490353 -0700
++++ b/matplotlib/mpl-data/matplotlibrc	2026-07-05 16:26:43.988759649 -0700
+@@ -82,7 +82,7 @@
+ ##     PS PDF SVG Template
+ ## You can also deploy your own backend outside of Matplotlib by referring to
+ ## the module name (which must be in the PYTHONPATH) as 'module://my_backend'.
+-#backend: webagg
++backend: Agg
+ 
+ ## The port to use for the web server in the WebAgg backend.
+ #webagg.port: 8988

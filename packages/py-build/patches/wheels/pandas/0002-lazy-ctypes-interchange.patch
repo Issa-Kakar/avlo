@@ -1,0 +1,20 @@
+--- a/pandas/core/interchange/from_dataframe.py	2026-07-05 16:17:03.649216901 -0700
++++ b/pandas/core/interchange/from_dataframe.py	2026-07-05 16:17:03.706262754 -0700
+@@ -1,6 +1,5 @@
+ from __future__ import annotations
+ 
+-import ctypes
+ import re
+ from typing import Any
+ 
+@@ -461,6 +460,10 @@
+     responsible for keeping the memory owner object alive as long as
+     the returned NumPy array is being used.
+     """
++    # avlo: lazy — the interchange protocol needs raw pointer casts; the wasm
++    # build ships no ctypes, so calling this surfaces the precise tombstone
++    import ctypes
++
+     kind, bit_width, _, _ = dtype
+ 
+     column_dtype = _NP_DTYPES.get(kind, {}).get(bit_width, None)

@@ -137,7 +137,57 @@ Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
   (run-store already accumulates it), stop-square SVG centroid offset in DOM,
   language-switch while editing doesn't retoggle `.is-runnable`.
 
-## Next: M2 bundles (task #5) → M3+P2 (#6, + full patch 0006) → P3 snapshots (#7) → P4+M4 (#8)
+## Session 4 — Commit 2: M2 COMPLETE (bundles + dev mount)
+- **Full gate board green**: pack-stdlib double-run byte-identical · corpus
+  basic 6/6 numpy 4/4 pandas 5/5 mpl 4/4 all 1/1 (real tars, PNG decode,
+  font gates) · every tar `--repro` byte-identical (incl. mpl subset+prebake)
+  · G3 tracer 4 traces/81 rules ∩=∅ no PIL/fontTools · G1 budgets
+  (numpy-path 7.01MB br / pandas-mpl 13.64MB br vs 12/16MiB ceilings) ·
+  spike P0-A(fork) 5/5 + P0-B 9/9 through numpy.tar · stage --check clean ·
+  typecheck clean. **Canvas demo**: numpy.ones(4).sum()→4.0, pandas
+  groupby+describe (Jupyter echo), `import requests` instant refusal listing
+  the real set, stat/multiprocessing un-refused.
+- Pipeline: fetch-wheels (13 pins from stock lock; release-asset 404s →
+  jsdelivr CDN mirror, sha-equivalence) → packlib.py (hashseed re-exec,
+  dotted tombstones D6, deterministic zip/ustar) → pack-package.py (D2-D6;
+  ustar meta-first; --unpruned/--stage-only/--tar-only) → tracer →
+  compress/budgets → stage.mjs (dev manifest + py-stdlib-modules.gen.ts,
+  --check drift gate).
+- **Wheel patches born of gates** (all generated as exact-context diffs):
+  pandas 0001 (top-level `import ctypes` in pandas.errors — EAGER, would
+  have broken `import pandas` entirely on the ctypes-less fork; tracer found
+  it) + 0002 (lazy ctypes in interchange.from_dataframe); dateutil 0001
+  (silence the missing-tzdata UserWarning — tarball pruned, pytz is THE tz
+  db via the reworked path-probed ensure_tzpath, now called by the executor
+  after every mount); matplotlib 0001 (rc backend: Agg) + 0002
+  (pillow-ectomy: imsave/print_png → _avlo_png, imread/others → clear
+  ValueError, colors._repr_png_, lazy PillowWriter).
+- **Font learnings**: the recipes mpl wheel SHIPS matplotlib/fontlist.json
+  (39 faces, RELATIVE fnames — pyodide-patched font_manager loads
+  package-local, so planned patch 0003 was unnecessary); prebake deletes it
+  and rebuilds over the shipped faces. 5-face subset alone sprays ~20
+  findfont warnings into user output (mathtext dejavusans fontset probes
+  STIX/cm/Display fallbacks) → ship those 25 faces UNSUBSET (+1.56MB raw,
+  ~0.7MB br; subsetting them is glyph-index-fragile, STIXNonUni rides PUA).
+  Corpus font gates: matplotlib-logger tap asserts no findfont + no
+  "generated new fontManager" (proves baked-list consumption).
+- pandas 2.3 reality: io wrappers (excel/html/xml/sql/sas front doors) are
+  EAGERLY imported by pandas.io.api — only lazy internals prunable
+  (style/styler, clipboard, sas readers, _numba kernels). numpy: recipes
+  wheel ships no tests; pruned f2py+_pyinstaller only.
+- Runtime wiring: supervisor fetches per dev manifest w/ sha verify
+  (stale-mix refusal), in-memory bundle cache across generations (copies
+  transferred, originals kept), downloading phase w/ streamed progress,
+  set-aware respawn (supersets satisfy); executor mounts (extract →
+  loadDynlib per loadOrder → ensure_tzpath) BEFORE network scrub + harness.
+  py-imports/manager consume the GENERATED allowlist (hand-set deleted).
+
+## Next: M3+P2 (worker serving + full patch 0006) → P3 snapshots → P4+M4
 - P3 groundwork already proven in the spike: stacked capture 30.2MB / restore
   ~0.5s / blit 3.1ms; py-loader has the `_loadSnapshot` seam; supervisor has
-  idle teardown + respawn. M2 starts at pack-package.py + the import tracer.
+  idle teardown + respawn; bundle mounts feed the per-set snapshot recipe.
+- M3 note: supervisor's in-memory bundle cache (~38MB raw for 'all') is the
+  dev stopgap — P2 swaps fetches to Cache API + build-lock origin.
+- Deferred nits: pydoc allowlisted but trips the _pyrepl tombstone at
+  runtime (pydoc.py:80 top-level import; precise error, fine);
+  `.is-runnable` retoggle on language switch (still in polish backlog).

@@ -1,0 +1,14 @@
+# python-dateutil prune list — paths relative to the site-packages root.
+# dateutil.zoneinfo's MODULE stays (pandas._libs.tslibs.timezones imports it
+# eagerly); its embedded tz DATABASE goes — pytz's TZif tree is the runtime's
+# single tz database (_avlo_runtime.ensure_tzpath bridge), and dateutil
+# handles a missing tarball gracefully (gettz falls back / returns None).
+#
+# reason: windows timezone APIs have no canvas use
+dateutil/tz/win.py
+dateutil/tzwin.py
+# reason: tz-database rebuild tooling has no canvas use
+dateutil/zoneinfo/rebuild.py
+# data-file rule (no tombstone): drop the embedded tz tarball — pytz provides
+# the tz database for the whole runtime
+dateutil/zoneinfo/dateutil-zoneinfo.tar.gz

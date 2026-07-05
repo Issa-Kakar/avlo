@@ -13,12 +13,9 @@
 import { getCodeProps } from '@/core/accessors';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getBbox, getHandle, hasActiveRoom, transactPyOutput } from '@/runtime/room-runtime';
-import { resolveImports, scanPythonImports, unavailableMessage } from './py-imports';
+import { AVAILABLE_PACKAGES, resolveImports, scanPythonImports, unavailableMessage } from './py-imports';
 import { PY_LIMITS, type PyRunStatus, type PySetKey, type SupToMain } from './py-protocol';
 import { appendOutput, clearRun, getRunEntry, patchRun, upsertRun } from './py-run-store';
-
-/** P2 flips these to the manifest's bundle set; P1 is stdlib-only. */
-const AVAILABLE_PACKAGES: ReadonlySet<string> = new Set();
 
 interface QueuedRun {
   runId: number;

@@ -77,11 +77,26 @@ export type SupToMain = SupReadyMsg | PhaseMsg | StdoutMsg | ResultMsg | SupFata
 
 // ---------------------------------------------------------------- sup → exec
 
+/** One package bundle to mount at boot — bytes are a deterministic ustar
+ * (meta.json first) fetched + sha-verified by the SUPERVISOR; the executor
+ * never fetches. `loadOrder` is the tar meta's canonical DSO order; the
+ * ARRAY order across bundles is the set's deps-first mount order. */
+export interface PyBundlePayload {
+  name: string;
+  /** Extraction root (site-packages) — from the tar meta. */
+  prefix: string;
+  loadOrder: string[];
+  /** Transferred on boot (the supervisor keeps cached copies). */
+  bytes: ArrayBuffer;
+}
+
 export interface ExecBootMsg {
   t: 'boot';
   /** Base URL for glue/wasm/stdlib artifacts (dev: /py-dev/fork/). */
   artifactBase: string;
   sab: SharedArrayBuffer;
+  /** Package bundles to mount before the harness installs (M2). */
+  bundles?: PyBundlePayload[];
   /** Snapshot restore payload (P3); absent = cold boot. */
   snapshot?: ArrayBuffer;
 }

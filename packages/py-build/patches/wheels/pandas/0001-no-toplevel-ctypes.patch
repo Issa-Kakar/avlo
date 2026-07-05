@@ -1,0 +1,21 @@
+--- a/pandas/errors/__init__.py	2026-07-05 16:15:41.154220167 -0700
++++ b/pandas/errors/__init__.py	2026-07-05 16:15:41.218715733 -0700
+@@ -3,8 +3,6 @@
+ """
+ from __future__ import annotations
+ 
+-import ctypes
+-
+ from pandas._config.config import OptionError
+ 
+ from pandas._libs.tslibs import (
+@@ -633,6 +631,9 @@
+     """
+ 
+     def __init__(self, message: str) -> None:
++        # avlo: lazy — windows-only path; the wasm build ships no ctypes
++        import ctypes
++
+         # attr only exists on Windows, so typing fails on other platforms
+         message += f" ({ctypes.WinError()})"  # type: ignore[attr-defined]
+         super().__init__(message)

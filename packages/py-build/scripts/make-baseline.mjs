@@ -11,9 +11,9 @@
 // hard-fails unless the two snapshots are byte-identical (G0).
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { entropyDraws, installDeterministicEnv } from './lib/det-env.mjs';
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -24,49 +24,16 @@ const opt = (name, dflt) => {
 const indexDir = resolve(pkgRoot, opt('--index', 'dist/raw'));
 const stdlibZip = resolve(pkgRoot, opt('--stdlib', 'dist/stage/python_stdlib.zip'));
 const outFile = resolve(pkgRoot, opt('--out', 'dist/baseline.snap'));
+if (!existsSync(stdlibZip)) {
+  // A silent fallback to the raw zip would bake the WRONG stdlib into the
+  // baseline (restage ⇒ recapture rule) — refuse instead.
+  console.error(`staged stdlib zip missing: ${stdlibZip} — run pack:stdlib first`);
+  process.exit(1);
+}
 const warmups = readFileSync(join(pkgRoot, 'config/baseline-imports.txt'), 'utf8')
   .split('\n')
   .map((l) => l.trim())
   .filter((l) => l && !l.startsWith('#'));
-
-// --- deterministic environment ----------------------------------------------
-// Three nondeterminism sources reach the heap during a capture boot (found by
-// byte-diffing two builds): (1) entropy — in Node, Emscripten's initRandomFill
-// prefers require('crypto').randomFillSync over webcrypto, so BOTH get seeded
-// stand-ins; (2) Date.now — MEMFS stamps every node (stdlib zip mtime lands in
-// zipimport's heap cache); (3) performance.now — clock_gettime anchors.
-let draws = 0;
-function installDeterministicEnv() {
-  let s = 0x9e3779b9 >>> 0;
-  const next = () => {
-    s ^= (s << 13) >>> 0;
-    s ^= s >>> 17;
-    s ^= (s << 5) >>> 0;
-    s >>>= 0;
-    return s;
-  };
-  const fill = (view) => {
-    draws++;
-    const u8 = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-    for (let i = 0; i < u8.length; i++) u8[i] = next() & 0xff;
-    return view;
-  };
-  Object.defineProperty(globalThis.crypto, 'getRandomValues', {
-    configurable: true,
-    value: fill,
-  });
-  const nodeCrypto = createRequire(import.meta.url)('crypto');
-  nodeCrypto.randomFillSync = (buf, offset, size) => {
-    const view = offset !== undefined ? new Uint8Array(buf.buffer ?? buf, offset, size ?? buf.length - offset) : buf;
-    fill(view);
-    return buf;
-  };
-  nodeCrypto.randomBytes = (n) => fill(Buffer.alloc(n));
-  let fakeNow = 1_750_000_000_000; // fixed epoch; +1 ms per call
-  Date.now = () => (fakeNow += 1);
-  let perf = 0;
-  performance.now = () => (perf += 0.1);
-}
 
 // --- snapshot container parsing (mirror of web/src/dev/py-spike-snap.ts) ---
 function parseMeta(bytes) {
@@ -78,9 +45,8 @@ function parseMeta(bytes) {
 
 async function buildOnce(label) {
   installDeterministicEnv();
-  draws = 0;
   const { loadPyodide } = await import(pathToFileURL(join(indexDir, 'pyodide.mjs')).href);
-  const stdLibURL = existsSync(stdlibZip) ? pathToFileURL(stdlibZip).href : pathToFileURL(join(indexDir, 'python_stdlib.zip')).href;
+  const stdLibURL = pathToFileURL(stdlibZip).href;
   const py = await loadPyodide({
     indexURL: indexDir,
     stdLibURL,
@@ -101,7 +67,7 @@ async function buildOnce(label) {
   }
   const sha = createHash('sha256').update(snap).digest('hex');
   console.log(
-    `[${label}] ${(snap.length / 1e6).toFixed(1)} MB, heapSize ${meta.heapSize}, ${draws} entropy draws, sha256 ${sha.slice(0, 16)}…`,
+    `[${label}] ${(snap.length / 1e6).toFixed(1)} MB, heapSize ${meta.heapSize}, ${entropyDraws()} entropy draws, sha256 ${sha.slice(0, 16)}…`,
   );
   return { snap: snap.slice(), sha, stdLibURL };
 }
@@ -132,6 +98,13 @@ if (args.includes('--repro')) {
     throw new Error('restore-verify: warmup modules missing');
   }
   console.log(`restore-verify OK (python ${py.runPython('import sys; sys.version.split()[0]')})`);
+
+  // D9: the fork's TRUE builtin module set — merged with stdlib-modules.json
+  // by stage.mjs into the generated click-time allowlist.
+  const builtins = JSON.parse(py.runPython('import sys, json; json.dumps(sorted(sys.builtin_module_names))'));
+  const builtinsFile = join(pkgRoot, 'dist/stage/builtin-modules.json');
+  writeFileSync(builtinsFile, `${JSON.stringify(builtins, null, 2)}\n`);
+  console.log(`wrote ${builtinsFile} (${builtins.length} builtins)`);
 }
 
 mkdirSync(dirname(outFile), { recursive: true });

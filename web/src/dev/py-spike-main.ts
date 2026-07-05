@@ -177,7 +177,7 @@ json.dumps(r)
 const NUMPY_SUM = 'import numpy; float(numpy.ones(4).sum())';
 const LAZY_SUBMODULE = `
 import json, sys
-cands = ['numpy.testing', 'numpy.f2py', 'numpy.matlib', 'numpy.ma']
+cands = ['numpy.testing', 'numpy.polynomial', 'numpy.matlib', 'numpy.ma']
 target = next((c for c in cands if c not in sys.modules), None)
 ok = False
 if target is not None:

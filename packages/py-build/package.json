@@ -9,6 +9,14 @@
     "clone": "node scripts/run-build.mjs --clone-only",
     "pack:stdlib": "python3.13 scripts/pack-stdlib.py",
     "baseline": "node scripts/make-baseline.mjs",
-    "corpus": "node scripts/run-corpus.mjs"
+    "corpus": "node scripts/run-corpus.mjs",
+    "wheels": "node scripts/fetch-wheels.mjs",
+    "bundles": "python3.13 scripts/pack-package.py --all --repro",
+    "trace": "node scripts/trace-imports.mjs",
+    "trace:check": "node scripts/trace-imports.mjs --check",
+    "compress": "node scripts/compress.mjs",
+    "budgets": "node scripts/check-budgets.mjs",
+    "stage": "node scripts/stage.mjs",
+    "stage:check": "node scripts/stage.mjs --check"
   }
 }

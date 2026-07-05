@@ -11,8 +11,8 @@ ctypes/
 bz2.py
 # reason: c-extension _lzma is not part of this build
 lzma.py
-# reason: c-extension pyexpat is disabled (patch 0003); xml.etree.ElementTree
-# stays (pure-python fallback works without _elementtree)
+# xml.etree.ElementTree stays: the pure-python fallback works without _elementtree.
+# reason: c-extension pyexpat is disabled (patch 0003)
 xml/parsers/
 xml/sax/
 xml/dom/

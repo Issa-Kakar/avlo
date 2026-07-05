@@ -1,0 +1,18 @@
+# pandas prune list — paths relative to the site-packages root.
+# Curated from trace-imports.mjs --propose pandas (recipes wheel ships no
+# tests/). NOTE pandas 2.3's io wrappers (excel/html/xml/sql/sas front doors)
+# are EAGERLY imported by pandas.io.api — only lazy internals are prunable.
+# The Step-3 tracer enforces trace ∩ prune = ∅.
+#
+# reason: the Styler engine requires jinja2, which the canvas runtime does not ship
+pandas/io/formats/style.py
+pandas/io/formats/style_render.py
+# reason: system clipboard access does not exist in the canvas sandbox
+pandas/io/clipboard/
+# reason: SAS binary readers are lazily-imported heavyweights with no canvas use
+pandas/io/sas/sas7bdat.py
+pandas/io/sas/sas_xport.py
+pandas/io/sas/sas_constants.py
+# reason: numba JIT paths require numba, which the canvas runtime does not ship
+pandas/core/_numba/kernels/
+pandas/core/_numba/extensions.py

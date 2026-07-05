@@ -13,7 +13,14 @@
 
 import { HARNESS_INSTALL, RUN_INVOKE } from './py-harness';
 import { bootPyodide, type Pyodide } from './py-loader';
-import { type ExecBootMsg, type ExecRunMsg, OUTPUT_TRUNCATION_MARKER, PY_LIMITS, type SupToExec } from './py-protocol';
+import {
+  type ExecBootMsg,
+  type ExecRunMsg,
+  OUTPUT_TRUNCATION_MARKER,
+  PY_LIMITS,
+  type PyBundlePayload,
+  type SupToExec,
+} from './py-protocol';
 import { HEARTBEAT, MEM_KIB, mapPySab, PyExecState, type PySabViews, RUN_ID, STATE } from './py-sab';
 
 let pyodide: Pyodide = null;
@@ -81,15 +88,34 @@ function scrubNetworkScope(): void {
   }
 }
 
+/** Mount one bundle: write the tar into MEMFS, extract it (meta.json stays
+ * out), delete the tar, then loadDynlib every DSO in the meta's canonical
+ * order (the supervisor sends bundles in deps-first set order). */
+async function mountBundle(b: PyBundlePayload): Promise<void> {
+  pyodide.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(b.bytes));
+  pyodide.runPython(`import os, tarfile
+with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
+    _t.extractall(${JSON.stringify(b.prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
+os.remove('/tmp/_avlo_bundle.tar')
+del _t`);
+  for (const so of b.loadOrder) {
+    await pyodide._api.loadDynlib(`${b.prefix}/${so}`);
+  }
+}
+
 async function boot(m: ExecBootMsg): Promise<void> {
   sab = mapPySab(m.sab);
   const t0 = performance.now();
   try {
     pyodide = await bootPyodide({ artifactBase: m.artifactBase, snapshot: m.snapshot });
+    for (const b of m.bundles ?? []) await mountBundle(b);
   } catch (err) {
     post({ t: 'exec-fatal', error: String((err as Error)?.stack ?? err) });
     return;
   }
+  // tz bridge: point stdlib zoneinfo at pytz's TZif tree when the pytz
+  // bundle just mounted (path-probed no-op otherwise).
+  pyodide.runPython('import _avlo_runtime; _avlo_runtime.ensure_tzpath(); del _avlo_runtime');
   scrubNetworkScope();
   pyodide.setInterruptBuffer(sab.u8);
   pyodide.setStdout({ write: makeWriteHook('out'), isatty: false });

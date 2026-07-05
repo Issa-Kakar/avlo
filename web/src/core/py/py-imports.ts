@@ -11,188 +11,9 @@
  */
 
 import type { PySetKey } from './py-protocol';
+import { AVAILABLE_PACKAGES as GEN_AVAILABLE, PACKAGE_TO_SET, SET_BUNDLES, STDLIB_MODULES } from './py-stdlib-modules.gen';
 
-/** Top-level stdlib modules present in the pruned build (sys.stdlib_module_
- * names minus the prune list; pruned names get better errors at runtime from
- * the tombstone finder, so they stay ALLOWED here). */
-const STDLIB = new Set([
-  'abc',
-  'antigravity',
-  'argparse',
-  'array',
-  'ast',
-  'asyncio',
-  'atexit',
-  'base64',
-  'bdb',
-  'binascii',
-  'bisect',
-  'builtins',
-  'cProfile',
-  'calendar',
-  'cmath',
-  'cmd',
-  'code',
-  'codecs',
-  'codeop',
-  'collections',
-  'colorsys',
-  'compileall',
-  'concurrent',
-  'configparser',
-  'contextlib',
-  'contextvars',
-  'copy',
-  'copyreg',
-  'csv',
-  'dataclasses',
-  'datetime',
-  'decimal',
-  'difflib',
-  'dis',
-  'doctest',
-  'email',
-  'encodings',
-  'enum',
-  'errno',
-  'faulthandler',
-  'filecmp',
-  'fileinput',
-  'fnmatch',
-  'fractions',
-  'functools',
-  'gc',
-  'getopt',
-  'getpass',
-  'gettext',
-  'glob',
-  'graphlib',
-  'gzip',
-  'hashlib',
-  'heapq',
-  'hmac',
-  'html',
-  'importlib',
-  'inspect',
-  'io',
-  'ipaddress',
-  'itertools',
-  'json',
-  'keyword',
-  'linecache',
-  'locale',
-  'logging',
-  'mailbox',
-  'marshal',
-  'math',
-  'mimetypes',
-  'mmap',
-  'modulefinder',
-  'multiprocessing',
-  'netrc',
-  'numbers',
-  'opcode',
-  'operator',
-  'optparse',
-  'os',
-  'pathlib',
-  'pdb',
-  'pickle',
-  'pickletools',
-  'pkgutil',
-  'platform',
-  'plistlib',
-  'posixpath',
-  'pprint',
-  'profile',
-  'pstats',
-  'py_compile',
-  'pyclbr',
-  'pydoc',
-  'queue',
-  'quopri',
-  'random',
-  're',
-  'reprlib',
-  'rlcompleter',
-  'runpy',
-  'sched',
-  'secrets',
-  'select',
-  'selectors',
-  'shelve',
-  'shlex',
-  'shutil',
-  'signal',
-  'site',
-  'socket',
-  'stat',
-  'statistics',
-  'string',
-  'stringprep',
-  'struct',
-  'subprocess',
-  'symtable',
-  'sys',
-  'sysconfig',
-  'tabnanny',
-  'tarfile',
-  'tempfile',
-  'textwrap',
-  'this',
-  'threading',
-  'time',
-  'timeit',
-  'token',
-  'tokenize',
-  'tomllib',
-  'trace',
-  'traceback',
-  'tracemalloc',
-  'types',
-  'typing',
-  'unicodedata',
-  'unittest',
-  'urllib',
-  'uuid',
-  'warnings',
-  'weakref',
-  'webbrowser',
-  'xml',
-  'zipfile',
-  'zipimport',
-  'zlib',
-  'zoneinfo',
-  // pruned-but-tombstoned (runtime gives the friendlier, precise error):
-  'ctypes',
-  'bz2',
-  'lzma',
-  'http',
-  'ftplib',
-  'poplib',
-  'imaplib',
-  'smtplib',
-  'socketserver',
-  'wsgiref',
-  'xmlrpc',
-  'wave',
-  'tty',
-  'pty',
-  'dbm',
-  'zipapp',
-]);
-
-/** Local-package universe (M2 bundles) — top-level import name → set key.
- * Availability is the CALLER's knowledge (P1: nothing; P2: manifest-driven). */
-const PACKAGE_SETS: Record<string, PySetKey> = {
-  numpy: 'numpy',
-  pandas: 'numpy+pandas',
-  matplotlib: 'numpy+matplotlib',
-  mpl_toolkits: 'numpy+matplotlib',
-  dateutil: 'numpy+pandas',
-  pytz: 'numpy+pandas',
-  PIL: 'numpy+matplotlib',
-};
+export const AVAILABLE_PACKAGES: ReadonlySet<string> = GEN_AVAILABLE;
 
 export interface PyImportResolution {
   setKey: PySetKey;
@@ -257,34 +78,39 @@ export function scanPythonImports(source: string): string[] {
   return [...names];
 }
 
+/** Sets ordered smallest-first for the upward merge below. */
+const SET_KEYS_BY_SIZE = (Object.keys(SET_BUNDLES) as PySetKey[]).sort((a, b) => SET_BUNDLES[a].length - SET_BUNDLES[b].length);
+
 /**
  * Resolve scanned imports to a bundle set key or a refusal.
- * `availablePackages` is what the current manifest actually provides
- * (P1: empty set — stdlib only).
+ * `availablePackages` is what the current staged artifacts actually provide
+ * (generated AVAILABLE_PACKAGES; the parameter stays for unit-testability).
+ * Multi-package needs merge upward by bundle union — the smallest configured
+ * set covering every required bundle wins (pandas + matplotlib ⇒ 'all').
  */
 export function resolveImports(modules: string[], availablePackages: ReadonlySet<string>): PyImportResolution {
   const missing: string[] = [];
-  let needsNumpy = false;
-  let needsPandas = false;
-  let needsMpl = false;
+  const neededBundles = new Set<string>();
   for (const m of modules) {
-    if (STDLIB.has(m)) continue;
-    const set = PACKAGE_SETS[m];
+    if (STDLIB_MODULES.has(m)) continue;
+    const set = PACKAGE_TO_SET[m];
     if (set === undefined || !availablePackages.has(m)) {
       missing.push(m);
       continue;
     }
-    if (set === 'numpy') needsNumpy = true;
-    else if (set === 'numpy+pandas') needsPandas = true;
-    else needsMpl = true;
+    for (const b of SET_BUNDLES[set]) neededBundles.add(b);
   }
-  const setKey: PySetKey =
-    needsPandas && needsMpl ? 'all' : needsPandas ? 'numpy+pandas' : needsMpl ? 'numpy+matplotlib' : needsNumpy ? 'numpy' : 'stdlib';
+  let setKey: PySetKey = 'stdlib';
+  if (neededBundles.size > 0) {
+    setKey = SET_KEYS_BY_SIZE.find((k) => [...neededBundles].every((b) => SET_BUNDLES[k].includes(b))) ?? 'all';
+  }
   return { setKey, missing };
 }
 
 /** The user-facing refusal line (rendered error-tinted in the output panel). */
 export function unavailableMessage(missing: string[]): string {
   const list = missing.map((m) => `'${m}'`).join(', ');
-  return `ImportError: ${list} ${missing.length === 1 ? 'is' : 'are'} not available in canvas Python. Available: the Python standard library.`;
+  const marquee = ['numpy', 'pandas', 'matplotlib'].filter((p) => AVAILABLE_PACKAGES.has(p));
+  const avail = marquee.length > 0 ? `${marquee.join(', ')} + the Python standard library` : 'the Python standard library';
+  return `ImportError: ${list} ${missing.length === 1 ? 'is' : 'are'} not available in canvas Python. Available: ${avail}.`;
 }

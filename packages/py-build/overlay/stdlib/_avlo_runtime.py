@@ -37,16 +37,18 @@ def post_restore() -> None:
 
 
 def ensure_tzpath() -> None:
-    """Point stdlib zoneinfo at pytz's TZif tree when pytz is mounted."""
-    zoneinfo = sys.modules.get("zoneinfo")
-    if zoneinfo is None:
-        return
-    try:
-        import pytz  # noqa: F401 — presence check only
-    except ImportError:
-        return
+    """Point stdlib zoneinfo at pytz's TZif tree when the pytz bundle is
+    mounted. Called after every bundle mount / restore / blit. Path-probed
+    (no pytz import — this must stay cheap and import-light): the pytz
+    bundle's mount point is fixed by the packer prefix. PYTHONTZPATH covers a
+    FUTURE `import zoneinfo` (its TZPATH reads the env at first import);
+    reset_tzpath covers an already-imported one."""
     import os
 
-    tz_root = os.path.join(os.path.dirname(pytz.__file__), "zoneinfo")
-    if tz_root not in zoneinfo.TZPATH:
+    tz_root = "/lib/python3.13/site-packages/pytz/zoneinfo"
+    if not os.path.isdir(tz_root):
+        return
+    os.environ["PYTHONTZPATH"] = tz_root
+    zoneinfo = sys.modules.get("zoneinfo")
+    if zoneinfo is not None and tz_root not in zoneinfo.TZPATH:
         zoneinfo.reset_tzpath([tz_root, *zoneinfo.TZPATH])

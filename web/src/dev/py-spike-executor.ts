@@ -37,7 +37,17 @@ interface CaptureMsg {
 }
 type InMsg = BootMsg | ExecMsg | CaptureMsg | { t: 'numpy-record' } | { t: 'blit-test' };
 
-const WHEEL_URL = '/py-dev/numpy-2.2.5-cp313-cp313-pyemscripten_2025_0_wasm32.whl';
+const BUNDLE_URL = '/py-dev/fork/bundles/numpy.tar';
+
+/** meta.json is the FIRST ustar entry by construction (pack-package D2):
+ * name at byte 0, octal size at 124, payload at 512 — one header parse. */
+function parseTarMeta(buf: Uint8Array): { prefix: string; loadOrder: string[] } {
+  const ascii = (from: number, to: number) => new TextDecoder().decode(buf.subarray(from, to)).replace(/\0.*$/s, '');
+  const name = ascii(0, 100);
+  if (name !== 'meta.json') throw new Error(`first tar entry is ${JSON.stringify(name)}, want meta.json`);
+  const size = Number.parseInt(ascii(124, 136), 8);
+  return JSON.parse(new TextDecoder().decode(buf.subarray(512, 512 + size)));
+}
 
 // biome-ignore lint/suspicious/noExplicitAny: stock/fork pyodide has no bundled types here
 let pyodide: any = null;
@@ -167,28 +177,30 @@ async function boot(m: BootMsg): Promise<void> {
   });
 }
 
-/** G6.5 + G7 — unpack the wheel, eager-load every .so in lexicographic order
+/** G6.5 + G7 — mount the REAL numpy.tar bundle (M2 artifact): single-header
+ * meta parse, tarfile extract, then eager-load every .so per meta.loadOrder
  * (the dsoBaseHook records each base), import numpy, then read back the whole
  * site-packages tree (INCLUDING import-generated __pycache__ pycs — the heap's
  * importlib state references them) for byte-identical restore. */
 async function numpyRecord(): Promise<void> {
-  const wheelBytes = new Uint8Array(await (await fetch(WHEEL_URL)).arrayBuffer());
-  pyodide.FS.mkdirTree('/wheel');
-  pyodide.FS.writeFile('/wheel/numpy.whl', wheelBytes);
-  const { sp, sos } = runJson<{ sp: string; sos: string[] }>(`
-import glob, json, os, sys, zipfile
+  const tarBytes = new Uint8Array(await (await fetch(BUNDLE_URL)).arrayBuffer());
+  const meta = parseTarMeta(tarBytes);
+  pyodide.FS.writeFile('/tmp/_avlo_bundle.tar', tarBytes);
+  const { sp } = runJson<{ sp: string }>(`
+import json, os, sys, tarfile
 sp = next(p for p in sys.path if p.endswith('site-packages'))
-with zipfile.ZipFile('/wheel/numpy.whl') as z:
-    z.extractall(sp)
-os.remove('/wheel/numpy.whl')
-os.rmdir('/wheel')
-json.dumps({'sp': sp, 'sos': sorted(glob.glob(sp + '/**/*.so', recursive=True))})
+with tarfile.open('/tmp/_avlo_bundle.tar') as t:
+    t.extractall(sp, members=[m for m in t.getmembers() if m.name != 'meta.json'], filter='data')
+os.remove('/tmp/_avlo_bundle.tar')
+json.dumps({'sp': sp})
 `);
+  if (sp !== meta.prefix) throw new Error(`meta.prefix ${meta.prefix} != interpreter site-packages ${sp}`);
+  const sos = meta.loadOrder.map((r) => `${meta.prefix}/${r}`);
   const api = pyodide._api;
   // G6.5 — hook liveness in isolation before the full pipeline
-  await api.loadDynlib(sos[0], false);
+  await api.loadDynlib(sos[0]);
   const g65LoadOrderLen = api.getDsoLoadInfo().loadOrder.length as number;
-  for (const so of sos.slice(1)) await api.loadDynlib(so, false);
+  for (const so of sos.slice(1)) await api.loadDynlib(so);
   const { sum } = runJson<{ sum: number }>(`
 import gc, json, numpy
 import numpy.random  # deferred in numpy 2.x — bake the seeded global RandomState

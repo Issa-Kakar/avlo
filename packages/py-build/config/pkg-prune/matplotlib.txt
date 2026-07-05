@@ -1,0 +1,53 @@
+# matplotlib prune list — paths relative to the site-packages root.
+# AGG-ONLY build: every other backend goes (plus _backend_pdf_ps.py — the one
+# fontTools import site — and _ttconv/_tkagg DSOs that only those backends
+# load). backend_mixed stays (5KB, harmless). Fonts: afm/pdfcorefonts tables
+# ride the pruned vector backends; the ttf face keep-list + subsetting is
+# config-driven (build.config.json `fonts`), not prune rules.
+#
+# reason: only the Agg backend ships in canvas Python
+matplotlib/backends/_backend_gtk.py
+matplotlib/backends/_backend_pdf_ps.py
+matplotlib/backends/_backend_tk.py
+matplotlib/backends/backend_cairo.py
+matplotlib/backends/backend_gtk3.py
+matplotlib/backends/backend_gtk3agg.py
+matplotlib/backends/backend_gtk3cairo.py
+matplotlib/backends/backend_gtk4.py
+matplotlib/backends/backend_gtk4agg.py
+matplotlib/backends/backend_gtk4cairo.py
+matplotlib/backends/backend_macosx.py
+matplotlib/backends/backend_nbagg.py
+matplotlib/backends/backend_pdf.py
+matplotlib/backends/backend_pgf.py
+matplotlib/backends/backend_ps.py
+matplotlib/backends/backend_qt.py
+matplotlib/backends/backend_qt5.py
+matplotlib/backends/backend_qt5agg.py
+matplotlib/backends/backend_qt5cairo.py
+matplotlib/backends/backend_qtagg.py
+matplotlib/backends/backend_qtcairo.py
+matplotlib/backends/backend_svg.py
+matplotlib/backends/backend_template.py
+matplotlib/backends/backend_tkagg.py
+matplotlib/backends/backend_tkcairo.py
+matplotlib/backends/backend_webagg.py
+matplotlib/backends/backend_webagg_core.py
+matplotlib/backends/backend_wx.py
+matplotlib/backends/backend_wxagg.py
+matplotlib/backends/backend_wxcairo.py
+matplotlib/backends/qt_compat.py
+matplotlib/backends/web_backend/
+# data-file rules (no tombstone): DSOs only the pruned backends load
+matplotlib/backends/_tkagg.cpython-313-wasm32-emscripten.so
+matplotlib/_ttconv.cpython-313-wasm32-emscripten.so
+# reason: test tooling is stripped from canvas bundles
+matplotlib/testing/
+# reason: GUI toolbar icons, demo data and sphinx tooling have no canvas use
+matplotlib/mpl-data/sample_data/
+matplotlib/mpl-data/images/
+matplotlib/mpl-data/plot_directive/
+matplotlib/mpl-data/kpsewhich.lua
+# reason: PostScript/PDF font tables ride the pruned vector backends
+matplotlib/mpl-data/fonts/afm/
+matplotlib/mpl-data/fonts/pdfcorefonts/

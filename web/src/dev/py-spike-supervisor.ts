@@ -39,7 +39,6 @@ type InMsg =
   | { t: 'capture'; slot: Slot }
   | { t: 'numpy-record' }
   | { t: 'blit-test' }
-  | { t: 'probe' }
   | { t: 'terminate' };
 
 function post(msg: unknown, transfer?: Transferable[]): void {
@@ -201,15 +200,6 @@ self.onmessage = (e: MessageEvent<InMsg>) => {
     }
     case 'blit-test': {
       executor?.postMessage({ t: 'blit-test' });
-      break;
-    }
-    case 'probe': {
-      post({
-        t: 'probe-result',
-        byte: Atomics.load(interruptView as unknown as Uint8Array<SharedArrayBuffer>, 0),
-        hasExecutor: executor !== null,
-        interruptWrittenAt,
-      });
       break;
     }
     case 'terminate': {

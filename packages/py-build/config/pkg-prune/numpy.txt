@@ -1,0 +1,10 @@
+# numpy prune list — paths relative to the site-packages root, one per line.
+# Same syntax as stdlib-prune.txt: `dir/` prunes a tree, `mod.py` a module;
+# every rule becomes an exact dotted tombstone in _avlo_pruned_numpy.
+# Recipes wheels already strip tests/, so this list is small. The Step-3
+# import tracer enforces trace ∩ prune = ∅.
+#
+# reason: fortran build tooling has no canvas use
+numpy/f2py/
+# reason: pyinstaller packaging hooks have no canvas use
+numpy/_pyinstaller/

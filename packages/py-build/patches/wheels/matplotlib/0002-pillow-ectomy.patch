@@ -1,0 +1,186 @@
+--- a/matplotlib/image.py	2026-07-05 16:26:43.936235091 -0700
++++ b/matplotlib/image.py	2026-07-05 16:26:43.996263158 -0700
+@@ -10,8 +10,6 @@
+ import warnings
+ 
+ import numpy as np
+-import PIL.Image
+-import PIL.PngImagePlugin
+ 
+ import matplotlib as mpl
+ from matplotlib import _api, cbook, cm
+@@ -675,7 +673,9 @@
+         """Write the image to png file *fname*."""
+         im = self.to_rgba(self._A[::-1] if self.origin == 'lower' else self._A,
+                           bytes=True, norm=True)
+-        PIL.Image.fromarray(im).save(fname, format="png")
++        # avlo: Pillow is not shipped — the stdlib-resident encoder writes it
++        import _avlo_png
++        _avlo_png.write_png(im, fname)
+ 
+     @staticmethod
+     def _normalize_image_array(A):
+@@ -718,8 +718,6 @@
+         ----------
+         A : array-like or `PIL.Image.Image`
+         """
+-        if isinstance(A, PIL.Image.Image):
+-            A = pil_to_array(A)  # Needed e.g. to apply png palette.
+         self._A = self._normalize_image_array(A)
+         self._imcache = None
+         self.stale = True
+@@ -1488,44 +1486,11 @@
+         returned as int arrays, with a bit depth determined by the file's
+         contents.
+     """
+-    # hide imports to speed initial import on systems with slow linkers
+-    from urllib import parse
+-
+-    if format is None:
+-        if isinstance(fname, str):
+-            parsed = parse.urlparse(fname)
+-            # If the string is a URL (Windows paths appear as if they have a
+-            # length-1 scheme), assume png.
+-            if len(parsed.scheme) > 1:
+-                ext = 'png'
+-            else:
+-                ext = Path(fname).suffix.lower()[1:]
+-        elif hasattr(fname, 'geturl'):  # Returned by urlopen().
+-            # We could try to parse the url's path and use the extension, but
+-            # returning png is consistent with the block above.  Note that this
+-            # if clause has to come before checking for fname.name as
+-            # urlopen("file:///...") also has a name attribute (with the fixed
+-            # value "<urllib response>").
+-            ext = 'png'
+-        elif hasattr(fname, 'name'):
+-            ext = Path(fname.name).suffix.lower()[1:]
+-        else:
+-            ext = 'png'
+-    else:
+-        ext = format
+-    img_open = (
+-        PIL.PngImagePlugin.PngImageFile if ext == 'png' else PIL.Image.open)
+-    if isinstance(fname, str) and len(parse.urlparse(fname).scheme) > 1:
+-        # Pillow doesn't handle URLs directly.
+-        raise ValueError(
+-            "Please open the URL for reading and pass the "
+-            "result to Pillow, e.g. with "
+-            "``np.array(PIL.Image.open(urllib.request.urlopen(url)))``."
+-            )
+-    with img_open(fname) as image:
+-        return (_pil_png_to_float_array(image)
+-                if isinstance(image, PIL.PngImagePlugin.PngImageFile) else
+-                pil_to_array(image))
++    # avlo: Pillow is not shipped in canvas Python — reading image files is
++    # unavailable; build arrays with numpy instead.
++    raise ValueError(
++        "matplotlib.image.imread is not available in canvas Python "
++        "(Pillow is not shipped); construct image arrays with numpy instead")
+ 
+ 
+ def imsave(fname, arr, vmin=None, vmax=None, cmap=None, format=None,
+@@ -1615,45 +1580,17 @@
+             sm = cm.ScalarMappable(cmap=cmap)
+             sm.set_clim(vmin, vmax)
+             rgba = sm.to_rgba(arr, bytes=True)
+-        if pil_kwargs is None:
+-            pil_kwargs = {}
+-        else:
+-            # we modify this below, so make a copy (don't modify caller's dict)
+-            pil_kwargs = pil_kwargs.copy()
+-        pil_shape = (rgba.shape[1], rgba.shape[0])
+-        image = PIL.Image.frombuffer(
+-            "RGBA", pil_shape, rgba, "raw", "RGBA", 0, 1)
+-        if format == "png":
+-            # Only use the metadata kwarg if pnginfo is not set, because the
+-            # semantics of duplicate keys in pnginfo is unclear.
+-            if "pnginfo" in pil_kwargs:
+-                if metadata:
+-                    _api.warn_external("'metadata' is overridden by the "
+-                                       "'pnginfo' entry in 'pil_kwargs'.")
+-            else:
+-                metadata = {
+-                    "Software": (f"Matplotlib version{mpl.__version__}, "
+-                                 f"https://matplotlib.org/"),
+-                    **(metadata if metadata is not None else {}),
+-                }
+-                pil_kwargs["pnginfo"] = pnginfo = PIL.PngImagePlugin.PngInfo()
+-                for k, v in metadata.items():
+-                    if v is not None:
+-                        pnginfo.add_text(k, v)
+-        elif metadata is not None:
+-            raise ValueError(f"metadata not supported for format {format!r}")
+-        if format in ["jpg", "jpeg"]:
+-            format = "jpeg"  # Pillow doesn't recognize "jpg".
+-            facecolor = mpl.rcParams["savefig.facecolor"]
+-            if cbook._str_equal(facecolor, "auto"):
+-                facecolor = mpl.rcParams["figure.facecolor"]
+-            color = tuple(int(x * 255) for x in mcolors.to_rgb(facecolor))
+-            background = PIL.Image.new("RGB", pil_shape, color)
+-            background.paste(image, image)
+-            image = background
+-        pil_kwargs.setdefault("format", format)
+-        pil_kwargs.setdefault("dpi", (dpi, dpi))
+-        image.save(fname, **pil_kwargs)
++        # avlo: Pillow is not shipped — PNG goes through the stdlib-resident
++        # encoder; every other raster format refuses with a clear error.
++        # Text metadata is dropped (deterministic output).
++        if format != "png":
++            raise ValueError(
++                f"canvas Python can only write PNG images (got {format!r}); "
++                "Pillow is not shipped in this runtime")
++        if pil_kwargs:
++            raise ValueError("pil_kwargs is not supported in canvas Python")
++        import _avlo_png
++        _avlo_png.write_png(np.ascontiguousarray(rgba), fname, dpi=dpi)
+ 
+ 
+ def pil_to_array(pilImage):
+--- a/matplotlib/colors.py	2026-07-05 16:26:43.939986844 -0700
++++ b/matplotlib/colors.py	2026-07-05 16:26:44.000014912 -0700
+@@ -49,9 +49,6 @@
+ from numbers import Real
+ import re
+ 
+-from PIL import Image
+-from PIL.PngImagePlugin import PngInfo
+-
+ import matplotlib as mpl
+ import numpy as np
+ from matplotlib import _api, _cm, cbook, scale
+@@ -905,14 +902,9 @@
+                     (_REPR_PNG_SIZE[1], 1))
+         pixels = self(X, bytes=True)
+         png_bytes = io.BytesIO()
+-        title = self.name + ' colormap'
+-        author = f'Matplotlib v{mpl.__version__}, https://matplotlib.org'
+-        pnginfo = PngInfo()
+-        pnginfo.add_text('Title', title)
+-        pnginfo.add_text('Description', title)
+-        pnginfo.add_text('Author', author)
+-        pnginfo.add_text('Software', author)
+-        Image.fromarray(pixels).save(png_bytes, format='png', pnginfo=pnginfo)
++        # avlo: Pillow is not shipped — stdlib-resident encoder, no metadata
++        import _avlo_png
++        _avlo_png.write_png(pixels, png_bytes)
+         return png_bytes.getvalue()
+ 
+     def _repr_html_(self):
+--- a/matplotlib/animation.py	2026-07-05 16:26:43.943738599 -0700
++++ b/matplotlib/animation.py	2026-07-05 16:26:44.003766667 -0700
+@@ -33,7 +33,6 @@
+ import warnings
+ 
+ import numpy as np
+-from PIL import Image
+ 
+ import matplotlib as mpl
+ from matplotlib._animation_data import (
+@@ -508,6 +507,7 @@
+         buf = BytesIO()
+         self.fig.savefig(
+             buf, **{**savefig_kwargs, "format": "rgba", "dpi": self.dpi})
++        from PIL import Image  # avlo: lazy — precise tombstone at use
+         self._frames.append(Image.frombuffer(
+             "RGBA", self.frame_size, buf.getbuffer(), "raw", "RGBA", 0, 1))
+ 

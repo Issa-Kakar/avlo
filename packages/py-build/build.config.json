@@ -16,9 +16,129 @@
   "recipes": {
     "release": "0.29-20260507",
     "base": "https://github.com/pyodide/pyodide-recipes/releases/download/0.29-20260507",
+    "$commentMirror": "The recipes release ships one 400MB packages.tar.gz, not per-wheel assets; the pyodide CDN serves the same wheels individually. sha256 pins make the mirror provenance-equivalent.",
+    "mirror": "https://cdn.jsdelivr.net/pyodide/v0.29.4/full",
     "wheels": {
-      "$comment": "name -> sha256, filled at M2 when wheels are first consumed"
+      "$comment": "Pinned from the stock release lock (dist/raw/pyodide-lock.json) via fetch-wheels.mjs --stamp. traceOnly wheels are downloaded for the import tracer's unpruned trees but NEVER shipped.",
+      "numpy": {
+        "version": "2.2.5",
+        "file": "numpy-2.2.5-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "sha256": "800c98edc0c864dfa49f07005680c699b4b42b84eae1f8cb19d35b3634e7f05c"
+      },
+      "pandas": {
+        "version": "2.3.3",
+        "file": "pandas-2.3.3-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "sha256": "2579a3d8e9f040421836365ccf7886fc4054c87381d4d481840a97785cd78923"
+      },
+      "matplotlib": {
+        "version": "3.8.4",
+        "file": "matplotlib-3.8.4-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "sha256": "b919d426f1703c055b3c12a06871af40b8eb07d82339f4f9d7e45279fd93e81f"
+      },
+      "contourpy": {
+        "version": "1.3.1",
+        "file": "contourpy-1.3.1-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "sha256": "65f63bc91d211c5d44e2e81dab7397b2da5f195688cf2785586be3cba6d732a7"
+      },
+      "kiwisolver": {
+        "version": "1.4.8",
+        "file": "kiwisolver-1.4.8-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "sha256": "23e3ec0666ab7e747f902c18f9009103b094c8424458aaeeb2504338dac9100f"
+      },
+      "cycler": {
+        "version": "0.12.1",
+        "file": "cycler-0.12.1-py3-none-any.whl",
+        "sha256": "6eedeaff76b9be1d5e5b759fa9b84c3b384b3684cabea98defd97e974112865f"
+      },
+      "packaging": {
+        "version": "26.2",
+        "file": "packaging-26.2-py3-none-any.whl",
+        "sha256": "7a0e80a4de677fefa2782ea4d34063708a3ac3d54469298f22cedcc4c7bebb4b"
+      },
+      "pyparsing": {
+        "version": "3.2.1",
+        "file": "pyparsing-3.2.1-py3-none-any.whl",
+        "sha256": "67a97ce758343bf6e651a1cc63731f19fd6720a2d6617eab71528021552ee3dc"
+      },
+      "python-dateutil": {
+        "version": "2.9.0.post0",
+        "file": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+        "sha256": "1fe3a0346ef21bc85b295227256d6aed72aa8116178b019fc5ae5d57fbd213cf"
+      },
+      "pytz": {
+        "version": "2025.2",
+        "file": "pytz-2025.2-py2.py3-none-any.whl",
+        "sha256": "d7fb2f11cf7f8dd17e652d5494189f520ee086e9fc71aef4cbb978f5dcfc2878"
+      },
+      "six": {
+        "version": "1.17.0",
+        "file": "six-1.17.0-py2.py3-none-any.whl",
+        "sha256": "bc830cfdc71a224b6d0e4337183a87ea53f21b6623deca5771ee3bc866fd8da2"
+      },
+      "pillow": {
+        "version": "11.3.0",
+        "file": "pillow-11.3.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "sha256": "57d88e2ac283c21830b4ee920cb73fbbf5c46df62d967089fce5fec46548bd7b",
+        "traceOnly": true
+      },
+      "fonttools": {
+        "version": "4.56.0",
+        "file": "fonttools-4.56.0-py3-none-any.whl",
+        "sha256": "30d4590e0bac3ef0445a4e0fa25600e8b4fff54bb028b02666013c26fde42965",
+        "traceOnly": true
+      }
     }
+  },
+  "hostTools": {
+    "$comment": "Host pip pins for pack-time tooling (NOT shipped). fontTools drives the DejaVu subset; version-pinned so subsetting is reproducible.",
+    "fonttools": "4.56.0"
+  },
+  "fonts": {
+    "$comment": "`faces` are the text faces, subset to `unicodes` via the pinned host fontTools (--no-recalc-timestamp --no-recalc-bounds). `keepUnsubset` ship whole: mathtext's dejavusans fontset probes every one of these fallback families (sized delimiters, \\mathcal, cm set) — missing families spam findfont warnings into user output — and their glyph lookups (STIXNonUni rides the PUA) are fragile under subsetting.",
+    "faces": ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans-Oblique.ttf", "DejaVuSans-BoldOblique.ttf", "DejaVuSansMono.ttf"],
+    "keepUnsubset": [
+      "DejaVuSansDisplay.ttf",
+      "STIXGeneral.ttf",
+      "STIXGeneralBol.ttf",
+      "STIXGeneralBolIta.ttf",
+      "STIXGeneralItalic.ttf",
+      "STIXNonUni.ttf",
+      "STIXNonUniBol.ttf",
+      "STIXNonUniBolIta.ttf",
+      "STIXNonUniIta.ttf",
+      "STIXSizFiveSymReg.ttf",
+      "STIXSizFourSymBol.ttf",
+      "STIXSizFourSymReg.ttf",
+      "STIXSizOneSymBol.ttf",
+      "STIXSizOneSymReg.ttf",
+      "STIXSizThreeSymBol.ttf",
+      "STIXSizThreeSymReg.ttf",
+      "STIXSizTwoSymBol.ttf",
+      "STIXSizTwoSymReg.ttf",
+      "cmb10.ttf",
+      "cmex10.ttf",
+      "cmmi10.ttf",
+      "cmr10.ttf",
+      "cmss10.ttf",
+      "cmsy10.ttf",
+      "cmtt10.ttf"
+    ],
+    "unicodes": "U+0000-00FF,U+0370-03FF,U+2000-206F,U+2190-21FF,U+2200-22FF,U+25A0-25FF,U+FB00-FB06"
+  },
+  "bundles": {
+    "$comment": "Bundle -> member wheels (D1). Set order below is deps-first and IS the canonical cross-bundle DSO load order.",
+    "numpy": ["numpy"],
+    "dateutil": ["python-dateutil", "six"],
+    "pytz": ["pytz"],
+    "mpl-deps": ["contourpy", "cycler", "kiwisolver", "packaging", "pyparsing"],
+    "pandas": ["pandas"],
+    "matplotlib": ["matplotlib"]
+  },
+  "sets": {
+    "numpy": ["numpy"],
+    "numpy+pandas": ["numpy", "dateutil", "pytz", "pandas"],
+    "numpy+matplotlib": ["numpy", "dateutil", "pytz", "mpl-deps", "matplotlib"],
+    "all": ["numpy", "dateutil", "pytz", "mpl-deps", "pandas", "matplotlib"]
   },
   "jobs": {
     "$comment": "Conservative parallelism: WSL2 host has ~9GB RAM total.",
@@ -31,7 +151,74 @@
     "full": "dist/pyodide.asm.js dist/pyodide.js dist/python_stdlib.zip dist/snapshot.bin"
   },
   "budgets": {
-    "$comment": "raw/br byte ceilings per artifact, locked from M2 measurements",
-    "pending": true
+    "$comment": "Byte ceilings. `artifacts` (name -> {raw, br}) is stamped by check-budgets.mjs --update (+5% headroom over measurement, human-committed); plain runs hard-fail over any ceiling. `composites` are wire-download sums of .br sizes.",
+    "artifacts": {
+      "pyodide.asm.js": {
+        "raw": 786521,
+        "br": 140689
+      },
+      "pyodide.asm.wasm": {
+        "raw": 7844575,
+        "br": 1970294
+      },
+      "pyodide.mjs": {
+        "raw": 18497,
+        "br": 6667
+      },
+      "python_stdlib.zip": {
+        "raw": 3251905,
+        "br": 3192954
+      },
+      "baseline.snap": {
+        "raw": 22020550,
+        "br": 2579957
+      },
+      "bundles/numpy.tar": {
+        "raw": 9580032,
+        "br": 2057526
+      },
+      "bundles/dateutil.tar": {
+        "raw": 387072,
+        "br": 115194
+      },
+      "bundles/pytz.tar": {
+        "raw": 1526784,
+        "br": 139905
+      },
+      "bundles/mpl-deps.tar": {
+        "raw": 1591296,
+        "br": 425322
+      },
+      "bundles/pandas.tar": {
+        "raw": 18590208,
+        "br": 3514509
+      },
+      "bundles/matplotlib.tar": {
+        "raw": 9235968,
+        "br": 2770127
+      }
+    },
+    "composites": {
+      "numpy-path": {
+        "$comment": "cold wire cost to first numpy run",
+        "files": ["pyodide.asm.js", "pyodide.asm.wasm", "python_stdlib.zip", "bundles/numpy.tar"],
+        "br": 12582912
+      },
+      "pandas-mpl": {
+        "$comment": "cold wire cost for the full `all` set",
+        "files": [
+          "pyodide.asm.js",
+          "pyodide.asm.wasm",
+          "python_stdlib.zip",
+          "bundles/numpy.tar",
+          "bundles/dateutil.tar",
+          "bundles/pytz.tar",
+          "bundles/mpl-deps.tar",
+          "bundles/pandas.tar",
+          "bundles/matplotlib.tar"
+        ],
+        "br": 16777216
+      }
+    }
   }
 }

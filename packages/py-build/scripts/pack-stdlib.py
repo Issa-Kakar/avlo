@@ -5,8 +5,11 @@ Input : dist/raw/python_stdlib.zip  (fork build output)
         config/stdlib-prune.txt     (committed prune list)
         overlay/stdlib/*.py         (sitecustomize, _avlo_runtime, ...)
 Output: dist/stage/python_stdlib.zip
+        dist/stage/stdlib-modules.json  (top-level names for the generated
+                                         import-gate allowlist, D9)
 
-Must run under CPython 3.13 (pyc MAGIC must match the wasm interpreter).
+Must run under CPython 3.13 (pyc MAGIC must match the wasm interpreter);
+re-execs itself with PYTHONHASHSEED=0 (marshalled sets iterate in hash order).
 
 Layout notes:
 - zipimport loads `foo.pyc` stored NEXT TO where foo.py would live (legacy
@@ -20,93 +23,61 @@ Layout notes:
   life — stored-vs-deflated is 7.2MB vs ~2MB RAM, while zipimport's per-module
   inflate is microseconds and almost every import is baked into a snapshot
   anyway. Sorted entries + fixed timestamps keep it byte-reproducible (G0).
+- Tombstone registry keys are EXACT dotted prune paths ('xml.sax', not 'xml')
+  so partially-pruned packages keep their shipped parents importable (D6).
 """
 
 import hashlib
-import io
+import json
 import py_compile
 import sys
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import packlib
+
+packlib.ensure_hashseed()
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_ZIP = ROOT / "dist/raw/python_stdlib.zip"
 PRUNE_TXT = ROOT / "config/stdlib-prune.txt"
 OVERLAY = ROOT / "overlay/stdlib"
 OUT_ZIP = ROOT / "dist/stage/python_stdlib.zip"
+OUT_MODULES = ROOT / "dist/stage/stdlib-modules.json"
 
-FIXED_DATE = (2026, 1, 1, 0, 0, 0)
+CONFIG = json.loads((ROOT / "build.config.json").read_text())
+# "3.13.2" -> "313" — the zip mounts at /lib/python313.zip in MEMFS.
+PYTAG = "".join(CONFIG["toolchain"]["python"].split(".")[:2])
+DFILE_PREFIX = f"/lib/python{PYTAG}.zip/"
 
-
-def load_prune_list() -> list[str]:
-    rules = []
-    for line in PRUNE_TXT.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            rules.append(line)
-    return rules
-
-
-def is_pruned(name: str, rules: list[str]) -> bool:
-    return any(
-        name == r or (r.endswith("/") and name.startswith(r)) for r in rules
-    )
-
-
-def compile_bytes(source: bytes, arcname: str) -> bytes:
-    """py -> unchecked-hash pyc bytes, via a temp file (py_compile API)."""
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as td:
-        src = Path(td) / "m.py"
-        src.write_bytes(source)
-        pyc = Path(td) / "m.pyc"
-        py_compile.compile(
-            str(src),
-            cfile=str(pyc),
-            dfile=f"/lib/python313.zip/{arcname}",  # traceback co_filename
-            doraise=True,
-            optimize=2,
-            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
-        )
-        return pyc.read_bytes()
+DEFAULT_REASON = "stripped from the canvas Python build"
 
 
 def main() -> None:
     if sys.version_info[:2] != (3, 13):
         sys.exit(f"need CPython 3.13 (pyc magic), got {sys.version}")
-    rules = load_prune_list()
+    rules = packlib.load_prune_rules(PRUNE_TXT)
+    reasons = packlib.parse_reasons(PRUNE_TXT, DEFAULT_REASON)
     src = zipfile.ZipFile(SRC_ZIP)
 
     entries: dict[str, bytes] = {}
-    pruned_top: dict[str, str] = {}
+    pruned: dict[str, str] = {}
     skipped = failed = 0
-
-    # Reasons: nearest preceding comment in the prune file, per top-level name.
-    reason = "stripped from the canvas Python build"
-    reasons: dict[str, str] = {}
-    current = reason
-    for line in PRUNE_TXT.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("# reason:"):
-            current = line.removeprefix("# reason:").strip()
-        elif line and not line.startswith("#"):
-            top = line.split("/")[0].removesuffix(".py")
-            reasons[top] = current
 
     for info in sorted(src.infolist(), key=lambda i: i.filename):
         name = info.filename
         if name.endswith("/"):
             continue
-        if is_pruned(name, rules):
-            top = name.split("/")[0].removesuffix(".py")
-            pruned_top[top] = reasons.get(top, reason)
+        if packlib.is_pruned(name, rules):
             skipped += 1
             continue
         data = src.read(name)
         if name.endswith(".py"):
             try:
-                entries[name[:-3] + ".pyc"] = compile_bytes(data, name)
+                entries[name[:-3] + ".pyc"] = packlib.compile_pyc(
+                    data, f"{DFILE_PREFIX}{name}", optimize=2
+                )
             except py_compile.PyCompileError as e:
                 print(f"!! compile failed, shipping source: {name}: {e}")
                 entries[name] = data
@@ -114,34 +85,42 @@ def main() -> None:
         else:
             entries[name] = data  # data files (encodings aliases etc.)
 
+    # Every prune RULE becomes an exact dotted tombstone (not just its top).
+    for rule in rules:
+        key = packlib.dotted_key(rule)
+        pruned[key] = reasons.get(key, DEFAULT_REASON)
+
     # Overlay modules (compiled like the rest).
     for p in sorted(OVERLAY.glob("*.py")):
-        entries[p.name[:-3] + ".pyc"] = compile_bytes(p.read_bytes(), p.name)
+        entries[p.name[:-3] + ".pyc"] = packlib.compile_pyc(
+            p.read_bytes(), f"{DFILE_PREFIX}{p.name}", optimize=2
+        )
 
-    # Generated tombstone registry.
-    lines = ["# GENERATED by pack-stdlib.py — do not edit", "PRUNED = {"]
-    for top, why in sorted(pruned_top.items()):
-        lines.append(f"    {top!r}: {why!r},")
-    lines.append("}")
-    entries["_avlo_pruned.pyc"] = compile_bytes(
-        "\n".join(lines).encode(), "_avlo_pruned.py"
+    entries["_avlo_pruned.pyc"] = packlib.compile_pyc(
+        packlib.registry_source("by pack-stdlib.py", pruned),
+        f"{DFILE_PREFIX}_avlo_pruned.py",
+        optimize=2,
     )
 
-    OUT_ZIP.parent.mkdir(parents=True, exist_ok=True)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as out:
-        for name in sorted(entries):
-            zi = zipfile.ZipInfo(name, date_time=FIXED_DATE)
-            zi.external_attr = 0o644 << 16
-            # explicit ZipInfo bypasses the archive default → set per-entry
-            out.writestr(zi, entries[name], zipfile.ZIP_DEFLATED, 9)
-    OUT_ZIP.write_bytes(buf.getvalue())
+    data = packlib.write_zip(OUT_ZIP, entries)
 
-    digest = hashlib.sha256(buf.getvalue()).hexdigest()
+    # D9: the generated import-gate allowlist inputs. `modules` = importable
+    # top-level names actually in the zip; `tombstoned` = exact dotted pruned
+    # keys (their top-levels stay click-time-allowed — the runtime tombstone
+    # error is more precise than a pre-run refusal).
+    tops = sorted(
+        {n.split("/")[0].removesuffix(".pyc") for n in entries if n.endswith(".pyc")}
+    )
+    OUT_MODULES.write_text(
+        json.dumps({"modules": tops, "tombstoned": sorted(pruned)}, indent=2) + "\n"
+    )
+
+    digest = hashlib.sha256(data).hexdigest()
     print(
         f"packed {len(entries)} entries ({skipped} pruned, {failed} src-fallback) "
         f"{SRC_ZIP.stat().st_size:,} -> {OUT_ZIP.stat().st_size:,} bytes\n"
-        f"tombstones: {', '.join(sorted(pruned_top))}\n"
+        f"tombstones ({len(pruned)}): {', '.join(sorted(pruned))}\n"
+        f"top-level modules: {len(tops)} -> {OUT_MODULES.name}\n"
         f"sha256 {digest}"
     )
 
