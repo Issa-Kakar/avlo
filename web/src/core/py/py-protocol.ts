@@ -132,7 +132,8 @@ export const PY_LIMITS = {
   /** SIGINT repeat cadence until acknowledged — a terminated-but-still-
    * spinning zombie executor can eat one write (P0-B finding). */
   interruptRepeatMs: 50,
-  /** Run queue cap; further clicks are ignored with a status flash. */
+  /** Run queue cap; further clicks are ignored (silently — queue-full
+   * feedback is polish backlog). */
   queueCap: 4,
   /** stdout relay batching. */
   stdoutFlushMs: 100,

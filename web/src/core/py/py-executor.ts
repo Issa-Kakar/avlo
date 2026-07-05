@@ -14,19 +14,21 @@
 import { HARNESS_INSTALL, RUN_INVOKE } from './py-harness';
 import { bootPyodide, type Pyodide } from './py-loader';
 import { type ExecBootMsg, type ExecRunMsg, OUTPUT_TRUNCATION_MARKER, PY_LIMITS, type SupToExec } from './py-protocol';
-import { HEARTBEAT, MEM_BYTES, mapPySab, PyExecState, type PySabViews, RUN_ID, STATE } from './py-sab';
+import { HEARTBEAT, MEM_KIB, mapPySab, PyExecState, type PySabViews, RUN_ID, STATE } from './py-sab';
 
 let pyodide: Pyodide = null;
 let sab: PySabViews | null = null;
 let currentRunId = 0;
 
-/** Combined stdout+stderr for the CURRENT run. */
+/** Combined stdout+stderr for the CURRENT run. Decoders are recreated per
+ * run — a multi-byte character split across the last chunk of a run would
+ * otherwise leak its partial state into the next run's decode. */
 let outBuf = '';
 let outTruncated = false;
 let relayedUpTo = 0;
 let lastFlushAt = 0;
-const stdoutDecoder = new TextDecoder();
-const stderrDecoder = new TextDecoder();
+let stdoutDecoder = new TextDecoder();
+let stderrDecoder = new TextDecoder();
 
 function post(msg: unknown, transfer?: Transferable[]): void {
   (self as unknown as Worker).postMessage(msg, transfer ?? []);
@@ -54,11 +56,29 @@ function flushRelay(now = performance.now()): void {
   }
 }
 
-function makeWriteHook(decoder: TextDecoder) {
+function makeWriteHook(stream: 'out' | 'err') {
+  // Reads the CURRENT decoder at write time (exec() swaps in fresh ones).
   return (buf: Uint8Array): number => {
+    const decoder = stream === 'out' ? stdoutDecoder : stderrDecoder;
     appendOutput(decoder.decode(buf, { stream: true }));
     return buf.length;
   };
+}
+
+/**
+ * A1 isolation, authoritative layer: after boot no code in this worker needs
+ * network access (artifacts are fetched inside bootPyodide; bundle bytes
+ * arrive via postMessage). Deleting the APIs from the realm — own properties
+ * AND prototype-chain definitions — makes them unreachable from Python via
+ * the fork's `js` proxy (`js.fetch` reads as undefined). The harness-level
+ * meta_path guard is defense-in-depth; prod CSP backstops dynamic import().
+ */
+function scrubNetworkScope(): void {
+  for (const k of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource']) {
+    for (let o: object | null = self; o !== null; o = Object.getPrototypeOf(o)) {
+      if (Object.getOwnPropertyDescriptor(o, k)) delete (o as Record<string, unknown>)[k];
+    }
+  }
 }
 
 async function boot(m: ExecBootMsg): Promise<void> {
@@ -70,9 +90,10 @@ async function boot(m: ExecBootMsg): Promise<void> {
     post({ t: 'exec-fatal', error: String((err as Error)?.stack ?? err) });
     return;
   }
+  scrubNetworkScope();
   pyodide.setInterruptBuffer(sab.u8);
-  pyodide.setStdout({ write: makeWriteHook(stdoutDecoder), isatty: false });
-  pyodide.setStderr({ write: makeWriteHook(stderrDecoder), isatty: false });
+  pyodide.setStdout({ write: makeWriteHook('out'), isatty: false });
+  pyodide.setStderr({ write: makeWriteHook('err'), isatty: false });
   pyodide.runPython(HARNESS_INSTALL);
   Atomics.store(sab.i32, STATE, PyExecState.Idle);
   post({ t: 'exec-ready', bootMs: performance.now() - t0 });
@@ -88,6 +109,8 @@ function exec(m: ExecRunMsg): void {
   outTruncated = false;
   relayedUpTo = 0;
   lastFlushAt = performance.now();
+  stdoutDecoder = new TextDecoder();
+  stderrDecoder = new TextDecoder();
   Atomics.store(sab.i32, RUN_ID, m.runId);
   Atomics.store(sab.i32, STATE, PyExecState.Running);
   const t0 = performance.now();
@@ -108,7 +131,9 @@ function exec(m: ExecRunMsg): void {
     appendOutput(interrupted ? 'KeyboardInterrupt\n' : `${String((err as Error)?.message ?? err)}\n`);
   }
   flushRelay();
-  Atomics.store(sab.i32, MEM_BYTES, pyodide._module?.HEAP8?.length ?? 0);
+  // KiB, not bytes: HEAP8.length reaches 2^31 at the 2 GiB ceiling — as raw
+  // bytes it would wrap negative in the Int32 slot.
+  Atomics.store(sab.i32, MEM_KIB, (pyodide._module?.HEAP8?.length ?? 0) >>> 10);
   Atomics.store(sab.i32, RUN_ID, 0);
   Atomics.store(sab.i32, STATE, PyExecState.Idle);
   Atomics.add(sab.i32, HEARTBEAT, 1);

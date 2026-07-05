@@ -3,17 +3,18 @@
  * global FIFO queue (cap 4, single-flight dispatch), the pre-run import gate,
  * and the ONE Y commit per run.
  *
- * SECURITY INVARIANT (never-auto-run): `toggleRunCodeBlock` has exactly three
- * call sites — canvas play-button click, DOM play-button click, Cmd/Ctrl+Enter
- * in the editor — all local gestures. Nothing observer/sync/hydration-driven
- * may call it; remote output fields render as inert data.
+ * SECURITY INVARIANT (never-auto-run): `toggleRunCodeBlock` has exactly four
+ * call sites — SelectTool + CodeTool canvas play-button hits, the DOM
+ * play-button click, Cmd/Ctrl+Enter in the editor — all local gestures.
+ * Nothing observer/sync/hydration-driven may call it; remote output fields
+ * render as inert data.
  */
 
 import { getCodeProps } from '@/core/accessors';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getBbox, getHandle, hasActiveRoom, transactPyOutput } from '@/runtime/room-runtime';
 import { resolveImports, scanPythonImports, unavailableMessage } from './py-imports';
-import { PY_LIMITS, type PySetKey, type SupToMain } from './py-protocol';
+import { PY_LIMITS, type PyRunStatus, type PySetKey, type SupToMain } from './py-protocol';
 import { appendOutput, clearRun, getRunEntry, patchRun, upsertRun } from './py-run-store';
 
 /** P2 flips these to the manifest's bundle set; P1 is stdlib-only. */
@@ -56,16 +57,19 @@ function ensureSupervisor(): Worker {
     type: 'module',
   });
   supervisor.onmessage = (e: MessageEvent<SupToMain>) => onSupervisorMessage(e.data);
-  supervisor.onerror = (e: ErrorEvent) => {
-    // Supervisor death orphans everything — fail all runs, full reset.
-    const all = inFlight ? [inFlight, ...queue] : [...queue];
-    inFlight = null;
-    queue.length = 0;
-    supervisor?.terminate();
-    supervisor = null;
-    for (const run of all) finishRun(run, 'error', `Python runtime failed: ${e.message}`);
-  };
+  supervisor.onerror = (e: ErrorEvent) => resetRuntime(`Python runtime failed: ${e.message}`);
   return supervisor;
+}
+
+/** Supervisor state is unrecoverable (worker error / protocol violation) —
+ * fail every run and drop the worker; the next click starts clean. */
+function resetRuntime(message: string): void {
+  const all = inFlight ? [inFlight, ...queue] : [...queue];
+  inFlight = null;
+  queue.length = 0;
+  supervisor?.terminate();
+  supervisor = null;
+  for (const run of all) finishRun(run, 'error', message);
 }
 
 function dispatchNext(): void {
@@ -79,7 +83,7 @@ function dispatchNext(): void {
   ensureTicker();
 }
 
-function finishRun(run: QueuedRun, status: string, output: string): void {
+function finishRun(run: QueuedRun, status: PyRunStatus, output: string): void {
   // Deleted block / left room → drop the commit, never throw.
   if (hasActiveRoom() && getHandle(run.blockId)) {
     transactPyOutput(() => {
@@ -102,6 +106,9 @@ function onSupervisorMessage(m: SupToMain): void {
         phase: m.phase,
         received: m.received,
         total: m.total,
+        // "Running… N s" counts execution, not queue/boot/download time —
+        // restart the clock when the run actually dispatches.
+        ...(m.phase === 'running' ? { startedAt: performance.now() } : null),
       });
       invalidateBlock(inFlight.blockId);
       break;
@@ -119,12 +126,10 @@ function onSupervisorMessage(m: SupToMain): void {
       break;
     }
     case 'sup-fatal': {
-      if (inFlight) {
-        const run = inFlight;
-        inFlight = null;
-        finishRun(run, 'error', `Python runtime failed: ${m.error}`);
-      }
-      dispatchNext();
+      // The supervisor's active-run bookkeeping never clears on this path —
+      // dispatching into it again would wedge every subsequent run. Full
+      // reset, same as onerror.
+      resetRuntime(`Python runtime failed: ${m.error}`);
       break;
     }
   }

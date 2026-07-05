@@ -51,16 +51,22 @@ function clearRunTimers(run: ActiveRun): void {
   run.softTimer = run.hardTimer = run.interruptRepeat = null;
 }
 
+/** Terminate + null the executor generation (heap + RAM freed). Safe when
+ * already dormant. Used for idle teardown AND for broken-executor paths — a
+ * dead worker left assigned would wedge the next run (onRun sees `executor`
+ * non-null and waits for an exec-ready that never comes). */
+function teardownExecutor(): void {
+  executor?.terminate();
+  executor = null;
+  executorReady = false;
+  sab = null;
+}
+
 function armIdleTeardown(): void {
   if (idleTimer !== null) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     idleTimer = null;
-    if (active === null && executor !== null) {
-      executor.terminate();
-      executor = null;
-      executorReady = false;
-      sab = null; // heap + RAM freed; respawn is cheap (snapshots at P3)
-    }
+    if (active === null) teardownExecutor(); // respawn is cheap (snapshots at P3)
   }, PY_LIMITS.idleTeardownMs);
 }
 
@@ -74,8 +80,10 @@ function spawnExecutor(): void {
     type: 'module',
   });
   executor.onmessage = (e: MessageEvent<ExecToSup>) => onExecutorMessage(e.data);
-  executor.onerror = (e: ErrorEvent) =>
-    failActiveRun(`executor error: ${e.message}`, /out of memory|OOM/i.test(e.message) ? 'oom' : 'error');
+  executor.onerror = (e: ErrorEvent) => {
+    if (active) failActiveRun(`executor error: ${e.message}`, /out of memory|OOM/i.test(e.message) ? 'oom' : 'error');
+    else teardownExecutor(); // dormant executor broke — never leave it assigned
+  };
   executor.postMessage({ t: 'boot', artifactBase: ARTIFACT_BASE, sab: sab.sab });
 }
 
@@ -178,15 +186,21 @@ function onExecutorMessage(m: ExecToSup): void {
     }
     case 'exec-fatal': {
       if (active) {
-        failActiveRun(`Python runtime failed: ${m.error.split('\n')[0]}`, /out of memory|OOM|RangeError/i.test(m.error) ? 'oom' : 'error');
+        // Boot failure (executor never became ready) → an eager respawn
+        // would just boot a second doomed worker; go dormant instead and
+        // let the next click re-attempt.
+        const respawn = executorReady;
+        failActiveRun(
+          `Python runtime failed: ${m.error.split('\n')[0]}`,
+          /out of memory|OOM|RangeError/i.test(m.error) ? 'oom' : 'error',
+          respawn,
+        );
+        if (!respawn) teardownExecutor();
       } else {
         // Boot failed with nothing pending (e.g. eager respawn while
         // artifacts unreachable) — go dormant; the next run re-attempts and
         // its failure then surfaces as that run's result.
-        executor?.terminate();
-        executor = null;
-        executorReady = false;
-        sab = null;
+        teardownExecutor();
       }
       break;
     }

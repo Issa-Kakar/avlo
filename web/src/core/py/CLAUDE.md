@@ -13,25 +13,33 @@ build-side state: `packages/py-build/NOTES.md`.
 | File | Role |
 |------|------|
 | `py-protocol.ts` | Message types for all three threads + `PY_LIMITS` caps. Single source of truth; workers import type-light (no yjs) |
-| `py-sab.ts` | 64 B PY_SAB layout (interrupt u8[0] / state / runId / heartbeat / epoch / futex-reserved / cancelKind / memBytes) + alloc/map + interrupt write/clear |
+| `py-sab.ts` | 64 B PY_SAB layout (interrupt u8[0] / state / runId / heartbeat / epoch / futex-reserved / cancelKind / memKiB) + alloc/map + interrupt write/clear |
 | `py-manager.ts` | Main-thread API: `toggleRunCodeBlock` / `cancelRun` / `isRunnableCodeBlock`. FIFO queue (cap 4), single-flight dispatch, pre-run import gate, ONE Y commit per run, 500 ms status ticker |
 | `py-run-store.ts` | Ephemeral per-block phase + live output (Zustand, non-persisted, presence-store pattern). Never written to Y |
 | `py-imports.ts` | Pure: `scanPythonImports` (triple-quote-aware line scan) + `resolveImports` (stdlib allowlist + package→setKey map) + refusal message |
-| `py-harness.ts` | Python harness source: fresh `__main__`, linecache-seeded `'<block>'`, ast last-expression echo, harness-frame-trimmed tracebacks. Primitive-only returns (JSON string) |
+| `py-harness.ts` | Python harness source: fresh `__main__` per run (interpreter/module state SHARED across runs until P3's blit reset), linecache-seeded `'<block>'`, ast last-expression echo, harness-frame-trimmed tracebacks, defense-in-depth import guard. Primitive-only returns (JSON string) |
 | `py-supervisor.ts` | Worker. Executor lifecycle, wall clocks (30 s soft + 5 s hard grace; 2 s cancel grace), idle teardown (2 min), eager respawn, result synthesis |
 | `py-executor.ts` | Nested worker. Pyodide instance, raw-write stdout/stderr hooks (flush ≥100 ms/≥8 KB inside the write callback — no timers run mid-Python), 4096-char output cap |
 | `py-loader.ts` | Fork boot wrapper (`loadPyodide` config; P3 adds `_loadSnapshot` + `_preRestoreHook`) |
 
 ## Security invariants
 
-- **Never-auto-run.** `toggleRunCodeBlock` has exactly THREE call sites, all
-  local gestures: SelectTool playButton click, CodeTool DOM `.code-run-btn`
-  click / play-button canvas hit, Cmd/Ctrl+Enter in the CM keymap. Nothing
-  observer-, sync-, or hydration-driven may call it; remote `output`/
-  `outputStatus` fields render as inert data.
-- No JS FFI surface for user code; no network from Python (no fetch bridge;
-  `_ssl`/http stack stripped from the build; `_socket` exists only to satisfy
-  asyncio's import chain — no transport).
+- **Never-auto-run.** `toggleRunCodeBlock` has exactly FOUR call sites, all
+  local gestures: SelectTool play-button canvas hit, CodeTool play-button
+  canvas hit, CodeTool DOM `.code-run-btn` click, Cmd/Ctrl+Enter in the CM
+  keymap. Nothing observer-, sync-, or hydration-driven may call it; remote
+  `output`/`outputStatus` fields render as inert data.
+- **No JS bridge / no network for run code — two layers.** AUTHORITATIVE:
+  `py-executor.ts` `scrubNetworkScope()` deletes `fetch`/`XMLHttpRequest`/
+  `WebSocket`/`EventSource` from the worker realm (own props + prototype
+  chain) right after boot — the fork's `js` proxy then reads them as
+  undefined. DEFENSE-IN-DEPTH: the harness pops `js`/`pyodide_js` from
+  `sys.modules` and a `meta_path` guard raises ModuleNotFoundError for
+  `{js, pyodide_js, pyodide, _pyodide}` roots (pyodide/_pyodide stay cached
+  for internals, so the hook covers the popped bridge + uncached submodules).
+  Fork-level bridge removal (patch 0006) lands with M3; prod CSP backstops
+  dynamic `import()`. Build already strips `_ssl`/http stack; `_socket`
+  exists only to satisfy asyncio's import chain — no transport.
 - Executor receives exactly one SAB (its generation's PY_SAB).
 - Caps (`PY_LIMITS`): 30 s + 5 s wall, 4096 output chars, 4 figures ≤ 2048 px,
   queue 4, 2 GB wasm memory ceiling (build-pinned `MAXIMUM_MEMORY`).

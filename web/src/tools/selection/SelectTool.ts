@@ -569,7 +569,7 @@ export class SelectTool implements PointerTool {
           case 'playButton': {
             // Re-verify like openButton: block may have been deleted or edited
             // mid-press; re-test the button at release. LOCAL GESTURE — one of
-            // exactly three legal toggleRunCodeBlock call sites (never-auto-run).
+            // exactly four legal toggleRunCodeBlock call sites (never-auto-run).
             const { handle: stored } = this.downHit;
             const handle = getHandle(stored.id);
             if (

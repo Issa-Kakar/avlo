@@ -2,7 +2,30 @@
 
 Master plan: /home/issak/.claude/plans/prompt-md-i-copied-my-synthetic-octopus.md
 Pickup plan (session 3): /home/issak/.claude/plans/original-prompt-was-here-graceful-cocke.md
-Task list: session tasks #1-#8 (Step1..P4+M4); #1 Step1 DONE, #2 P0-B DONE, #3 M1-finish in progress.
+Slice plan (session 4): /home/issak/.claude/plans/packages-py-build-notes-md-view-the-two-zazzy-pascal.md
+Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
+
+## Session 4 — Commit 1 (P1 hardening) DONE
+- A1 isolation: `scrubNetworkScope()` in py-executor (deletes fetch/XHR/WS/ES
+  own+prototype-chain after boot — AUTHORITATIVE layer); harness meta_path
+  guard blocks {js,pyodide_js,pyodide,_pyodide} + pops js/pyodide_js from
+  sys.modules (defense-in-depth); pyDevStatic resolve-then-contain (encoded
+  `..` 404s — verified with curl); `_dumps = json.dumps` captured.
+- A2: per-run TextDecoder recreation; MEM_BYTES→MEM_KIB (>>>10); startedAt
+  re-stamped at phase 'running'; supervisor teardownExecutor() on dormant
+  onerror + no-respawn on boot-failure exec-fatal; manager resetRuntime() on
+  sup-fatal (was: wedged supervisor got redispatched); +stat/multiprocessing/
+  pydoc/netrc/modulefinder/rlcompleter in STDLIB allowlist.
+- Canvas smoke (Chrome, fresh room): print→2; `__import__('js')`→
+  ModuleNotFoundError tinted; guard-bypass probe (strip meta_path guard,
+  importlib js) → fetch/XHR/WS/ES all MISSING (scrub holds); 5/6 new stdlib
+  mods import (pydoc gate-passes but hits the _pyrepl tombstone at runtime —
+  pydoc.py:80 top-level import; precise error, acceptable; revisit at Step 1
+  if cheap); requests → instant refusal; Ctrl+Enter toggle cancels
+  mid-`while True` → "Run cancelled."; 30s soft timeout observed live.
+- Known nit re-confirmed (already in backlog): language-switch WHILE EDITING
+  doesn't retoggle `.is-runnable` — DOM button dead until editor reopen;
+  Ctrl+Enter unaffected.
 
 ## Done
 - P0-A PASSED on stock AND fork (Chrome): fork fresh boot ~2.2-2.4s (stock 5.2s),

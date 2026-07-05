@@ -87,7 +87,14 @@ const pyDevStatic = (): Plugin => ({
     server.middlewares.use((req, res, next) => {
       const url = (req.url ?? '').split('?')[0];
       if (!url.startsWith('/py-dev/')) return next();
-      const file = path.join(server.config.root, 'public', decodeURIComponent(url));
+      // Resolve BEFORE the containment check — an encoded `..` passes the raw
+      // prefix test above but must not escape the served directory.
+      const root = path.join(server.config.root, 'public', 'py-dev');
+      const file = path.resolve(server.config.root, 'public', `.${decodeURIComponent(url)}`);
+      if (!file.startsWith(root + path.sep)) {
+        res.statusCode = 404;
+        return res.end('not found');
+      }
       let bytes: Buffer;
       try {
         bytes = readFileSync(file);

@@ -6,7 +6,9 @@
  * snapshot capture (a live PyProxy aborts serializeHiwireState).
  *
  * Contract (master plan §Execution semantics):
- * - whole block source, FRESH `__main__` namespace per run;
+ * - whole block source, FRESH `__main__` namespace per run — but the
+ *   interpreter (sys.modules, module-level state) is SHARED across runs
+ *   within an executor generation until P3's blit reset lands;
  * - compiled as '<block>' with linecache seeded so user frames keep source;
  * - Jupyter-style last-expression echo (ast split; `df.head()` must print);
  * - tracebacks drop harness frames; user frames show source lines; stdlib
@@ -25,6 +27,32 @@ import ast, builtins, linecache, sys, traceback, json
 _BLOCK = ${JSON.stringify(BLOCK_FILE)}
 _HARNESS = ${JSON.stringify(HARNESS_FILE)}
 
+# Captured at definition — user code monkeypatching json.dumps must not be
+# able to break the run protocol (the JSON result string below).
+_dumps = json.dumps
+
+# Defense-in-depth import guard. The AUTHORITATIVE isolation layer is the
+# executor's worker-scope network scrub (py-executor.ts scrubNetworkScope);
+# the fork-level bridge removal lands with patch 0006 (M3). Here: drop the JS
+# bridge from the import cache (internals hold direct refs — popping only
+# clears the cache) and report the whole pyodide/js surface as absent to any
+# future import. pyodide/_pyodide stay cached (internals may re-import them),
+# so the hook mainly covers js/pyodide_js and uncached submodules.
+sys.modules.pop("js", None)
+sys.modules.pop("pyodide_js", None)
+
+_BLOCKED_ROOTS = frozenset({"js", "pyodide_js", "pyodide", "_pyodide"})
+
+
+class _AvloImportGuard:
+    def find_spec(self, name, path=None, target=None):
+        if name.partition(".")[0] in _BLOCKED_ROOTS:
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return None
+
+
+sys.meta_path.insert(0, _AvloImportGuard())
+
 
 def _trim_tb(tb):
     """Drop leading harness frames so the user's frame is the traceback root."""
@@ -34,7 +62,8 @@ def _trim_tb(tb):
 
 
 def run(code):
-    # Fresh namespace per run — stateless, reproducible runs.
+    # Fresh namespace per run. NOT stateless: the interpreter is shared
+    # across runs until P3's blit reset (imported modules keep their state).
     g = {"__name__": "__main__", "__builtins__": builtins}
     lines = code.splitlines(keepends=True)
     linecache.cache[_BLOCK] = (len(code), None, lines, _BLOCK)
@@ -64,7 +93,7 @@ def run(code):
         linecache.cache.pop(_BLOCK, None)
         sys.stdout.flush()
         sys.stderr.flush()
-    return json.dumps({"ok": ok, "interrupted": interrupted})
+    return _dumps({"ok": ok, "interrupted": interrupted})
 `;
 
 /** Per-run: executor sets `_avlo_code` (string, by value) then evals this. */

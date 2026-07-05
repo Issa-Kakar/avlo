@@ -15,7 +15,9 @@
  *   i32[4]      EPOCH       executor generation stamp (supervisor-written)
  *   i32[5]      FUTEX_SEQ   reserved for a future Futex wait/notify pair
  *   i32[6]      CANCEL_KIND why the interrupt byte was written (PyCancelKind)
- *   i32[7]      MEM_BYTES   executor-reported heap size after each run
+ *   i32[7]      MEM_KIB     executor-reported heap size after each run, in
+ *                           KiB — raw bytes hit 2^31 at the 2 GiB ceiling and
+ *                           would read back negative from an Int32 slot
  */
 
 export const PY_SAB_BYTES = 64;
@@ -27,7 +29,7 @@ export const HEARTBEAT = 3;
 export const EPOCH = 4;
 export const FUTEX_SEQ = 5;
 export const CANCEL_KIND = 6;
-export const MEM_BYTES = 7;
+export const MEM_KIB = 7;
 
 export const SIGINT = 2;
 
