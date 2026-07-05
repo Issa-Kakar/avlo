@@ -1,0 +1,68 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: strip graphics/FS JS libs, 2GB cap, snapshot exports
+
+One consolidated Makefile patch (single-writer for Makefile.envs so queue
+hunks never conflict):
+- drop GL/egl/webgl/html5_webgl/sdl + idbfs/nodefs/proxyfs/workerfs/websocket
+  JS libs and the embuilder libgl step (headless AGG canvas needs none;
+  loaders feed buffers, never mount host FS). html5.js + eventloop.js KEPT
+  (stack-switching scheduler) — candidates for a later bisect.
+- MAXIMUM_MEMORY 4GB->2GB; drop FS_DEBUG; drop USE_BZIP2 (module gone in 0003).
+- EXPORTED_RUNTIME_METHODS += loadWebAssemblyModule,newDSO,LDSO,
+  getEmptyTableSlot,freeTableIndexes,growMemory (needed by DSO replay).
+  MAIN_MODULE=1 + EXPORT_ALL=1 untouched (frozen ABI guarantee).
+
+--- a/Makefile.envs	2026-07-04 22:35:45.618638531 -0700
++++ b/Makefile.envs	2026-07-04 22:42:29.486538286 -0700
+@@ -161,15 +161,13 @@
+ 	-s LZ4=1 \
+ 	-s EXPORT_NAME="'_createPyodideModule'" \
+ 	-s EXPORT_EXCEPTION_HANDLING_HELPERS \
+-	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES' \
++	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES,loadWebAssemblyModule,newDSO,LDSO,getEmptyTableSlot,freeTableIndexes,growMemory' \
+ 	-s USE_ZLIB \
+-	-s USE_BZIP2 \
+ 	-s FORCE_FILESYSTEM=1 \
+ 	-s INITIAL_MEMORY=20971520 \
+ 	-s ALLOW_MEMORY_GROWTH=1 \
+-	-s MAXIMUM_MEMORY=4GB \
++	-s MAXIMUM_MEMORY=2GB \
+ 	-s EXPORT_ALL=1 \
+-	-s FS_DEBUG=1 \
+ 	-s STACK_SIZE=5MB \
+ 	-s AUTO_JS_LIBRARIES=0 \
+ 	-s AUTO_NATIVE_LIBRARIES=0 \
+@@ -182,22 +180,10 @@
+ 	-lpython$(PYMAJOR).$(PYMINOR)$(CPYTHON_ABI_FLAGS) \
+ 	-lffi \
+ 	-lstdc++ \
+-	-lidbfs.js \
+-	-lnodefs.js \
+-	-lproxyfs.js \
+-	-lworkerfs.js \
+-	-lwebsocket.js \
+ 	-leventloop.js \
+ 	-lhiwire \
+ 	\
+-	-lGL \
+-	-legl.js \
+-	-lwebgl.js \
+-	-lhtml5.js \
+-	-lhtml5_webgl.js \
+-	-lsdl.js \
+-	-sMAX_WEBGL_VERSION=2  \
+-	-sGL_WORKAROUND_SAFARI_GETCONTEXT_BUG=0
++	-lhtml5.js
+ 
+ EXPORTS=_main \
+    ,_free \
+--- a/Makefile	2026-07-04 22:42:29.514538249 -0700
++++ b/Makefile	2026-07-04 22:42:29.514538249 -0700
+@@ -116,7 +116,6 @@
+ 	[ -d dist ] || mkdir dist
+    # TODO(ryanking13): Link libgl to a side module not to the main module.
+    # For unknown reason, a side module cannot see symbols when libGL is linked to it.
+-	embuilder build libgl
+ 	$(CXX) -o dist/pyodide.asm.js -lpyodide src/core/main.o $(MAIN_MODULE_LDFLAGS)
+ 
+ 	if [[ -n $${PYODIDE_SOURCEMAP+x} ]] || [[ -n $${PYODIDE_SYMBOLS+x} ]] || [[ -n $${PYODIDE_DEBUG_JS+x} ]]; then \

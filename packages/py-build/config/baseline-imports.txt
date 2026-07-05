@@ -1,0 +1,21 @@
+# Baseline snapshot warmup imports — modules baked into baseline.snap.
+# The run harness itself needs: sys, io, ast, json, traceback, linecache,
+# contextlib, types. The rest are near-universal and cheap relative to their
+# use frequency. `random` is DELIBERATELY excluded (entropy contract:
+# _avlo_runtime.post_restore reseeds it only if present).
+sys
+io
+types
+contextlib
+ast
+json
+traceback
+linecache
+math
+re
+datetime
+collections
+functools
+itertools
+enum
+abc

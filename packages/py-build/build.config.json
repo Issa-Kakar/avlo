@@ -1,0 +1,37 @@
+{
+  "$comment": "Every pin for the AVLO Python toolchain. Reproducibility root: identical config + identical patches => identical buildHash. Image digest is stamped after the first successful pull (scripts/run-build.mjs refuses to build with an empty digest unless --allow-undigested).",
+  "pyodide": {
+    "repo": "https://github.com/pyodide/pyodide",
+    "tag": "0.29.4"
+  },
+  "image": {
+    "ref": "pyodide/pyodide-env:20260120-chrome145-firefox146-py313",
+    "digest": "sha256:799a423ab2dff9eb4ec1a2909ee7bb7f8ab8d8edcac38889237c66a1b6bb7411"
+  },
+  "toolchain": {
+    "python": "3.13.2",
+    "emscripten": "4.0.9",
+    "abi": "2025_0"
+  },
+  "recipes": {
+    "release": "0.29-20260507",
+    "base": "https://github.com/pyodide/pyodide-recipes/releases/download/0.29-20260507",
+    "wheels": {
+      "$comment": "name -> sha256, filled at M2 when wheels are first consumed"
+    }
+  },
+  "jobs": {
+    "$comment": "Conservative parallelism: WSL2 host has ~9GB RAM total.",
+    "emsdkCores": 2,
+    "emccCores": 2,
+    "pyodideJobs": 2
+  },
+  "targets": {
+    "m0": "dist/pyodide.asm.js dist/pyodide.js dist/python_stdlib.zip",
+    "full": "dist/pyodide.asm.js dist/pyodide.js dist/python_stdlib.zip dist/snapshot.bin"
+  },
+  "budgets": {
+    "$comment": "raw/br byte ceilings per artifact, locked from M2 measurements",
+    "pending": true
+  }
+}

@@ -1,0 +1,46 @@
+# stdlib prune list — paths relative to the stdlib zip root, one per line.
+# `name/` prunes a package tree; `name.py` prunes a module. Every top-level
+# name pruned here lands in the generated _avlo_pruned.py tombstone registry
+# (sitecustomize's meta_path finder turns imports into actionable errors).
+# CONSERVATIVE v1 — the M2 import tracer refines this against the corpus;
+# CI gate: trace ∩ prune = ∅.
+#
+# reason: c-extension _ctypes is disabled (patch 0003)
+ctypes/
+# reason: c-extension _bz2 is disabled (patch 0003)
+bz2.py
+# reason: c-extension _lzma is not part of this build
+lzma.py
+# reason: c-extension pyexpat is disabled (patch 0003); xml.etree.ElementTree
+# stays (pure-python fallback works without _elementtree)
+xml/parsers/
+xml/sax/
+xml/dom/
+# reason: packaging/venv machinery has no canvas use
+ensurepip/
+venv/
+zipapp.py
+# reason: IDE/teaching material
+idlelib/
+turtledemo/
+turtle.py
+pydoc_data/
+# reason: interactive-terminal machinery (help() console, REPL niceties)
+_pyrepl/
+# reason: server-side protocol stacks with no canvas backend (_socket has no
+# transport; kept importable only where asyncio's import chain needs it)
+xmlrpc/
+wsgiref/
+socketserver.py
+http/
+ftplib.py
+poplib.py
+imaplib.py
+smtplib.py
+# reason: audio/multimedia codecs (colorsys stays — matplotlib.colors uses it)
+wave.py
+# reason: tty/terminal control (no pty in MEMFS worker)
+tty.py
+pty.py
+# reason: legacy database formats
+dbm/

@@ -18,10 +18,11 @@
  */
 
 import type * as Y from 'yjs';
+import { getRunEntry, type PyRunEntry } from '@/core/py/py-run-store';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import type { CodeLanguage } from '../accessors';
-import { getCodeProps } from '../accessors';
+import { getCodeProps, getHeaderVisible } from '../accessors';
 import { assertCrossOriginIsolated } from '../sab';
 import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-measure';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
@@ -1042,6 +1043,44 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
   return out;
 }
 
+/**
+ * World-space hit test for the header play/stop button — geometry mirrors the
+ * canvas paint in renderCodeLayout (btnCx/btnCy from playButtonGeom). Callers
+ * gate on language/runnability; this is pure geometry. Radius padded 1.5× for
+ * clickability at small zoom.
+ */
+export function hitCodePlayButton(id: string, y: Y.Map<unknown>, wx: number, wy: number): boolean {
+  if (!getHeaderVisible(y)) return false;
+  const layout = codeSystem.getLayoutById(id);
+  const frame = codeSystem.getFrame(id);
+  if (!layout || !frame) return false;
+  const { btnR } = playButtonGeom(layout.fontSize);
+  const btnCx = frame[0] + layout.totalWidth - layout.padRightPx - btnR;
+  const btnCy = frame[1] + layout.headerBarHeightPx / 2;
+  const r = btnR * 1.5;
+  const dx = wx - btnCx;
+  const dy = wy - btnCy;
+  return dx * dx + dy * dy <= r * r;
+}
+
+/** Live status label painted left of the stop button (header row). */
+function runStatusText(run: PyRunEntry): string {
+  switch (run.phase) {
+    case 'queued':
+      return 'Queued';
+    case 'booting':
+      return 'Starting Python…';
+    case 'downloading':
+      return run.total ? `Downloading… ${((run.received ?? 0) / 1e6).toFixed(0)}/${(run.total / 1e6).toFixed(0)} MB` : 'Downloading…';
+    case 'restoring':
+      return 'Restoring…';
+    case 'running':
+      return `Running… ${((performance.now() - run.startedAt) / 1000).toFixed(1)} s`;
+    case 'cancelling':
+      return 'Stopping…';
+  }
+}
+
 // ============================================================================
 // §10 CANVAS RENDERER — SOA span iteration, zero per-line allocation
 // ============================================================================
@@ -1060,6 +1099,8 @@ export function renderCodeLayout(
   title?: string,
   output?: string,
   outputCache?: CodeOutput,
+  outputStatus?: string,
+  blockId?: string,
 ): void {
   // All px metrics are cached on the layout (populated by layoutCodeSourceInto).
   // No fontSize param — fontSize === layout.fontSize at every call site.
@@ -1112,24 +1153,38 @@ export function renderCodeLayout(
     ctx.font = chromeFont;
     ctx.fillText(title, originX + pl, originY + hh / 2);
 
-    // Play button — green circle with white triangle (centroid-centered)
+    // Play button — green circle + triangle; toggles to a red stop square
+    // while this block has an active Python run. Live status text sits to
+    // its left (fixed header height — no bbox drift; ticker repaints).
     const { btnR, triW, triH, triXOffset } = playButtonGeom(layout.fontSize);
     const btnCx = originX + layout.totalWidth - layout.padRightPx - btnR;
     const btnCy = originY + hh / 2;
+    const run = blockId !== undefined ? getRunEntry(blockId) : undefined;
 
-    ctx.fillStyle = THEME.chrome.playBg;
+    ctx.fillStyle = run ? THEME.chrome.stopBg : THEME.chrome.playBg;
     ctx.beginPath();
     ctx.arc(btnCx, btnCy, btnR, 0, Math.PI * 2);
     ctx.fill();
 
-    const triX = btnCx - triXOffset;
-    ctx.fillStyle = THEME.chrome.playGreen;
-    ctx.beginPath();
-    ctx.moveTo(triX, btnCy - triH / 2);
-    ctx.lineTo(triX + triW, btnCy);
-    ctx.lineTo(triX, btnCy + triH / 2);
-    ctx.closePath();
-    ctx.fill();
+    if (run) {
+      const sq = btnR * 0.75;
+      ctx.fillStyle = THEME.chrome.stopRed;
+      ctx.fillRect(btnCx - sq / 2, btnCy - sq / 2, sq, sq);
+      ctx.fillStyle = THEME.chrome.runStatus;
+      ctx.font = chromeFont;
+      ctx.textAlign = 'right';
+      ctx.fillText(runStatusText(run), btnCx - btnR * 2, btnCy);
+      ctx.textAlign = 'left';
+    } else {
+      const triX = btnCx - triXOffset;
+      ctx.fillStyle = THEME.chrome.playGreen;
+      ctx.beginPath();
+      ctx.moveTo(triX, btnCy - triH / 2);
+      ctx.lineTo(triX + triW, btnCy);
+      ctx.lineTo(triX, btnCy + triH / 2);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 
   // 3. Code content — shifted down by header height
@@ -1229,7 +1284,8 @@ export function renderCodeLayout(
     // when output is non-empty. No fallback branch.
     if (output && outputCache) {
       ctx.textBaseline = 'alphabetic';
-      ctx.fillStyle = THEME.palette[S.DEFAULT];
+      // Failed runs (error/timeout/oom/cancelled/unavailable) tint the text.
+      ctx.fillStyle = outputStatus !== undefined && outputStatus !== 'ok' ? THEME.chrome.outputError : THEME.palette[S.DEFAULT];
       ctx.font = chromeFont;
       const chromeBl = (cfs * (OUTPUT_LINE_H_MULT + 0.8)) / 2; // approximate ascent
       const maxLines = Math.min(outputCache.lineCount, MAX_OUTPUT_CANVAS_LINES);

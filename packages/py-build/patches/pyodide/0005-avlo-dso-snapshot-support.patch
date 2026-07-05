@@ -1,0 +1,172 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: deterministic DSO snapshot support in dynload
+
+DsoSnapshotSupport: record/replay store behind Module.dsoBaseHook (see
+emsdk patch 0005-avlo), JS-side replay loader for restore-before-heap-
+overwrite, dlopen handle capture/restore. Adapted from Cloudflare
+workerd src/pyodide/internal/snapshot.ts (Apache-2.0).
+
+--- a/src/js/dynload.ts	2026-07-04 22:33:26.022665875 -0700
++++ b/src/js/dynload.ts	2026-07-04 22:34:33.118658243 -0700
+@@ -109,9 +109,135 @@
+   }
+ }
+ 
++/**
++ * AVLO snapshot support — DSO base record/replay (adapted from Cloudflare
++ * workerd's src/pyodide/internal/snapshot.ts, Apache-2.0).
++ *
++ * RECORD: every fresh DSO base allocation in loadWebAssemblyModule notifies
++ * Module.dsoBaseHook.record (see emsdk patch 0005-avlo). The accumulated
++ * loadOrder/soMemoryBases/soTableBases travel in the snapshot metadata.
++ *
++ * REPLAY: while restoring a snapshot, DSOs are re-instantiated JS-side (no C
++ * runtime — the heap is overwritten AFTER instantiation) in recorded order;
++ * dsoBaseHook.replay hands back the recorded bases and loadWebAssemblyModule
++ * skips allocation (the restored heap's allocator already owns those regions).
++ */
++export interface DsoLoadInfo {
++  loadOrder: string[];
++  soMemoryBases: Record<string, number>;
++  soTableBases: Record<string, number>;
++}
++
++export class DsoSnapshotSupport {
++  #module: any;
++  #info: DsoLoadInfo = { loadOrder: [], soMemoryBases: {}, soTableBases: {} };
++  #replaying = false;
++
++  constructor(module: any) {
++    this.#module = module;
++    // The hook reads #info/#replaying through `self` at CALL time, so
++    // setDsoLoadInfo can swap the store without reinstalling the hook.
++    const self = this;
++    module.dsoBaseHook = {
++      replay(name: string): [number, number] | undefined {
++        if (!self.#replaying) return undefined;
++        const info = self.#info;
++        const key = name.split("/").pop()!;
++        const mem = info.soMemoryBases[name] ?? info.soMemoryBases[key];
++        const tab = info.soTableBases[name] ?? info.soTableBases[key];
++        if (mem === undefined || tab === undefined) {
++          throw new Error(`snapshot replay: no recorded bases for DSO ${name}`);
++        }
++        return [mem, tab];
++      },
++      record(name: string, memoryBase: number, tableBase: number): void {
++        const info = self.#info;
++        const key = name.split("/").pop()!;
++        info.loadOrder.push(name);
++        info.soMemoryBases[name] = memoryBase;
++        info.soMemoryBases[key] = memoryBase;
++        info.soTableBases[name] = tableBase;
++        info.soTableBases[key] = tableBase;
++      },
++    };
++  }
++
++  public getDsoLoadInfo(): DsoLoadInfo {
++    return this.#info;
++  }
++
++  /** Seed recorded bases from snapshot meta and enter replay mode. */
++  public setDsoLoadInfo(info: DsoLoadInfo): void {
++    this.#info = info;
++    this.#replaying = true;
++  }
++
++  /** Exit replay mode; subsequent dlopens record on top of the seeded info
++   * (per-set snapshot generation stacks on a restored baseline). */
++  public dsoReplayDone(): void {
++    this.#replaying = false;
++  }
++
++  /**
++   * Replay-load one DSO from raw wasm bytes, entirely JS-side. Used ONLY
++   * during snapshot restore, before the heap overwrite. Mirrors workerd's
++   * loadDynlib: refcount pinned (arena allocations are unreclaimable anyway),
++   * non-global, empty local scope (post-RTLD_GLOBAL emscripten needs a scope
++   * object for dependent-symbol lookup).
++   */
++  public loadDynlibReplay(path: string, bytes: Uint8Array): void {
++    const M = this.#module;
++    const wasmModule = new WebAssembly.Module(bytes);
++    const dso = M.newDSO(path, undefined, "loading");
++    dso.refcount = Infinity;
++    dso.global = false;
++    dso.exports = M.loadWebAssemblyModule(wasmModule, {}, path, {});
++    M.LDSO.loadedLibsByName[path.split("/").pop()!] = dso;
++  }
++
++  /** Re-associate dlopen handles recorded in the snapshot with the freshly
++   * re-instantiated DSOs, so dlsym on a pre-snapshot handle still works. */
++  public restoreDsoHandles(
++    dsoHandles: Record<string, { handles: number[] }>,
++  ): void {
++    const M = this.#module;
++    for (const [name, { handles }] of Object.entries(dsoHandles)) {
++      const dso = M.LDSO.loadedLibsByName[name.split("/").pop()!];
++      if (!dso) {
++        throw new Error(`snapshot restore: DSO ${name} not re-instantiated`);
++      }
++      for (const h of handles) {
++        M.LDSO.loadedLibsByHandle[h] = dso;
++      }
++    }
++  }
++
++  /** Snapshot-capture helper: which dlopen handles are currently live. */
++  public recordDsoHandles(): Record<string, { handles: number[] }> {
++    const M = this.#module;
++    const out: Record<string, { handles: number[] }> = {};
++    for (const [h, dso] of Object.entries(M.LDSO.loadedLibsByHandle)) {
++      const handle = Number(h);
++      if (handle === 0) continue;
++      const name = (dso as { name: string }).name;
++      (out[name] ??= { handles: [] }).handles.push(handle);
++    }
++    return out;
++  }
++
++}
++
+ if (typeof API !== "undefined" && typeof Module !== "undefined") {
+   const singletonDynlibLoader = new DynlibLoader(API, Module);
+ 
+   // TODO: Find a better way to register these functions
+   API.loadDynlib = singletonDynlibLoader.loadDynlib.bind(singletonDynlibLoader);
++
++  const dsoSnapshotSupport = new DsoSnapshotSupport(Module);
++  API.getDsoLoadInfo = dsoSnapshotSupport.getDsoLoadInfo.bind(dsoSnapshotSupport);
++  API.setDsoLoadInfo = dsoSnapshotSupport.setDsoLoadInfo.bind(dsoSnapshotSupport);
++  API.dsoReplayDone = dsoSnapshotSupport.dsoReplayDone.bind(dsoSnapshotSupport);
++  API.loadDynlibReplay = dsoSnapshotSupport.loadDynlibReplay.bind(dsoSnapshotSupport);
++  API.restoreDsoHandles = dsoSnapshotSupport.restoreDsoHandles.bind(dsoSnapshotSupport);
++  API.recordDsoHandles = dsoSnapshotSupport.recordDsoHandles.bind(dsoSnapshotSupport);
+ }
+--- a/src/js/types.ts	2026-07-04 22:53:40.874341801 -0700
++++ b/src/js/types.ts	2026-07-04 22:53:40.986341720 -0700
+@@ -522,6 +522,23 @@
+     searchDirs?: string[] | undefined,
+     readFileFunc?: (path: string) => Uint8Array,
+   ) => Promise<void>;
++  // AVLO snapshot support (see dynload.ts DsoSnapshotSupport)
++  getDsoLoadInfo: () => {
++    loadOrder: string[];
++    soMemoryBases: Record<string, number>;
++    soTableBases: Record<string, number>;
++  };
++  setDsoLoadInfo: (info: {
++    loadOrder: string[];
++    soMemoryBases: Record<string, number>;
++    soTableBases: Record<string, number>;
++  }) => void;
++  dsoReplayDone: () => void;
++  loadDynlibReplay: (path: string, bytes: Uint8Array) => void;
++  restoreDsoHandles: (
++    dsoHandles: Record<string, { handles: number[] }>,
++  ) => void;
++  recordDsoHandles: () => Record<string, { handles: number[] }>;
+   install: (
+     buffer: Uint8Array,
+     filename: string,

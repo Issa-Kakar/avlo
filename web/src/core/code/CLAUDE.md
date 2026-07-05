@@ -576,8 +576,18 @@ context-menu actions wired through field descriptors in
 `object-query.ts`): code blocks always occlude (opaque bg) and participate
 normally in spatial-index queries.
 
+## Execution (python)
+
+The play button is LIVE for `language === 'python'` (decorative for the rest):
+canvas hit via `hitCodePlayButton` (SelectTool `playButton` DownHit +
+CodeTool.end), DOM `.code-run-btn.is-runnable` while editing, Mod-Enter in the
+CM keymap — all three route to `core/py/py-manager.toggleRunCodeBlock` (the
+never-auto-run invariant lives there; see `core/py/CLAUDE.md`). Run state
+(stop square + "Running… N s" in the header row) paints from `py-run-store`
+inside `renderCodeLayout` (blockId param); `outputStatus !== 'ok'` tints the
+output text `THEME.chrome.outputError` (canvas + DOM both).
+
 ## Known Issues
 
 - **Long code blocks:** CM's internal viewport optimization causes WYSIWYG
   mismatch on very tall blocks (content outside CM's visible window is virtualized).
-- **Play button:** Decorative only (`pointer-events: none`). No execution runtime.

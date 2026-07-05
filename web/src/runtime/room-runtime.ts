@@ -147,6 +147,21 @@ export function transact<T>(fn: () => T): T | undefined {
   return result;
 }
 
+/** Origin for Python run-output commits — NOT undo-tracked (UndoManager
+ * tracks only `{userId}`): Cmd+Z after a run undoes the last edit, never the
+ * output. Persists + broadcasts normally. */
+export const PY_RUN_ORIGIN = 'py-run';
+
+/** `transact` variant for Python output: same return-through semantics,
+ * distinct origin. */
+export function transactPyOutput<T>(fn: () => T): T | undefined {
+  let result: T | undefined;
+  getActiveRoomDoc().mutateWithOrigin(() => {
+    result = fn();
+  }, PY_RUN_ORIGIN);
+  return result;
+}
+
 export function undo(): void {
   getActiveRoomDoc().undo();
 }

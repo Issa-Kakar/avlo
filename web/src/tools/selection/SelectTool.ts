@@ -1,6 +1,7 @@
 import { getConnectorType } from '@/core/accessors';
 import { openBookmarkUrl } from '@/core/bookmark/bookmark-actions';
 import { getOpenButtonWorldBBox, hitTestOpenButton } from '@/core/bookmark/bookmark-render';
+import { hitCodePlayButton } from '@/core/code/code-system';
 import { isAnchored } from '@/core/connectors/anchor-atoms';
 import { getConnectorLabelRect } from '@/core/connectors/connector-label';
 import { getConnectorRoute } from '@/core/connectors/connector-router';
@@ -8,6 +9,7 @@ import type { Slot } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import { pointsToBBoxMut } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
+import { isRunnableCodeBlock, toggleRunCodeBlock } from '@/core/py/py-manager';
 import { hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
@@ -56,6 +58,7 @@ type DownHit =
   | { kind: 'handle'; handleId: HandleId }
   | { kind: 'endpoint'; connectorId: string; slot: Slot }
   | { kind: 'openButton'; handle: ObjectHandle }
+  | { kind: 'playButton'; handle: ObjectHandle }
   | { kind: 'flowButton'; side: FlowSide; sourceId: string };
 
 // === SelectTool Class ===
@@ -211,6 +214,20 @@ export class SelectTool implements PointerTool {
         invalidateOverlay();
         return;
       }
+      // Code play/stop button — same priority slot as the bookmark Open chip.
+      // Gated on runnability (python only, v1) so other languages keep the
+      // decorative button + plain click-to-select behavior.
+      if (
+        hit.kind === 'code' &&
+        !this.hasAddModifier() &&
+        isRunnableCodeBlock(hit.id) &&
+        hitCodePlayButton(hit.id, hit.y, worldX, worldY)
+      ) {
+        this.downHit = { kind: 'playButton', handle: hit };
+        this.phase = 'pendingClick';
+        invalidateOverlay();
+        return;
+      }
       const isSelected = selectedIds.includes(hit.id);
       this.downHit = { kind: 'object', handle: hit, isSelected };
       this.phase = 'pendingClick';
@@ -350,6 +367,20 @@ export class SelectTool implements PointerTool {
             // state stays set: ambient `ctx.translate(tdx, tdy)` in objects.ts
             // carries the hover-painted button along with the bookmark, so the
             // cursor stays attached to the button visually for the whole drag.
+            const { handle } = this.downHit;
+            const store = useSelectionStore.getState();
+            const isSelected = store.selectedIds.includes(handle.id);
+            if (isSelected) contextMenuController.hide();
+            else store.setSelection([handle.id]);
+            this.phase = 'translate';
+            useSelectionStore.getState().beginTranslate();
+            break;
+          }
+
+          case 'playButton': {
+            if (!passMove) break;
+            // Drift on a pressed play button = translate intent (mirrors the
+            // bookmark openButton promotion).
             const { handle } = this.downHit;
             const store = useSelectionStore.getState();
             const isSelected = store.selectedIds.includes(handle.id);
@@ -531,6 +562,24 @@ export class SelectTool implements PointerTool {
               hitTestOpenButton(handle, worldX, worldY)
             ) {
               openBookmarkUrl(handle.id);
+            }
+            break;
+          }
+
+          case 'playButton': {
+            // Re-verify like openButton: block may have been deleted or edited
+            // mid-press; re-test the button at release. LOCAL GESTURE — one of
+            // exactly three legal toggleRunCodeBlock call sites (never-auto-run).
+            const { handle: stored } = this.downHit;
+            const handle = getHandle(stored.id);
+            if (
+              handle &&
+              handle.kind === 'code' &&
+              worldX !== undefined &&
+              worldY !== undefined &&
+              hitCodePlayButton(handle.id, handle.y, worldX, worldY)
+            ) {
+              toggleRunCodeBlock(handle.id);
             }
             break;
           }

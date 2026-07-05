@@ -250,6 +250,11 @@ html {
   width: var(--c-btn-size);
   height: var(--c-btn-size);
 }
+/* Runnable blocks (python) get a live run/stop button while editing. */
+.code-run-btn.is-runnable {
+  pointer-events: auto;
+  cursor: pointer;
+}
 .code-run-btn > svg {
   position: absolute;
   /* Triangle path (M0 0L17 10L0 20Z) has its centroid at (W/3, H/2) of its

@@ -111,6 +111,13 @@ export interface ThemeSpec {
     playBg: string;
     outputLabel: string;
     outputText: string;
+    /** Output text tint when the last run failed (error/timeout/oom/…). */
+    outputError: string;
+    /** Live run status text (right-aligned in the output label row). */
+    runStatus: string;
+    /** Stop-square fill while a run is active (play button toggles). */
+    stopRed: string;
+    stopBg: string;
     /** Title input placeholder color. */
     placeholder: string;
   };
@@ -150,6 +157,10 @@ export const CODE_THEME: ThemeSpec = {
     playBg: '#4ADE8035',
     outputLabel: '#E0E0E090',
     outputText: '#AEAEAE',
+    outputError: '#FF5555',
+    runStatus: '#E0E0E090',
+    stopRed: '#FF5555',
+    stopBg: '#FF555535',
     placeholder: '#E0E0E060',
   },
 };

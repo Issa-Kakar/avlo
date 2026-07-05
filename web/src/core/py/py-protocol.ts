@@ -1,0 +1,148 @@
+/**
+ * Python runtime message protocol — the single source of truth for every
+ * main ↔ supervisor ↔ executor exchange. Plain discriminated unions over
+ * structured-cloneable data; bulk payloads ride transferables.
+ *
+ * Channel map (see core/py/CLAUDE.md):
+ *   main ⇄ supervisor : postMessage (the MainToSup / SupToMain unions)
+ *   supervisor ⇄ executor : postMessage (SupToExec / ExecToSup) + one 64 B PY_SAB
+ *     (py-sab.ts) for interrupt/state/heartbeat — writable while the
+ *     executor's event loop is blocked in synchronous Python.
+ */
+
+/** Mirrors the code block's Y `outputStatus` field — renderer drives tint. */
+export type PyRunStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
+
+/** Package-set key: which bundles a run needs (P1 ships stdlib-only). */
+export type PySetKey = 'stdlib' | 'numpy' | 'numpy+pandas' | 'numpy+matplotlib' | 'all';
+
+/** Live phase for the run store / play-button UI (never written to Y). */
+export type PyRunPhase = 'queued' | 'booting' | 'downloading' | 'restoring' | 'running' | 'cancelling';
+
+export interface PyFigure {
+  /** PNG bytes — transferred, then ingested through the image pipeline. */
+  png: ArrayBuffer;
+  width: number;
+  height: number;
+}
+
+// ---------------------------------------------------------------- main → sup
+
+export interface RunMsg {
+  t: 'run';
+  runId: number;
+  code: string;
+  setKey: PySetKey;
+}
+export interface CancelMsg {
+  t: 'cancel';
+  runId: number;
+}
+/** Idle-teardown veto/ping and future config live here as needed. */
+export type MainToSup = RunMsg | CancelMsg;
+
+// ---------------------------------------------------------------- sup → main
+
+export interface SupReadyMsg {
+  t: 'sup-ready';
+}
+export interface PhaseMsg {
+  t: 'phase';
+  runId: number;
+  phase: PyRunPhase;
+  /** e.g. download progress: receivedBytes/totalBytes. */
+  received?: number;
+  total?: number;
+}
+/** Batched stdout+stderr (≥100 ms / ≥8 KB) — DOM overlay live view only. */
+export interface StdoutMsg {
+  t: 'stdout';
+  runId: number;
+  chunk: string;
+}
+export interface ResultMsg {
+  t: 'result';
+  runId: number;
+  status: PyRunStatus;
+  /** Final combined output, already capped + truncation-marked (harness). */
+  output: string;
+  durationMs: number;
+  figures: PyFigure[];
+}
+export interface SupFatalMsg {
+  t: 'sup-fatal';
+  error: string;
+}
+export type SupToMain = SupReadyMsg | PhaseMsg | StdoutMsg | ResultMsg | SupFatalMsg;
+
+// ---------------------------------------------------------------- sup → exec
+
+export interface ExecBootMsg {
+  t: 'boot';
+  /** Base URL for glue/wasm/stdlib artifacts (dev: /py-dev/fork/). */
+  artifactBase: string;
+  sab: SharedArrayBuffer;
+  /** Snapshot restore payload (P3); absent = cold boot. */
+  snapshot?: ArrayBuffer;
+}
+export interface ExecRunMsg {
+  t: 'exec';
+  runId: number;
+  code: string;
+}
+export type SupToExec = ExecBootMsg | ExecRunMsg;
+
+// ---------------------------------------------------------------- exec → sup
+
+export interface ExecReadyMsg {
+  t: 'exec-ready';
+  bootMs: number;
+}
+export interface ExecStdoutMsg {
+  t: 'exec-stdout';
+  runId: number;
+  chunk: string;
+}
+export interface ExecDoneMsg {
+  t: 'exec-done';
+  runId: number;
+  /** ok=false carries the harness-trimmed traceback in `output`'s tail. */
+  ok: boolean;
+  /** True when the failure was a KeyboardInterrupt (cancel/timeout mapping
+   * to 'cancelled' vs 'timeout' is the supervisor's call via CANCEL_KIND). */
+  interrupted: boolean;
+  output: string;
+  durationMs: number;
+  figures: PyFigure[];
+}
+export interface ExecFatalMsg {
+  t: 'exec-fatal';
+  error: string;
+}
+export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecFatalMsg;
+
+// ------------------------------------------------------------------- limits
+
+export const PY_LIMITS = {
+  /** Wall-clock soft timeout → SIGINT (supervisor clock). */
+  softTimeoutMs: 30_000,
+  /** Grace after soft timeout / cancel before executor.terminate(). */
+  hardGraceMs: 5_000,
+  cancelGraceMs: 2_000,
+  /** SIGINT repeat cadence until acknowledged — a terminated-but-still-
+   * spinning zombie executor can eat one write (P0-B finding). */
+  interruptRepeatMs: 50,
+  /** Run queue cap; further clicks are ignored with a status flash. */
+  queueCap: 4,
+  /** stdout relay batching. */
+  stdoutFlushMs: 100,
+  stdoutFlushBytes: 8_192,
+  /** Idle executor teardown (snapshots make respawn cheap). */
+  idleTeardownMs: 120_000,
+  maxFigures: 4,
+  maxFigurePx: 2_048,
+  /** Final-output char cap — mirrors MAX_OUTPUT_CHARS in code-tokens.ts. */
+  maxOutputChars: 4_096,
+} as const;
+
+export const OUTPUT_TRUNCATION_MARKER = '\n… output truncated (4096 char limit)';

@@ -47,6 +47,7 @@ export interface IRoomDocManager {
   readonly zOrder: ZRankTable;
 
   mutate(fn: () => void): void;
+  mutateWithOrigin(fn: () => void, origin: unknown): void;
   destroy(): void;
   undo(): void;
   redo(): void;
@@ -152,6 +153,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   mutate(fn: () => void): void {
     if (this.destroyed) return;
     this.ydoc.transact(fn, this.userId);
+  }
+
+  /** Transact under a non-default origin. UndoManager tracks only `userId`
+   * (see attachUndoManager), so a distinct origin keeps the write out of the
+   * undo stack while still persisting (y-indexeddb) and broadcasting (WS) —
+   * both are origin-agnostic. First consumer: Python run output. */
+  mutateWithOrigin(fn: () => void, origin: unknown): void {
+    if (this.destroyed) return;
+    this.ydoc.transact(fn, origin);
   }
 
   undo(): void {

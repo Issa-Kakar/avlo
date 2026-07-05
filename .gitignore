@@ -48,3 +48,8 @@ completed_tasks/
 .claude/
 PROMPT.MD
 prompt.md
+
+# Python toolchain build workspace (packages/py-build) — clone + container caches
+packages/py-build/.work/
+# Local pyodide/py artifacts pulled for dev (P0 spike + py:pull)
+web/public/py-dev/

@@ -12,6 +12,7 @@ import type { Frame, FrameTuple } from './types/geometry';
 import type {
   BookmarkProps,
   CodeLanguage,
+  CodeOutputStatus,
   CodeProps,
   ConnectorCap,
   ConnectorEndpoint,
@@ -276,6 +277,7 @@ export function getCodeProps(y: Y.Map<unknown>): CodeProps | null {
     headerVisible: (y.get('headerVisible') as boolean | undefined) ?? true,
     outputVisible: (y.get('outputVisible') as boolean | undefined) ?? false,
     output: y.get('output') as string | undefined,
+    outputStatus: y.get('outputStatus') as CodeOutputStatus | undefined,
   };
 }
 
@@ -289,6 +291,10 @@ export function getOutputVisible(y: Y.Map<unknown>, fallback = false): boolean {
 
 export function getCodeOutput(y: Y.Map<unknown>): string | undefined {
   return y.get('output') as string | undefined;
+}
+
+export function getOutputStatus(y: Y.Map<unknown>): CodeOutputStatus | undefined {
+  return y.get('outputStatus') as CodeOutputStatus | undefined;
 }
 
 // ============================================================================

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>py-spike (P0)</title>
+    <style>
+      body { font: 13px/1.5 ui-monospace, monospace; background: #16161e; color: #d8d8e0; padding: 16px; }
+      button { font: inherit; padding: 6px 14px; margin-bottom: 12px; }
+      pre { white-space: pre-wrap; }
+      #summary { color: #4ade80; }
+    </style>
+  </head>
+  <body>
+    <h3>AVLO Python runtime — P0 mechanics spike (dev only)</h3>
+    <button id="run">P0-A gates (stock)</button>
+    <button id="run-fork">P0-A gates (fork)</button>
+    <button id="run-p0b">P0-B gates (fork numpy record/replay)</button>
+    <div id="summary"></div>
+    <pre id="log"></pre>
+    <script type="module" src="/src/dev/py-spike-main.ts"></script>
+  </body>
+</html>

@@ -9,7 +9,16 @@
 import { generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import { type CodeLanguage, getCodeOutput, getCodeProps, getHeaderVisible, getLineNumbers, getOutputVisible } from '@/core/accessors';
+import {
+  type CodeLanguage,
+  getCodeOutput,
+  getCodeProps,
+  getHeaderVisible,
+  getLanguage,
+  getLineNumbers,
+  getOutputStatus,
+  getOutputVisible,
+} from '@/core/accessors';
 import {
   borderRadius,
   charWidth,
@@ -17,6 +26,7 @@ import {
   getDefaultWidth,
   gutterGap,
   headerBarHeight,
+  hitCodePlayButton,
   lineHeight as lineHeightFn,
   padBottom,
   padLeft,
@@ -34,6 +44,8 @@ import {
   playButtonGeom,
   THEME,
 } from '@/core/code/code-tokens';
+import { isRunnableCodeBlock, toggleRunCodeBlock } from '@/core/py/py-manager';
+import { usePyRunStore } from '@/core/py/py-run-store';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
@@ -84,6 +96,7 @@ export class CodeTool implements PointerTool {
   private editorView: unknown | null = null; // EditorView — typed as unknown to keep imports lazy
   private headerDiv: HTMLDivElement | null = null;
   private titleInput: HTMLInputElement | null = null;
+  private runBtnUnsub: (() => void) | null = null;
   private outputDiv: HTMLDivElement | null = null;
   private outputTextDiv: HTMLDivElement | null = null;
   private sessionUM: Y.UndoManager | null = null;
@@ -123,7 +136,14 @@ export class CodeTool implements PointerTool {
     const y = worldY ?? this.downWorld?.[1] ?? 0;
 
     if (this.hitCodeId) {
-      this.startEditing(this.hitCodeId, this.downWorld ?? undefined);
+      // Play/stop button wins over edit entry (local gesture — a legal
+      // toggleRunCodeBlock call site; see never-auto-run in core/py).
+      const hit = getHandle(this.hitCodeId);
+      if (hit && isRunnableCodeBlock(this.hitCodeId) && hitCodePlayButton(this.hitCodeId, hit.y, x, y)) {
+        toggleRunCodeBlock(this.hitCodeId);
+      } else {
+        this.startEditing(this.hitCodeId, this.downWorld ?? undefined);
+      }
     } else {
       this.createCodeObject(x, y);
     }
@@ -428,6 +448,19 @@ export class CodeTool implements PointerTool {
         cmLang.indentOnInput(),
         cmView.keymap.of([
           backspaceIndent,
+          // Run the block (python) — MUST precede plain Enter. Always consumes
+          // so Mod-Enter never inserts a newline. A legal toggleRunCodeBlock
+          // call site (local gesture; never-auto-run invariant).
+          {
+            key: 'Mod-Enter',
+            preventDefault: true,
+            run: () => {
+              if (this.objectId && isRunnableCodeBlock(this.objectId)) {
+                toggleRunCodeBlock(this.objectId);
+              }
+              return true;
+            },
+          },
           // Enter: language-aware auto-indent + bracket explode (cursor between
           // a matched pair opens an indented line with the closer pushed down).
           { key: 'Enter', run: cmCommands.insertNewlineAndIndent },
@@ -762,6 +795,7 @@ export class CodeTool implements PointerTool {
       this.objectId = null;
       this.headerDiv = null;
       this.titleInput = null;
+      this.runBtnUnsub = dispose(this.runBtnUnsub, (fn) => fn());
       this.outputDiv = null;
       this.outputTextDiv = null;
 
@@ -812,7 +846,29 @@ export class CodeTool implements PointerTool {
     // Size + SVG positioning come from --c-btn-size / --c-tri-w / --c-tri-h on
     // the container (set in setCSSVars, refreshed on every positionEditor).
     // viewBox `0 0 17 20` matches triW:triH = 0.85:1.
-    playBtn.innerHTML = `<svg viewBox="0 0 17 20"><path d="M0 0L17 10L0 20Z" fill="${THEME.chrome.playGreen}"/></svg>`;
+    const playSvg = `<svg viewBox="0 0 17 20"><path d="M0 0L17 10L0 20Z" fill="${THEME.chrome.playGreen}"/></svg>`;
+    playBtn.innerHTML = playSvg;
+    // Runnable blocks (python, v1) get a live button while editing — a legal
+    // toggleRunCodeBlock call site (local gesture; never-auto-run invariant).
+    if (getLanguage(y) === 'python') {
+      const blockId = y.get('id') as string;
+      playBtn.classList.add('is-runnable');
+      playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleRunCodeBlock(blockId);
+      });
+      // Mirror run state onto the DOM button (canvas is hidden while editing).
+      const stopSvg = `<svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" fill="${THEME.chrome.stopRed}"/></svg>`;
+      let wasRunning = false;
+      this.runBtnUnsub?.();
+      this.runBtnUnsub = usePyRunStore.subscribe((s) => {
+        const running = s.runs.has(blockId);
+        if (running === wasRunning) return;
+        wasRunning = running;
+        playBtn.innerHTML = running ? stopSvg : playSvg;
+        playBtn.style.background = running ? THEME.chrome.stopBg : THEME.chrome.playBg;
+      });
+    }
 
     header.appendChild(input);
     header.appendChild(playBtn);
@@ -851,6 +907,7 @@ export class CodeTool implements PointerTool {
     textDiv.style.maxHeight = `${maxH}px`;
     textDiv.style.lineHeight = `${outputLH}px`;
     textDiv.textContent = (getCodeOutput(y) as string) ?? '';
+    this.applyOutputTint(textDiv, y);
 
     output.appendChild(sep);
     output.appendChild(label);
@@ -938,5 +995,12 @@ export class CodeTool implements PointerTool {
   private updateOutputContent(y: Y.Map<unknown>): void {
     if (!this.outputTextDiv) return;
     this.outputTextDiv.textContent = getCodeOutput(y) ?? '';
+    this.applyOutputTint(this.outputTextDiv, y);
+  }
+
+  /** Failed-run tint — mirrors the canvas renderer's outputStatus branch. */
+  private applyOutputTint(div: HTMLDivElement, y: Y.Map<unknown>): void {
+    const status = getOutputStatus(y);
+    div.style.color = status !== undefined && status !== 'ok' ? THEME.chrome.outputError : '';
   }
 }

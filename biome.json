@@ -112,7 +112,7 @@
       }
     },
     {
-      "includes": ["scripts/verify/**", "web/scripts/**", "web/src/dev/**"],
+      "includes": ["scripts/verify/**", "web/scripts/**", "web/src/dev/**", "packages/py-build/scripts/**"],
       "linter": {
         "rules": {
           "suspicious": {

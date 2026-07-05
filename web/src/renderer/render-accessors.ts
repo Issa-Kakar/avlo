@@ -242,6 +242,7 @@ interface CodeRender {
   title: string | undefined;
   outputVisible: boolean;
   output: string | undefined;
+  outputStatus: string | undefined;
 }
 
 const _codeScratch: CodeRender = {
@@ -252,6 +253,7 @@ const _codeScratch: CodeRender = {
   title: undefined,
   outputVisible: false,
   output: undefined,
+  outputStatus: undefined,
 };
 
 export function readCodeRender(y: Y.Map<unknown>): CodeRender {
@@ -264,6 +266,7 @@ export function readCodeRender(y: Y.Map<unknown>): CodeRender {
   _codeScratch.title = readPrim<string>(yi, 'title');
   _codeScratch.outputVisible = readPrim<boolean>(yi, 'outputVisible') ?? false;
   _codeScratch.output = readPrim<string>(yi, 'output');
+  _codeScratch.outputStatus = readPrim<string>(yi, 'outputStatus');
   return _codeScratch;
 }
 

@@ -158,6 +158,10 @@ export interface TextProps {
 
 export type CodeLanguage = 'javascript' | 'typescript' | 'python' | 'html' | 'css' | 'json' | 'sql';
 
+/** How the last run ended — drives output-panel tint. Written only by
+ * `transactPyOutput` (never undo-tracked). Values = PyRunStatus. */
+export type CodeOutputStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
+
 export interface CodeProps {
   content: Y.Text;
   origin: [number, number];
@@ -169,6 +173,7 @@ export interface CodeProps {
   headerVisible: boolean;
   outputVisible: boolean;
   output: string | undefined;
+  outputStatus: CodeOutputStatus | undefined;
 }
 
 // ============================================================================
