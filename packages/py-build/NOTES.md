@@ -63,13 +63,26 @@ Slice plan (session 8): /home/issak/.claude/plans/home-issak-claude-plans-prompt
   **verify 8/8** (gate names unfrozen intrinsics pre-harden; staged tree ==
   lock for all 4 artifacts; flipped-byte + truncated-buffer negatives).
 - `pnpm typecheck` 12/12 green with all of the above.
-- **PENDING (browser board, needs dev server)**: canvas sqlite3+seaborn
-  runs + download prompts, preflight-once network trace, preflight negative
-  (corrupt local R2 blob → refusal), SW 502 negative + no-cache-write
-  (vite preview), offline second-load (validates nested-worker SW control),
-  plus the session-7 PENDING sweep (zero /py-dev/fork/ product fetches,
-  avlo-py-<hash> no-refetch rerun, offline-UX message, PORT_OFFSET=10,
-  guard-stripped import js in real Chrome).
+- **Browser/dev board (run post-commit, same session)**: canvas sqlite3 run
+  (Python block → downloads only sqlite3.tar → `(6, 3)` output) + seaborn
+  figure VERIFIED by the owner on the live dev instance; the orchestrator
+  R2 wiring proven end-to-end (py worker on :8794 → bad hash 400 / glue 200
+  with exact lock size + immutable/ETag/sandbox-CSP/CORP headers /
+  sqlite3.tar byte-exact through the Vite proxy). Preflight POSITIVE is
+  implicit in every successful canvas boot (spawn happens only after
+  ensureGlueVerified); preflight NEGATIVE observed live: a real 404 on the
+  glue surfaced as "Python runtime download failed: pyodide.mjs: HTTP 404"
+  error-tinted with NO executor spawn and clean retry on next click.
+  Debugging artifact worth keeping: TWO dev instances were up (main repo on
+  base ports + avlo-parallel on dev:p's +10) — a THIRD dev:p from the main
+  repo collides with the parallel one silently (workerd binds fail, curls
+  hit the OTHER checkout's workers + state → phantom 404s). Check
+  `ss -tlnp` pids before diagnosing "missing" R2 keys.
+- **Still deferred to the next preview pass** (needs `vite preview` + SW,
+  not the dev path): SW verified-route 502 negative + no-cache-write,
+  offline second-load (the nested-worker-SW-control validation), zero
+  `/py-dev/fork/` product-fetch sweep, guard-stripped `import js` re-probe
+  in real Chrome (Node harness covers the closure 43-board meanwhile).
 
 ## Session 8 — Commit 1: sqlite3 + seaborn bundles (scope-guard relaxation)
 - Owner decisions: packages = sqlite3 + seaborn; sqlite3 bundle RIDES EVERY
