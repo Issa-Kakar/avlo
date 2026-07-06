@@ -1,0 +1,195 @@
+/* AI panel — pure overlay on the right edge, spanning between the
+ * TopBarRight pill (bottom edge ~55px: top 7 + height 48) and the
+ * ZoomControls (bottom 16 + ~48 bar). Chrome design language throughout:
+ * surface / border / popover shadow / blue-tinted dividers / hover wash. */
+
+.ai-panel {
+  position: fixed;
+  top: 63px;
+  right: 9px;
+  bottom: 72px;
+  width: 380px;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-chrome-surface);
+  border: 1px solid var(--color-chrome-border);
+  border-radius: var(--radius-chrome-pill);
+  box-shadow: var(--shadow-chrome-popover);
+  font-family: var(--font-ui);
+}
+
+.ai-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--color-chrome-divider);
+  flex-shrink: 0;
+}
+
+.ai-panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-chrome-ink-tier);
+}
+
+.ai-panel-header-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-chrome-btn);
+  background: transparent;
+  color: var(--color-chrome-ink-body);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.ai-panel-header-btn:hover {
+  background: var(--color-chrome-hover);
+}
+
+.ai-panel-signin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 20px;
+  font-size: 13px;
+  color: var(--color-chrome-ink-body);
+  text-align: center;
+}
+
+.ai-panel-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-panel-empty,
+.ai-panel-hint {
+  font-size: 12px;
+  color: var(--color-chrome-ink-body);
+  opacity: 0.75;
+}
+
+.ai-msg {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-chrome-ink-engaged);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.ai-msg p {
+  margin: 0 0 4px;
+}
+
+.ai-msg-user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--color-chrome-hover);
+  border-radius: 10px;
+  padding: 7px 10px;
+}
+
+.ai-msg-assistant {
+  align-self: stretch;
+}
+
+.ai-msg-quota {
+  color: #ef4e3a;
+  font-size: 12px;
+}
+
+.ai-msg-tool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 4px;
+}
+
+.ai-msg-tool-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-chrome-accent);
+}
+
+.ai-msg-tool-intent {
+  font-size: 11px;
+  color: var(--color-chrome-ink-body);
+  background: var(--color-chrome-hover);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.ai-panel-composer {
+  border-top: 2px solid var(--color-chrome-divider);
+  padding: 10px 12px 8px;
+  flex-shrink: 0;
+}
+
+.ai-panel-input {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--color-chrome-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: 400 13px / 1.4 var(--font-ui);
+  color: var(--color-chrome-ink-engaged);
+  background: var(--color-chrome-surface);
+  outline: none;
+}
+
+.ai-panel-input:focus {
+  border-color: #818f9c;
+}
+
+.ai-panel-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  justify-content: flex-end;
+}
+
+.ai-panel-send {
+  height: 28px;
+  padding: 0 14px;
+  border-radius: var(--radius-chrome-btn);
+  background: #ef4e3a;
+  color: #fff;
+  font: 700 12px var(--font-ui);
+}
+
+.ai-panel-send:hover:not(:disabled) {
+  background: #d74634;
+}
+
+.ai-panel-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ai-panel-clear {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-chrome-btn);
+  background: transparent;
+  color: var(--color-chrome-ink-body);
+  font: 700 12px var(--font-ui);
+}
+
+.ai-panel-clear:hover {
+  background: var(--color-chrome-hover);
+}
+
+.ai-panel-footer {
+  padding: 4px 12px 8px;
+  font-size: 11px;
+  color: var(--color-chrome-ink-body);
+  opacity: 0.7;
+  flex-shrink: 0;
+  min-height: 22px;
+}

@@ -435,6 +435,41 @@
   background: rgba(42, 82, 121, 0.08);
 }
 
+/* AI toggle — a transparent 32×32 icon button (HistoryButtons geometry) that
+   adopts the engaged-dark trigger pattern while the panel is open
+   (aria-expanded, same as the main-menu trigger). Sits just left of Share. */
+.top-bar-ai {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-right: 6px;
+  border: none;
+  border-radius: var(--radius-chrome-btn);
+  background: transparent;
+  color: #1b1f22;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.top-bar-ai:hover {
+  background: rgba(42, 82, 121, 0.08);
+}
+
+.top-bar-ai[aria-expanded="true"],
+.top-bar-ai[aria-expanded="true"]:hover,
+.top-bar-ai[aria-expanded="true"]:active {
+  background: #1b1f22;
+  color: var(--color-chrome-surface);
+}
+
+.top-bar-ai-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
 /* Share button — the app's primary action: a vivid coral (#ef4e3a), a warm
    foil to the toolbar's cool electric blue. Text + icon share white via
    currentColor (~3.6:1 — readable for a bold label, under strict AA). Flat,

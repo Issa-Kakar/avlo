@@ -1,0 +1,12 @@
+# Gemini via AI Studio — the primary chat model. Absent => Workers AI fallback
+# model (@cf/zai-org/glm-4.7-flash via the AI binding; real-network, bills neurons).
+GOOGLE_AI_STUDIO_API_KEY=
+
+# Optional: route Gemini through Cloudflare AI Gateway (observability, BYOK,
+# Dynamic Routing budgets). Both must be set to engage the gateway path.
+AI_GATEWAY_ACCOUNT_ID=
+AI_GATEWAY_NAME=
+
+# Optional: '1' registers the generate_image tool (FLUX via the AI binding ->
+# shared R2). Off by default while the image lane is stub-grade.
+AI_IMAGES_ENABLED=

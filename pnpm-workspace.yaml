@@ -7,6 +7,7 @@ allowBuilds:
   esbuild: true
   workerd: true
   sharp: true
+  core-js-pure: false
 
 minimumReleaseAgeExclude:
   - '@cloudflare/workerd-darwin-64@1.20260630.1'

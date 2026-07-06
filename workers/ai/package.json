@@ -1,0 +1,27 @@
+{
+  "name": "@avlo/ai",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:tsc": "tsc --noEmit",
+    "types": "wrangler types",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.88",
+    "@avlo/shared": "workspace:*",
+    "@avlo/worker-shared": "workspace:*",
+    "@cloudflare/ai-chat": "^0.9.3",
+    "agents": "^0.17.3",
+    "ai": "^6.0.219",
+    "hono": "^4.12.27",
+    "workers-ai-provider": "^3.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251106.1",
+    "typescript": "^6.0.3"
+  }
+}
