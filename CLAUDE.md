@@ -4,7 +4,7 @@
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `renderer/grid`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `routes`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,locks,geometry/recognizer}`, `renderer/grid`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `routes`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -83,6 +83,7 @@ All paths relative to `web/src/` unless noted.
 | `layers/shape-preview.ts` | In-flight shape draw (line/rect/ellipse/diamond/roundedRect) |
 | `layers/stroke-preview.ts` | In-flight Perfect Freehand stroke |
 | `layers/eraser-dim.ts` | Dim hovered objects under eraser via 'screen' blend |
+| `lock-veil/` | Remote-lock veil — worker-owned canvas layer (`transferControlToOffscreen`) between base and overlay painting a grey filter rect per locked bbox; main thread ships camera scalars + one transferred bbox Float64Array, worker culls + single-path fills, 0×0 when idle (see `core/locks/CLAUDE.md`) |
 | `layers/handle-stamp.ts` | Resize-handle bitmap stamp — pre-rendered offscreen, blitted (no per-frame `shadowBlur`) |
 | `animation/AnimationController.ts` | Singleton animation job manager — push-based invalidation |
 | `animation/EraserTrailAnimation.ts` | Decaying eraser-stroke trail |
@@ -131,6 +132,7 @@ All paths relative to `web/src/` unless noted.
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
 | `clipboard/` | Nonce-based clipboard + serializer. Entry: `clipboard-actions.ts`, `clipboard-serializer.ts`. See CLAUDE.md |
 | `z-order/` | `ZRankTable` (SoA Uint32 ranks + slot pool) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
+| `locks/` | Ephemeral conflict-resolution grabs — `lockOwner: Uint32Array` keyed by `handle.slot` (0=unlocked, 1=mine, ≥2=peer key; every guard is ONE `lo[slot] > 1` compare), binary `MSG_LOCK` frames on the Yjs WS (never awareness), DO-arbitrated first-wins, worker-rendered grey veil. Entry: `lock-table.ts`, `lock-protocol.ts` (+ `@avlo/shared/lock-protocol`, `workers/sync/src/room.ts`, `renderer/lock-veil/`). See CLAUDE.md |
 
 ### Stores
 | File | Responsibility |

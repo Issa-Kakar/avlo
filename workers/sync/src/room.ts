@@ -2,6 +2,10 @@ import * as schemaDo from '@avlo/db/schema-do';
 import {
   asRoomId,
   asUserId,
+  decodeLockSetBody,
+  encodeLockPeerSet,
+  LOCK_STALE_MS,
+  MSG_LOCK,
   maxZLength,
   normalizeRoomTitle,
   type Permission,
@@ -25,9 +29,12 @@ const headKey = (room: string) => `rooms/${room}/head.v2.bin`;
 
 const { roomMeta } = schemaDo;
 
-/** Per-connection identity — the trust boundary (server-set), written once in onConnect (§19/H19). */
+/** Per-connection identity — the trust boundary (server-set), written once in onConnect (§19/H19).
+ *  `lockKey` is the small int (≥2) peers see as this connection's ephemeral-lock owner key;
+ *  it lives in the attachment (survives hibernation) so post-wake allocations never collide. */
 interface ConnState {
   userId: UserId;
+  lockKey: number;
 }
 
 /** The room DO's authoritative meta — the one `room_meta` row, shape-identical to the
@@ -43,6 +50,7 @@ type RoomMeta = MetaEvent;
 // --- Tier-3 WS message limiter (§10/H25) — generous abuse backstop, not an editing throttle.
 const SYNC_BUDGET = 200;
 const AWARE_BUDGET = 400;
+const LOCK_BUDGET = 40;
 const WINDOW_MS = 1000;
 const OK = 0;
 const DROP = 1;
@@ -51,8 +59,21 @@ const CLOSE = 2;
 class RateState {
   sync = 0;
   aware = 0;
+  lock = 0;
   win = 0;
 }
+
+/** Ephemeral lock record per holding connection — in-memory only (hibernation wipes the
+ *  tables; each holder's ≤15s lease re-announce rebuilds them). Invariant (trusted,
+ *  unchecked): `id ∈ rec.ids ⇔ #lockOwner.get(id) === rec.key` — only #applyLockSet and
+ *  the release paths write either side. */
+interface LockRec {
+  key: number;
+  ids: Set<string>;
+  last: number;
+}
+
+const EMPTY_IDS: ReadonlySet<string> = new Set();
 
 // YServer lifecycle: awaits onStart(), then onLoad(), installs debounced onSave(), then
 // accepts sockets — so hydration always completes before the first sync step. (Meta loads
@@ -79,6 +100,12 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
   // on the hot path. Hibernation clears it (the DO only hibernates after idle).
   #rl = new Map<Connection<ConnState>, RateState>();
   #boot = Date.now();
+
+  // Ephemeral object locks — authoritative while this instance lives. In-memory only:
+  // per-connection sets in the 2KB attachment would cap out (a marquee lock is up to
+  // 4096 × 26-char ids), so hibernation amnesia is accepted and healed by client leases.
+  #lockOwner = new Map<string, number>(); // objectId → ownerKey
+  #locks = new Map<Connection<ConnState>, LockRec>(); // only conns holding ≥1 lock
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -149,8 +176,9 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     }
 
     // 3. STAMP IDENTITY — the ONLY setState, before super (a later non-spread write would
-    // wipe y-partyserver's __ypsAwarenessIds, §19/H19).
-    conn.setState({ userId });
+    // wipe y-partyserver's __ypsAwarenessIds, §19/H19). No await between alloc and stamp —
+    // two racing connects can't mint the same lockKey (DO events interleave only at awaits).
+    conn.setState({ userId, lockKey: this.#allocLockKey() });
     await super.onConnect(conn, ctx); // YServer: syncStep1 + awareness merge
 
     // 4. PUSH EFFECTIVE MODE + ROOM META — out-of-band __YPS: strings (never parsed by the
@@ -160,6 +188,12 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     this.sendCustomMessage(conn, `title:${this.meta.title}`);
     this.sendCustomMessage(conn, `owner:${this.meta.ownerId === userId ? '1' : '0'}`);
     this.sendCustomMessage(conn, `perm:${this.meta.permission}`);
+
+    // 4b. EPHEMERAL LOCK SNAPSHOT — editors only (viewers can't mutate, so lock state is
+    // noise to them). Sweep first so stale holders aren't snapshotted. This lands on the
+    // client after syncStep1 but before its `synced` flips — the client buffers until sync.
+    this.#sweepLocks();
+    if (!this.isReadOnly(conn)) this.#sendLockSnapshot(conn);
 
     // 5. PROJECT THE VISIT — fire-and-forget send, error-handled (waitUntil is a no-op in a
     // DO, §6). NO rev bump: visits resolve ordering by `visitedAt`, so rev stays
@@ -254,6 +288,10 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       } else {
         this.sendCustomMessage(c, `mode:${this.isReadOnly(c) ? 'viewer' : 'editor'}`); // re-push, no reconnect
         this.sendCustomMessage(c, `perm:${next}`);
+        // Locks follow edit rights: a demoted editor's locks die; a promoted viewer has a
+        // blind lock column — send the snapshot (idempotent full-replace for existing editors).
+        if (this.isReadOnly(c)) this.#releaseConnLocks(c);
+        else this.#sendLockSnapshot(c);
       }
     }
 
@@ -335,14 +373,14 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
   }
 
   /**
-   * Tier-3 limiter gate (§10/H25): classify by peeking the leading varuint (0=sync,
-   * 1=awareness) without consuming the buffer. Awareness over budget → DROP (the client
-   * smooths cursors); sync over budget → CLOSE (reconnect triggers a clean Yjs resync;
-   * dropping a sync update would silently diverge since resyncInterval is -1).
+   * Tier-3 limiter gate (§10/H25): classify by the leading varuint (0=sync, 1=awareness,
+   * MSG_LOCK=lock — all single-byte). Awareness over budget → DROP (the client smooths
+   * cursors); lock over budget → DROP (the 15s lease heals), CLOSE only at 10× (a
+   * deliberate flood of ~111KB frames); sync over budget → CLOSE (reconnect triggers a
+   * clean Yjs resync; dropping a sync update would silently diverge since resyncInterval
+   * is -1).
    */
-  #gate(conn: Connection<ConnState>, message: WSMessage): number {
-    if (typeof message === 'string') return OK; // y-partyserver __YPS: strings bypass
-    const type = message instanceof ArrayBuffer ? new Uint8Array(message, 0, 1)[0] : (message as Uint8Array)[0];
+  #gate(conn: Connection<ConnState>, type: number): number {
     let s = this.#rl.get(conn);
     if (s === undefined) {
       s = new RateState();
@@ -353,16 +391,147 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       s.win = w;
       s.sync = 0;
       s.aware = 0;
+      s.lock = 0;
     }
     if (type === 1) return ++s.aware > AWARE_BUDGET ? DROP : OK;
+    if (type === MSG_LOCK) return ++s.lock > LOCK_BUDGET ? (s.lock > LOCK_BUDGET * 10 ? CLOSE : DROP) : OK;
     return ++s.sync > SYNC_BUDGET ? CLOSE : OK;
   }
 
   override onMessage(conn: Connection<ConnState>, message: WSMessage): void {
-    const verdict = this.#gate(conn, message);
+    if (typeof message === 'string') {
+      super.onMessage(conn, message); // y-partyserver __YPS: strings bypass the limiter
+      return;
+    }
+    const u8 =
+      message instanceof ArrayBuffer ? new Uint8Array(message) : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+    const verdict = this.#gate(conn, u8[0]);
     if (verdict === CLOSE) conn.close(1008, 'sync rate');
-    else if (verdict === OK) super.onMessage(conn, message); // peek didn't consume — original buffer
+    else if (verdict === OK) {
+      // Lock frames MUST be intercepted here — the base handleMessage switches only on
+      // sync/awareness with no default, so an unhandled type would be silently dropped.
+      if (u8[0] === MSG_LOCK) this.#onLockMessage(conn, u8);
+      else super.onMessage(conn, message); // peek didn't consume — original buffer
+    }
     // DROP → silently ignore
+  }
+
+  // --- Ephemeral object locks (advisory conflict-resolution grabs) -----------------------
+  // Full-replace semantics both directions: a client's LOCK_SET declares "my set is now
+  // exactly {ids}"; a broadcast LOCK_PEER_SET declares one peer's granted set. First-wins
+  // arbitration by arrival order — a loser gets no denial message (the winner's earlier
+  // broadcast, already in flight to it, IS the implicit denial; its commit guards heal).
+
+  /** Lowest free int ≥ 2. Live connections' attachments ARE the free-list — a departed
+   *  conn's key is absent from every live state; hibernation-retained conns contribute
+   *  their persisted keys, so post-wake allocations never collide. */
+  #allocLockKey(): number {
+    const used = new Set<number>();
+    for (const c of this.getConnections<ConnState>()) {
+      const k = c.state?.lockKey;
+      if (k !== undefined) used.add(k);
+    }
+    let key = 2;
+    while (used.has(key)) key++;
+    return key;
+  }
+
+  #onLockMessage(conn: Connection<ConnState>, u8: Uint8Array): void {
+    this.#sweepLocks(); // lazy expiry — a contender's own frame frees stale locks before arbitration
+    const key = conn.state?.lockKey;
+    // Viewers ignored; the undefined check covers a socket raced past a 4401/4403 close in
+    // onConnect (accepted but never stamped) — the one boundary-justified defensive check.
+    if (key === undefined || this.isReadOnly(conn)) return;
+    const ids = decodeLockSetBody(u8);
+    if (ids === null) return; // malformed / over-cap — ignore the whole frame, never partially apply
+    this.#applyLockSet(conn, key, ids);
+  }
+
+  #applyLockSet(conn: Connection<ConnState>, key: number, ids: readonly string[]): void {
+    const next = new Set<string>();
+    let changed = false;
+    for (const id of ids) {
+      if (next.has(id)) continue; // hostile duplicates
+      const cur = this.#lockOwner.get(id);
+      if (cur === undefined) {
+        this.#lockOwner.set(id, key); // granted
+        next.add(id);
+        changed = true;
+      } else if (cur === key) {
+        next.add(id); // retained — not a delta
+      }
+      // owned by another → first-wins: silently not granted
+    }
+    const rec = this.#locks.get(conn);
+    if (rec) {
+      for (const id of rec.ids) {
+        if (!next.has(id)) {
+          this.#lockOwner.delete(id); // released = old \ new
+          changed = true;
+        }
+      }
+    }
+    if (next.size === 0) this.#locks.delete(conn);
+    else if (rec) {
+      rec.ids = next;
+      rec.last = Date.now(); // lease refresh — an unchanged resend broadcasts nothing
+    } else {
+      this.#locks.set(conn, { key, ids: next, last: Date.now() });
+    }
+    if (changed) this.#broadcastPeerSet(conn, key, next); // the full GRANTED set (full-replace)
+  }
+
+  /** Broadcast one peer's granted set to every OTHER editor connection. Sender never sees
+   *  its own set (locked-by-me is a local 1 in its column); viewers are excluded. */
+  #broadcastPeerSet(from: Connection<ConnState> | null, key: number, ids: ReadonlySet<string>): void {
+    let frame: Uint8Array | undefined;
+    for (const c of this.getConnections<ConnState>()) {
+      if (c === from || this.isReadOnly(c)) continue;
+      frame ??= encodeLockPeerSet(key, ids); // encode only if ≥1 recipient
+      try {
+        c.send(frame);
+      } catch {
+        // racing close — harmless, mirrors YServer's send()
+      }
+    }
+  }
+
+  /** One LOCK_PEER_SET per holding peer. Skips the target's own record — a client must
+   *  never receive its own set under a peer key it can't recognize (the permission
+   *  re-push path snapshots existing editors, whose records are in #locks). */
+  #sendLockSnapshot(conn: Connection<ConnState>): void {
+    for (const [holder, rec] of this.#locks) {
+      if (holder === conn) continue;
+      try {
+        conn.send(encodeLockPeerSet(rec.key, rec.ids));
+      } catch {
+        // racing close — harmless
+      }
+    }
+  }
+
+  #releaseConnLocks(conn: Connection<ConnState>): void {
+    const rec = this.#locks.get(conn);
+    if (!rec) return;
+    this.#locks.delete(conn);
+    for (const id of rec.ids) this.#lockOwner.delete(id);
+    this.#broadcastPeerSet(conn, rec.key, EMPTY_IDS);
+  }
+
+  /** Lazy lease expiry (>3 missed 15s re-announces), run on lock-message/connect/close.
+   *  No alarm: post-hibernation the tables are empty anyway (a timed sweep would wake the
+   *  DO to sweep nothing), and CF eventually closes dead hibernatable sockets → onClose.
+   *  Residual: a crashed holder's grey lingers on fully-idle clients until the next room
+   *  event — cosmetic for an advisory system. */
+  #sweepLocks(): void {
+    const now = Date.now();
+    for (const [conn, rec] of this.#locks) {
+      // Map delete-during-iteration is safe
+      if (now - rec.last <= LOCK_STALE_MS) continue;
+      this.#locks.delete(conn);
+      for (const id of rec.ids) this.#lockOwner.delete(id);
+      this.#broadcastPeerSet(conn, rec.key, EMPTY_IDS);
+    }
   }
 
   /**
@@ -373,6 +542,8 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
     // First let YServer prune the connection and awareness state.
     await super.onClose(connection, code, reason, wasClean);
     this.#rl.delete(connection);
+    this.#releaseConnLocks(connection); // graceful close, CF-detected dead socket, 4403 eviction
+    this.#sweepLocks();
 
     // If the room is now empty, flush the doc immediately (non-debounced). This runs on the
     // fresh instance after a hibernation wake too — onLoad re-hydrates the doc before onClose,

@@ -1,3 +1,15 @@
+export {
+  decodeLockPeerSetBody,
+  decodeLockSetBody,
+  encodeLockPeerSet,
+  encodeLockSet,
+  LOCK_LEASE_MS,
+  LOCK_MAX_FRAME_BYTES,
+  LOCK_MAX_ID_LEN,
+  LOCK_MAX_IDS,
+  LOCK_STALE_MS,
+  MSG_LOCK,
+} from './lock-protocol';
 export { SYNC_WS_PREFIX } from './sync';
 export * from './types/identifiers';
 export { Permission } from './types/permission';

@@ -49,6 +49,7 @@ import {
   scaleBBoxEdges,
   scaleBBoxUniform,
 } from '@/core/geometry/scale-system';
+import { getLockOwners } from '@/core/locks/lock-table';
 import { getItalicOverhangPad, getMinCharWidth } from '@/core/text/text-measure';
 import {
   anchorFactor,
@@ -64,7 +65,7 @@ import { isCorner, isHorzSide } from '@/core/types/handles';
 import type { BindableKind, ConnectorEndpoint, ObjectHandle, ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
 import { isBindableKind } from '@/core/types/objects';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getHandle, getObjects, transact } from '@/runtime/room-runtime';
+import { getHandle, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
 import {
   type ConnectorTopology,
   cancelTopology,
@@ -664,11 +665,15 @@ export class TransformController {
     this.scaleCtx = { sx: 1, sy: 1, origin, selBounds, handleId };
 
     const builder = newTopologyBuilder('scale', selectedIds);
+    const lo = getLockOwners();
 
     for (const id of selectedIds) {
-      this.injectIds.push(id);
       const handle = getHandle(id);
-      if (!handle) continue;
+      // Remote-locked ids never enter the gesture: no injectIds push (renderer keeps
+      // drawing them in place), no freeze, no topology entry. Selection is lock-free
+      // by the prune invariant — this covers the deferred-prune race window.
+      if (!handle || lo[handle.slot] > 1) continue;
+      this.injectIds.push(id);
 
       if (handle.kind === 'connector') {
         builder.onSelectedConnector(id, handle);
@@ -746,11 +751,12 @@ export class TransformController {
     this.dy = 0;
 
     const builder = newTopologyBuilder('translate', selectedIds);
+    const lo = getLockOwners();
 
     for (const id of selectedIds) {
-      this.injectIds.push(id);
       const handle = getHandle(id);
-      if (!handle) continue;
+      if (!handle || lo[handle.slot] > 1) continue; // see beginScale — locked ids never enter the gesture
+      this.injectIds.push(id);
 
       if (handle.kind === 'connector') {
         builder.onSelectedConnector(id, handle);
@@ -808,6 +814,7 @@ export class TransformController {
    */
   beginEndpointDrag(connectorId: string, slot: Slot, handle: ObjectHandle): boolean {
     this.clear();
+    if (getLockOwners()[handle.slot] > 1) return false; // remote-locked — SelectTool stays idle
     const routeCtx = buildRouteContext(connectorId, handle.y);
     if (!routeCtx) return false;
     this.mode = 'endpointDrag';
@@ -865,6 +872,14 @@ export class TransformController {
     const slot = ed.slot;
     const validCount = ed.entry.validCount;
     const id = ed.entry.id;
+    // Lost first-wins arbitration mid-drag (peer key overwrote our optimistic claim) —
+    // heal by dropping the commit; the preview snaps back to the canonical route.
+    const h = getHandle(id);
+    if (h && getLockOwners()[h.slot] > 1) {
+      this.endpointDrag = null;
+      this.mode = 'none';
+      return false;
+    }
     const src = ed.entry.pointsBuf[slotPointIndex(slot, validCount)];
     const value: ConnectorEndpoint = snap ? anchorRecordFromSnap(snap) : ([src[0], src[1]] as Point);
     transact(() => {
@@ -890,6 +905,12 @@ export class TransformController {
     // Clear visual state FIRST (prevents double-transform glitch)
     this.clear();
 
+    // Commit guard — a peer lock that won first-wins arbitration mid-gesture overwrote our
+    // optimistic claim; skip those entries (the loser's heal). Lookup by id, not frozen slot:
+    // slots recycle after deletion, ids are the stable key.
+    const lo = getLockOwners();
+    const byId = getObjectsById();
+
     transact(() => {
       for (const kind in store) {
         const k = kind as ScalableKind;
@@ -903,12 +924,20 @@ export class TransformController {
               (COMMIT_SCALE[k][behavior] as ((y: Y.Map<unknown>, o: any, f: any) => void) | undefined)
             : undefined;
           if (!commitFn) continue;
-          for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
+          for (const [, e] of map) {
+            const h = byId.get(e.id);
+            if (h !== undefined && lo[h.slot] > 1) continue;
+            commitFn(e.y, e.out, e.frozen);
+          }
         } else {
           // SAFETY: TranslateCommitTable mapped type enforces kind→function compatibility at definition.
           // biome-ignore lint/suspicious/noExplicitAny: correlated-union cast documented above
           const commitFn = TRANSLATE_COMMIT[k] as (y: Y.Map<unknown>, o: any, f: any) => void;
-          for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
+          for (const [, e] of map) {
+            const h = byId.get(e.id);
+            if (h !== undefined && lo[h.slot] > 1) continue;
+            commitFn(e.y, e.out, e.frozen);
+          }
         }
       }
       // commit() is reached only when mode is 'scale' or 'translate' (endpointDrag

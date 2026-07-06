@@ -4,6 +4,16 @@ import type { Slot } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
 import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
 import { rawScaleFactors } from '@/core/geometry/scale-system';
+import {
+  acquireLocalLock,
+  acquireLocalLocks,
+  getLockOwners,
+  LOCK_SRC_CODE_EDITOR,
+  LOCK_SRC_TEXT_EDITOR,
+  LOCK_SRC_TRANSFORM,
+  onRemoteLocksApplied,
+  releaseLocalLocks,
+} from '@/core/locks/lock-table';
 import { getTextFrame } from '@/core/text/text-system';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { handlePosition, scaleOrigin } from '@/core/types/handles';
@@ -20,7 +30,7 @@ import {
   inlineStylesEqual,
   stylesEqual,
 } from '@/tools/selection/selection-utils';
-import { getController } from '@/tools/selection/transform';
+import { getController, getTransformInjectIds } from '@/tools/selection/transform';
 import type { InlineStyles, KindCounts, SelectedStyles, SelectionKind, SelectionMode, TransformState } from '@/tools/selection/types';
 import { EMPTY_INLINE_STYLES, EMPTY_KIND_COUNTS, EMPTY_STYLES } from '@/tools/selection/types';
 import type { HandleId } from '@/tools/types';
@@ -101,6 +111,27 @@ export interface SelectionActions {
 
 export type SelectionStore = SelectionState & SelectionActions;
 
+// Remote lock landed on a selected id mid-gesture — pruning then would desync the renderer
+// (selectedSet skip vs the controller's injectIds re-push → double-draw), and keyboard
+// Guard 7 + the hidden context menu already block every selection mutation during a
+// gesture, so the prune defers to endTransform/cancelTransform. Commit guards heal writes.
+let _lockPrunePending = false;
+
+/** Ephemeral-lock arm of the transform-gesture lock: acquire the full inject set
+ *  (selection ∪ attached connectors, post-filter) right after the controller begin. */
+function acquireTransformLocks(): void {
+  const inject = getTransformInjectIds();
+  if (inject !== null) acquireLocalLocks(LOCK_SRC_TRANSFORM, inject);
+}
+
+function releaseTransformLocks(): void {
+  releaseLocalLocks(LOCK_SRC_TRANSFORM);
+  if (_lockPrunePending) {
+    _lockPrunePending = false;
+    pruneRemoteLockedSelection();
+  }
+}
+
 // === Store Implementation ===
 
 export const useSelectionStore = create<SelectionStore>()(
@@ -159,6 +190,7 @@ export const useSelectionStore = create<SelectionStore>()(
       const selBounds = computeSelectionBounds();
       if (!selBounds) return;
       getController().beginTranslate(get().selectedIdSet, selBounds);
+      acquireTransformLocks();
       set({ transform: { kind: 'translate' } });
     },
 
@@ -175,6 +207,7 @@ export const useSelectionStore = create<SelectionStore>()(
       const clickOffset: Point = [downWorld[0] - handlePos[0], downWorld[1] - handlePos[1]];
       const { selectedIdSet } = get();
       getController().beginScale(selectedIdSet, handleId, origin, selBounds);
+      acquireTransformLocks();
       set({ transform: { kind: 'scale', initialDelta, clickOffset } });
     },
 
@@ -200,16 +233,21 @@ export const useSelectionStore = create<SelectionStore>()(
         ctrl.clear();
       }
       set({ transform: { kind: 'none' } });
+      releaseTransformLocks();
     },
 
     cancelTransform: () => {
       getController().cancel();
       set({ transform: { kind: 'none' } });
+      releaseTransformLocks();
     },
 
     // === Endpoint Drag Actions ===
 
-    beginEndpointDrag: (connectorId, slot) =>
+    beginEndpointDrag: (connectorId, slot) => {
+      // SelectTool already ran getController().beginEndpointDrag (and bailed on false),
+      // so the controller's injectIds holds the dragged connector.
+      acquireTransformLocks();
       set({
         transform: {
           kind: 'endpointDrag',
@@ -218,7 +256,8 @@ export const useSelectionStore = create<SelectionStore>()(
           currentPosition: [0, 0],
           currentSnap: null,
         },
-      }),
+      });
+    },
 
     updateEndpointDrag: (currentPosition, currentSnap) =>
       set((state) =>
@@ -228,6 +267,7 @@ export const useSelectionStore = create<SelectionStore>()(
     // === Text Editing Actions ===
 
     beginTextEditing: (objectId) => {
+      acquireLocalLock(LOCK_SRC_TEXT_EDITOR, objectId);
       set({
         textEditingId: objectId,
         menuOpen: true,
@@ -236,6 +276,7 @@ export const useSelectionStore = create<SelectionStore>()(
     },
 
     endTextEditing: () => {
+      releaseLocalLocks(LOCK_SRC_TEXT_EDITOR);
       const { selectedIds } = get();
       set({
         textEditingId: null,
@@ -247,11 +288,13 @@ export const useSelectionStore = create<SelectionStore>()(
     // === Code Editing Actions ===
 
     beginCodeEditing: (objectId) => {
+      acquireLocalLock(LOCK_SRC_CODE_EDITOR, objectId);
       set({ codeEditingId: objectId, menuOpen: true });
       get().refreshStyles();
     },
 
     endCodeEditing: () => {
+      releaseLocalLocks(LOCK_SRC_CODE_EDITOR);
       const { selectedIds } = get();
       set({ codeEditingId: null, menuOpen: selectedIds.length > 0 });
     },
@@ -443,3 +486,44 @@ useDeviceUIStore.subscribe(
     if (prev === 'select') useSelectionStore.getState().clearSelection();
   },
 );
+
+// === Cross-module: ephemeral lock reactions ===
+// Maintains the centerpiece invariant — outside an active gesture, `selectedIds` never
+// contains a remote-locked id — so selection-actions / z-actions / convert-kind / delete /
+// cut / keyboard paths need zero per-callsite guards. Pickers keep locked ids from ever
+// entering a selection; this prunes locks that land on an existing one.
+
+function pruneRemoteLockedSelection(): void {
+  const s = useSelectionStore.getState();
+  if (s.selectedIds.length === 0) return;
+  const lo = getLockOwners();
+  const kept = s.selectedIds.filter((id) => {
+    const h = getHandle(id);
+    return !h || lo[h.slot] <= 1;
+  });
+  if (kept.length !== s.selectedIds.length) {
+    s.setSelection(kept); // setSelection([]) routes to clearSelection
+    invalidateOverlay();
+  }
+}
+
+onRemoteLocksApplied((ids) => {
+  const s = useSelectionStore.getState();
+  let selectionHit = false;
+  let textHit = false;
+  let codeHit = false;
+  for (const id of ids) {
+    if (s.selectedIdSet.has(id)) selectionHit = true;
+    if (id === s.textEditingId) textHit = true;
+    else if (id === s.codeEditingId) codeHit = true;
+  }
+  // Force-close mirrors the remote-delete bridge in onObjectsDeleted — the peer owns the
+  // object now; tool teardown handles DOM unmount + invalidation (the rare race loss).
+  if (textHit) textTool.commitAndClose();
+  if (codeHit) codeTool.commitAndClose();
+  if (selectionHit) {
+    if (s.transform.kind !== 'none')
+      _lockPrunePending = true; // deferred — see the flag's comment
+    else pruneRemoteLockedSelection();
+  }
+});

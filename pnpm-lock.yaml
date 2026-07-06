@@ -83,6 +83,9 @@ importers:
       jittered-fractional-indexing:
         specifier: ^1.0.1
         version: 1.0.1
+      lib0:
+        specifier: ^0.2.117
+        version: 0.2.117
       nanoid:
         specifier: ^5.1.11
         version: 5.1.11

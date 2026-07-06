@@ -251,7 +251,7 @@ function flush(): void {
     return;
   }
 
-  const throttleMs = getBackpressureDelay();
+  const throttleMs = getBackpressureDelay(currentProvider);
   if (throttleMs > 0) {
     timer = window.setTimeout(flush, throttleMs);
     return;
@@ -264,10 +264,10 @@ function flush(): void {
   dirty = false;
 }
 
-function getBackpressureDelay(): number {
+/** Shared with core/locks/lock-protocol.ts — both throttle against the same socket buffer. */
+export function getBackpressureDelay(provider: YProvider | null): number {
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: upstream-type — provider's `ws` is an internal field not in the public type; read for backpressure gating only
-    const ws: WebSocket | undefined = (currentProvider as any)?.ws;
+    const ws = provider?.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) return 0;
     const buf = ws.bufferedAmount ?? 0;
     if (buf > BACKPRESSURE_CRITICAL) return 200;

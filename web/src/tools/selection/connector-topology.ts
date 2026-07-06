@@ -46,11 +46,12 @@ import { computeConnectorBBoxFromPointsInto } from '@/core/geometry/bbox';
 import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
+import { getLockOwners } from '@/core/locks/lock-table';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { isCorner } from '@/core/types/handles';
 import type { BindableKind, ConnectorEndpoint, ObjectHandle, StoredAnchor, StoredStraightAnchor } from '@/core/types/objects';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getAttachedConnectors, getHandle, getObjects } from '@/runtime/room-runtime';
+import { getAttachedConnectors, getHandle, getObjects, getObjectsById } from '@/runtime/room-runtime';
 import type { Entry } from './transform';
 import type { ScaleCtx } from './types';
 
@@ -366,6 +367,7 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
   const selectedBindables = new Map<string, SelectedBindable>();
   const selectedConnectors: ObjectHandle[] = [];
   const attachedIds = new Set<string>();
+  const lo = getLockOwners();
 
   return {
     onSelectedConnector(_id, handle) {
@@ -390,6 +392,11 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
 
       for (const cid of attached) {
         if (selectedIdSet.has(cid)) continue;
+        // A remote-locked attached connector never enters the topology (no entry, no
+        // injectIds via the controller) — it renders on the normal background path and
+        // its route heals via the observer's cache-only reroute at our commit.
+        const h = getHandle(cid);
+        if (!h || lo[h.slot] > 1) continue;
         attachedIds.add(cid);
       }
     },
@@ -681,11 +688,27 @@ function publishCount<S>(e: RerouteEntryBase<S>, count: number): void {
 // ============================================================================
 
 export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 'scale', dx: number, dy: number): void {
+  // Same loser-heal as transform.commit(): skip entries a peer locked mid-gesture.
+  const lo = getLockOwners();
+  const byId = getObjectsById();
+  const lockedElsewhere = (id: string): boolean => {
+    const h = byId.get(id);
+    return h !== undefined && lo[h.slot] > 1;
+  };
   if (mode === 'translate') {
-    for (const e of topology.translates) commitTranslate(e, dx, dy);
+    for (const e of topology.translates) {
+      if (lockedElsewhere(e.id)) continue;
+      commitTranslate(e, dx, dy);
+    }
   }
-  for (const e of topology.elbowReroutes) commitReroute(e);
-  for (const e of topology.straightReroutes) commitReroute(e);
+  for (const e of topology.elbowReroutes) {
+    if (lockedElsewhere(e.id)) continue;
+    commitReroute(e);
+  }
+  for (const e of topology.straightReroutes) {
+    if (lockedElsewhere(e.id)) continue;
+    commitReroute(e);
+  }
 }
 
 /**

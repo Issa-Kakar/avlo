@@ -12,6 +12,16 @@ import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
 import { ensureImageWorkers, hydrateImages } from '@/core/image/image-manager';
+import { attachLocks, detachLocks } from '@/core/locks/lock-protocol';
+import {
+  bindLockTable,
+  ensureLockCapacity,
+  getLockOwners,
+  lockSlotAcquired,
+  lockSlotReleased,
+  markLockVeilDirty,
+  resetLockTable,
+} from '@/core/locks/lock-table';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
@@ -20,6 +30,7 @@ import { ZRankTable } from '@/core/z-order/z-rank-table';
 import { queryClient } from '@/query/client';
 import { ROOMS_QUERY_KEY, type RoomsQueryData } from '@/query/rooms';
 import { evictGeometry } from '@/renderer/geometry-cache';
+import { notifyLockVeil } from '@/renderer/lock-veil/lock-veil';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { router } from '@/router';
@@ -105,6 +116,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
 
+    // Lock table is a leaf module (see its header) — inject its two external needs.
+    bindLockTable(this.objectsById, notifyLockVeil);
+
     // Spawn the image worker pool now (synchronous, parallel with init's IDB/WS) so the first
     // image bitmap is ready ASAP. Idempotent + session-scoped — see ensureImageWorkers().
     ensureImageWorkers();
@@ -177,6 +191,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Detach presence listeners (signals departure while WS still open)
     detach();
+    detachLocks();
 
     this.websocketProvider = dispose(this.websocketProvider, (p) => {
       p.disconnect();
@@ -192,6 +207,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.connectorRouter.clear();
 
     this.zOrder.clear();
+
+    resetLockTable();
 
     // Drop UI selection so stale selectedIds don't render against the next room's objects.
     useSelectionStore.getState().clearSelection();
@@ -343,6 +360,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (!handle) continue;
       this.spatialIndex.remove(handle); // identity removal; envelope mirrors still describe the live entry
       this.zOrder.releaseSlot(handle.slot, handle.z);
+      lockSlotReleased(handle.slot); // before Phase B can recycle the slot (LIFO free-list)
       removeObjectCaches(id, handle.kind);
       invalidateIfVisible(handle.bbox, vp);
       this.objectsById.delete(id);
@@ -432,6 +450,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const z = getZ(yObj);
       if (!isZKey(z)) throw new Error(`upsertHandle: object ${id} (kind=${kind}) has no z key`);
       const slot = this.zOrder.acquireSlot();
+      lockSlotAcquired(slot);
       const fresh = createHandle(id, kind, yObj, newBBox, z, slot);
       this.zOrder.noteAdd(z);
       this.objectsById.set(id, fresh);
@@ -449,6 +468,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
     if (bboxChanged || alwaysEvict) evictGeometry(id);
     invalidateIfVisible(handle.bbox, vp); // new area — always (content may have changed visually even when bbox identical)
+
+    // Remote-locked ink changed (the lock holder moved/restyled it) → re-raster the veil.
+    if (getLockOwners()[handle.slot] > 1) markLockVeilDirty();
 
     return bboxChanged;
   }
@@ -508,6 +530,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.spatialIndex.load(handles);
     }
     this.zOrder.load(this.objectsById.values());
+    // Slots renumbered densely — all prior lock state is void (WS starts after hydrate,
+    // so no lock traffic can precede this).
+    resetLockTable();
+    ensureLockCapacity(this.objectsById.size);
 
     hydrateImages();
     invalidateWorldAll();
@@ -543,6 +569,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         this.wsConnected = wsConnected;
         if (!wsConnected) this.wsRepacked = false;
       });
+
+      // Ephemeral lock wire: messageHandlers[MSG_LOCK] + buffer-until-sync + lease egress.
+      attachLocks(this.websocketProvider);
 
       // Listen for sync status — repack spatial index on first sync per connection
       this.websocketProvider.on('sync', (isSynced: boolean) => {
