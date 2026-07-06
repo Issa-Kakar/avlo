@@ -7,10 +7,9 @@
  * @module canvas/animation/EraserTrailAnimation
  */
 
-import { getStroke } from 'perfect-freehand';
 import { useCameraStore } from '@/stores/camera-store';
 import { clamp01 } from '@/utils/math';
-import { getSvgPathFromStroke } from '../types';
+import { traceEraserTrail } from '../freehand';
 import type { AnimationJob } from './AnimationController';
 
 const TRAIL_LIFETIME_MS = 200;
@@ -74,27 +73,15 @@ export class EraserTrailAnimation implements AnimationJob {
         return [p.x, p.y, eased] as [number, number, number];
       });
 
-      const outline = getStroke(pfPoints, {
-        size: TRAIL_BASE_WIDTH_PX,
-        thinning: 0.5,
-        smoothing: 0.7,
-        streamline: 0.4,
-        simulatePressure: true,
-        easing: (t: number) => -t * t + 2 * t,
-        start: { easing: (t: number) => t, cap: true },
-        end: { cap: true, easing: (t: number) => t, taper: 0 },
-      });
-
-      if (outline.length) {
-        const path = new Path2D(getSvgPathFromStroke(outline, false));
-        ctx.save();
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = TRAIL_BASE_ALPHA;
-        ctx.fillStyle = 'rgb(140, 140, 140)';
-        ctx.fill(path);
-        ctx.restore();
-      }
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = TRAIL_BASE_ALPHA;
+      ctx.fillStyle = 'rgb(140, 140, 140)';
+      ctx.beginPath();
+      traceEraserTrail(ctx, pfPoints, TRAIL_BASE_WIDTH_PX);
+      ctx.fill();
+      ctx.restore();
     }
 
     return this.active || this.points.length > 0;

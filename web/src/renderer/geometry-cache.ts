@@ -12,13 +12,12 @@
  * - Room teardown → clearGeometry() via clearAllObjectCaches()
  */
 
-import { getStroke } from 'perfect-freehand';
 import { getEndCap, getFrame, getPoints, getShapeType, getStartCap, getWidth } from '@/core/accessors';
 import { buildConnectorPaths, type ConnectorPaths } from '@/core/connectors/connector-paths';
 import { getConnectorRoute } from '@/core/connectors/connector-router';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getSvgPathFromStroke, PF_OPTIONS_BASE } from './types';
+import { strokeToPath2D } from './freehand';
 
 type CachedGeometry = Path2D | ConnectorPaths;
 
@@ -34,19 +33,11 @@ function buildGeometry(handle: ObjectHandle): CachedGeometry {
   switch (kind) {
     case 'stroke': {
       const points = getPoints(y);
-      const width = getWidth(y);
-
       if (points.length === 0) {
         return new Path2D();
       }
 
-      const outline = getStroke(points, {
-        ...PF_OPTIONS_BASE,
-        size: width,
-        last: true,
-      });
-
-      return new Path2D(getSvgPathFromStroke(outline, false));
+      return strokeToPath2D(points, getWidth(y), true);
     }
 
     case 'shape': {

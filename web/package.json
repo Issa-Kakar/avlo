@@ -40,7 +40,6 @@
     "@tiptap/y-tiptap": "^3.0.3",
     "idb-keyval": "^6.2.5",
     "immer": "^11.1.8",
-    "perfect-freehand": "^1.2.2",
     "rbush": "^4.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

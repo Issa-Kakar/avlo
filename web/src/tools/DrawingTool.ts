@@ -322,16 +322,9 @@ export class DrawingTool implements PointerTool {
   }
 
   private addPoint(p: Point): void {
-    const pts = this.points;
-    const L = pts.length;
-    if (L >= 1) {
-      const last = pts[L - 1];
-      const scale = useCameraStore.getState().scale;
-      const dx = (p[0] - last[0]) * scale;
-      const dy = (p[1] - last[1]) * scale;
-      if (dx * dx + dy * dy < 1.0) return;
-    }
-    pts.push(p);
+    // Store every raw pointer point — the freehand pipeline (streamline + track
+    // simplification) does all smoothing, and culls near-duplicates internally.
+    this.points.push(p);
     invalidateOverlay();
   }
 
