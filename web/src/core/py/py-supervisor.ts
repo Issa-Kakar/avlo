@@ -160,43 +160,48 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
     }
   };
   if (misses.length > 0) progress();
-  for (const name of misses) {
-    const expected = BUILD_LOCK.bundles[name];
-    const url = `${ARTIFACT_BASE}bundles/${name}.tar`;
-    const res = await fetch(url);
-    if (!res.ok || !res.body) throw new Error(`${name}.tar: HTTP ${res.status}`);
-    const reader = res.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let got = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      got += value.length;
-      if (got > expected.size) {
-        // Abort BEFORE buffering an over-long body — the sha check below
-        // would catch the mismatch, but only after holding the whole stream.
-        void reader.cancel();
-        throw new Error(`${name}.tar exceeds build-lock size (${expected.size} B) — artifact mix drifted from build-lock`);
+  // Misses download concurrently (sum → max wall-clock). All per-tar state is
+  // closure-local; `received` interleaves safely (single-threaded increments)
+  // and converges to `total`; any reject propagates through Promise.all.
+  await Promise.all(
+    misses.map(async (name) => {
+      const expected = BUILD_LOCK.bundles[name];
+      const url = `${ARTIFACT_BASE}bundles/${name}.tar`;
+      const res = await fetch(url);
+      if (!res.ok || !res.body) throw new Error(`${name}.tar: HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        got += value.length;
+        if (got > expected.size) {
+          // Abort BEFORE buffering an over-long body — the sha check below
+          // would catch the mismatch, but only after holding the whole stream.
+          void reader.cancel();
+          throw new Error(`${name}.tar exceeds build-lock size (${expected.size} B) — artifact mix drifted from build-lock`);
+        }
+        chunks.push(value);
+        received += value.length;
+        progress();
       }
-      chunks.push(value);
-      received += value.length;
-      progress();
-    }
-    const bytes = new Uint8Array(got);
-    let off = 0;
-    for (const c of chunks) {
-      bytes.set(c, off);
-      off += c.length;
-    }
-    if (!(await matchesLockEntry(bytes.buffer, expected))) {
-      throw new Error(`${name}.tar sha256 mismatch — artifact mix drifted from build-lock`);
-    }
-    const meta = parseTarMeta(bytes);
-    // Fresh Response copies the buffer per spec — safe to transfer `bytes.buffer`
-    // to the executor afterwards.
-    await cache.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/x-tar' } }));
-    byName.set(name, { name, prefix: meta.prefix, loadOrder: meta.loadOrder, bytes: bytes.buffer });
-  }
+      const bytes = new Uint8Array(got);
+      let off = 0;
+      for (const c of chunks) {
+        bytes.set(c, off);
+        off += c.length;
+      }
+      if (!(await matchesLockEntry(bytes.buffer, expected))) {
+        throw new Error(`${name}.tar sha256 mismatch — artifact mix drifted from build-lock`);
+      }
+      const meta = parseTarMeta(bytes);
+      // Fresh Response copies the buffer per spec — safe to transfer `bytes.buffer`
+      // to the executor afterwards.
+      await cache.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/x-tar' } }));
+      byName.set(name, { name, prefix: meta.prefix, loadOrder: meta.loadOrder, bytes: bytes.buffer });
+    }),
+  );
   return names.map((n) => byName.get(n) as PyBundlePayload);
 }
 
@@ -276,8 +281,9 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
   bootedSetKey = null;
   let payloads: PyBundlePayload[];
   try {
-    await ensureGlueVerified();
-    payloads = await ensureBundles(setKey);
+    // Independent I/O chains (glue trio hash vs tar fetches) — overlap them
+    // on the cold first spawn (ensureGlueVerified memoizes on success).
+    [, payloads] = await Promise.all([ensureGlueVerified(), ensureBundles(setKey)]);
   } catch (err) {
     if (token !== spawnToken) return;
     // Download/verify failure: surface as the pending run's result (or stay
@@ -327,22 +333,32 @@ function dispatch(run: ActiveRun): void {
 }
 
 /** Write SIGINT now, keep re-writing until the run resolves, hard-kill after
- * the grace window if Python never surfaces the interrupt. */
+ * the grace window if Python never surfaces the interrupt. UserCancel
+ * OUTRANKS SoftTimeout: a Stop click during the timeout grace re-arms the
+ * kill on the shorter cancel grace, a soft timeout landing after a cancel
+ * changes nothing, and repeats of the same kind never extend the deadline.
+ * Closures read `run.cancelKind` live so the forced-kill label always
+ * matches the graceful exec-done mapping. */
 function beginInterrupt(run: ActiveRun, kind: PyCancelKind, graceMs: number): void {
   if (!sab || run !== active) return;
-  run.cancelKind = kind;
+  const arm = run.hardTimer === null || (kind === PyCancelKind.UserCancel && run.cancelKind !== PyCancelKind.UserCancel);
+  if (arm) {
+    run.cancelKind = kind;
+    if (run.hardTimer !== null) clearTimeout(run.hardTimer);
+    run.hardTimer = setTimeout(() => {
+      run.hardTimer = null;
+      const cancelled = run.cancelKind === PyCancelKind.UserCancel;
+      failActiveRun(
+        cancelled ? 'Cancelled (forced stop).' : 'Timed out (forced stop).',
+        cancelled ? 'cancelled' : 'timeout',
+        /* respawn */ true,
+      );
+    }, graceMs);
+  }
   post({ t: 'phase', runId: run.runId, phase: 'cancelling' });
   const views = sab;
-  writeInterrupt(views, kind);
-  run.interruptRepeat ??= setInterval(() => writeInterrupt(views, kind), PY_LIMITS.interruptRepeatMs);
-  run.hardTimer ??= setTimeout(() => {
-    run.hardTimer = null;
-    failActiveRun(
-      kind === PyCancelKind.UserCancel ? 'Cancelled (forced stop).' : 'Timed out (forced stop).',
-      kind === PyCancelKind.UserCancel ? 'cancelled' : 'timeout',
-      /* respawn */ true,
-    );
-  }, graceMs);
+  writeInterrupt(views, run.cancelKind);
+  run.interruptRepeat ??= setInterval(() => writeInterrupt(views, run.cancelKind), PY_LIMITS.interruptRepeatMs);
 }
 
 /** Synthesize a result for the active run (executor dead/hung paths). */
@@ -401,14 +417,17 @@ function onExecutorMessage(m: ExecToSup): void {
       } else if (status === 'cancelled') {
         output += `${output ? '\n' : ''}Run cancelled.`;
       }
-      post({
-        t: 'result',
-        runId: m.runId,
-        status,
-        output,
-        durationMs: m.durationMs,
-        figures: m.figures,
-      } satisfies ResultMsg);
+      post(
+        {
+          t: 'result',
+          runId: m.runId,
+          status,
+          output,
+          durationMs: m.durationMs,
+          figures: m.figures,
+        } satisfies ResultMsg,
+        m.figures.map((f) => f.png),
+      );
       armIdleTeardown();
       break;
     }

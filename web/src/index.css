@@ -275,8 +275,10 @@ html {
   font-weight: 450;
 }
 .code-output-text {
-  color: var(--c-output-text, #aeaeae);
-  white-space: pre-wrap;
-  word-break: break-all;
+  color: var(--c-output-text, #f8f8f2);
+  /* Logical lines only — the canvas panel never wraps; long lines clip at the
+     content edge on both surfaces (WYSIWYG height parity). */
+  white-space: pre;
+  overflow-x: hidden;
   overflow-y: auto;
 }

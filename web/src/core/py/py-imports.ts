@@ -63,15 +63,19 @@ export function scanPythonImports(source: string): string[] {
       }
       out += c;
     }
-    const m = /^\s*(?:import\s+(.+)|from\s+([A-Za-z_][\w.]*)\s+import\b)/.exec(out);
-    if (!m) continue;
-    if (m[2] !== undefined) {
-      names.add(m[2].split('.')[0]);
-    } else {
-      // `import a.b as x, c` — split on commas, take each root.
-      for (const part of m[1].split(',')) {
-        const name = /^\s*([A-Za-z_][\w.]*)/.exec(part)?.[1];
-        if (name) names.add(name.split('.')[0]);
+    // Split compound statements (`import os; from x import y`) — safe on the
+    // STRIPPED line only: a `;` inside a string literal is already gone.
+    for (const stmt of out.split(';')) {
+      const m = /^\s*(?:import\s+(.+)|from\s+([A-Za-z_][\w.]*)\s+import\b)/.exec(stmt);
+      if (!m) continue;
+      if (m[2] !== undefined) {
+        names.add(m[2].split('.')[0]);
+      } else {
+        // `import a.b as x, c` — split on commas, take each root.
+        for (const part of m[1].split(',')) {
+          const name = /^\s*([A-Za-z_][\w.]*)/.exec(part)?.[1];
+          if (name) names.add(name.split('.')[0]);
+        }
       }
     }
   }

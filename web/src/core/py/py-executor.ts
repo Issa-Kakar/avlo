@@ -11,6 +11,8 @@
  * output is capped at PY_LIMITS.maxOutputChars with a truncation marker.
  */
 
+// Lock-free verify subpath — the executor must not carry the build-lock JSON.
+import { sha256Hex } from '@avlo/py-loader/verify';
 import { assertRealmHardened, hardenRealm, scrubWorkerScope } from './py-harden';
 import { HARNESS_INSTALL, RUN_INVOKE } from './py-harness';
 import { bootPyodide, type Pyodide } from './py-loader';
@@ -20,6 +22,7 @@ import {
   OUTPUT_TRUNCATION_MARKER,
   PY_LIMITS,
   type PyBundlePayload,
+  type PyFigure,
   type SupToExec,
 } from './py-protocol';
 import { HEARTBEAT, MEM_KIB, mapPySab, PyExecState, type PySabViews, RUN_ID, STATE } from './py-sab';
@@ -90,8 +93,7 @@ function makeWriteHook(stream: 'out' | 'err') {
 async function verifyStdlibZip(expectedSha256: string): Promise<void> {
   const zipPath = pyodide.runPython("import sys; next(p for p in sys.path if p.endswith('.zip'))") as string;
   // MEMFS file contents are plain-ArrayBuffer views — the narrow cast is true.
-  const digest = await crypto.subtle.digest('SHA-256', pyodide.FS.readFile(zipPath) as Uint8Array<ArrayBuffer>);
-  const sha = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  const sha = await sha256Hex(pyodide.FS.readFile(zipPath) as Uint8Array<ArrayBuffer>);
   if (sha !== expectedSha256) {
     throw new Error(`stdlib zip drift: ${zipPath} hashes ${sha}, manifest expects ${expectedSha256} — re-run stage.mjs`);
   }
@@ -167,20 +169,35 @@ function exec(m: ExecRunMsg): void {
   const t0 = performance.now();
   let ok = false;
   let interrupted = false;
+  let figures: PyFigure[] = [];
   try {
     pyodide.globals.set('_avlo_code', m.code); // string → by value, no proxy
     const res = JSON.parse(pyodide.runPython(RUN_INVOKE) as string) as {
       ok: boolean;
       interrupted: boolean;
+      figures: [string, number, number][];
     };
     ok = res.ok;
     interrupted = res.interrupted;
+    figures = res.figures.map(([path, w, h]) => {
+      // FS.readFile can return a subarray VIEW over MEMFS — .slice() mints the
+      // fresh exact-size buffer that transfer requires.
+      const bytes = pyodide.FS.readFile(path) as Uint8Array;
+      pyodide.FS.unlink(path);
+      return { png: bytes.slice().buffer, width: w, height: h };
+    });
   } catch (err) {
     // Harness-level failure (or KeyboardInterrupt landing outside user code —
     // e.g. during compile): surface as the run's error output.
     interrupted = /KeyboardInterrupt/.test(String(err));
     appendOutput(interrupted ? 'KeyboardInterrupt\n' : `${String((err as Error)?.message ?? err)}\n`);
   }
+  // Drain any incomplete multibyte tail the streaming decoders still hold —
+  // a run whose last chunk ends mid-character must not lose its final glyphs.
+  const stdoutTail = stdoutDecoder.decode();
+  if (stdoutTail) appendOutput(stdoutTail);
+  const stderrTail = stderrDecoder.decode();
+  if (stderrTail) appendOutput(stderrTail);
   flushRelay();
   // KiB, not bytes: HEAP8.length reaches 2^31 at the 2 GiB ceiling — as raw
   // bytes it would wrap negative in the Int32 slot.
@@ -188,15 +205,18 @@ function exec(m: ExecRunMsg): void {
   Atomics.store(sab.i32, RUN_ID, 0);
   Atomics.store(sab.i32, STATE, PyExecState.Idle);
   Atomics.add(sab.i32, HEARTBEAT, 1);
-  post({
-    t: 'exec-done',
-    runId: m.runId,
-    ok,
-    interrupted,
-    output: outBuf,
-    durationMs: performance.now() - t0,
-    figures: [],
-  });
+  post(
+    {
+      t: 'exec-done',
+      runId: m.runId,
+      ok,
+      interrupted,
+      output: outBuf,
+      durationMs: performance.now() - t0,
+      figures,
+    },
+    figures.map((f) => f.png),
+  );
   currentRunId = 0;
 }
 

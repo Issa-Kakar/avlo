@@ -4,16 +4,17 @@
  * Used by CanvasRuntime (drop), clipboard-actions (paste), toolbar, and keyboard shortcut.
  */
 
-import { generateZAtTop, isSvg } from '@avlo/shared';
+import { generateZAtTop, isSvg, type ZKey } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
+import type { FrameTuple } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getUserId } from '@/stores/auth-store';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { enqueue, ingest } from './image-manager';
+import { enqueue, type IngestResult, ingest } from './image-manager';
 
 const MAX_SVG_INPUT = 10 * 1024 * 1024; // 10 MB
 const SVG_TIMEOUT = 10_000; // 10 s
@@ -111,6 +112,26 @@ export async function rasterizeSvg(blob: Blob): Promise<Blob> {
   }
 }
 
+/** Insert an image Y.Map from an ingest result — MUST run inside an open
+ * transact (mirror of insertConnector). Clones `frame` (Y must never hold a
+ * caller's scratch tuple). */
+export function insertImage(r: IngestResult, frame: Readonly<FrameTuple>, z: ZKey): string {
+  const objectId = ulid();
+  const yObj = new Y.Map<unknown>();
+  yObj.set('id', objectId);
+  yObj.set('kind', 'image');
+  yObj.set('assetId', r.assetId);
+  yObj.set('frame', [frame[0], frame[1], frame[2], frame[3]]);
+  yObj.set('naturalWidth', r.naturalWidth);
+  yObj.set('naturalHeight', r.naturalHeight);
+  yObj.set('mimeType', r.mimeType);
+  yObj.set('ownerId', getUserId());
+  yObj.set('createdAt', Date.now());
+  yObj.set('z', z);
+  getObjects().set(objectId, yObj);
+  return objectId;
+}
+
 /** Create an image object from a blob at a world position. */
 export async function createImageFromBlob(blob: Blob, worldX: number, worldY: number, opts?: { selectAfter?: boolean }): Promise<string> {
   // SVG → rasterize to PNG before ingesting
@@ -131,23 +152,7 @@ export async function createImageFromBlob(blob: Blob, worldX: number, worldY: nu
   const x = worldX - width / 2;
   const y = worldY - height / 2;
 
-  const objectId = ulid();
-  const userId = getUserId();
-
-  transact(() => {
-    const yObj = new Y.Map<unknown>();
-    yObj.set('id', objectId);
-    yObj.set('kind', 'image');
-    yObj.set('assetId', result.assetId);
-    yObj.set('frame', [x, y, width, height]);
-    yObj.set('naturalWidth', result.naturalWidth);
-    yObj.set('naturalHeight', result.naturalHeight);
-    yObj.set('mimeType', result.mimeType);
-    yObj.set('ownerId', userId);
-    yObj.set('createdAt', Date.now());
-    yObj.set('z', generateZAtTop(getZOrder().maxZ()));
-    getObjects().set(objectId, yObj);
-  });
+  const objectId = transact(() => insertImage(result, [x, y, width, height], generateZAtTop(getZOrder().maxZ()))) as string;
 
   if (opts?.selectAfter !== false) {
     useDeviceUIStore.getState().setActiveTool('select');

@@ -7,6 +7,67 @@ Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
 Slice plan (session 7): /home/issak/.claude/plans/packages-py-build-notes-md-home-issak-c-scalable-quiche.md
 Slice plan (session 8): /home/issak/.claude/plans/home-issak-claude-plans-prompt-md-i-cop-toasty-flask.md
 
+## Session 9 — figures → canvas images + connectors, review sweep, WYSIWYG fixes
+- **P4 figure pipeline LANDED** (client-side only, no rebuild/restage): harness
+  `_harvest_figures` (Gcf via `sys.modules['matplotlib._pylab_helpers']` —
+  never imports mpl; dpi-scaled to maxFigurePx, first maxFigures, PNGs to
+  `/tmp/_avlo_figN.png`, `destroy_all()` UNCONDITIONAL + start-of-run sweep,
+  skip-dump-on-interrupt, `plt.show()` UserWarning filtered at module level;
+  caps are LOCAL literals — py-harness must stay import-free for the Node
+  harness's type-strip, drift pinned by PY_LIMITS-driven board checks) →
+  executor `FS.readFile().slice()` fresh buffers + unlink + TRANSFER lists on
+  exec-done AND the sup→main relay → NEW `py-figures.ts`:
+  `placeRunFigures` — ingest via the image pipeline, assetId dedup vs the
+  block's live `figureIds` images (owner semantics: same plot = NO-OP,
+  create-only, never update/move/delete), east placement 400wu wide
+  (drag-drop parity) slid vertically by `slideClear`, ONE user-origin
+  transact per figure (insertImage + elbow insertConnector code-E→image-W
+  none→arrow + figureIds append — UNDO-TRACKED, owner decision; output text
+  stays PY_RUN_ORIGIN), per-block stale-batch guard.
+- **Reuse extractions** (behavior-identical): `slideClear` + scratches →
+  `core/spatial/clear-placement.ts` (connector-flow imports it; core/py must
+  not import tools/); `insertImage(r, frame, z)` out of createImageFromBlob
+  (mirror of insertConnector); py-loader gained a lock-free `./verify`
+  subpath export (executor's inline sha256 deleted — the stdlib as-mounted
+  gate now shares THE verification predicate without carrying the lock JSON).
+- **Review sweep (code-review high, 8 finder angles + verify pass; 10
+  findings, 9 fixed)**: supervisor `beginInterrupt` — UserCancel now OUTRANKS
+  an armed SoftTimeout (re-arms the kill on the 2 s cancel grace; closures
+  read `run.cancelKind` live so forced-kill labels match exec-done; was: ??=
+  kept the 5 s timer + stale closure kind → Stop during grace reported
+  'timeout' up to 5 s late) · py-manager `invalidateBlock` guards
+  `hasActiveRoom()` (ticker/result paths outlive the room; getBbox throws
+  bare → wedged queue) · DOM run button seeds from the current run store
+  (editor opened on a running block showed Play that actually cancels) ·
+  executor drains the streaming TextDecoders at run end (mid-character final
+  chunk lost its glyphs) · py-imports splits compound `import a; import b`
+  statements on the STRIPPED line (gate gap; string-safe by construction) ·
+  SW verified-route put now rides `event.waitUntil` (multi-MB write could die
+  with the SW → offline boot silently lost artifacts) · cold-boot I/O
+  parallelized (glue preflight ∥ bundle fetches; tar misses via Promise.all —
+  sum→max) · dead isRunActive + stale /py-dev/fork/ comments dropped.
+  REFUTED (documented): SIGINT-in-finally boundary race (only reachable
+  under active cancellation), SW non-ok passthrough (fail-visible — module
+  import/instantiateStreaming/preflight all reject non-ok), re-verify-on-
+  every-hit costs (THE fail-closed invariant). Deferred note: SW cacheFirst
+  tar put races the supervisor's identity-normalized put on the same key —
+  self-healing (hits re-verified), watch on the preview board.
+- **Output-panel WYSIWYG fixes**: DOM ok-path text now `palette[S.DEFAULT]`
+  (#F8F8F2) like canvas — vestigial `chrome.outputText` (#AEAEAE) deleted ·
+  canvas clips the output-line loop to the frame (long tracebacks painted
+  past `totalWidth` outside the published bbox → dirty-rect ghosts; vertical
+  was never broken — 12-line cap shared by height+paint) · DOM panel height
+  now EXPLICIT `min(logicalLines,12)×outputLH` with `white-space: pre` (no
+  wrap — canvas never wraps) + sep at -1 px flow height ⇒ equals
+  `outputPanelHeight` exactly, >12 lines scroll in the fixed box ·
+  `.is-runnable` retoggles live on language switch (handler always wired,
+  runnability re-checked at click).
+- **Verified**: typecheck 12/12 · harness base 42/42 + seaborn 23/23 (+5
+  figure-harvest checks: triple+decode, plt.show filter, cross-run Gcf empty,
+  cap=PY_LIMITS.maxFigures, dpi-scale ≤ maxFigurePx) + verify 8/8 · Chrome
+  dev board pending this session (figures on canvas, dedup no-op rerun,
+  undo, clip/height parity).
+
 ## Session 8 — Commit 2: client-side artifact verification + freeze hardening
 - **The gap (owner-flagged)**: pyodide.mjs / pyodide.asm.js / pyodide.asm.wasm
   were NEVER byte-verified against the committed lock — they ride pyodide's

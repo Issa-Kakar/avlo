@@ -35,7 +35,9 @@ double-click-to-edit).
   title: string | undefined,  // undefined → "Untitled" fallback; '' → deliberate clear; 'Foo' → "Foo"
   headerVisible: boolean,     // Default true
   outputVisible: boolean,     // Default false
-  output: string | undefined, // Execution output (no runtime yet)
+  output: string | undefined,       // Run output — written by core/py's transactPyOutput
+  outputStatus: CodeOutputStatus | undefined, // non-ok tints the output text
+  figureIds: string[] | undefined,  // run-created figure image ids (core/py/py-figures.ts)
 }
 ```
 
@@ -310,7 +312,9 @@ attr string). Over-painting alternatives would be worse.
 
 Single source of truth: `THEME` in `code-tokens.ts` — `palette[S]` for token
 colors and `chrome.{bg,gutter,selection,lineHl,caret,nonmatchBracket,searchMatch,
-sep,title,playGreen,playBg,outputLabel,outputText,placeholder}` for chrome.
+sep,title,playGreen,playBg,outputLabel,outputError,runStatus,stopRed,stopBg,
+placeholder}` for chrome. Ok-path output text is `palette[S.DEFAULT]` on BOTH
+surfaces (the DOM's `--c-output-text` is set from it — no separate chrome token).
 Current theme: CoolGlow chrome (deep blue/purple) + Sweet Dracula palette.
 Color-only emphasis — no bold, no italic. Theme swap = change `CODE_THEME`
 export + invalidate.
@@ -347,8 +351,8 @@ unmapped (JS/PY/JSON/CSS separators all fg).
 ## Canvas Renderer (`renderCodeLayout`)
 
 Signature: `renderCodeLayout(ctx, layout, originX, originY, spans, source,
-title?, output?, outputCache?)` — all size/color metrics read off `layout`'s
-cached px fields, so no `fontSize` param. `title`/`output` undefined hides the
+title?, output?, outputCache?, outputStatus?, blockId?)` — all size/color
+metrics read off `layout`'s cached px fields, so no `fontSize` param. `title`/`output` undefined hides the
 respective chrome section; present string shows it. Callers (`drawCode` +
 scale-time paths in `objects.ts`) eagerly build `outputCache` so the renderer
 has no fallback branch.
@@ -431,7 +435,8 @@ fallback so partially-themed elements degrade gracefully.
 | `--c-gw` | `2 * charWidth(fs) * scale` | `.cm-gutterElement` min-width content area |
 | `--c-btn-size` | `fs * scale` | `.code-run-btn` width/height |
 | `--c-tri-w` / `--c-tri-h` | `playButtonGeom(fs) * scale` | `.code-run-btn > svg` width/height + centroid offset |
-| `--c-bg` / `--c-sep` / `--c-title` / `--c-caret` / `--c-placeholder` / `--c-output-label` / `--c-output-text` | `THEME.chrome.*` | `.code-editor` + chrome elements |
+| `--c-bg` / `--c-sep` / `--c-title` / `--c-caret` / `--c-placeholder` / `--c-output-label` | `THEME.chrome.*` | `.code-editor` + chrome elements |
+| `--c-output-text` | `THEME.palette[S.DEFAULT]` | `.code-output-text` — matches the canvas ok-path output color |
 
 `--c-gi` / `--c-gw` / `--c-gg` are removed when `lineNumbers=false` (CM strips
 `.cm-gutters`). `--c-cl` stays — content padding always applies.
@@ -580,12 +585,25 @@ normally in spatial-index queries.
 
 The play button is LIVE for `language === 'python'` (decorative for the rest):
 canvas hit via `hitCodePlayButton` (SelectTool `playButton` DownHit +
-CodeTool.end), DOM `.code-run-btn.is-runnable` while editing, Mod-Enter in the
-CM keymap — all three route to `core/py/py-manager.toggleRunCodeBlock` (the
-never-auto-run invariant lives there; see `core/py/CLAUDE.md`). Run state
-(stop square + "Running… N s" in the header row) paints from `py-run-store`
-inside `renderCodeLayout` (blockId param); `outputStatus !== 'ok'` tints the
-output text `THEME.chrome.outputError` (canvas + DOM both).
+CodeTool.end), DOM `.code-run-btn.is-runnable` while editing (class retoggles
+live on language switch; button seeds its run visual from the current store),
+Mod-Enter in the CM keymap — all three route to
+`core/py/py-manager.toggleRunCodeBlock` (the never-auto-run invariant lives
+there; see `core/py/CLAUDE.md`). Run state (stop square + "Running… N s" in
+the header row) paints from `py-run-store` inside `renderCodeLayout` (blockId
+param); `outputStatus !== 'ok'` tints the output text
+`THEME.chrome.outputError` (canvas + DOM both). Matplotlib figures land as
+separate IMAGE objects + auto elbow connectors (`core/py/py-figures.ts`) —
+never in the output panel.
+
+**Output-panel WYSIWYG parity (canvas ↔ DOM):** output lines never wrap on
+either surface. Canvas clips the line loop to the frame (long tracebacks must
+not paint outside the published bbox); the DOM mirror uses `white-space: pre`
++ `overflow: hidden/auto` with an EXPLICIT height =
+`min(logicalLines, MAX_OUTPUT_CANVAS_LINES) × outputLH` (`outputDomLines` in
+CodeTool mirrors `outputLineCount`), and the 1px separator div carries a
+`-1px` bottom margin so it consumes no flow height — the DOM panel equals
+`outputPanelHeight` exactly; >12 logical lines scroll within the fixed box.
 
 ## Known Issues
 

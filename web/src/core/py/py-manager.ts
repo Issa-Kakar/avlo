@@ -13,6 +13,7 @@
 import { getCodeProps } from '@/core/accessors';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getBbox, getHandle, hasActiveRoom, transactPyOutput } from '@/runtime/room-runtime';
+import { placeRunFigures } from './py-figures';
 import { AVAILABLE_PACKAGES, resolveImports, scanPythonImports, unavailableMessage } from './py-imports';
 import { PY_LIMITS, type PyRunStatus, type PySetKey, type SupToMain } from './py-protocol';
 import { appendOutput, clearRun, getRunEntry, patchRun, upsertRun } from './py-run-store';
@@ -32,6 +33,8 @@ let inFlight: QueuedRun | null = null;
 let ticker: ReturnType<typeof setInterval> | null = null;
 
 function invalidateBlock(blockId: string): void {
+  // Ticker + supervisor-message paths outlive the room (getBbox throws bare).
+  if (!hasActiveRoom()) return;
   const bbox = getBbox(blockId);
   if (bbox) invalidateWorldBBox(bbox);
 }
@@ -119,6 +122,7 @@ function onSupervisorMessage(m: SupToMain): void {
       const run = inFlight;
       inFlight = null;
       finishRun(run, m.status, m.output);
+      placeRunFigures(run.blockId, run.runId, m.figures);
       dispatchNext();
       break;
     }

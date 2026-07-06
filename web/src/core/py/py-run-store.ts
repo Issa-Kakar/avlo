@@ -68,9 +68,4 @@ export function getRunEntry(blockId: string): PyRunEntry | undefined {
   return usePyRunStore.getState().runs.get(blockId);
 }
 
-export function isRunActive(blockId: string): boolean {
-  const e = getRunEntry(blockId);
-  return e !== undefined && e.phase !== 'queued';
-}
-
 export const { upsertRun, patchRun, appendOutput, clearRun } = usePyRunStore.getState();

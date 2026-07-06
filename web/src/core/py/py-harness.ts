@@ -20,6 +20,14 @@
 export const HARNESS_FILE = '<avlo-harness>';
 export const BLOCK_FILE = '<block>';
 
+/** Figure caps — MUST mirror PY_LIMITS.maxFigures/maxFigurePx (py-protocol).
+ * Local literals because this file stays IMPORT-FREE (the py-build Node
+ * harness type-strips it directly; Node ESM rejects extensionless relative
+ * specifiers). Drift is pinned by the harness board's PY_LIMITS-driven
+ * cap checks (run-harness.mjs seaborn section). */
+const MAX_FIGS = 4;
+const MAX_FIG_PX = 2_048;
+
 /** Boot-time: define the harness module. Executor runs this once. */
 export const HARNESS_SOURCE = `
 import ast, builtins, linecache, sys, traceback, json
@@ -61,6 +69,59 @@ def _trim_tb(tb):
     return tb
 
 
+# ---- matplotlib figure harvest (caps templated from MAX_FIGS/MAX_FIG_PX) ---
+_MAX_FIGS = ${MAX_FIGS}
+_MAX_FIG_PX = ${MAX_FIG_PX}
+
+# plt.show() under Agg warns "FigureCanvasAgg is non-interactive, and thus
+# cannot be shown" — a habitual line in real plot code; keep it out of the
+# output panel. warnings filters are interpreter state, so this persists
+# across runs within a generation (like the import guard above).
+import warnings
+
+warnings.filterwarnings("ignore", message=".*non-interactive.*cannot be shown")
+
+
+def _close_all_figures():
+    helpers = sys.modules.get("matplotlib._pylab_helpers")
+    if helpers is not None:
+        try:
+            helpers.Gcf.destroy_all()
+        except BaseException:
+            pass
+
+
+def _harvest_figures(interrupted):
+    """PNG-dump open pyplot figures to MEMFS, ALWAYS closing them — the
+    interpreter is shared across runs, so a leaked figure would reappear in
+    the next run's harvest. Detection never imports matplotlib itself:
+    _pylab_helpers (Gcf's home) is in sys.modules iff pyplot ran. Skips the
+    dump when interrupted (cancel/timeout must not fight the kill grace with
+    savefig work) but still closes. SIGINT repeats until the run resolves, so
+    every step is BaseException-guarded."""
+    helpers = sys.modules.get("matplotlib._pylab_helpers")
+    if helpers is None:
+        return []
+    figs = []
+    try:
+        if not interrupted:
+            for i, mgr in enumerate(helpers.Gcf.get_all_fig_managers()[:_MAX_FIGS]):
+                try:
+                    fig = mgr.canvas.figure
+                    dpi = fig.dpi
+                    m = max(fig.get_figwidth(), fig.get_figheight()) * dpi
+                    if m > _MAX_FIG_PX:
+                        dpi = dpi * _MAX_FIG_PX / m
+                    path = "/tmp/_avlo_fig%d.png" % i
+                    fig.savefig(path, format="png", dpi=dpi)
+                    figs.append([path, round(fig.get_figwidth() * dpi), round(fig.get_figheight() * dpi)])
+                except BaseException:
+                    pass
+    finally:
+        _close_all_figures()
+    return figs
+
+
 def run(code):
     # Fresh namespace per run. NOT stateless: the interpreter is shared
     # across runs until P3's blit reset (imported modules keep their state).
@@ -69,6 +130,10 @@ def run(code):
     linecache.cache[_BLOCK] = (len(code), None, lines, _BLOCK)
     interrupted = False
     ok = True
+    figures = []
+    # Second-chance sweep: a hard-interrupted prior cleanup can leak figures
+    # past its own guarded destroy_all.
+    _close_all_figures()
     try:
         tree = ast.parse(code, _BLOCK)
         last = None
@@ -91,9 +156,13 @@ def run(code):
         traceback.print_exception(et, ev, _trim_tb(tb), file=sys.stderr)
     finally:
         linecache.cache.pop(_BLOCK, None)
+        try:
+            figures = _harvest_figures(interrupted)
+        except BaseException:
+            pass
         sys.stdout.flush()
         sys.stderr.flush()
-    return _dumps({"ok": ok, "interrupted": interrupted})
+    return _dumps({"ok": ok, "interrupted": interrupted, "figures": figures})
 `;
 
 /** Per-run: executor sets `_avlo_code` (string, by value) then evals this. */

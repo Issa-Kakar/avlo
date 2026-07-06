@@ -1,8 +1,9 @@
 /**
  * Fork boot wrapper — the one place that touches the pyodide loader API.
  * P3 extends this with snapshot restore (`_loadSnapshot` + `_preRestoreHook`)
- * and lazy bundle mounting; P1 is a cold boot of glue+wasm+stdlib from
- * `artifactBase` (dev: /py-dev/fork/ via the pyDevStatic middleware).
+ * and lazy bundle mounting; today it cold-boots glue+wasm+stdlib from
+ * `artifactBase` = `PY_ORIGIN/<buildHash>/` (dev: the `/api/py` Vite proxy —
+ * the `/py-dev/` pyDevStatic middleware serves the spike pages only).
  */
 
 // biome-ignore lint/suspicious/noExplicitAny: fork loader has no bundled types in-app

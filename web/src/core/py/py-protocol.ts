@@ -94,7 +94,7 @@ export interface PyBundlePayload {
 
 export interface ExecBootMsg {
   t: 'boot';
-  /** Base URL for glue/wasm/stdlib artifacts (dev: /py-dev/fork/). */
+  /** Base URL for glue/wasm/stdlib artifacts (`PY_ORIGIN/<buildHash>/`). */
   artifactBase: string;
   sab: SharedArrayBuffer;
   /** Manifest hash of python_stdlib.zip — the executor hashes the zip AS

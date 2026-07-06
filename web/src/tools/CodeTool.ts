@@ -42,6 +42,7 @@ import {
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
   playButtonGeom,
+  S,
   THEME,
 } from '@/core/code/code-tokens';
 import { isRunnableCodeBlock, toggleRunCodeBlock } from '@/core/py/py-manager';
@@ -65,6 +66,20 @@ import type { PointerTool, PreviewData } from './types';
  * same grammar the lezer worker runs, so editor and canvas tokenize
  * identically by construction.
  */
+/** Logical output lines, capped — mirrors code-system's outputLineCount so the
+ * DOM panel height always equals the canvas outputPanelHeight term (WYSIWYG). */
+function outputDomLines(text: string): number {
+  if (!text) return 0;
+  let n = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      n++;
+      if (n >= MAX_OUTPUT_CANVAS_LINES) return MAX_OUTPUT_CANVAS_LINES;
+    }
+  }
+  return n;
+}
+
 async function loadLangExt(language: CodeLanguage): Promise<import('@codemirror/language').LanguageSupport> {
   switch (language) {
     case 'python':
@@ -289,7 +304,8 @@ export class CodeTool implements PointerTool {
     s.setProperty('--c-caret', THEME.chrome.caret);
     s.setProperty('--c-placeholder', THEME.chrome.placeholder);
     s.setProperty('--c-output-label', THEME.chrome.outputLabel);
-    s.setProperty('--c-output-text', THEME.chrome.outputText);
+    // Output text mirrors the canvas renderer's ok-path color (palette default).
+    s.setProperty('--c-output-text', THEME.palette[S.DEFAULT]);
   }
 
   // =========================================================================
@@ -688,7 +704,7 @@ export class CodeTool implements PointerTool {
       // Update separator margins
       const sep = this.outputDiv.firstElementChild;
       if (sep && (sep as HTMLElement).style.height === '1px') {
-        (sep as HTMLElement).style.margin = `0 ${-padRight(props.fontSize) * scale}px 0 ${-padLeft(props.fontSize) * scale}px`;
+        (sep as HTMLElement).style.margin = `0 ${-padRight(props.fontSize) * scale}px -1px ${-padLeft(props.fontSize) * scale}px`;
       }
       // Update label height
       const label = this.outputDiv.querySelector('.code-output-label') as HTMLElement | null;
@@ -698,7 +714,7 @@ export class CodeTool implements PointerTool {
         label.style.lineHeight = `${labelH}px`;
       }
       if (this.outputTextDiv) {
-        this.outputTextDiv.style.maxHeight = `${MAX_OUTPUT_CANVAS_LINES * outputLH}px`;
+        this.outputTextDiv.style.height = `${outputDomLines(this.outputTextDiv.textContent ?? '') * outputLH}px`;
         this.outputTextDiv.style.lineHeight = `${outputLH}px`;
       }
     }
@@ -740,6 +756,8 @@ export class CodeTool implements PointerTool {
   private async switchLanguage(yMap: Y.Map<unknown>): Promise<void> {
     if (!this.editorView || !this.langCompartment) return;
     const lang = yMap.get('language') as CodeLanguage;
+    // Live-retoggle the run button's pointer-events gate (python-only, v1).
+    this.headerDiv?.querySelector('.code-run-btn')?.classList.toggle('is-runnable', lang === 'python');
     const ext = await loadLangExt(lang);
     if (!this.editorView || !this.langCompartment) return;
     // biome-ignore lint/suspicious/noExplicitAny: CodeMirror dispatch accepts loosely typed state effects
@@ -850,25 +868,32 @@ export class CodeTool implements PointerTool {
     playBtn.innerHTML = playSvg;
     // Runnable blocks (python, v1) get a live button while editing — a legal
     // toggleRunCodeBlock call site (local gesture; never-auto-run invariant).
-    if (getLanguage(y) === 'python') {
-      const blockId = y.get('id') as string;
-      playBtn.classList.add('is-runnable');
-      playBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleRunCodeBlock(blockId);
-      });
-      // Mirror run state onto the DOM button (canvas is hidden while editing).
-      const stopSvg = `<svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" fill="${THEME.chrome.stopRed}"/></svg>`;
-      let wasRunning = false;
-      this.runBtnUnsub?.();
-      this.runBtnUnsub = usePyRunStore.subscribe((s) => {
-        const running = s.runs.has(blockId);
-        if (running === wasRunning) return;
-        wasRunning = running;
-        playBtn.innerHTML = running ? stopSvg : playSvg;
-        playBtn.style.background = running ? THEME.chrome.stopBg : THEME.chrome.playBg;
-      });
-    }
+    // Always wired: `.is-runnable` (CSS pointer-events gate) toggles with the
+    // language — including live switches while editing — and the handler
+    // re-checks runnability at click time.
+    const blockId = y.get('id') as string;
+    if (getLanguage(y) === 'python') playBtn.classList.add('is-runnable');
+    playBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isRunnableCodeBlock(blockId)) toggleRunCodeBlock(blockId);
+    });
+    // Mirror run state onto the DOM button (canvas is hidden while editing).
+    // Seeded from the CURRENT store — the editor can open on an already-
+    // running block, and subscribe only fires on change.
+    const stopSvg = `<svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" fill="${THEME.chrome.stopRed}"/></svg>`;
+    const applyRunVisual = (running: boolean): void => {
+      playBtn.innerHTML = running ? stopSvg : playSvg;
+      playBtn.style.background = running ? THEME.chrome.stopBg : THEME.chrome.playBg;
+    };
+    let wasRunning = usePyRunStore.getState().runs.has(blockId);
+    if (wasRunning) applyRunVisual(true);
+    this.runBtnUnsub?.();
+    this.runBtnUnsub = usePyRunStore.subscribe((s) => {
+      const running = s.runs.has(blockId);
+      if (running === wasRunning) return;
+      wasRunning = running;
+      applyRunVisual(running);
+    });
 
     header.appendChild(input);
     header.appendChild(playBtn);
@@ -881,7 +906,6 @@ export class CodeTool implements PointerTool {
   private createOutputDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
     const cfs = chromeFontSize(fs) * scale;
     const outputLH = cfs * OUTPUT_LINE_H_MULT;
-    const maxH = MAX_OUTPUT_CANVAS_LINES * outputLH;
 
     const output = document.createElement('div');
     output.className = 'code-output';
@@ -889,11 +913,13 @@ export class CodeTool implements PointerTool {
     const padB = fs * OUTPUT_PAD_BOTTOM_RATIO * scale;
     output.style.padding = `0 ${padRight(fs) * scale}px ${padB}px ${padLeft(fs) * scale}px`;
 
-    // Separator line — matches canvas fillRect (1px within the output area)
+    // Separator line — matches canvas fillRect (1px ON the panel boundary).
+    // -1px bottom margin keeps it out of the flow so the label starts at the
+    // panel top exactly like canvas drawSep (which consumes no height).
     const sep = document.createElement('div');
     sep.style.height = '1px';
     sep.style.background = THEME.chrome.sep;
-    sep.style.margin = `0 ${-padRight(fs) * scale}px 0 ${-padLeft(fs) * scale}px`;
+    sep.style.margin = `0 ${-padRight(fs) * scale}px -1px ${-padLeft(fs) * scale}px`;
 
     const label = document.createElement('div');
     label.className = 'code-output-label';
@@ -904,9 +930,12 @@ export class CodeTool implements PointerTool {
 
     const textDiv = document.createElement('div');
     textDiv.className = 'code-output-text';
-    textDiv.style.maxHeight = `${maxH}px`;
+    const text = (getCodeOutput(y) as string) ?? '';
+    // Explicit height = capped logical lines × line height — the exact canvas
+    // outputPanelHeight term. >cap lines scroll within the fixed box.
+    textDiv.style.height = `${outputDomLines(text) * outputLH}px`;
     textDiv.style.lineHeight = `${outputLH}px`;
-    textDiv.textContent = (getCodeOutput(y) as string) ?? '';
+    textDiv.textContent = text;
     this.applyOutputTint(textDiv, y);
 
     output.appendChild(sep);
@@ -994,7 +1023,10 @@ export class CodeTool implements PointerTool {
 
   private updateOutputContent(y: Y.Map<unknown>): void {
     if (!this.outputTextDiv) return;
-    this.outputTextDiv.textContent = getCodeOutput(y) ?? '';
+    const text = getCodeOutput(y) ?? '';
+    this.outputTextDiv.textContent = text;
+    // lineHeight is always set by createOutputDiv/positionEditor — reuse it.
+    this.outputTextDiv.style.height = `${outputDomLines(text) * parseFloat(this.outputTextDiv.style.lineHeight)}px`;
     this.applyOutputTint(this.outputTextDiv, y);
   }
 

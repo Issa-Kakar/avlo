@@ -110,7 +110,6 @@ export interface ThemeSpec {
     playGreen: string;
     playBg: string;
     outputLabel: string;
-    outputText: string;
     /** Output text tint when the last run failed (error/timeout/oom/…). */
     outputError: string;
     /** Live run status text (right-aligned in the output label row). */
@@ -156,7 +155,6 @@ export const CODE_THEME: ThemeSpec = {
     playGreen: '#4ADE80',
     playBg: '#4ADE8035',
     outputLabel: '#E0E0E090',
-    outputText: '#AEAEAE',
     outputError: '#FF5555',
     runStatus: '#E0E0E090',
     stopRed: '#FF5555',

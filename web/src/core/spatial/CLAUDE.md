@@ -19,8 +19,14 @@ web/src/core/spatial/
 ├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers (~250 LOC)
 ├── object-query.ts          — Picker facade: 4 exports, no options  (~230 LOC)
 ├── handle-hit.ts            — Resize handles + endpoint dots        (~140 LOC)
+├── clear-placement.ts       — `slideClear` clear-spot search         (~50 LOC)
 └── index.ts                 — Barrel; re-exports `ObjectSpatialIndex` only
 ```
+
+`clear-placement.ts` is the collision-avoidance core shared by
+connector-flow's sibling placement and py-figures' auto-placement: slide a
+probe frame along one axis (module scratches, `queryBBox` + `isBindableKind`
+blockers) until it clears, stepping just past each blocker's edge.
 
 `hit-dispatch.ts` exposes three switch dispatchers (`hitPointFor` /
 `hitRectFor` / `hitCircleFor`) over eight named, monomorphic per-kind

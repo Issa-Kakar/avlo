@@ -1290,11 +1290,19 @@ export function renderCodeLayout(
       const chromeBl = (cfs * (OUTPUT_LINE_H_MULT + 0.8)) / 2; // approximate ascent
       const maxLines = Math.min(outputCache.lineCount, MAX_OUTPUT_CANVAS_LINES);
       const ls = outputCache.lineStart;
+      // Output lines are unwrapped — clip long ones (tracebacks) to the block:
+      // painted pixels must stay inside the published bbox (dirty-rect WYSIWYG).
+      // Right edge is the DOM text div's content edge (pad-right inset).
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(originX, codeBottomY, layout.totalWidth - layout.padRightPx, originY + bgH - codeBottomY);
+      ctx.clip();
       for (let i = 0; i < maxLines; i++) {
         const from = ls[i];
         const to = ls[i + 1] - 1;
         ctx.fillText(output.substring(from, to), originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
       }
+      ctx.restore();
     }
   }
 

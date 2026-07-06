@@ -93,7 +93,11 @@ function pyCoreEntry(url: URL): { name: string; sha256: string; size: number } |
  * 502 and NEVER cached. The synthetic Response carries Content-Type ONLY —
  * `arrayBuffer()` yields DECODED bytes, so the network response's
  * Content-Encoding/Content-Length (a `.br` body) must not ride along. */
-async function verifiedPyFirst(request: Request, entry: { name: string; sha256: string; size: number }): Promise<Response> {
+async function verifiedPyFirst(
+  event: FetchEvent,
+  request: Request,
+  entry: { name: string; sha256: string; size: number },
+): Promise<Response> {
   let cache: Cache | null = null;
   try {
     cache = await caches.open(PY_CACHE);
@@ -106,6 +110,9 @@ async function verifiedPyFirst(request: Request, entry: { name: string; sha256: 
     cache = null; // Cache API unavailable — verification still mandatory below
   }
   const resp = await fetch(request);
+  // Non-ok propagates unverified + uncached — fail-visible: no consumer
+  // executes a non-ok body (module import, instantiateStreaming, and the
+  // supervisor glue preflight all reject it).
   if (!resp.ok) return resp;
   const bytes = await resp.arrayBuffer();
   if (!(await matchesLockEntry(bytes, entry))) {
@@ -115,7 +122,9 @@ async function verifiedPyFirst(request: Request, entry: { name: string; sha256: 
     status: 200,
     headers: { 'Content-Type': resp.headers.get('Content-Type') ?? 'application/octet-stream' },
   });
-  cache?.put(request, out.clone());
+  // waitUntil: respondWith settles with `out` immediately — the multi-MB put
+  // must survive SW termination or offline boot silently loses the artifact.
+  if (cache) event.waitUntil(cache.put(request, out.clone()));
   return out;
 }
 
@@ -139,7 +148,7 @@ sw.addEventListener('fetch', (event) => {
   // them — see the PY_CACHE comment).
   if (isPyRequest(url, PY_ORIGIN)) {
     const core = pyCoreEntry(url);
-    event.respondWith(core ? verifiedPyFirst(request, core) : cacheFirst(request, PY_CACHE));
+    event.respondWith(core ? verifiedPyFirst(event, request, core) : cacheFirst(request, PY_CACHE));
     return;
   }
 

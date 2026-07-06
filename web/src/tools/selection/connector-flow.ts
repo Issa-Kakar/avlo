@@ -42,8 +42,8 @@ import { routeNewConnectorInto, type VirtualAnchor } from '@/core/connectors/rer
 import { midpointAnchorFor } from '@/core/connectors/shape-geometry';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { Dir, ElbowSnapTarget, SnapTarget } from '@/core/connectors/types';
-import { setBBoxXYWH } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
+import { slideClear } from '@/core/spatial/clear-placement';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint, ObjectHandle, StoredElbowAnchor } from '@/core/types/objects';
@@ -369,10 +369,6 @@ function computeDupFrame(side: FlowSide, f: Readonly<FrameTuple>): FrameTuple {
 // SEMANTIC PLACEMENT — redundancy check + clear-space search
 // =============================================================================
 
-// Module scratches for the clear-spot search — written + read synchronously.
-const _spotFrame: FrameTuple = [0, 0, 0, 0];
-const _spotBbox: BBoxTuple = [0, 0, 0, 0];
-
 /**
  * Source-sized placement frame aligned beside `cand`: connector-facing edge
  * level with the candidate's, centered on the candidate's cross axis. The
@@ -393,39 +389,6 @@ function computeSiblingBaseFrame(side: FlowSide, src: Readonly<FrameTuple>, cand
     case 'w': // candidate left — level the right edges
       return [cand[0] + cand[2] - dw, candCy - dh / 2, dw, dh];
   }
-}
-
-/**
- * Slide a sibling frame along the perpendicular axis from `startC` until it
- * clears every bindable, stepping just past each blocker's edge (+ `gap`).
- * `base` fixes the along-axis position + extents; only `base[pIdx]` moves.
- * Returns the cleared perpendicular centre, or `null` once `c` runs past `limit`.
- */
-function slideClear(base: FrameTuple, pIdx: number, half: number, gap: number, dir: number, startC: number, limit: number): number | null {
-  let c = startC;
-  for (let guard = 0; guard < 64; guard++) {
-    if (dir > 0 ? c > limit : c < limit) return null;
-    _spotFrame[0] = base[0];
-    _spotFrame[1] = base[1];
-    _spotFrame[2] = base[2];
-    _spotFrame[3] = base[3];
-    _spotFrame[pIdx] = c - half;
-    setBBoxXYWH(_spotBbox, _spotFrame[0], _spotFrame[1], _spotFrame[2], _spotFrame[3]);
-    const hits = getSpatialIndex().queryBBox(_spotBbox);
-    let blocked = false;
-    let next = c;
-    for (let i = 0; i < hits.length; i++) {
-      const h = hits[i];
-      if (!isBindableKind(h.kind)) continue;
-      blocked = true;
-      // Centre that puts the sibling's near edge `gap` past this blocker's edge.
-      const past = dir > 0 ? (pIdx === 0 ? h.maxX : h.maxY) + gap + half : (pIdx === 0 ? h.minX : h.minY) - gap - half;
-      if (dir > 0 ? past > next : past < next) next = past;
-    }
-    if (!blocked) return c;
-    c = next;
-  }
-  return null;
 }
 
 /**

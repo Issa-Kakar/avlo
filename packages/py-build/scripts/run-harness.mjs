@@ -298,6 +298,10 @@ if (section === 'base') {
 // precise, and pandas↔sqlite3 roundtrips — all POST-freeze.
 if (section === 'seaborn') {
   const { decodePng } = await import('./lib/png.mjs');
+  // Dependency-free like verify.ts — safe to type-strip directly. Drives the
+  // harvest-cap checks so py-harness's local MAX_FIGS/MAX_FIG_PX literals
+  // (the file must stay import-free) cannot silently drift from PY_LIMITS.
+  const { PY_LIMITS } = await import(pathToFileURL(join(repo, 'web/src/core/py/py-protocol.ts')).href);
   const { pyodide, run } = await bootHardened('all');
 
   pyodide.runPython(`import logging
@@ -342,6 +346,48 @@ _mpl_logger.setLevel(logging.INFO)`);
     "import sqlite3, pandas as pd\ncon = sqlite3.connect(':memory:')\npd.DataFrame({'g': ['a', 'a', 'b'], 'x': [1.0, 2.0, 3.5]}).to_sql('t', con, index=False)\nprint(pd.read_sql_query('SELECT SUM(x) AS s FROM t', con)['s'].iloc[0])\ncon.close()",
   );
   check('pandas↔sqlite3 read_sql roundtrip post-freeze', r.ok && r.output === '6.5\n', JSON.stringify(r).slice(0, 300));
+
+  // ---- figure harvest (session 9): open pyplot figures come back as
+  // [path, w, h] triples in the run JSON and are ALWAYS closed across runs.
+  r = run("import matplotlib.pyplot as plt\nplt.plot([1, 2, 3])\nplt.show()\nprint('plotted')");
+  check(
+    'harvest: open figure → one [path,w,h] triple; plt.show() warning filtered',
+    r.ok && r.figures.length === 1 && r.output === 'plotted\n',
+    JSON.stringify(r).slice(0, 300),
+  );
+  if (r.ok && r.figures.length === 1) {
+    const [p, w, h] = r.figures[0];
+    const png = decodePng(Buffer.from(pyodide.FS.readFile(p)));
+    check(
+      'harvest: figure PNG decodes, dims match the triple',
+      png.width === w && png.height === h,
+      `${png.width}x${png.height} vs ${w}x${h}`,
+    );
+    pyodide.FS.unlink(p); // executor-shaped cleanup
+  }
+  r = run('import matplotlib._pylab_helpers as h\nprint(len(h.Gcf.get_all_fig_managers()))');
+  check(
+    'harvest: Gcf empty on the NEXT run (unconditional close-all)',
+    r.ok && r.output === '0\n' && r.figures.length === 0,
+    JSON.stringify(r).slice(0, 200),
+  );
+  r = run("import matplotlib.pyplot as plt\nfor i in range(6):\n    plt.figure()\nprint('made 6')");
+  check(
+    'harvest: 6 open figures capped at PY_LIMITS.maxFigures',
+    r.ok && r.figures.length === PY_LIMITS.maxFigures,
+    JSON.stringify(r).slice(0, 200),
+  );
+  if (r.ok) for (const [p] of r.figures) pyodide.FS.unlink(p);
+  r = run("import matplotlib.pyplot as plt\nplt.figure(figsize=(30, 10), dpi=100)\nprint('big')");
+  check(
+    'harvest: oversize figure dpi-scaled to ≤ PY_LIMITS.maxFigurePx long side',
+    r.ok &&
+      r.figures.length === 1 &&
+      Math.max(r.figures[0][1], r.figures[0][2]) <= PY_LIMITS.maxFigurePx &&
+      r.figures[0][1] >= PY_LIMITS.maxFigurePx - 64,
+    JSON.stringify(r.figures).slice(0, 200),
+  );
+  if (r.ok) for (const [p] of r.figures) pyodide.FS.unlink(p);
 
   const logs = JSON.parse(pyodide.runPython('import json; json.dumps(_avlo_mpl_logs)'));
   check(
