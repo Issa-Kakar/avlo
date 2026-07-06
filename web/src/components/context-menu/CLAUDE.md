@@ -21,7 +21,7 @@
 > - **Icons:** 20×20, sourced from `components/toolbar/icons/*`. `fill="currentColor"` / `stroke="currentColor"` so they tint via parent.
 > - **Row protection:** `whitespace-nowrap` utility on filter dropdown rows — prevents subpixel wrap on borderline-fit labels (e.g. "Sticky Note" against `min-w-[140px]`).
 > - **Labels singular:** `Stroke` / `Shape` / `Connector` / `Image`. Two-word singulars (`Code Block`, `Sticky Note`) untouched.
-> - **Lock button:** `.ctx-btn-sq .ctx-btn-lock`. `.ctx-btn-lock` is a TSX-only semantic marker (no CSS rules); icon ink `var(--ctx-engaged)` is inherited from the `.ctx-btn` base. Mural 24-viewBox glyph in `icons/LockIcon.tsx`, 20×20. Rendered by the shell as the leftmost button on every bar — including `image` / `bookmark`, where it's the *entire* bar. No-op placeholder; locking is not implemented yet. Trash + overflow `…` were lifted into the upcoming right-click menu; the `IconTrash` source survives at `icons/TrashIcon.tsx` for reuse elsewhere in the app, but nothing in the context menu imports it.
+> - **Lock button:** `.ctx-btn-sq .ctx-btn-fmt .ctx-btn-lock` — LIVE durable-lock toggle. Subscribes `selectionLocked`; `onMouseDown` → `toggleSelectedLocked()` (tracked, undoable, own undo step); `active` when locked reuses the `.ctx-btn-fmt.active` dark fill. Mural 24-viewBox glyph in `icons/LockIcon.tsx`, 20×20. Rendered by the shell as the leftmost button on every bar — including `image` / `bookmark`, where it's the *entire* bar — and when `selectionLocked`, `ContextMenuBar` skips the divider + per-kind menu so the active lock button is the entire bar for EVERY kind (second press unlocks and re-expands). Trash + overflow `…` were lifted into the upcoming right-click menu; the `IconTrash` source survives at `icons/TrashIcon.tsx` for reuse elsewhere in the app, but nothing in the context menu imports it.
 > - **Defaults, not laws.** Icon `#1b1f22` / text `#48525b` are menu-wide starting points; surfaces mix tones case-by-case, per the action / icon / text they carry.
 >
 > **Aligned to the new vocabulary:** `FilterObjectsDropdown` (the base);
@@ -329,8 +329,8 @@ The trailing label slot (+ its divider) renders **only for a single connector** 
 ```
 ContextMenu                  <- gate on menuOpen, renders null when closed
 └── ContextMenuBar           <- computes effectiveKind, looks up MENU_BY_KIND
-    ├── LockButton           <- no-op placeholder, always leftmost (every kind incl. image/bookmark)
-    └── <div .ctx-divider>   <- omitted when MENU_BY_KIND has no entry → lock-only bar
+    ├── LockButton           <- durable-lock toggle, always leftmost (every kind incl. image/bookmark)
+    └── <div .ctx-divider>   <- omitted when MENU_BY_KIND has no entry OR selectionLocked → lock-only bar
         + <Menu />           <- one menus/* component (StrokeMenu … MixedMenu)
 ```
 
@@ -546,7 +546,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `menu-widths.ts` | `STROKE_WIDTHS` (pen `4/7/10/13`) + `OUTLINE_WIDTHS` (shape/connector `2/4/6/8`), derived from `toolbar/weights`. |
 | `menus/*.tsx` | One self-subscribing menu bar per `SelectionKind` — `StrokeMenu`, `ConnectorMenu`, `ShapeMenu`, `TextMenu`, `NoteMenu`, `CodeMenu`, `MixedMenu`. Each owns its store selector(s) + the JSX for its kind. |
 | `FormatButtons.tsx` | `BoldButton` + `ItalicButton` — shared by `ShapeMenu`/`TextMenu`/`NoteMenu`. |
-| `LockButton.tsx` | Shell lock button — no-op placeholder, leftmost on every bar (incl. image/bookmark where it's the whole bar). `IconLock` 20×20 inside `.ctx-btn-sq .ctx-btn-lock`. |
+| `LockButton.tsx` | Shell lock button — durable-lock toggle (`selectionLocked` → `active`, `onMouseDown` → `toggleSelectedLocked`), leftmost on every bar; the whole bar for image/bookmark and for any locked selection. `IconLock` 20×20 inside `.ctx-btn-sq .ctx-btn-fmt .ctx-btn-lock`. |
 | `LabelButton.tsx` | Connector-bar "Add label" button — `onMouseDown` → `textTool.startEditing(selectedIds[0])`. `IconLabel` 20×20 inside `.ctx-btn-sq .ctx-btn-label`. Rendered only in `ConnectorMenu`'s single-connector **no-label** branch (the has-label branch shows live text controls instead — see `connectorsOnly`). |
 | `MenuButton.tsx` | Base button primitive (`mouseDown preventDefault` keeps canvas focus) |
 | `ButtonGroup.tsx` | Flex row wrapper |

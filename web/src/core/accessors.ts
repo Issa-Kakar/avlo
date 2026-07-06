@@ -75,6 +75,11 @@ export function getWidth(y: Y.Map<unknown>, fallback = 2): number {
   return (y.get('strokeWidth') as number | undefined) ?? fallback;
 }
 
+/** Durable per-object lock — `locked: 1` present ⇔ locked (unlock deletes the key). */
+export function getLocked(y: Y.Map<unknown>): boolean {
+  return y.get('locked') === 1;
+}
+
 // ============================================================================
 // GEOMETRY ACCESSORS
 // ============================================================================

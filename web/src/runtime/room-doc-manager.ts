@@ -7,7 +7,7 @@ import { getZ, isZKey, Permission, type RoomId, SYNC_WS_PREFIX, type UserId, typ
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { getContent, getFontFamily, getFontSize, getLanguage } from '@/core/accessors';
+import { getContent, getFontFamily, getFontSize, getLanguage, getLocked } from '@/core/accessors';
 import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
@@ -21,6 +21,7 @@ import {
   lockSlotReleased,
   markLockVeilDirty,
   resetLockTable,
+  setLockedFlag,
 } from '@/core/locks/lock-table';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
@@ -48,6 +49,9 @@ import { attach, detach } from './presence/presence';
 function invalidateIfVisible(b: BBoxTuple, vp: Readonly<BBoxTuple>): void {
   if (b[2] >= vp[0] && b[0] <= vp[2] && b[3] >= vp[1] && b[1] <= vp[3]) invalidateWorldBBox(b);
 }
+
+/** StackItem.meta key → Set<string> of top-level object ids the item's transaction(s) wrote. */
+const UNDO_TOUCHED_IDS = Symbol('avlo:undo-touched-ids');
 
 // Manager interface - public API
 export interface IRoomDocManager {
@@ -81,6 +85,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Undo/Redo manager
   private undoManager: Y.UndoManager | null = null;
   private unbindHistory: (() => void) | null = null;
+  private unbindUndoMeta: (() => void) | null = null;
 
   // Track if destroyed for cleanup
   private destroyed = false;
@@ -103,6 +108,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private readonly _deletedIds = new Set<string>();
   private readonly _bboxChangedIds = new Set<string>();
   private readonly _kindChangedIds = new Set<string>();
+  private readonly _lockChangedIds = new Set<string>();
+  // Per-transaction snapshot of Y-written ids (touched ∪ deleted), taken BEFORE Phase C
+  // pollutes `touched` with derived-reroute connector ids. Read synchronously by the
+  // UndoManager stack-item handlers (deep observers fire before afterTransaction).
+  private readonly _lastTxObjectIds = new Set<string>();
   // Scratch bbox reused across every upsert in a single fire. `upsertHandle` copies its
   // values into `handle.bbox` (or seeds a fresh tuple on first insert) — the scratch never
   // leaks into `objectsById`.
@@ -161,6 +171,34 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       captureTimeout: 500,
     });
     this.unbindHistory = bindUndoManagerToHistoryStore(this.undoManager);
+    this.unbindUndoMeta = this.attachUndoMetaCapture(this.undoManager);
+  }
+
+  /**
+   * Stamp every StackItem with the set of object ids its transaction(s) wrote, so
+   * `undo()`/`redo()` can vet the top item against live ephemeral locks before popping.
+   * 'stack-item-added' fires for new items (incl. `type:'redo'` items minted during undo —
+   * their ids come from the undo transaction's own observer fire); 'stack-item-updated'
+   * fires on captureTimeout merges and unions into the existing set (covers the editors'
+   * 600s-session captureTimeout too). Origin-agnostic: ySync-tagged editor transactions
+   * flow through the same deep observer. Mirrors the stackItem.meta precedent in
+   * core/text/extensions.ts.
+   */
+  private attachUndoMetaCapture(um: Y.UndoManager): () => void {
+    const onAdded = ({ stackItem }: { stackItem: Y.UndoManager['undoStack'][number] }) => {
+      stackItem.meta.set(UNDO_TOUCHED_IDS, new Set(this._lastTxObjectIds));
+    };
+    const onUpdated = ({ stackItem }: { stackItem: Y.UndoManager['undoStack'][number] }) => {
+      const ids = stackItem.meta.get(UNDO_TOUCHED_IDS) as Set<string> | undefined;
+      if (ids) for (const id of this._lastTxObjectIds) ids.add(id);
+      else stackItem.meta.set(UNDO_TOUCHED_IDS, new Set(this._lastTxObjectIds));
+    };
+    um.on('stack-item-added', onAdded);
+    um.on('stack-item-updated', onUpdated);
+    return () => {
+      um.off('stack-item-added', onAdded);
+      um.off('stack-item-updated', onUpdated);
+    };
   }
 
   mutate(fn: () => void): void {
@@ -170,12 +208,40 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   undo(): void {
     if (this.destroyed) return;
-    this.undoManager?.undo();
+    const um = this.undoManager;
+    if (!um || this.isStackTopBlocked(um.undoStack)) return;
+    um.undo();
   }
 
   redo(): void {
     if (this.destroyed) return;
-    this.undoManager?.redo();
+    const um = this.undoManager;
+    if (!um || this.isStackTopBlocked(um.redoStack)) return;
+    um.redo();
+  }
+
+  /**
+   * Undo/redo gate — silent no-op while the top stack item touches an object a peer is
+   * mid-gesture on (ephemeral remote lock). Self-resolving: the peer's release unblocks.
+   * Deliberately does NOT consult the durable `locked` flag — history writes through
+   * persistent locks (Figma semantics; keeps every stack item reachable). Ids without a
+   * live handle (deleted objects) can't be locked: undoing a field edit on a top-level-
+   * deleted object is a yjs no-op, undo-of-own-delete resurrects — both fine. Missing
+   * meta (pre-capture item — impossible in practice, stacks don't persist) → allow.
+   * Accepted residual: yjs pops past zero-change items to the next one unvetted — needs
+   * a peer-delete/overwrite race AND a lock below; degrades to the old baseline.
+   */
+  private isStackTopBlocked(stack: readonly Y.UndoManager['undoStack'][number][]): boolean {
+    const top = stack[stack.length - 1];
+    if (!top) return false;
+    const ids = top.meta.get(UNDO_TOUCHED_IDS) as ReadonlySet<string> | undefined;
+    if (!ids) return false;
+    const lo = getLockOwners();
+    for (const id of ids) {
+      const h = this.objectsById.get(id);
+      if (h !== undefined && lo[h.slot] > 1) return true;
+    }
+    return false;
   }
 
   getUndoManager(): Y.UndoManager | null {
@@ -198,6 +264,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       p.destroy();
     });
     this.unbindHistory = dispose(this.unbindHistory, (fn) => fn());
+    this.unbindUndoMeta = dispose(this.unbindUndoMeta, (fn) => fn());
     this.undoManager = dispose(this.undoManager, (m) => m.destroy());
     this.objectsObserver = dispose(this.objectsObserver, (fn) => this.objects.unobserveDeep(fn));
 
@@ -239,6 +306,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       touched.clear();
       deleted.clear();
       this._kindChangedIds.clear();
+      this._lockChangedIds.clear();
 
       for (const ev of events) {
         // Top-level adds/deletes
@@ -312,6 +380,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             router.onBindableChanged(id);
           }
 
+          // Durable lock keychange: mirror onto the lock-table column synchronously.
+          // No eviction, no veil poke — repaint rides the generic touched invalidate.
+          if (ev.keysChanged.has('locked')) {
+            const handle = this.objectsById.get(id);
+            if (handle) {
+              setLockedFlag(handle.slot, getLocked(yObj) ? 1 : 0);
+              this._lockChangedIds.add(id);
+            }
+          }
+
           // z key-edit: mirror Y onto handle.z + rank table synchronously with the fire.
           // A z-only edit has no bbox impact, so Phase B's upsertHandle would no-op on
           // bbox check. Updating here keeps next sort site's view consistent without
@@ -337,6 +415,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           }
         }
       }
+
+      // Snapshot Y-written ids for the UndoManager meta capture BEFORE Phase C adds
+      // derived-reroute connector ids to `touched` (those had no Y-write — including
+      // them would spuriously block undo while a peer merely holds an attached connector).
+      const snap = this._lastTxObjectIds;
+      snap.clear();
+      for (const id of touched) snap.add(id);
+      for (const id of deleted) snap.add(id);
 
       if (touched.size === 0 && deleted.size === 0) return;
       this.applyObjectChanges();
@@ -417,6 +503,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // against the recomputed selection composition (selectionKind/kindCounts/mode).
     if (this._kindChangedIds.size > 0) sel.onObjectsKindChanged(this._kindChangedIds);
 
+    // Durable-lock bridge — recompose/prune the selection so `selectionLocked` and the
+    // context-menu bar react in the same beat as the keychange.
+    if (this._lockChangedIds.size > 0) sel.onObjectsLockChanged(this._lockChangedIds);
+
     sel.onObjectsChanged(touched, changed);
   }
 
@@ -451,6 +541,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (!isZKey(z)) throw new Error(`upsertHandle: object ${id} (kind=${kind}) has no z key`);
       const slot = this.zOrder.acquireSlot();
       lockSlotAcquired(slot);
+      if (getLocked(yObj)) setLockedFlag(slot, 1); // seed the durable-lock column (create / remote add / undo-of-delete)
       const fresh = createHandle(id, kind, yObj, newBBox, z, slot);
       this.zOrder.noteAdd(z);
       this.objectsById.set(id, fresh);
@@ -534,6 +625,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // so no lock traffic can precede this).
     resetLockTable();
     ensureLockCapacity(this.objectsById.size);
+    // Seed the durable-lock column (hydrate bypasses upsertHandle's first-insert seed).
+    for (const h of this.objectsById.values()) {
+      if (getLocked(h.y)) setLockedFlag(h.slot, 1);
+    }
 
     hydrateImages();
     invalidateWorldAll();

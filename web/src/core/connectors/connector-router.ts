@@ -27,7 +27,7 @@
  */
 
 import type * as Y from 'yjs';
-import { isRemoteLockedId } from '@/core/locks/lock-table';
+import { isLockedId, isRemoteLockedId } from '@/core/locks/lock-table';
 import { getActiveRoomDoc, getObjects } from '@/runtime/room-runtime';
 import { getConnectorType, getEnd, getEndCap, getStart, getStartCap, getWidth } from '../accessors';
 import { computeConnectorBBoxFromPointsInto } from '../geometry/bbox';
@@ -274,9 +274,9 @@ export function getAttachedConnectors(shapeId: string): ReadonlySet<string> | un
  * No-op when no cached route exists — corrupted state.
  */
 export function detachConnectorFromShape(connectorId: string, shapeId: string): void {
-  // A peer holds this connector (e.g. mid-endpoint-drag) — leave its endpoints alone.
-  // Degrades to the already-survivable "remote peer deleted my anchor shape" case.
-  if (isRemoteLockedId(connectorId)) return;
+  // A peer holds this connector (mid-endpoint-drag) or it's durably locked — leave its
+  // endpoints alone. Degrades to the survivable "peer deleted my anchor shape" case.
+  if (isRemoteLockedId(connectorId) || isLockedId(connectorId)) return;
   const y = getObjects().get(connectorId);
   if (!y) return;
   const route = getActiveRoomDoc().connectorRouter.getRoute(connectorId);
@@ -337,7 +337,7 @@ export function renormalizeAttachedAnchors(shapeId: string, fromShapeType: strin
   if (!attached) return;
   const objects = getObjects();
   for (const connectorId of attached) {
-    if (isRemoteLockedId(connectorId)) continue; // peer-held — its anchors are theirs to move
+    if (isRemoteLockedId(connectorId) || isLockedId(connectorId)) continue; // peer-held or durably locked — anchors stay put
     const y = objects.get(connectorId);
     if (!y) continue;
     const isStraight = getConnectorType(y) === 'straight';

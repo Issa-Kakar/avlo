@@ -223,6 +223,7 @@ export function hitFlowButton(at: Point, b: Readonly<BBoxTuple>, scale: number):
 export function flowButtonGate(): FlowGate | null {
   const store = useSelectionStore.getState();
   if (store.mode !== 'standard' || store.selectedIds.length !== 1) return null;
+  if (store.selectionLocked) return null; // locked selection shows no affordances
   if (store.transform.kind !== 'none') return null;
   if (store.codeEditingId !== null) return null;
   // Same gate as resize handles: shape/note label editing keeps affordances.

@@ -8,6 +8,7 @@ import type { Slot } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import { pointsToBBoxMut } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
+import { isLockedObject } from '@/core/locks/lock-table';
 import { hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
@@ -157,8 +158,15 @@ export class SelectTool implements PointerTool {
     const store = useSelectionStore.getState();
     const { mode, selectedIds, textEditingId } = store;
 
-    // 1. Mode-specific first-priority hit targets
-    if (mode === 'standard' && selectedIds.length > 0 && (!textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
+    // 1. Mode-specific first-priority hit targets (locked selections render no
+    // handles/endpoint dots, so their hit probes are skipped to match)
+    if (
+      mode === 'standard' &&
+      !store.selectionLocked &&
+      selectedIds.length > 0 &&
+      (!textEditingId || textTool.isEditingLabel()) &&
+      !store.codeEditingId
+    ) {
       // Standard mode: check resize handles first
       const selectionBounds = computeSelectionBounds();
       const handleHit = selectionBounds ? hitResizeHandle([worldX, worldY], selectionBounds) : null;
@@ -168,7 +176,7 @@ export class SelectTool implements PointerTool {
         invalidateOverlay();
         return;
       }
-    } else if (mode === 'connector') {
+    } else if (mode === 'connector' && !store.selectionLocked) {
       // Connector mode: check endpoint dots first
       const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
@@ -204,7 +212,7 @@ export class SelectTool implements PointerTool {
       // Bookmark Open-button: handled below standard handle/endpoint priority
       // (those returned already) but above the regular object click. Shift/Ctrl
       // falls through to additive object selection — standard convention.
-      if (hit.kind === 'bookmark' && !this.hasAddModifier() && hitTestOpenButton(hit, worldX, worldY)) {
+      if (hit.kind === 'bookmark' && !isLockedObject(hit) && !this.hasAddModifier() && hitTestOpenButton(hit, worldX, worldY)) {
         this.downHit = { kind: 'openButton', handle: hit };
         this.hoveredOpenBookmarkId = hit.id;
         this.phase = 'pendingClick';
@@ -229,8 +237,9 @@ export class SelectTool implements PointerTool {
       return;
     }
 
-    // 3. No object hit - selectionGap or background
-    if (mode === 'standard') {
+    // 3. No object hit - selectionGap or background. A locked selection has no
+    // gap affordance (gap→translate must be unreachable) — falls to background.
+    if (mode === 'standard' && !store.selectionLocked) {
       // Standard mode has selection bounds - can have gap clicks
       const selectionBounds = computeSelectionBounds();
       if (selectionBounds && pointInBBox([worldX, worldY], selectionBounds)) {
@@ -327,8 +336,10 @@ export class SelectTool implements PointerTool {
             if (!passMove) break;
             const { handle, isSelected } = this.downHit;
             const store = useSelectionStore.getState();
-            // Anchored connectors: marquee (cannot translate them rigidly).
-            if (handle.kind === 'connector' && isAnchored(handle)) {
+            // Locked objects can't translate — drag from one sweeps a marquee
+            // (which excludes locked ids). Anchored connectors: same divert
+            // (cannot translate them rigidly).
+            if (isLockedObject(handle) || (handle.kind === 'connector' && isAnchored(handle))) {
               this.phase = 'marquee';
               this.marqueeActive = true;
               this.updateMarqueeBBox(worldX, worldY);
@@ -466,6 +477,13 @@ export class SelectTool implements PointerTool {
           case 'object': {
             const { handle, isSelected } = this.downHit;
             const hitId = handle.id;
+            // Locked: always solo-select — no additive/subtractive, no drill,
+            // no edit entry. The lock-only context menu shows via the common
+            // post-end() show() below.
+            if (isLockedObject(handle)) {
+              store.setSelection([hitId]);
+              break;
+            }
             if (!isSelected) {
               if (this.hasAddModifier()) {
                 // Additive: add to current selection
@@ -661,7 +679,7 @@ export class SelectTool implements PointerTool {
     const store = useSelectionStore.getState();
     const { mode, selectedIds } = store;
 
-    if (mode === 'standard' && (!store.textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
+    if (mode === 'standard' && !store.selectionLocked && (!store.textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
       const bounds = computeSelectionBounds();
       if (bounds) {
         const handle = hitResizeHandle([worldX, worldY], bounds);
@@ -672,7 +690,7 @@ export class SelectTool implements PointerTool {
           return;
         }
       }
-    } else if (mode === 'connector') {
+    } else if (mode === 'connector' && !store.selectionLocked) {
       const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
         this.clearBookmarkOpenHoverIfAny();
@@ -700,7 +718,7 @@ export class SelectTool implements PointerTool {
     // the cursor is on genuinely visible bookmark pixels — no separate
     // 4-corner sampling needed).
     const topmost = pickTopmostPaint([worldX, worldY], { px: HIT_RADIUS_PX });
-    if (topmost && topmost.kind === 'bookmark' && hitTestOpenButton(topmost, worldX, worldY)) {
+    if (topmost && topmost.kind === 'bookmark' && !isLockedObject(topmost) && hitTestOpenButton(topmost, worldX, worldY)) {
       if (this.hoveredOpenBookmarkId !== topmost.id) {
         const prevId = this.hoveredOpenBookmarkId;
         this.hoveredOpenBookmarkId = topmost.id;

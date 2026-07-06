@@ -12,7 +12,7 @@
  */
 
 import { getFrame } from '@/core/accessors';
-import { getLockOwners } from '@/core/locks/lock-table';
+import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { BINDABLE_KINDS, type BindableHandle, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { getObjectsById, getSpatialIndex, getZOrder } from '@/runtime/room-runtime';
@@ -80,19 +80,24 @@ function shapeArea(h: ObjectHandle): number {
 
 /** Shared hit-collection loop for the three pickers. `lo` = lock-owner column: remote-locked
  *  objects (owner > 1) are untouchable — invisible to click/marquee/eraser/editor-entry.
- *  `null` opts out (bindable snap: attaching a connector never mutates the target shape). */
+ *  `lf` = durable-lock column: locked objects are skipped where the pick leads to mutation
+ *  or edit entry. Either `null` opts that filter out (bindable snap passes both — attaching
+ *  a connector never mutates the target; click-pick passes `lf: null` — a locked object
+ *  stays click-selectable). */
 function collectHits(
   entries: readonly ObjectHandle[],
   p: Point,
   r: number,
   kindFilter: ReadonlySet<ObjectKind> | null,
   lo: Uint32Array | null,
+  lf: Uint8Array | null,
 ): Cand[] {
   const out = _collectHitsScratch;
   out.length = 0;
   for (const e of entries) {
     if (kindFilter && !kindFilter.has(e.kind)) continue;
     if (lo !== null && lo[e.slot] > 1) continue;
+    if (lf !== null && lf[e.slot] === 1) continue;
     const paint = hitPointFor(e, p, r);
     if (paint === null) continue;
     out.push({ handle: e, paint });
@@ -120,9 +125,10 @@ export function queryHandleIds(region: Region): string[] {
   const env = regionEnvelope(region);
   const entries = getSpatialIndex().queryBBox(env);
   const lo = getLockOwners();
+  const lf = getLockedFlags();
   const out: string[] = [];
   for (const e of entries) {
-    if (lo[e.slot] > 1) continue; // remote-locked — untouchable to marquee + eraser
+    if (lo[e.slot] > 1 || lf[e.slot] === 1) continue; // remote- or durably-locked — untouchable to marquee + eraser
     const ok = region.kind === 'rect' ? hitRectFor(e, region.bbox) : hitCircleFor(e, region.p, region.r);
     if (ok) out.push(e.id);
   }
@@ -143,7 +149,7 @@ export function queryHandleIds(region: Region): string[] {
 export function pickTopmostPaint(at: Point, radius: Radius): ObjectHandle | null {
   const r = resolveRadius(radius);
   const entries = getSpatialIndex().queryRadius(at[0], at[1], r);
-  const cs = collectHits(entries, at, r, null, getLockOwners());
+  const cs = collectHits(entries, at, r, null, getLockOwners(), null); // lf null — locked objects stay click-selectable
   if (cs.length === 0) return null;
   if (cs.length === 1) return cs[0].handle;
   sortTopFirst(cs);
@@ -195,7 +201,7 @@ export function pickTopmostPaint(at: Point, radius: Radius): ObjectHandle | null
 export function pickTopmostOfKind(at: Point, radius: Radius, kind: ObjectKind): string | null {
   const r = resolveRadius(radius);
   const entries = getSpatialIndex().queryRadius(at[0], at[1], r);
-  const cs = collectHits(entries, at, r, null, getLockOwners());
+  const cs = collectHits(entries, at, r, null, getLockOwners(), getLockedFlags()); // locked → create-over, never edit-into
   if (cs.length === 0) return null;
   sortTopFirst(cs);
   for (const c of cs) {
@@ -219,7 +225,7 @@ export function pickTopmostOfKind(at: Point, radius: Radius, kind: ObjectKind): 
 export function pickTopmostBindable<T>(at: Point, radius: Radius, accept: (h: BindableHandle) => T | null): T | null {
   const r = resolveRadius(radius);
   const entries = getSpatialIndex().queryRadius(at[0], at[1], r);
-  const cs = collectHits(entries, at, r, BINDABLE_KINDS_SET, null);
+  const cs = collectHits(entries, at, r, BINDABLE_KINDS_SET, null, null);
   if (cs.length === 0) return null;
   sortTopFirst(cs);
 

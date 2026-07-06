@@ -66,8 +66,8 @@ Transition gated by `passMove` (`dist > MOVE_THRESHOLD_PX`). Gap/background also
 |---|---|---|
 | `handle`     | `scale`        | `store.beginScale(handleId, downWorld)` |
 | `endpoint`   | `endpointDrag` | Drill to single connector if multi-selected. Controller owns the gesture (RouteContext + buffer + bbox snapshots). |
-| `object` (unselected) | `translate` | Selects first. Anchored connectors → `marquee` instead. |
-| `object` (selected)   | `translate` | Anchored connectors in connector mode → `marquee` instead. |
+| `object` (unselected) | `translate` | Selects first. Durably-locked objects + anchored connectors → `marquee` instead. |
+| `object` (selected)   | `translate` | Durably-locked objects + anchored connectors → `marquee` instead. |
 | `openButton` | `translate`    | Drift on a pressed Open button = translate intent (user moving the bookmark). Hover stays painted; `ctx.translate(tdx, tdy)` in `objects.ts` carries the hovered chip with the card. |
 | `selectionGap`        | `translate` | Drag = translate entire selection. |
 | `background`          | `marquee`   | Empty area drag = marquee select. |
@@ -478,7 +478,7 @@ Per object in ULID order:
 
 ```typescript
 interface SelectionState {
-  selectedIds, mode, selectionKind, selectedIdSet, kindCounts,
+  selectedIds, mode, selectionKind, selectedIdSet, kindCounts, selectionLocked,
   menuOpen, selectedStyles, inlineStyles, boundsVersion,
   transform: TransformState,    // {kind:'none'} | TranslateTransform | ScaleTransform | EndpointDragTransform
   marquee, textEditingId, codeEditingId,

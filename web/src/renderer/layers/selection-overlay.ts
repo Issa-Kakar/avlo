@@ -113,7 +113,7 @@ function shouldHideHandlesForEditing(textEditingId: string | null, codeEditingId
  * Handles hide during translate and when the bbox would be too small on screen.
  */
 export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
-  const { selectedIds, mode, transform, textEditingId, codeEditingId } = useSelectionStore.getState();
+  const { selectedIds, mode, transform, textEditingId, codeEditingId, selectionLocked } = useSelectionStore.getState();
   const scale = useCameraStore.getState().scale;
 
   // 1. Marquee — independent of selection. Owned by SelectTool.
@@ -130,8 +130,9 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   const isTranslating = transform.kind === 'translate';
 
   // 2. Connector mode (single connector by invariant). Endpoint dots only — no bbox,
-  // no polyline highlight, no resize handles.
-  if (mode === 'connector') {
+  // no polyline highlight, no resize handles. A locked connector draws no dots
+  // (nothing to drag) and falls through to the plain selection box for feedback.
+  if (mode === 'connector' && !selectionLocked) {
     if (!isTranslating) drawConnectorEndpointDots(ctx, selectedIds[0], transform);
     return;
   }
@@ -144,7 +145,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
     if (!handle) return;
     const bbox = currentBoundsForHandle(handle, transform);
     drawSelectionBox(ctx, bbox, scale);
-    if (!isTranslating && !hideHandlesForEdit && shouldShowHandles(bbox, scale)) {
+    if (!isTranslating && !hideHandlesForEdit && !selectionLocked && shouldShowHandles(bbox, scale)) {
       drawResizeHandles(ctx, computeHandles(bbox), scale);
     }
     return;
@@ -170,7 +171,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   const selRect = selectionRectForOverlay(transform);
   if (selRect) {
     drawSelectionBox(ctx, selRect, scale);
-    if (!isTranslating && !hideHandlesForEdit && shouldShowHandles(selRect, scale)) {
+    if (!isTranslating && !hideHandlesForEdit && !selectionLocked && shouldShowHandles(selRect, scale)) {
       drawResizeHandles(ctx, computeHandles(selRect), scale);
     }
   }

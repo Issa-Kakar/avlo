@@ -75,6 +75,13 @@ constant on screen); connector snap uses `{ world }` (stable shape-widths at any
 zoom). **No call site does its own `/scale`.** `resolveRadius` is the single
 source of truth and is also imported by `handle-hit.ts`.
 
+**Lock filtering.** `collectHits` takes two nullable columns — `lo` (ephemeral
+`getLockOwners()`, skip `> 1`) and `lf` (durable `getLockedFlags()`, skip `=== 1`).
+Per picker: `pickTopmostPaint` → `(lo, null)` (durably-locked stays click-selectable),
+`pickTopmostOfKind` → `(lo, lf)` (create-over, never edit-into), `pickTopmostBindable`
+→ `(null, null)` (snap-attach never mutates the target). `queryHandleIds` checks both
+inline — one place removes locked objects from marquee AND eraser.
+
 ### `handle-hit.ts` — non-spatial sibling
 
 Resize handles + endpoint dots don't live in rbush; they're derived from

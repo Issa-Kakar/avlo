@@ -1,4 +1,5 @@
 import { hasLabel } from '@/core/accessors';
+import { getLockedFlags } from '@/core/locks/lock-table';
 import { getInlineStyles } from '@/core/text/text-system';
 import type { ObjectKind } from '@/core/types/objects';
 import { OBJECT_KINDS } from '@/core/types/objects';
@@ -47,12 +48,15 @@ export function computeSelectionComposition(ids: string[]) {
     bookmark: 0,
   };
   const selectedIdSet = new Set<string>();
+  const lf = getLockedFlags();
+  let lockedCount = 0;
 
   for (const id of ids) {
     const handle = objectsById.get(id);
     if (!handle) continue;
     selectedIdSet.add(id);
     counts[handle.kind]++;
+    if (lf[handle.slot] === 1) lockedCount++;
   }
 
   let nonZero = 0;
@@ -75,7 +79,11 @@ export function computeSelectionComposition(ids: string[]) {
         ? ('standard' as const)
         : ('none' as const);
 
-  return { selectionKind, kindCounts, selectedIdSet, mode };
+  // All-or-nothing by invariant: mixed lock states never persist in a selection
+  // (pickers solo-select locked ids; reconcileLockedSelection prunes partial remote locks).
+  const locked = lockedCount > 0 && lockedCount === selectedIdSet.size;
+
+  return { selectionKind, kindCounts, selectedIdSet, mode, locked };
 }
 
 // === Style Computation ===

@@ -11,6 +11,7 @@ import {
 import * as Y from 'yjs';
 import { getContent } from '@/core/accessors';
 import { insertConnector } from '@/core/connectors/connector-actions';
+import { isLockedId, isLockedObject } from '@/core/locks/lock-table';
 import type { ConnectorEndpoint, ObjectHandle } from '@/core/types/objects';
 import { getActiveRoomDoc, getHandle, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { getUserId } from '@/stores/auth-store';
@@ -296,6 +297,10 @@ export function executeCanvasActions(rawInput: unknown): { results: AiActionResu
             results.push({ i, status: 'dropped', reason: 'unknown id' });
             return;
           }
+          if (isLockedObject(handle)) {
+            results.push({ i, status: 'dropped', reason: 'object is locked' });
+            return;
+          }
           const outcome =
             action._type === 'update'
               ? updateObject(handle, action.props)
@@ -310,7 +315,7 @@ export function executeCanvasActions(rawInput: unknown): { results: AiActionResu
           let removed = 0;
           for (const sid of action.ids) {
             const target = ulidFor(sid);
-            if (target && objects.has(target)) {
+            if (target && objects.has(target) && !isLockedId(target)) {
               objects.delete(target);
               removed++;
             }

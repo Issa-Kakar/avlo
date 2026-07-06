@@ -34,7 +34,7 @@ import {
   playButtonGeom,
   THEME,
 } from '@/core/code/code-tokens';
-import { isRemoteLocked } from '@/core/locks/lock-table';
+import { isLockedObject, isRemoteLocked } from '@/core/locks/lock-table';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
@@ -260,7 +260,7 @@ export class CodeTool implements PointerTool {
     if (!host) return;
 
     const handle = getHandle(objectId);
-    if (handle?.kind !== 'code' || isRemoteLocked(handle)) return;
+    if (handle?.kind !== 'code' || isRemoteLocked(handle) || isLockedObject(handle)) return;
 
     const props = getCodeProps(handle.y);
     if (!props) return;
@@ -321,8 +321,8 @@ export class CodeTool implements PointerTool {
     // and don't touch shared state.
     if (this.pendingMountId !== objectId) return;
     const stillValid = getHandle(objectId);
-    // isRemoteLocked: a peer's lock landed during the import await.
-    if (stillValid?.kind !== 'code' || isRemoteLocked(stillValid)) {
+    // isRemoteLocked / isLockedObject: a peer's lock landed during the import await.
+    if (stillValid?.kind !== 'code' || isRemoteLocked(stillValid) || isLockedObject(stillValid)) {
       this.pendingMountId = null;
       return;
     }

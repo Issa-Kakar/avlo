@@ -1,4 +1,11 @@
-import { acquireLocalLock, getLockOwners, LOCK_SRC_ERASER, onRemoteLocksApplied, releaseLocalLocks } from '@/core/locks/lock-table';
+import {
+  acquireLocalLock,
+  getLockedFlags,
+  getLockOwners,
+  LOCK_SRC_ERASER,
+  onRemoteLocksApplied,
+  releaseLocalLocks,
+} from '@/core/locks/lock-table';
 import { atPoint, queryHandleIds } from '@/core/spatial/object-query';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/renderer/animation/EraserTrailAnimation';
@@ -178,12 +185,13 @@ export class EraserTool implements PointerTool {
 
     const idsToDelete = this.state.hitAccum;
 
-    // Loser-heal: a peer lock that landed between the last hit-test and pointer-up wins —
-    // drop those ids from the delete set. (Deleting from a Set mid-iteration is legal.)
+    // Loser-heal: a peer lock (or a durable lock) that landed between the last hit-test
+    // and pointer-up wins — drop those ids. (Deleting from a Set mid-iteration is legal.)
     const lo = getLockOwners();
+    const lf = getLockedFlags();
     for (const id of idsToDelete) {
       const handle = getHandle(id);
-      if (handle && lo[handle.slot] > 1) idsToDelete.delete(id);
+      if (handle && (lo[handle.slot] > 1 || lf[handle.slot] === 1)) idsToDelete.delete(id);
     }
 
     // Collect (connectorId, shapeId) pairs to detach. Surviving connectors get their bound

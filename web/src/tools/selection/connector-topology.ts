@@ -46,7 +46,7 @@ import { computeConnectorBBoxFromPointsInto } from '@/core/geometry/bbox';
 import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
-import { getLockOwners } from '@/core/locks/lock-table';
+import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { isCorner } from '@/core/types/handles';
 import type { BindableKind, ConnectorEndpoint, ObjectHandle, StoredAnchor, StoredStraightAnchor } from '@/core/types/objects';
@@ -688,12 +688,14 @@ function publishCount<S>(e: RerouteEntryBase<S>, count: number): void {
 // ============================================================================
 
 export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 'scale', dx: number, dy: number): void {
-  // Same loser-heal as transform.commit(): skip entries a peer locked mid-gesture.
+  // Same loser-heal as transform.commit(): skip entries a peer locked mid-gesture,
+  // plus durably-locked connectors (lock landed in the same race window).
   const lo = getLockOwners();
+  const lf = getLockedFlags();
   const byId = getObjectsById();
   const lockedElsewhere = (id: string): boolean => {
     const h = byId.get(id);
-    return h !== undefined && lo[h.slot] > 1;
+    return h !== undefined && (lo[h.slot] > 1 || lf[h.slot] === 1);
   };
   if (mode === 'translate') {
     for (const e of topology.translates) {

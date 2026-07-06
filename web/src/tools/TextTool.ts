@@ -32,7 +32,7 @@ import {
 } from '@/core/accessors';
 import { connectorLabelMidpointInto } from '@/core/connectors/connector-label';
 import { getConnectorRoute } from '@/core/connectors/connector-router';
-import { isRemoteLocked } from '@/core/locks/lock-table';
+import { isLockedObject, isRemoteLocked } from '@/core/locks/lock-table';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { computeLabelTextBox } from '@/core/text/shape-label';
 import {
@@ -239,7 +239,8 @@ export class TextTool implements PointerTool {
     const handle = getHandle(objectId);
     // Remote-locked → a peer holds the object (pickers filter these; this covers the
     // Enter-key path + label-create, which mutates the existing shape/connector below).
-    if (!handle || isRemoteLocked(handle)) return;
+    // Durably-locked → editing is blocked outright (lock-only context menu).
+    if (!handle || isRemoteLocked(handle) || isLockedObject(handle)) return;
 
     // Create label fields if a shape/connector without a label. Connectors reuse the
     // shape-label keys minus align/alignV (anchor-centred on the route midpoint).
@@ -403,7 +404,8 @@ export class TextTool implements PointerTool {
     if (
       !fresh ||
       (fresh.kind !== 'text' && fresh.kind !== 'note' && fresh.kind !== 'shape' && fresh.kind !== 'connector') ||
-      isRemoteLocked(fresh)
+      isRemoteLocked(fresh) ||
+      isLockedObject(fresh)
     ) {
       this.pendingMountId = null;
       if (isNew) this.deleteIfEmptyCreated(objectId);

@@ -1,17 +1,35 @@
-# Ephemeral Locks (Conflict-Resolution Grabs)
+# Locks — Ephemeral Grabs + the Durable `locked` Property
 
-While a user transforms (full inject set = selection ∪ attached connectors), types in a
-text/code/shape-label/note editor, or sweeps the eraser (locked on first hit), peers cannot
-select, edit, or erase those objects — rendered greyed-out on their screens. Advisory +
-ephemeral: never in the Y.Doc, never in awareness (whole-state churn); a dedicated binary
-message (`MSG_LOCK = 76`) on the Yjs WebSocket with the room DO as authoritative arbiter.
-Distinct from the future durable `locked` object property.
+Two lock concepts share this module's SoA table:
+
+**Ephemeral grabs.** While a user transforms (full inject set = selection ∪ attached
+connectors), types in a text/code/shape-label/note editor, or sweeps the eraser (locked on
+first hit), peers cannot select, edit, or erase those objects — rendered greyed-out on their
+screens. Advisory + ephemeral: never in the Y.Doc, never in awareness (whole-state churn); a
+dedicated binary message (`MSG_LOCK = 76`) on the Yjs WebSocket with the room DO as
+authoritative arbiter.
+
+**Durable `locked` object property.** `locked: 1` on the object's Y.Map (unlock deletes the
+key; toggled by the context-menu LockButton → `toggleSelectedLocked`, tracked + undoable both
+directions, stopCapturing-isolated as its own undo step). Locked objects are inert — invisible
+to marquee + eraser (`queryHandleIds`) and the text/code create-tool pick (`pickTopmostOfKind`),
+no transforms, no editor entry, no mutating keyboard shortcuts, dropped by the AI executor,
+stripped on paste/duplicate — but STILL click-pickable (`pickTopmostPaint` passes `lf: null`):
+a stationary click solo-selects (SelectTool `end()` locked branch; drag diverts to marquee) and
+the context menu collapses to the active LockButton, whose second press unlocks. No veil, no
+render change beyond hidden handles/dots/flow buttons (`selectionLocked` in selection-store).
+Mirrored into `_locked: Uint8Array` (0/1, slot-keyed) by the room observer ONLY: `locked`
+keychange branch + `upsertHandle` first-insert seed + hydrate seed; cleared in
+`lockSlotReleased`/`resetLockTable`, grown in `ensureLockCapacity`. Same one-compare guard
+idiom (`lf[slot] === 1`); separate column because a peer grab and a durable lock can coexist.
+Connector stickiness is untouched — reroute is observer-driven and lock-agnostic; new
+connectors may still snap/attach to locked shapes (attach never mutates the target).
 
 ## File Map
 
 | File | Responsibility |
 |---|---|
-| `lock-table.ts` | The SoA table + entire client API. `lockOwner: Uint32Array` keyed by `handle.slot` (`0`=unlocked · `1`=mine · `≥2`=server peer key), `lockedPos: Int32Array` (slot → index in its owner's dense lists, -1 free) + per-peer parallel `slots`/`ids` arrays (swap-remove, presence-renderer idiom). Local sources (`LOCK_SRC_TRANSFORM/TEXT_EDITOR/CODE_EDITOR/ERASER`), reaction hooks, dim-layer bridge, slot lifecycle. |
+| `lock-table.ts` | The SoA table + entire client API. `lockOwner: Uint32Array` keyed by `handle.slot` (`0`=unlocked · `1`=mine · `≥2`=server peer key), `lockedPos: Int32Array` (slot → index in its owner's dense lists, -1 free) + per-peer parallel `slots`/`ids` arrays (swap-remove, presence-renderer idiom), `_locked: Uint8Array` (durable-lock mirror — `getLockedFlags`/`isLockedObject`/`isLockedId`/`setLockedFlag`). Local sources (`LOCK_SRC_TRANSFORM/TEXT_EDITOR/CODE_EDITOR/ERASER`), reaction hooks, dim-layer bridge, slot lifecycle. |
 | `lock-protocol.ts` | Wire plumbing: `provider.messageHandlers[MSG_LOCK]` registration, receive buffering until 'sync', full-replace egress (immediate on release, 50ms coalesce on growth, presence backpressure), 15s lease resend, `attachLocks`/`detachLocks`. |
 | `packages/shared/src/lock-protocol.ts` | Cross-runtime wire format + caps + codecs (`decodeLockSetBody` is THE server-side network-boundary validator). |
 | `workers/sync/src/room.ts` | DO authority: per-conn `lockKey` (attachment-persisted), `#lockOwner`/`#locks` in-memory tables, first-wins `#applyLockSet`, editor-only broadcast/snapshot, release on close/eviction/permission-demote, lazy 45s lease sweep (no alarms — hibernation empties the tables; leases rebuild). |
@@ -32,15 +50,29 @@ endpoint drag, `connector-topology.ts` attached-discovery + `commitTopology`, `E
 accumulate + `commitErase`, editor entries + PHASE-3 mount fences, `connector-router.ts`
 `detachConnectorFromShape`/`renormalizeAttachedAnchors`.
 
+The durable column rides the same sites (`lf[slot] === 1` beside each `lo[slot] > 1`, or
+`isLockedObject`/`isLockedId` beside `isRemoteLocked`/`isRemoteLockedId`) with three deltas:
+`pickTopmostPaint` does NOT filter it (click-select stays live), `connector-topology.ts`
+attached-discovery does NOT check it (a locked attached connector must keep rerouting —
+reroute is cache-only; commit writes only free sides), and two keyboard chokepoints replace
+scattered guards (`keyboard-manager.ts`: hoisted `locked` in `handleModifierShortcut`, one
+early-return in `handleBareKey`) plus a `selectAll` filter.
+
 ## Invariants
 
-- **Untouchable + prune ⇒ zero-guard call sites.** Outside an active transform gesture,
-  `selectedIds` never contains a remote-locked id: pickers filter locked ids out of
-  click/marquee, and the `onRemoteLocksApplied` subscriber in `selection-store.ts` prunes
-  locks that land on an existing selection (deferred to gesture end while transforming —
+- **Untouchable + prune ⇒ zero-guard call sites (EPHEMERAL locks only).** Outside an active
+  transform gesture, `selectedIds` never contains a remote-locked id: pickers filter locked
+  ids out of click/marquee, and the `onRemoteLocksApplied` subscriber in `selection-store.ts`
+  prunes locks that land on an existing selection (deferred to gesture end while transforming —
   keyboard Guard 7 + hidden context menu block selection mutations mid-gesture). Consequently
   `selection-actions.ts`, `z-actions.ts`, `convert-kind.ts`, clipboard cut, and keyboard
   delete need NO per-callsite guards — do not add defensive re-checks there.
+  A DURABLY-locked id, by contrast, IS deliberately selectable (solo click / kept multi after
+  lock-all — all-or-nothing via `reconcileLockedSelection`, partial remote locks pruned,
+  `_persistLockPending` defers mid-gesture). The compensating guards are `selectionLocked`
+  gating: the collapsed lock-only menu + the two keyboard chokepoints — the per-callsite
+  zero-guard rule for `selection-actions`/`z-actions`/`convert-kind` still stands (unreachable
+  while `selectionLocked`).
 - **Conflict policy: optimistic local + server first-wins + commit-time heal.** Local locks
   are claimed synchronously at gesture begin (`lockOwner[slot] = 1`) and announced; the DO
   grants by arrival order. A loser gets no denial message — the winner's earlier broadcast
@@ -65,8 +97,14 @@ accumulate + `commitErase`, editor entries + PHASE-3 mount fences, `connector-ro
 
 ## Accepted edges (documented, not bugs)
 
-- Undo/redo can write to a remote-locked object (Y.UndoManager sits below the mutation
-  funnels) — degrades to baseline CRDT merge.
+- Undo/redo vs locks: `RoomDocManagerImpl.undo/redo` gate on the TOP stack item's touched-id
+  meta (stamped per StackItem by the observer snapshot → 'stack-item-added'/'stack-item-updated';
+  ids captured pre-Phase-C so derived reroutes don't pollute) — silent no-op while any touched
+  id is EPHEMERALLY remote-locked, self-resolving at the peer's gesture end. Durable locks
+  deliberately do NOT gate history (undo writes through them, Figma semantics — keeps every
+  stack item reachable and lock/unlock cleanly undoable). Residual: yjs's `popStackItem` loops
+  past zero-change items to the next one unvetted (needs a peer-delete/overwrite race AND a
+  lock below) — degrades to baseline CRDT merge, the pre-gate behavior.
 - Editor force-close runs `commitAndClose`, whose empty-label cleanup may touch the
   just-locked object — the force-close IS the sanctioned heal.
 - Reconnect while the old socket lingers: re-announce is denied until the old conn's close
@@ -80,5 +118,5 @@ accumulate + `commitErase`, editor entries + PHASE-3 mount fences, `connector-ro
 
 ## Future
 
-`lockKind: Uint8Array` rides alongside `lockOwner` — grow in `ensureLockCapacity`, clear in
-the same two release paths.
+A per-grab `lockKind: Uint8Array` (ephemeral) could still ride alongside — grow in
+`ensureLockCapacity`, clear in the same release paths, exactly as `_locked` now does.

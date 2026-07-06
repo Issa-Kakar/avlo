@@ -49,7 +49,7 @@ import {
   scaleBBoxEdges,
   scaleBBoxUniform,
 } from '@/core/geometry/scale-system';
-import { getLockOwners } from '@/core/locks/lock-table';
+import { getLockedFlags, getLockOwners, isLockedObject } from '@/core/locks/lock-table';
 import { getItalicOverhangPad, getMinCharWidth } from '@/core/text/text-measure';
 import {
   anchorFactor,
@@ -666,13 +666,15 @@ export class TransformController {
 
     const builder = newTopologyBuilder('scale', selectedIds);
     const lo = getLockOwners();
+    const lf = getLockedFlags();
 
     for (const id of selectedIds) {
       const handle = getHandle(id);
-      // Remote-locked ids never enter the gesture: no injectIds push (renderer keeps
-      // drawing them in place), no freeze, no topology entry. Selection is lock-free
-      // by the prune invariant — this covers the deferred-prune race window.
-      if (!handle || lo[handle.slot] > 1) continue;
+      // Remote- or durably-locked ids never enter the gesture: no injectIds push
+      // (renderer keeps drawing them in place), no freeze, no topology entry.
+      // Selection is lock-free by the prune/reconcile invariants — this covers the
+      // deferred-prune race window.
+      if (!handle || lo[handle.slot] > 1 || lf[handle.slot] === 1) continue;
       this.injectIds.push(id);
 
       if (handle.kind === 'connector') {
@@ -752,10 +754,11 @@ export class TransformController {
 
     const builder = newTopologyBuilder('translate', selectedIds);
     const lo = getLockOwners();
+    const lf = getLockedFlags();
 
     for (const id of selectedIds) {
       const handle = getHandle(id);
-      if (!handle || lo[handle.slot] > 1) continue; // see beginScale — locked ids never enter the gesture
+      if (!handle || lo[handle.slot] > 1 || lf[handle.slot] === 1) continue; // see beginScale — locked ids never enter the gesture
       this.injectIds.push(id);
 
       if (handle.kind === 'connector') {
@@ -814,7 +817,7 @@ export class TransformController {
    */
   beginEndpointDrag(connectorId: string, slot: Slot, handle: ObjectHandle): boolean {
     this.clear();
-    if (getLockOwners()[handle.slot] > 1) return false; // remote-locked — SelectTool stays idle
+    if (getLockOwners()[handle.slot] > 1 || isLockedObject(handle)) return false; // remote-/durably-locked — SelectTool stays idle
     const routeCtx = buildRouteContext(connectorId, handle.y);
     if (!routeCtx) return false;
     this.mode = 'endpointDrag';
@@ -875,7 +878,7 @@ export class TransformController {
     // Lost first-wins arbitration mid-drag (peer key overwrote our optimistic claim) —
     // heal by dropping the commit; the preview snaps back to the canonical route.
     const h = getHandle(id);
-    if (h && getLockOwners()[h.slot] > 1) {
+    if (h && (getLockOwners()[h.slot] > 1 || isLockedObject(h))) {
       this.endpointDrag = null;
       this.mode = 'none';
       return false;
@@ -909,6 +912,7 @@ export class TransformController {
     // optimistic claim; skip those entries (the loser's heal). Lookup by id, not frozen slot:
     // slots recycle after deletion, ids are the stable key.
     const lo = getLockOwners();
+    const lf = getLockedFlags();
     const byId = getObjectsById();
 
     transact(() => {
@@ -926,7 +930,7 @@ export class TransformController {
           if (!commitFn) continue;
           for (const [, e] of map) {
             const h = byId.get(e.id);
-            if (h !== undefined && lo[h.slot] > 1) continue;
+            if (h !== undefined && (lo[h.slot] > 1 || lf[h.slot] === 1)) continue;
             commitFn(e.y, e.out, e.frozen);
           }
         } else {
@@ -935,7 +939,7 @@ export class TransformController {
           const commitFn = TRANSLATE_COMMIT[k] as (y: Y.Map<unknown>, o: any, f: any) => void;
           for (const [, e] of map) {
             const h = byId.get(e.id);
-            if (h !== undefined && lo[h.slot] > 1) continue;
+            if (h !== undefined && (lo[h.slot] > 1 || lf[h.slot] === 1)) continue;
             commitFn(e.y, e.out, e.frozen);
           }
         }

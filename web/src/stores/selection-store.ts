@@ -7,7 +7,9 @@ import { rawScaleFactors } from '@/core/geometry/scale-system';
 import {
   acquireLocalLock,
   acquireLocalLocks,
+  getLockedFlags,
   getLockOwners,
+  isLockedId,
   LOCK_SRC_CODE_EDITOR,
   LOCK_SRC_TEXT_EDITOR,
   LOCK_SRC_TRANSFORM,
@@ -47,6 +49,10 @@ export interface SelectionState {
   selectedIdSet: ReadonlySet<string>;
   /** Per-kind counts for mixed filter dropdown */
   kindCounts: KindCounts;
+  /** True when every selected object carries the durable `locked` flag (all-or-nothing
+   *  by invariant) — collapses the context menu to the lock button, hides handles,
+   *  blocks transforms + mutating keyboard shortcuts. */
+  selectionLocked: boolean;
   /** True when context menu is logically open (React mounts content, controller positions) */
   menuOpen: boolean;
   /** Live style snapshot of selected objects */
@@ -107,6 +113,7 @@ export interface SelectionActions {
   onObjectsDeleted: (deletedIds: ReadonlySet<string>) => void;
   onObjectsChanged: (touched: ReadonlySet<string>, bboxChangedIds: ReadonlySet<string>) => void;
   onObjectsKindChanged: (kindChangedIds: ReadonlySet<string>) => void;
+  onObjectsLockChanged: (lockChangedIds: ReadonlySet<string>) => void;
 }
 
 export type SelectionStore = SelectionState & SelectionActions;
@@ -116,6 +123,40 @@ export type SelectionStore = SelectionState & SelectionActions;
 // Guard 7 + the hidden context menu already block every selection mutation during a
 // gesture, so the prune defers to endTransform/cancelTransform. Commit guards heal writes.
 let _lockPrunePending = false;
+
+// Durable-lock sibling of _lockPrunePending — a `locked` keychange landed on a selected id
+// mid-gesture; reconcile defers to endTransform/cancelTransform for the same reasons.
+let _persistLockPending = false;
+
+/**
+ * Re-derive the selection against the durable-lock column. All-locked or none-locked →
+ * recompose in place (selectionLocked flips; the menu collapses/expands, handles
+ * hide/show). Partial — a remote peer locked part of a multi-selection — → prune the
+ * locked ids so mixed lock states never persist. Write-free (safe inside observer fires).
+ */
+function reconcileLockedSelection(): void {
+  const s = useSelectionStore.getState();
+  const ids = s.selectedIds;
+  if (ids.length === 0) return;
+  const lf = getLockedFlags();
+  let live = 0;
+  let locked = 0;
+  for (const id of ids) {
+    const h = getHandle(id);
+    if (!h) continue;
+    live++;
+    if (lf[h.slot] === 1) locked++;
+  }
+  const next =
+    locked === 0 || locked === live
+      ? ids
+      : ids.filter((id) => {
+          const h = getHandle(id);
+          return !h || lf[h.slot] !== 1;
+        });
+  s.setSelection(next); // setSelection([]) routes to clearSelection
+  invalidateOverlay();
+}
 
 /** Ephemeral-lock arm of the transform-gesture lock: acquire the full inject set
  *  (selection ∪ attached connectors, post-filter) right after the controller begin. */
@@ -130,6 +171,10 @@ function releaseTransformLocks(): void {
     _lockPrunePending = false;
     pruneRemoteLockedSelection();
   }
+  if (_persistLockPending) {
+    _persistLockPending = false;
+    reconcileLockedSelection();
+  }
 }
 
 // === Store Implementation ===
@@ -142,6 +187,7 @@ export const useSelectionStore = create<SelectionStore>()(
     selectionKind: 'none',
     selectedIdSet: EMPTY_ID_SET,
     kindCounts: EMPTY_KIND_COUNTS,
+    selectionLocked: false,
     menuOpen: false,
     selectedStyles: EMPTY_STYLES,
     inlineStyles: EMPTY_INLINE_STYLES,
@@ -164,6 +210,7 @@ export const useSelectionStore = create<SelectionStore>()(
         selectionKind: comp.selectionKind,
         selectedIdSet: comp.selectedIdSet,
         kindCounts: comp.kindCounts,
+        selectionLocked: comp.locked,
         transform: { kind: 'none' },
         boundsVersion: get().boundsVersion + 1,
       });
@@ -177,6 +224,7 @@ export const useSelectionStore = create<SelectionStore>()(
         selectionKind: 'none',
         selectedIdSet: EMPTY_ID_SET,
         kindCounts: EMPTY_KIND_COUNTS,
+        selectionLocked: false,
         menuOpen: false,
         selectedStyles: EMPTY_STYLES,
         inlineStyles: EMPTY_INLINE_STYLES,
@@ -420,6 +468,41 @@ export const useSelectionStore = create<SelectionStore>()(
       if (textEditingId !== null && kindChangedIds.has(textEditingId)) {
         textTool.onEditingKindChanged();
       }
+    },
+
+    // Durable-lock keychange landed on the doc — if it intersects the selection,
+    // recompose (menu collapse/expand) or prune (partial remote lock). Same
+    // write-free + defer-during-gesture rules as the ephemeral prune above.
+    onObjectsLockChanged: (lockChangedIds) => {
+      // Remote peer locked the object I'm editing → force-close (mirrors the ephemeral
+      // force-close). Deferred to a microtask: commitAndClose opens a transact, which is
+      // forbidden inside the observer fire; the re-check guards teardown races. Local
+      // toggles close pre-transact in toggleSelectedLocked and never reach this branch.
+      const { textEditingId, codeEditingId } = get();
+      if (textEditingId !== null && lockChangedIds.has(textEditingId) && isLockedId(textEditingId)) {
+        queueMicrotask(() => {
+          if (get().textEditingId === textEditingId) textTool.commitAndClose();
+        });
+      }
+      if (codeEditingId !== null && lockChangedIds.has(codeEditingId) && isLockedId(codeEditingId)) {
+        queueMicrotask(() => {
+          if (get().codeEditingId === codeEditingId) codeTool.commitAndClose();
+        });
+      }
+      const { selectedIdSet } = get();
+      let hit = false;
+      for (const id of lockChangedIds) {
+        if (selectedIdSet.has(id)) {
+          hit = true;
+          break;
+        }
+      }
+      if (!hit) return;
+      if (get().transform.kind !== 'none') {
+        _persistLockPending = true;
+        return;
+      }
+      reconcileLockedSelection();
     },
   })),
 );

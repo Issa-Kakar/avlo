@@ -12,8 +12,13 @@ import type { ObjectHandle } from '@/core/types/objects';
  * release time because ZRankTable recycles slots LIFO without zeroing. Incoming frames carry
  * stable ids interned fresh per frame (`objectsById`), so a reused slot can never be hit by a
  * stale frame — an unknown/deleted id is dropped (a lock on a deleted object is a no-op; Yjs
- * is authority). A future `lockKind: Uint8Array` rides alongside — grown in `ensureLockCapacity`,
- * cleared in the same two release paths.
+ * is authority).
+ *
+ * The durable `locked` object property rides alongside as `_locked: Uint8Array` (0/1) — a
+ * pure mirror of each object's Y.Map `locked` field, written only by the room observer
+ * (keychange branch + handle-insert/hydrate seeds), grown in `ensureLockCapacity`, cleared
+ * in `lockSlotReleased`/`resetLockTable`. Same one-load-one-compare guard idiom, separate
+ * column because a peer grab and a durable lock can coexist on one slot.
  *
  * Hot paths never allocate; all allocation lives in the cold acquire/release/apply paths.
  *
@@ -40,6 +45,8 @@ let _cap = INITIAL_CAP;
 let _lockOwner = new Uint32Array(_cap);
 /** slot → index into the owning peer's dense arrays; -1 when free or locally held. */
 let _lockedPos = new Int32Array(_cap).fill(-1);
+/** Durable-lock mirror of the Y.Map `locked` field (1 = locked). Observer-written only. */
+let _locked = new Uint8Array(_cap);
 
 /** Parallel dense arrays per peer — `ids` needed because no slot→handle map exists (release re-interns). */
 interface PeerLocks {
@@ -79,6 +86,27 @@ export function isRemoteLocked(handle: ObjectHandle): boolean {
 export function isRemoteLockedId(id: string): boolean {
   const handle = _objectsById?.get(id);
   return handle !== undefined && _lockOwner[handle.slot] > 1;
+}
+
+// ── durable lock column (persistent `locked` object property) ───────────────
+
+/** Live column ref — same fetch-per-loop contract as `getLockOwners`. */
+export function getLockedFlags(): Uint8Array {
+  return _locked;
+}
+
+export function isLockedObject(handle: ObjectHandle): boolean {
+  return _locked[handle.slot] === 1;
+}
+
+export function isLockedId(id: string): boolean {
+  const handle = _objectsById?.get(id);
+  return handle !== undefined && _locked[handle.slot] === 1;
+}
+
+/** Observer-only writer (locked keychange branch + handle-insert/hydrate seeds). */
+export function setLockedFlag(slot: number, v: 0 | 1): void {
+  _locked[slot] = v;
 }
 
 // ── local locks ──────────────────────────────────────────────────────────────
@@ -269,6 +297,7 @@ export function lockSlotAcquired(slot: number): void {
  * Phase B. Common case is one load + compare (almost everything is 0).
  */
 export function lockSlotReleased(slot: number): void {
+  _locked[slot] = 0; // unconditional — a durable lock has no ephemeral owner to key off
   const owner = _lockOwner[slot];
   if (owner === 0) return;
   if (owner === 1) {
@@ -292,6 +321,9 @@ export function ensureLockCapacity(n: number): void {
   const pos = new Int32Array(cap).fill(-1);
   pos.set(_lockedPos);
   _lockedPos = pos;
+  const locked = new Uint8Array(cap);
+  locked.set(_locked);
+  _locked = locked;
   _cap = cap;
 }
 
@@ -300,6 +332,7 @@ export function resetLockTable(): void {
   _cap = INITIAL_CAP;
   _lockOwner = new Uint32Array(_cap);
   _lockedPos = new Int32Array(_cap).fill(-1);
+  _locked = new Uint8Array(_cap);
   _peers.clear();
   for (const list of _sources) list.length = 0;
 }

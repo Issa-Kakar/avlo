@@ -11,6 +11,7 @@
 import { generateNZAtTop, generateZAtTop, normalizeUrl } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
+import { getLockedFlags } from '@/core/locks/lock-table';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getLastCursorWorld } from '@/runtime/input/cursor-tracking';
 import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
@@ -243,6 +244,9 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
           }
           case 'z':
             // Source z is preserved only for sortedPayload ordering above; assigned fresh below.
+            break;
+          case 'locked':
+            // Pasted/duplicated copies are born unlocked — the durable lock never travels.
             break;
           default:
             yObj.set(key, value);
@@ -534,7 +538,11 @@ export function duplicateSelected(): void {
 
 export function selectAll(): void {
   const objectsById = getObjectsById();
-  const ids = Array.from(objectsById.keys());
+  const lf = getLockedFlags();
+  const ids: string[] = [];
+  for (const h of objectsById.values()) {
+    if (lf[h.slot] !== 1) ids.push(h.id); // durably-locked ids never join a selection
+  }
   if (ids.length === 0) return;
 
   useDeviceUIStore.getState().setActiveTool('select');
