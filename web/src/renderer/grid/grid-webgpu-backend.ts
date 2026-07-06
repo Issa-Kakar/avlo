@@ -142,6 +142,7 @@ export async function createWebGPUGridBackend(canvas: HTMLCanvasElement): Promis
     BASE: GRID.bandRatio,
     MIN_PX: GRID.minPxCss,
     DOT_R: GRID.dotRadiusCss,
+    DOT_R_MAX: GRID.dotRadiusMaxCss,
     BASE_SP: GRID.baseSpacing,
   };
   const format = navigator.gpu.getPreferredCanvasFormat();

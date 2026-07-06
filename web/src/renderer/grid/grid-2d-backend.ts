@@ -12,7 +12,7 @@
  */
 
 import type { GridBackend } from './grid-backend';
-import { finestBandSpacing, GRID } from './grid-params';
+import { dotRadiusCssForSpacing, finestBandSpacing, GRID } from './grid-params';
 
 const MAX_2D_DIM = 16384; // matches SurfaceManager's canvas cap; camera dpr is already clamped to it
 
@@ -47,7 +47,9 @@ class Canvas2DGridBackend implements GridBackend {
     tctx.clearRect(0, 0, size, size);
     tctx.fillStyle = DOT_COLOR;
     tctx.beginPath();
-    tctx.arc(size / 2, size / 2, GRID.dotRadiusCss * dpr, 0, Math.PI * 2);
+    // Radius grows with on-screen spacing past the solo point (size/dpr ≈ CSS spacing), matching the
+    // WGSL path. Pure function of (size, dpr) → the (tileSize, tileDpr) cache key stays valid.
+    tctx.arc(size / 2, size / 2, dotRadiusCssForSpacing(size / dpr) * dpr, 0, Math.PI * 2);
     tctx.fill();
     this.tile = tile;
     this.tileSize = size;
