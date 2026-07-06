@@ -29,7 +29,15 @@ const bundleDir = join(pkgRoot, 'dist/stage/bundles');
 const config = JSON.parse(readFileSync(join(pkgRoot, 'build.config.json'), 'utf8'));
 const SETS = config.sets;
 // corpus group -> set key ('basic' runs on the bare stdlib).
-const GROUP_SET = { basic: null, numpy: 'numpy', pandas: 'numpy+pandas', mpl: 'numpy+matplotlib', all: 'all' };
+const GROUP_SET = {
+  basic: null,
+  sqlite: 'sqlite3',
+  numpy: 'numpy',
+  pandas: 'numpy+pandas',
+  mpl: 'numpy+matplotlib',
+  all: 'all',
+  seaborn: 'all',
+};
 
 // ---------------------------------------------------------------- parent
 if (!groupArg) {

@@ -5,6 +5,60 @@ Pickup plan (session 3): /home/issak/.claude/plans/original-prompt-was-here-grac
 Slice plan (session 4): /home/issak/.claude/plans/packages-py-build-notes-md-view-the-two-zazzy-pascal.md
 Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
 Slice plan (session 7): /home/issak/.claude/plans/packages-py-build-notes-md-home-issak-c-scalable-quiche.md
+Slice plan (session 8): /home/issak/.claude/plans/home-issak-claude-plans-prompt-md-i-cop-toasty-flask.md
+
+## Session 8 — Commit 1: sqlite3 + seaborn bundles (scope-guard relaxation)
+- Owner decisions: packages = sqlite3 + seaborn; sqlite3 bundle RIDES EVERY
+  SET (first position, prefix-consistent DSO order for P3 stacking) + a
+  standalone `sqlite3` set; seaborn joins `all` only. openpyxl DEFERRED
+  (needs the pyexpat revert in patch 0003 + un-pruning xml/parsers/ = docker
+  rebuild reversing a deliberate prune, and no file-ingestion path exists);
+  xlrd rejected (.xls-only); plotly rejected (HTML+plotly.js output model
+  conflicts with the js-bridge closure + PNG figure pipeline).
+- **sqlite3**: stock-lock unvendored wheel (1 top-level `_sqlite3.so` 1.43MB
+  + 4-file pure-py pkg) — rode the existing pipeline untouched; loadOrder
+  picked up the DSO, provides=['sqlite3'].
+- **seaborn 0.13.2**: NOT in the stock lock → new per-wheel pin fields in
+  build.config.json: `url` (PyPI wheel URL; --stamp SKIPS url pins and the
+  drift guard ignores them; download goes straight to the url — the sha pin
+  keeps provenance equivalent) + `depends` (hand-pinned direct deps feeding
+  the new `wheel_depends()` in pack-package.py; lock wheels stay loud on a
+  miss).
+- **seaborn eager-import land mines** (both would have killed `import
+  seaborn` on the pruned stdlib; found by static sweep, confirmed by gates):
+  wheel patch 0001 lazifies `from urllib.request import urlopen/urlretrieve`
+  (utils.py top-level; urllib.request pulls the pruned http stack) into the
+  two dataset functions; 0002 swaps `import pydoc` → inspect.getdoc in
+  _docstrings.py + external/docscrape.py (pydoc trips the _pyrepl tombstone
+  at import — the known pydoc nit, now load-bearing).
+- **seaborn prune** (tracer --propose confirmed every entry unreached):
+  objects.py + _core/{plot,subplots,moves,properties,exceptions}.py +
+  _marks/ + _stats/{aggregation,order,regression}.py + _testing.py —
+  seaborn.objects is PIL-dead by construction (plot.py imports PIL at top;
+  pillow never ships) and tombstones precisely (sb06). KEPT: _core/{data,
+  typing,rules,groupby,scales}, _stats/{base,counting,density} (classic API
+  reaches them), external/appdirs (EAGER via utils), external/kde (the
+  vendored scipy-free gaussian_kde — kdeplot works, sb03 asserts scipy
+  never enters sys.modules).
+- Corpus: new `sqlite/` group (set sqlite3 — :memory: CRUD, MEMFS file-db
+  reopen, types/rollback/Row; NB legacy isolation: commit before a rollback
+  probe or the implicit tx swallows prior inserts) + `seaborn/` group (set
+  all — scatter/heatmap/kde/theme PNG-gated + font gates; sb05/sb06 are
+  `# trace: skip` tombstone probes) + all/a02_read_sql (pandas↔sqlite3
+  DBAPI2 roundtrip, no sqlalchemy). GROUP_SET wired in run-corpus +
+  trace-imports.
+- Client: PySetKey += 'sqlite3' (py-protocol.ts — the CAST-SHADOWED union;
+  comment now warns), marquee += seaborn/sqlite3 (py-imports.ts).
+- **Gate board GREEN**: fetch (2 new wheels sha-ok) · unpruned 15 trees ·
+  trace 6 groups · G3 (93 rules, ∩=∅, no PIL/fontTools) · bundles ×8 --repro
+  byte-identical (sqlite3.tar 1.46MB/0.44br, seaborn.tar 1.00MB/0.31br) ·
+  corpus 7 groups (sqlite 3/3, seaborn 6/6 w/ 4 PNGs pixel-decoded, all 2/2)
+  · budgets --update diff = 2 new ceilings + benign ratchet-downs (session-7
+  glue rebuild shrank core artifacts; ceilings never re-stamped) · composites
+  numpy-path 7.44MB / pandas-mpl 14.38MB vs 12.58/16.78 ceilings · stage →
+  buildHash `6d447a5ba051a748` (PACKAGE_TO_SET sqlite3→'sqlite3',
+  seaborn→'all' auto-derived) · typecheck 12/12 · stage:check clean · seed
+  25 keys (was 21).
 
 ## Session 7 — M3+P2 Commit 1: fork patches 0006 + 0008 landed
 - **0006 (drop loader machinery)**: severed load-package's two import edges

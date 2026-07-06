@@ -112,7 +112,7 @@ export function resolveImports(modules: string[], availablePackages: ReadonlySet
 /** The user-facing refusal line (rendered error-tinted in the output panel). */
 export function unavailableMessage(missing: string[]): string {
   const list = missing.map((m) => `'${m}'`).join(', ');
-  const marquee = ['numpy', 'pandas', 'matplotlib'].filter((p) => AVAILABLE_PACKAGES.has(p));
+  const marquee = ['numpy', 'pandas', 'matplotlib', 'seaborn', 'sqlite3'].filter((p) => AVAILABLE_PACKAGES.has(p));
   const avail = marquee.length > 0 ? `${marquee.join(', ')} + the Python standard library` : 'the Python standard library';
   return `ImportError: ${list} ${missing.length === 1 ? 'is' : 'are'} not available in canvas Python. Available: ${avail}.`;
 }

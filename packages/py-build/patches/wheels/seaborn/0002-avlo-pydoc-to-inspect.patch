@@ -1,0 +1,46 @@
+--- a/seaborn/_docstrings.py
++++ b/seaborn/_docstrings.py
+@@ -1,5 +1,5 @@
+ import re
+-import pydoc
++import inspect
+ from .external.docscrape import NumpyDocString
+ 
+ 
+@@ -48,7 +48,7 @@
+     @classmethod
+     def from_function_params(cls, func):
+         """Use the numpydoc parser to extract components from existing func."""
+-        params = NumpyDocString(pydoc.getdoc(func))["Parameters"]
++        params = NumpyDocString(inspect.getdoc(func) or "")["Parameters"]
+         comp_dict = {}
+         for p in params:
+             name = p.name
+--- a/seaborn/external/docscrape.py
++++ b/seaborn/external/docscrape.py
+@@ -29,7 +29,6 @@
+ import inspect
+ import textwrap
+ import re
+-import pydoc
+ from warnings import warn
+ from collections import namedtuple
+ from collections.abc import Callable, Mapping
+@@ -656,7 +655,7 @@
+         if doc is None:
+             if cls is None:
+                 raise ValueError("No class or documentation string given")
+-            doc = pydoc.getdoc(cls)
++            doc = inspect.getdoc(cls) or ''
+ 
+         NumpyDocString.__init__(self, doc)
+ 
+@@ -680,7 +679,7 @@
+                                 (_members and name not in _members)):
+                             continue
+                         try:
+-                            doc_item = pydoc.getdoc(getattr(self._cls, name))
++                            doc_item = inspect.getdoc(getattr(self._cls, name)) or ''
+                             doc_list.append(
+                                 Parameter(name, '', splitlines_x(doc_item)))
+                         except AttributeError:

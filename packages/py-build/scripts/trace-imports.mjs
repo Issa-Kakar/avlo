@@ -37,7 +37,7 @@ const traceDir = join(pkgRoot, '.cache/trace');
 const unprunedRoot = join(pkgRoot, '.cache/unpruned');
 
 // Package groups only — 'basic' tests the PRUNED artifact's own behavior.
-const GROUP_SET = { numpy: 'numpy', pandas: 'numpy+pandas', mpl: 'numpy+matplotlib', all: 'all' };
+const GROUP_SET = { sqlite: 'sqlite3', numpy: 'numpy', pandas: 'numpy+pandas', mpl: 'numpy+matplotlib', all: 'all', seaborn: 'all' };
 const setWheels = (setKey) => SETS[setKey].flatMap((b) => BUNDLES[b]);
 
 function loadTraces() {

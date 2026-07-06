@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "buildHash": "bd8afa4e8f07f324",
+  "buildHash": "6d447a5ba051a748",
   "artifacts": {
     "pyodide.asm.js": {
       "sha256": "5cc6863c603b3ab6ab9503c63285ae515ccad25e7e0c5d0b218963839acb1090",
@@ -20,6 +20,10 @@
     }
   },
   "bundles": {
+    "sqlite3": {
+      "sha256": "410da0da0d183b0d1cf96174523c58eeadfb68b8f9027de8f07431ee4dbc0ca9",
+      "size": 1464320
+    },
     "numpy": {
       "sha256": "db667bbb049b5cb0f4b4208c4d84486a4bad1f99da516275ba0cb92c5808ec0a",
       "size": 9123840
@@ -43,19 +47,29 @@
     "matplotlib": {
       "sha256": "fe89207007f9f88d23b6a2ff248a90d5f34ebc2ab505b65f60bb379cb380c893",
       "size": 8796160
+    },
+    "seaborn": {
+      "sha256": "123174bf41c19144d374036d8b86e56e5ab53d650918436a07b037c5b8558759",
+      "size": 1003520
     }
   },
   "sets": {
+    "sqlite3": [
+      "sqlite3"
+    ],
     "numpy": [
+      "sqlite3",
       "numpy"
     ],
     "numpy+pandas": [
+      "sqlite3",
       "numpy",
       "dateutil",
       "pytz",
       "pandas"
     ],
     "numpy+matplotlib": [
+      "sqlite3",
       "numpy",
       "dateutil",
       "pytz",
@@ -63,12 +77,14 @@
       "matplotlib"
     ],
     "all": [
+      "sqlite3",
       "numpy",
       "dateutil",
       "pytz",
       "mpl-deps",
       "pandas",
-      "matplotlib"
+      "matplotlib",
+      "seaborn"
     ]
   }
 }

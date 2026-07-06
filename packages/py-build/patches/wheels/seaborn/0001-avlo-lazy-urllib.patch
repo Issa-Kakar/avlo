@@ -1,0 +1,31 @@
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -4,7 +4,6 @@
+ import warnings
+ import colorsys
+ from contextlib import contextmanager
+-from urllib.request import urlopen, urlretrieve
+ from types import ModuleType
+ 
+ import numpy as np
+@@ -496,6 +495,11 @@
+     Requires an internet connection.
+ 
+     """
++    # avlo: lazy — urllib.request pulls the pruned http stack; importing it
++    # here keeps `import seaborn` alive and lets the tombstone error surface
++    # exactly when the network is actually asked for.
++    from urllib.request import urlopen
++
+     with urlopen(DATASET_NAMES_URL) as resp:
+         txt = resp.read()
+ 
+@@ -571,6 +575,8 @@
+         if not os.path.exists(cache_path):
+             if name not in get_dataset_names():
+                 raise ValueError(f"'{name}' is not one of the example datasets.")
++            # avlo: lazy — see get_dataset_names.
++            from urllib.request import urlretrieve
+             urlretrieve(url, cache_path)
+         full_path = cache_path
+     else:

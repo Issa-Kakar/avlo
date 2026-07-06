@@ -275,7 +275,9 @@ export const PACKAGE_TO_SET: Readonly<Record<string, string>> = Object.freeze({
   pylab: 'numpy+matplotlib',
   pyparsing: 'numpy+matplotlib',
   pytz: 'numpy+pandas',
+  seaborn: 'all',
   six: 'numpy+pandas',
+  sqlite3: 'sqlite3',
 });
 
 /** Package import roots the current artifact set actually provides. */
@@ -284,8 +286,9 @@ export const AVAILABLE_PACKAGES: ReadonlySet<string> = new Set(Object.keys(PACKA
 /** Set key -> member bundles, deps-first (mount order). Mirrors the packer
  * config; the click-time gate merges multi-package needs by bundle union. */
 export const SET_BUNDLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  numpy: Object.freeze(['numpy']),
-  'numpy+pandas': Object.freeze(['numpy', 'dateutil', 'pytz', 'pandas']),
-  'numpy+matplotlib': Object.freeze(['numpy', 'dateutil', 'pytz', 'mpl-deps', 'matplotlib']),
-  all: Object.freeze(['numpy', 'dateutil', 'pytz', 'mpl-deps', 'pandas', 'matplotlib']),
+  sqlite3: Object.freeze(['sqlite3']),
+  numpy: Object.freeze(['sqlite3', 'numpy']),
+  'numpy+pandas': Object.freeze(['sqlite3', 'numpy', 'dateutil', 'pytz', 'pandas']),
+  'numpy+matplotlib': Object.freeze(['sqlite3', 'numpy', 'dateutil', 'pytz', 'mpl-deps', 'matplotlib']),
+  all: Object.freeze(['sqlite3', 'numpy', 'dateutil', 'pytz', 'mpl-deps', 'pandas', 'matplotlib', 'seaborn']),
 });

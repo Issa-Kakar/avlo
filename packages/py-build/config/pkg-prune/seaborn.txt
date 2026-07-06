@@ -1,0 +1,22 @@
+# seaborn prune list — paths relative to the unpacked wheel root.
+# The seaborn.objects interface is PIL-dead by construction: _core/plot.py
+# imports PIL at module top and pillow NEVER ships (traceOnly). The classic
+# function interface reaches into _core/_stats for data/typing/rules/groupby/
+# scales and the KDE/Hist stats, so the prune is surgical: only the Plot
+# pipeline, its mark layer, and the objects-only stats go. Every entry below
+# is unreached by the full corpus trace (trace-imports.mjs --propose seaborn);
+# _core/exceptions is imported only by plot.py/_marks (both pruned) and
+# scales.py's plot/properties imports are TYPE_CHECKING-only.
+# reason: seaborn.objects needs PIL (never shipped)
+seaborn/objects.py
+seaborn/_core/plot.py
+seaborn/_core/subplots.py
+seaborn/_core/moves.py
+seaborn/_core/properties.py
+seaborn/_core/exceptions.py
+seaborn/_marks/
+seaborn/_stats/aggregation.py
+seaborn/_stats/order.py
+seaborn/_stats/regression.py
+# reason: test-suite helper (numpy.testing); no canvas use
+seaborn/_testing.py

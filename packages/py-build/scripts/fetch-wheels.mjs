@@ -9,7 +9,11 @@
 // release asset, present after any fork build), preserves traceOnly flags,
 // and rewrites recipes.wheels. Pins are frozen until the next explicit
 // --stamp; a version drift between config and lock without --stamp is an
-// error, not a silent re-pin.
+// error, not a silent re-pin. Wheels pinned with a `url` (PyPI universal
+// wheels absent from the stock lock, e.g. seaborn) are outside --stamp's
+// authority: they are skipped by the restamp AND the drift guard, and their
+// download goes straight to the pinned url — the sha256 pin is what makes
+// any source provenance-equivalent.
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -34,6 +38,10 @@ const lockEntry = (lock, name) => lock.packages[name] ?? lock.packages[name.repl
 if (args.includes('--stamp')) {
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
   for (const name of names) {
+    if (wheels[name].url) {
+      console.log(`skip    ${name} (url-pinned, not in the stock lock)`);
+      continue;
+    }
     const e = lockEntry(lock, name);
     if (!e) throw new Error(`--stamp: ${name} not in ${lockPath}`);
     const prev = wheels[name];
@@ -50,6 +58,7 @@ if (args.includes('--stamp')) {
 if (existsSync(lockPath)) {
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
   for (const name of names) {
+    if (wheels[name].url) continue; // url pins are deliberately outside the lock's authority
     const e = lockEntry(lock, name);
     if (e && e.sha256 !== wheels[name].sha256) {
       throw new Error(`${name}: config sha256 disagrees with the stock lock — rerun with --stamp deliberately`);
@@ -69,19 +78,21 @@ for (const name of names) {
     console.log(`ok      ${file}`);
     continue;
   }
-  // Release asset first (canonical), then the CDN mirror — the sha256 pin
-  // below makes either source provenance-equivalent.
+  // Release asset first (canonical), then the CDN mirror; url pins go straight
+  // to their source — the sha256 pin below makes every source
+  // provenance-equivalent.
   const bases = [config.recipes.base, config.recipes.mirror].filter(Boolean);
+  const sources = wheels[name].url ? [wheels[name].url] : bases.map((base) => `${base}/${file}`);
   process.stdout.write(`fetch   ${file} ... `);
   let buf = null;
   let lastErr = null;
-  for (const base of bases) {
-    const res = await fetch(`${base}/${file}`, { redirect: 'follow' });
+  for (const source of sources) {
+    const res = await fetch(source, { redirect: 'follow' });
     if (res.ok) {
       buf = Buffer.from(await res.arrayBuffer());
       break;
     }
-    lastErr = `${base}/${file}: HTTP ${res.status}`;
+    lastErr = `${source}: HTTP ${res.status}`;
   }
   if (!buf) throw new Error(lastErr ?? `${file}: no sources`);
   const got = sha256(buf);

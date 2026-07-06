@@ -13,8 +13,10 @@
 /** Mirrors the code block's Y `outputStatus` field — renderer drives tint. */
 export type PyRunStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
 
-/** Package-set key: which bundles a run needs (P1 ships stdlib-only). */
-export type PySetKey = 'stdlib' | 'numpy' | 'numpy+pandas' | 'numpy+matplotlib' | 'all';
+/** Package-set key: which bundles a run needs (P1 ships stdlib-only).
+ * MUST mirror build.config.json `sets` keys — the gen.ts cast in
+ * py-imports.ts (SET_KEYS_BY_SIZE) silently lies if this union lags. */
+export type PySetKey = 'stdlib' | 'sqlite3' | 'numpy' | 'numpy+pandas' | 'numpy+matplotlib' | 'all';
 
 /** Live phase for the run store / play-button UI (never written to Y). */
 export type PyRunPhase = 'queued' | 'booting' | 'downloading' | 'restoring' | 'running' | 'cancelling';

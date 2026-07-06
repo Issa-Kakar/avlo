@@ -207,13 +207,22 @@ def prebake_fontcache() -> None:
     )
 
 
+def wheel_depends(name: str, lock: dict) -> list[str]:
+    """Direct deps for a wheel: url pins carry a hand-pinned `depends` field
+    (they are absent from the stock lock); lock wheels stay loud on a miss."""
+    pin = WHEELS[name]
+    if "depends" in pin:
+        return pin["depends"]
+    entry = lock["packages"].get(name) or lock["packages"][name.replace("-", "_")]
+    return entry["depends"]
+
+
 def bundle_requires(bundle: str) -> list[str]:
-    """Bundle names that must mount before this one (lock deps -> bundles)."""
+    """Bundle names that must mount before this one (pinned deps -> bundles)."""
     lock = json.loads((ROOT / "dist/raw/pyodide-lock.json").read_text())
     reqs: set[str] = set()
     for name in BUNDLES[bundle]:
-        entry = lock["packages"].get(name) or lock["packages"][name.replace("-", "_")]
-        for dep in entry["depends"]:
+        for dep in wheel_depends(name, lock):
             if WHEELS.get(dep, {}).get("traceOnly"):
                 continue  # pillow/fonttools: patched out, never shipped
             owner = BUNDLE_OF.get(dep)
