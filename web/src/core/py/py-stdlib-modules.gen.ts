@@ -260,8 +260,9 @@ export const STDLIB_MODULES: ReadonlySet<string> = new Set([
 ]);
 
 /** Import root -> the SMALLEST bundle-set key providing it (the click-time
- * gate merges upward across multiple roots). */
-export const PACKAGE_TO_SET: Readonly<Record<string, string>> = {
+ * gate merges upward across multiple roots). Frozen: consumed by the
+ * supervisor worker and main thread alike — never reshapeable at runtime. */
+export const PACKAGE_TO_SET: Readonly<Record<string, string>> = Object.freeze({
   contourpy: 'numpy+matplotlib',
   cycler: 'numpy+matplotlib',
   dateutil: 'numpy+pandas',
@@ -275,16 +276,16 @@ export const PACKAGE_TO_SET: Readonly<Record<string, string>> = {
   pyparsing: 'numpy+matplotlib',
   pytz: 'numpy+pandas',
   six: 'numpy+pandas',
-};
+});
 
 /** Package import roots the current artifact set actually provides. */
 export const AVAILABLE_PACKAGES: ReadonlySet<string> = new Set(Object.keys(PACKAGE_TO_SET));
 
 /** Set key -> member bundles, deps-first (mount order). Mirrors the packer
  * config; the click-time gate merges multi-package needs by bundle union. */
-export const SET_BUNDLES: Readonly<Record<string, readonly string[]>> = {
-  numpy: ['numpy'],
-  'numpy+pandas': ['numpy', 'dateutil', 'pytz', 'pandas'],
-  'numpy+matplotlib': ['numpy', 'dateutil', 'pytz', 'mpl-deps', 'matplotlib'],
-  all: ['numpy', 'dateutil', 'pytz', 'mpl-deps', 'pandas', 'matplotlib'],
-};
+export const SET_BUNDLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  numpy: Object.freeze(['numpy']),
+  'numpy+pandas': Object.freeze(['numpy', 'dateutil', 'pytz', 'pandas']),
+  'numpy+matplotlib': Object.freeze(['numpy', 'dateutil', 'pytz', 'mpl-deps', 'matplotlib']),
+  all: Object.freeze(['numpy', 'dateutil', 'pytz', 'mpl-deps', 'pandas', 'matplotlib']),
+});

@@ -5,6 +5,92 @@ Pickup plan (session 3): /home/issak/.claude/plans/original-prompt-was-here-grac
 Slice plan (session 4): /home/issak/.claude/plans/packages-py-build-notes-md-view-the-two-zazzy-pascal.md
 Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
 
+## Session 6 — verify Session 5 + fail-closed hardening + full-stack audit DONE
+- Owner decision: staying SAME-ORIGIN (no sandboxed iframe). That makes the
+  `py-harden.ts` scrub THE authority boundary, not defense-in-depth — reinforced
+  by the CSP: the app's `connect-src 'self' … wss://sync.avlo.io` is inherited
+  by same-origin worker scripts, so even in prod the executor CSP permits
+  `'self'`+backend egress; only the scrub actually stops it. So the enumeration
+  model must (a) be exhaustive and (b) fail closed.
+- **Fail-closed gate**: new `assertRealmHardened()` (py-harden.ts), called in
+  py-executor `boot()` right after scrub+harden, inside the exec-fatal try. Re-
+  reads the realm: every SCRUBBED_GLOBALS name undefined, WebAssembly compile
+  surface gone, protocol intrinsics frozen — THROWS on any survivor ⇒ boot
+  aborts (no harness, no runs) instead of running unconfined on a silent
+  scrub no-op (e.g. a non-configurable accessor on some engine).
+- **Scrub gap closed**: added `RTCPeerConnection`/`RTCDataChannel` (WebRTC — raw
+  egress NOT governed by connect-src, per the M3 exploration's platform verdict
+  #7) + `SharedWorker` (realm-mint escape alongside Worker). Window-only today
+  ⇒ absent-and-skipped in a worker; free future-proofing.
+- **Full-stack security audit (no rebuild needed — C surface confirmed solid):**
+  `_ctypes` double-dead (not compiled + `ctypes` tombstoned) ⇒ no in-wasm FFI;
+  `_ssl`/http gone; `_socket` compiled but `-lwebsocket.js` dropped ⇒ transport-
+  less; `pyexpat`/`_elementtree` dropped (C XML parser gone; ElementTree pure-py
+  stays); 2 GB mem cap. matplotlib pillow-ectomy fully severs untrusted-image
+  decode (`imread`→hard raise). Python overlay/wheel patches add no capability.
+- **Documented residuals (deferred, NOT fixed this session):** (1) `js` proxy
+  reachable-if-guard-stripped until fork patch 0006 (the definitive FFI closure,
+  M3, needs docker rebuild) — but authority-free post-scrub (postMessage-spoof
+  reaches only the user's own block). (2) `subprocess`/`multiprocessing` blocked
+  by wasm-syscall-absence, not policy — explicit prune is build-side + risks
+  benign transitive imports. (3) `sitecustomize` registry `__import__` of an
+  attacker-planted `_avlo_pruned_*.py` across runs in a generation — contained
+  (no authority), real fix is P3's per-run MEMFS/blit reset. (4) build-side
+  niceties: `DISABLE_DYLINK` dead 4GB/host-FS Makefile block (CI-assert unset),
+  `ssl`/`sqlite3` bare (non-tombstoned) errors.
+- **Verified GREEN.** Node harness (scratchpad, exact shipped code vs real fork +
+  numpy mount): 33/33 — reproduces Session-5's 22 + the gate passes clean/THROWS
+  on a restored global + WebRTC scrubbed + ctypes tombstoned + subprocess/os.fork
+  inert. **Browser smoke (the Session-5 untested gap — NOW DONE, Chrome via the
+  real supervisor→executor chain + a canvas run):** guard-stripped `js` proxy ⇒
+  all 16 authority names unreachable (incl. `navigator` deleted — the thing Node
+  can't validate); `print(1+1)`→2 on canvas; numpy 4.0/24; matplotlib Agg→valid
+  PNG; cancel mid-`while True`→"Run cancelled."; import-gate refuses `requests`.
+  Fail-closed assert did NOT false-trip a real boot. `pnpm typecheck` (10/10),
+  biome (clean), `stage --check` (clean — no generated files touched).
+
+## Session 5 — same-origin realm hardening (pre-M3) DONE
+- Threat-model finalized for the no-iframe reality: the executor is a
+  SAME-ORIGIN worker with the origin's full ambient authority at birth.
+  New `web/src/core/py/py-harden.ts` (dependency-free, Node-verifiable):
+  - `scrubWorkerScope()` supersedes scrubNetworkScope — network (fetch/XHR/
+    WS/WebSocketStream/ES/WebTransport) + fresh-realm escapes (Worker,
+    importScripts) + origin storage (indexedDB=room docs, caches=SW cache,
+    cookieStore, navigator=OPFS/locks/GPU) + BroadcastChannel; own props AND
+    prototype chain; strict-mode-safe (configurable→delete, else
+    writable→undefined — bare `delete` THROWS on non-configurable props).
+  - `hardenRealm()` — deletes WebAssembly compile surface (compile/
+    instantiate/*Streaming/Module; all DSO loads are boot-time, new set ⇒ new
+    worker) and freezes protocol-bearing intrinsics (Object/Array/Function/
+    String/typed-array/Promise prototypes, JSON, Atomics, Math, Reflect,
+    Date, WebAssembly). eval/Function stay: unblockable in-language, no I/O
+    authority left to exfiltrate with — posture is authority removal.
+- Executor: one-boot-per-generation guard; postMessage captured at module
+  load (result delivery survives global tampering); whole boot body in the
+  exec-fatal try; verifyStdlibZip — hashes python_stdlib.zip AS MOUNTED in
+  MEMFS vs the boot-msg manifest sha (spike's standing guard productionized;
+  restage ⇒ recapture; the anchor P3 snapshots key on).
+- Supervisor: manifest now REQUIRED for every spawn (stdlib sha rides boot),
+  shape-validated (hex64 + positive int sizes) + deep-frozen; tar meta
+  prefix/loadOrder path-validated (absolute-into-root / relative, no
+  ..//empty segs) + frozen; bundle streaming aborts past manifest size
+  (bounds memory before the sha check would catch it); frozen cache entries;
+  non-crossOriginIsolated contexts refused with a precise run result.
+- Frozen constants: PY_LIMITS, PyExecState, PyCancelKind, SET_KEYS_BY_SIZE;
+  stage.mjs codegen now emits Object.freeze for PACKAGE_TO_SET/SET_BUNDLES
+  (gen file hand-mirrored; `stage --check` byte-parity CLEAN). NB Sets are
+  NOT frozen — Object.freeze can't reach Set internals; ReadonlySet is the
+  contract there.
+- Verified: Node harness (scratchpad) boots the staged fork, mounts the real
+  numpy.tar, runs the SHIPPED py-harden + py-harness — 22/22: stdlib readback
+  hash == manifest, scrub holds, compile surface gone/runtime wasm types
+  kept, intrinsics frozen, print/echo/traceback-with-source/js-refusal/
+  __import__-refusal/numpy/numpy.random/SystemExit all green, protocol
+  survives json.dumps sabotage, guard-strip probe still sees js.fetch
+  undefined. `pnpm typecheck` + biome + `stage --check` clean.
+- NOT yet browser-smoked (no dev server this session): canvas run + cancel
+  path under the new boot order — worth one Chrome pass next session.
+
 ## Session 4 — Commit 1 (P1 hardening) DONE
 - A1 isolation: `scrubNetworkScope()` in py-executor (deletes fetch/XHR/WS/ES
   own+prototype-chain after boot — AUTHORITATIVE layer); harness meta_path

@@ -33,18 +33,18 @@ export const MEM_KIB = 7;
 
 export const SIGINT = 2;
 
-export const PyExecState = {
+export const PyExecState = Object.freeze({
   Booting: 0,
   Idle: 1,
   Running: 2,
-} as const;
+} as const);
 export type PyExecState = (typeof PyExecState)[keyof typeof PyExecState];
 
-export const PyCancelKind = {
+export const PyCancelKind = Object.freeze({
   None: 0,
   UserCancel: 1,
   SoftTimeout: 2,
-} as const;
+} as const);
 export type PyCancelKind = (typeof PyCancelKind)[keyof typeof PyCancelKind];
 
 export interface PySabViews {

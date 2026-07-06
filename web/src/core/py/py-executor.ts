@@ -11,6 +11,7 @@
  * output is capped at PY_LIMITS.maxOutputChars with a truncation marker.
  */
 
+import { assertRealmHardened, hardenRealm, scrubWorkerScope } from './py-harden';
 import { HARNESS_INSTALL, RUN_INVOKE } from './py-harness';
 import { bootPyodide, type Pyodide } from './py-loader';
 import {
@@ -27,6 +28,10 @@ let pyodide: Pyodide = null;
 let sab: PySabViews | null = null;
 let currentRunId = 0;
 
+/** Captured before any user code can run — result/relay delivery stays
+ * intact even if a run reassigns `self.postMessage`. */
+const rawPost = (self as unknown as Worker).postMessage.bind(self as unknown as Worker);
+
 /** Combined stdout+stderr for the CURRENT run. Decoders are recreated per
  * run — a multi-byte character split across the last chunk of a run would
  * otherwise leak its partial state into the next run's decode. */
@@ -38,7 +43,7 @@ let stdoutDecoder = new TextDecoder();
 let stderrDecoder = new TextDecoder();
 
 function post(msg: unknown, transfer?: Transferable[]): void {
-  (self as unknown as Worker).postMessage(msg, transfer ?? []);
+  rawPost(msg, transfer ?? []);
 }
 
 function appendOutput(text: string): void {
@@ -73,18 +78,22 @@ function makeWriteHook(stream: 'out' | 'err') {
 }
 
 /**
- * A1 isolation, authoritative layer: after boot no code in this worker needs
- * network access (artifacts are fetched inside bootPyodide; bundle bytes
- * arrive via postMessage). Deleting the APIs from the realm — own properties
- * AND prototype-chain definitions — makes them unreachable from Python via
- * the fork's `js` proxy (`js.fetch` reads as undefined). The harness-level
- * meta_path guard is defense-in-depth; prod CSP backstops dynamic import().
+ * Restage ⇒ recapture, productionized (the spike's standing guard): the
+ * interpreter's belief about the stdlib zip (zipimport TOC offsets, mtimes)
+ * lives in the wasm heap, and BUILD_ID only pins glue↔wasm — a drifted zip
+ * under a matching fork is exactly the corruption class it cannot catch.
+ * Hash the zip AS MOUNTED (read back from MEMFS, not re-fetched) against the
+ * supervisor-verified manifest and refuse the boot on mismatch. Also the
+ * anchor P3 snapshots key on: a heap image is only valid over the byte-
+ * identical zip it was captured against.
  */
-function scrubNetworkScope(): void {
-  for (const k of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource']) {
-    for (let o: object | null = self; o !== null; o = Object.getPrototypeOf(o)) {
-      if (Object.getOwnPropertyDescriptor(o, k)) delete (o as Record<string, unknown>)[k];
-    }
+async function verifyStdlibZip(expectedSha256: string): Promise<void> {
+  const zipPath = pyodide.runPython("import sys; next(p for p in sys.path if p.endswith('.zip'))") as string;
+  // MEMFS file contents are plain-ArrayBuffer views — the narrow cast is true.
+  const digest = await crypto.subtle.digest('SHA-256', pyodide.FS.readFile(zipPath) as Uint8Array<ArrayBuffer>);
+  const sha = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  if (sha !== expectedSha256) {
+    throw new Error(`stdlib zip drift: ${zipPath} hashes ${sha}, manifest expects ${expectedSha256} — re-run stage.mjs`);
   }
 }
 
@@ -104,23 +113,39 @@ del _t`);
 }
 
 async function boot(m: ExecBootMsg): Promise<void> {
+  if (pyodide || sab) {
+    // One boot per generation — a second would re-run mounts over live state
+    // and re-point the interrupt buffer mid-flight. Refuse loudly.
+    post({ t: 'exec-fatal', error: 'boot after boot' });
+    return;
+  }
   sab = mapPySab(m.sab);
   const t0 = performance.now();
   try {
     pyodide = await bootPyodide({ artifactBase: m.artifactBase, snapshot: m.snapshot });
     for (const b of m.bundles ?? []) await mountBundle(b);
+    await verifyStdlibZip(m.stdlibSha256);
+    // tz bridge: point stdlib zoneinfo at pytz's TZif tree when the pytz
+    // bundle just mounted (path-probed no-op otherwise).
+    pyodide.runPython('import _avlo_runtime; _avlo_runtime.ensure_tzpath(); del _avlo_runtime');
+    // Last network/compile touch is behind us — strip the realm's ambient
+    // authority, then freeze the intrinsics the run protocol flows through.
+    // MUST precede the harness install: the Python-side guard is the
+    // defense-in-depth layer, this is the authoritative one.
+    scrubWorkerScope();
+    hardenRealm();
+    // Fail closed: if the scrub silently no-op'd on any authority, abort the
+    // boot here (⇒ exec-fatal) rather than install the harness and run code in
+    // an unconfined realm. Same-origin ⇒ this scrub IS the boundary.
+    assertRealmHardened();
+    pyodide.setInterruptBuffer(sab.u8);
+    pyodide.setStdout({ write: makeWriteHook('out'), isatty: false });
+    pyodide.setStderr({ write: makeWriteHook('err'), isatty: false });
+    pyodide.runPython(HARNESS_INSTALL);
   } catch (err) {
     post({ t: 'exec-fatal', error: String((err as Error)?.stack ?? err) });
     return;
   }
-  // tz bridge: point stdlib zoneinfo at pytz's TZif tree when the pytz
-  // bundle just mounted (path-probed no-op otherwise).
-  pyodide.runPython('import _avlo_runtime; _avlo_runtime.ensure_tzpath(); del _avlo_runtime');
-  scrubNetworkScope();
-  pyodide.setInterruptBuffer(sab.u8);
-  pyodide.setStdout({ write: makeWriteHook('out'), isatty: false });
-  pyodide.setStderr({ write: makeWriteHook('err'), isatty: false });
-  pyodide.runPython(HARNESS_INSTALL);
   Atomics.store(sab.i32, STATE, PyExecState.Idle);
   post({ t: 'exec-ready', bootMs: performance.now() - t0 });
 }

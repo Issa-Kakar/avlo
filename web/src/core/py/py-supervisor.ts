@@ -55,16 +55,21 @@ interface ActiveRun {
   cancelKind: PyCancelKind;
 }
 
+interface ManifestEntry {
+  sha256: string;
+  size: number;
+}
 interface DevManifest {
   sets: Record<string, string[]>;
-  bundles: Record<string, { sha256: string; size: number }>;
+  artifacts: Record<string, ManifestEntry>;
+  bundles: Record<string, ManifestEntry>;
 }
 
 /** Verified tar bytes + the parsed mount recipe (512-byte meta header). */
 interface CachedBundle {
   bytes: ArrayBuffer;
   prefix: string;
-  loadOrder: string[];
+  loadOrder: readonly string[];
 }
 
 let executor: Worker | null = null;
@@ -101,19 +106,57 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
   return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** meta.json is the FIRST ustar entry by construction (pack-package D2). */
-function parseTarMeta(bytes: Uint8Array): { prefix: string; loadOrder: string[] } {
+/** Every path from a tar meta may only address INTO its mount root. */
+const safePathSegs = (p: string): boolean => p.split('/').every((s) => s !== '' && s !== '.' && s !== '..');
+
+/** meta.json is the FIRST ustar entry by construction (pack-package D2).
+ * The tar is sha-pinned by the manifest before this runs; the path checks
+ * guard the remaining trust link — a bad meta minted by the BUILD side would
+ * otherwise steer MEMFS extraction/dlopen outside the mount root. */
+function parseTarMeta(bytes: Uint8Array): { prefix: string; loadOrder: readonly string[] } {
   const ascii = (from: number, to: number) => new TextDecoder().decode(bytes.subarray(from, to)).replace(/\0.*$/s, '');
   if (ascii(0, 100) !== 'meta.json') throw new Error('bundle tar: first entry is not meta.json');
   const size = Number.parseInt(ascii(124, 136), 8);
-  return JSON.parse(new TextDecoder().decode(bytes.subarray(512, 512 + size)));
+  if (!Number.isInteger(size) || size <= 0 || size > 65_536) throw new Error('bundle tar: implausible meta.json size');
+  const meta = JSON.parse(new TextDecoder().decode(bytes.subarray(512, 512 + size))) as {
+    prefix?: unknown;
+    loadOrder?: unknown;
+  };
+  const { prefix, loadOrder } = meta;
+  if (typeof prefix !== 'string' || !prefix.startsWith('/') || !safePathSegs(prefix.slice(1))) {
+    throw new Error(`bundle tar: unsafe prefix ${JSON.stringify(prefix)}`);
+  }
+  if (!Array.isArray(loadOrder) || !loadOrder.every((s): s is string => typeof s === 'string' && safePathSegs(s))) {
+    throw new Error('bundle tar: unsafe loadOrder');
+  }
+  return { prefix, loadOrder: Object.freeze([...loadOrder]) };
+}
+
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** Shape-check what we consume from the fetched manifest, then deep-freeze it
+ * — every hash and size downstream verification trusts becomes immutable the
+ * moment it enters the supervisor. */
+function validateManifest(m: DevManifest): DevManifest {
+  const entryOk = (e: ManifestEntry | undefined): e is ManifestEntry =>
+    !!e && HEX64.test(e.sha256) && Number.isInteger(e.size) && e.size > 0;
+  if (!entryOk(m.artifacts?.['python_stdlib.zip'])) throw new Error('manifest: missing/invalid python_stdlib.zip entry');
+  for (const [name, e] of Object.entries(m.bundles ?? {})) {
+    if (!entryOk(e)) throw new Error(`manifest: invalid bundle entry ${name}`);
+  }
+  for (const e of Object.values(m.artifacts)) Object.freeze(e);
+  for (const e of Object.values(m.bundles)) Object.freeze(e);
+  Object.freeze(m.artifacts);
+  Object.freeze(m.bundles);
+  Object.freeze(m.sets);
+  return Object.freeze(m);
 }
 
 async function ensureManifest(): Promise<DevManifest> {
   if (manifest) return manifest;
   const res = await fetch(`${ARTIFACT_BASE}manifest.json`);
   if (!res.ok) throw new Error(`manifest.json: HTTP ${res.status}`);
-  manifest = (await res.json()) as DevManifest;
+  manifest = validateManifest((await res.json()) as DevManifest);
   return manifest;
 }
 
@@ -144,8 +187,14 @@ async function ensureBundles(setKey: PySetKey): Promise<CachedBundle[]> {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
       got += value.length;
+      if (got > expected.size) {
+        // Abort BEFORE buffering an over-long body — the sha check below
+        // would catch the mismatch, but only after holding the whole stream.
+        void reader.cancel();
+        throw new Error(`${name}.tar exceeds manifest size (${expected.size} B) — staged artifacts drifted, re-run stage.mjs`);
+      }
+      chunks.push(value);
       received += value.length;
       progress();
     }
@@ -160,7 +209,7 @@ async function ensureBundles(setKey: PySetKey): Promise<CachedBundle[]> {
       throw new Error(`${name}.tar sha256 mismatch — staged artifacts drifted, re-run stage.mjs`);
     }
     const meta = parseTarMeta(bytes);
-    bundleCache.set(name, { bytes: bytes.buffer, prefix: meta.prefix, loadOrder: meta.loadOrder });
+    bundleCache.set(name, Object.freeze({ bytes: bytes.buffer, prefix: meta.prefix, loadOrder: meta.loadOrder }));
   }
   return names.map((n) => bundleCache.get(n) as CachedBundle);
 }
@@ -199,7 +248,12 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
   executorReady = false;
   bootedSetKey = null;
   let bundles: CachedBundle[];
+  let stdlibSha256: string;
   try {
+    // Manifest is required for EVERY spawn (not just bundle sets) — the boot
+    // message carries the stdlib zip hash the executor verifies its MEMFS
+    // mount against (restage ⇒ recapture, the spike's standing guard).
+    stdlibSha256 = (await ensureManifest()).artifacts['python_stdlib.zip'].sha256;
     bundles = await ensureBundles(setKey);
   } catch (err) {
     if (token !== spawnToken) return;
@@ -229,7 +283,7 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
     bytes: b.bytes.slice(0),
   }));
   executor.postMessage(
-    { t: 'boot', artifactBase: ARTIFACT_BASE, sab: sab.sab, bundles: payloads },
+    { t: 'boot', artifactBase: ARTIFACT_BASE, sab: sab.sab, stdlibSha256, bundles: payloads },
     payloads.map((p) => p.bytes),
   );
   bootedSetKey = setKey;
@@ -381,6 +435,19 @@ function onRun(m: RunMsg): void {
   if (active) {
     // Manager serializes runs — this is a protocol violation, refuse loudly.
     post({ t: 'sup-fatal', error: `run ${m.runId} while ${active.runId} active` });
+    return;
+  }
+  if (!globalThis.crossOriginIsolated) {
+    // No COOP/COEP ⇒ no SharedArrayBuffer ⇒ no interrupt/cancel channel.
+    // Refuse with a precise result instead of a constructor throw later.
+    post({
+      t: 'result',
+      runId: m.runId,
+      status: 'error',
+      output: 'Python runtime unavailable: this context is not cross-origin isolated (COOP/COEP headers missing).',
+      durationMs: 0,
+      figures: [],
+    } satisfies ResultMsg);
     return;
   }
   if (idleTimer !== null) {

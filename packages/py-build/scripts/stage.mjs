@@ -137,24 +137,25 @@ ${stdlibModules.map((m) => `  ${q(m)},`).join('\n')}
 ]);
 
 /** Import root -> the SMALLEST bundle-set key providing it (the click-time
- * gate merges upward across multiple roots). */
-export const PACKAGE_TO_SET: Readonly<Record<string, string>> = {
+ * gate merges upward across multiple roots). Frozen: consumed by the
+ * supervisor worker and main thread alike — never reshapeable at runtime. */
+export const PACKAGE_TO_SET: Readonly<Record<string, string>> = Object.freeze({
 ${Object.entries(packageToSet)
   .sort(([a], [b]) => (a < b ? -1 : 1))
   .map(([k, v]) => `  ${key(k)}: ${q(v)},`)
   .join('\n')}
-};
+});
 
 /** Package import roots the current artifact set actually provides. */
 export const AVAILABLE_PACKAGES: ReadonlySet<string> = new Set(Object.keys(PACKAGE_TO_SET));
 
 /** Set key -> member bundles, deps-first (mount order). Mirrors the packer
  * config; the click-time gate merges multi-package needs by bundle union. */
-export const SET_BUNDLES: Readonly<Record<string, readonly string[]>> = {
+export const SET_BUNDLES: Readonly<Record<string, readonly string[]>> = Object.freeze({
 ${Object.entries(SETS)
-  .map(([k, v]) => `  ${key(k)}: ${arr(v)},`)
+  .map(([k, v]) => `  ${key(k)}: Object.freeze(${arr(v)}),`)
   .join('\n')}
-};
+});
 `;
 
 // ---- write or check ---------------------------------------------------------

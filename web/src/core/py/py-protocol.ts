@@ -85,7 +85,7 @@ export interface PyBundlePayload {
   name: string;
   /** Extraction root (site-packages) — from the tar meta. */
   prefix: string;
-  loadOrder: string[];
+  loadOrder: readonly string[];
   /** Transferred on boot (the supervisor keeps cached copies). */
   bytes: ArrayBuffer;
 }
@@ -95,6 +95,9 @@ export interface ExecBootMsg {
   /** Base URL for glue/wasm/stdlib artifacts (dev: /py-dev/fork/). */
   artifactBase: string;
   sab: SharedArrayBuffer;
+  /** Manifest hash of python_stdlib.zip — the executor hashes the zip AS
+   * MOUNTED in MEMFS and refuses the boot on drift (restage ⇒ recapture). */
+  stdlibSha256: string;
   /** Package bundles to mount before the harness installs (M2). */
   bundles?: PyBundlePayload[];
   /** Snapshot restore payload (P3); absent = cold boot. */
@@ -138,7 +141,9 @@ export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecFatalMs
 
 // ------------------------------------------------------------------- limits
 
-export const PY_LIMITS = {
+// Frozen: shared by all three threads' module scopes — a cap must never be
+// reshapeable at runtime, least of all from the executor realm.
+export const PY_LIMITS = Object.freeze({
   /** Wall-clock soft timeout → SIGINT (supervisor clock). */
   softTimeoutMs: 30_000,
   /** Grace after soft timeout / cancel before executor.terminate(). */
@@ -159,6 +164,6 @@ export const PY_LIMITS = {
   maxFigurePx: 2_048,
   /** Final-output char cap — mirrors MAX_OUTPUT_CHARS in code-tokens.ts. */
   maxOutputChars: 4_096,
-} as const;
+} as const);
 
 export const OUTPUT_TRUNCATION_MARKER = '\n… output truncated (4096 char limit)';

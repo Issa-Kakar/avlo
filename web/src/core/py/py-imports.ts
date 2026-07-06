@@ -79,7 +79,9 @@ export function scanPythonImports(source: string): string[] {
 }
 
 /** Sets ordered smallest-first for the upward merge below. */
-const SET_KEYS_BY_SIZE = (Object.keys(SET_BUNDLES) as PySetKey[]).sort((a, b) => SET_BUNDLES[a].length - SET_BUNDLES[b].length);
+const SET_KEYS_BY_SIZE = Object.freeze(
+  (Object.keys(SET_BUNDLES) as PySetKey[]).sort((a, b) => SET_BUNDLES[a].length - SET_BUNDLES[b].length),
+);
 
 /**
  * Resolve scanned imports to a bundle set key or a refusal.
