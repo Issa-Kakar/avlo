@@ -3,12 +3,15 @@
 # the EXACT bytes between its <script>/</script> tags; if that snippet ever changes, recompute
 # or SW registration is CSP-blocked in prod (the app still boots — registration is best-effort).
 #   node -e 'const f=require("fs").readFileSync("web/index.html","utf8");const o="<script>";const i=f.indexOf(o),j=f.indexOf("</script>",i);console.log("sha256-"+require("crypto").createHash("sha256").update(f.slice(i+o.length,j)).digest("base64"))'
+# script-src 'wasm-unsafe-eval' + https://py.avlo.io: the py supervisor/executor workers
+# import() pyodide.mjs cross-origin and compile its wasm — NEVER exercised in dev (Vite
+# proxies /api/py same-origin, no CSP); VERIFY on first prod deploy (M3 flag).
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-mB3L55QrwHlNxgJC8J/yDkEe+Z301KZThyJEOvKEbWw='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io https://auth.avlo.io https://users.avlo.io wss://sync.avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://py.avlo.io 'sha256-mB3L55QrwHlNxgJC8J/yDkEe+Z301KZThyJEOvKEbWw='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io https://auth.avlo.io https://users.avlo.io https://py.avlo.io wss://sync.avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

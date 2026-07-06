@@ -17,6 +17,8 @@
     "compress": "node scripts/compress.mjs",
     "budgets": "node scripts/check-budgets.mjs",
     "stage": "node scripts/stage.mjs",
-    "stage:check": "node scripts/stage.mjs --check"
+    "stage:check": "node scripts/stage.mjs --check",
+    "seed": "node scripts/publish.mjs --local",
+    "publish:r2": "node scripts/publish.mjs --remote"
   }
 }

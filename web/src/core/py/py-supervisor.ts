@@ -6,13 +6,16 @@
  * bundles (the executor NEVER fetches; bundle bytes ride postMessage), and
  * relays results to main.
  *
- * Bundle discipline (M2):
- * - The dev manifest (staged by py-build stage.mjs) is the source of truth
- *   for bundle hashes + set membership; every fetched tar is verified against
- *   it before use — a stale mix of artifacts is refused, same rule as the
- *   stdlib-zip hash guard in the spike.
- * - Verified tar bytes are CACHED in supervisor memory across executor
- *   generations; each boot gets transferred COPIES (originals stay).
+ * Bundle discipline (M3/P2):
+ * - The COMMITTED build-lock (@avlo/py-loader) is the source of truth for
+ *   artifact hashes + set membership — no boot-time manifest fetch; every
+ *   fetched tar is verified against it before use. A stale mix of artifacts
+ *   is refused, same rule as the stdlib-zip hash guard in the spike.
+ * - Verified tar bytes persist in the Cache API (`avlo-py-<buildHash>`,
+ *   shared with the SW's cache-first route — this is the offline path); each
+ *   boot gets the fetched/matched buffers TRANSFERRED outright (no resident
+ *   copy — the old ~38 MB in-memory 'all' cache is gone). Cache hits are
+ *   re-verified against the lock: the SW route writes this cache unverified.
  * - A run whose required bundles aren't mounted in the current generation
  *   forces a respawn with the right set (supersets satisfy subsets).
  *
@@ -28,6 +31,8 @@
  * pending here at any time.
  */
 
+import { PY_ORIGIN } from '@avlo/api-client';
+import { BUILD_LOCK } from '@avlo/py-loader';
 import {
   type ExecToSup,
   type MainToSup,
@@ -41,8 +46,12 @@ import {
 import { allocPySab, clearInterrupt, EPOCH, PyCancelKind, type PySabViews, writeInterrupt } from './py-sab';
 import { SET_BUNDLES } from './py-stdlib-modules.gen';
 
-// Dev default; P2 swaps to the py-loader build-lock origin.
-const ARTIFACT_BASE = '/py-dev/fork/';
+// Immutable content-hashed artifact origin — the committed lock pins the hash,
+// the worker 404s anything else (stale lock fails visible, never wrong).
+const ARTIFACT_BASE = `${PY_ORIGIN}/${BUILD_LOCK.buildHash}/`;
+// Shared with the SW's cache-first route (same URL keys); activate-time
+// eviction there deletes any avlo-py-* cache with a different hash.
+const PY_CACHE = `avlo-py-${BUILD_LOCK.buildHash}`;
 
 interface ActiveRun {
   runId: number;
@@ -55,23 +64,6 @@ interface ActiveRun {
   cancelKind: PyCancelKind;
 }
 
-interface ManifestEntry {
-  sha256: string;
-  size: number;
-}
-interface DevManifest {
-  sets: Record<string, string[]>;
-  artifacts: Record<string, ManifestEntry>;
-  bundles: Record<string, ManifestEntry>;
-}
-
-/** Verified tar bytes + the parsed mount recipe (512-byte meta header). */
-interface CachedBundle {
-  bytes: ArrayBuffer;
-  prefix: string;
-  loadOrder: readonly string[];
-}
-
 let executor: Worker | null = null;
 let executorReady = false;
 let sab: PySabViews | null = null;
@@ -79,8 +71,6 @@ let epoch = 0;
 let active: ActiveRun | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
-let manifest: DevManifest | null = null;
-const bundleCache = new Map<string, CachedBundle>();
 /** Set the CURRENT executor generation booted with (null = none). */
 let bootedSetKey: PySetKey | null = null;
 /** Last requested set — eager respawns reuse it (cache makes them free). */
@@ -132,54 +122,53 @@ function parseTarMeta(bytes: Uint8Array): { prefix: string; loadOrder: readonly 
   return { prefix, loadOrder: Object.freeze([...loadOrder]) };
 }
 
-const HEX64 = /^[0-9a-f]{64}$/;
-
-/** Shape-check what we consume from the fetched manifest, then deep-freeze it
- * — every hash and size downstream verification trusts becomes immutable the
- * moment it enters the supervisor. */
-function validateManifest(m: DevManifest): DevManifest {
-  const entryOk = (e: ManifestEntry | undefined): e is ManifestEntry =>
-    !!e && HEX64.test(e.sha256) && Number.isInteger(e.size) && e.size > 0;
-  if (!entryOk(m.artifacts?.['python_stdlib.zip'])) throw new Error('manifest: missing/invalid python_stdlib.zip entry');
-  for (const [name, e] of Object.entries(m.bundles ?? {})) {
-    if (!entryOk(e)) throw new Error(`manifest: invalid bundle entry ${name}`);
-  }
-  for (const e of Object.values(m.artifacts)) Object.freeze(e);
-  for (const e of Object.values(m.bundles)) Object.freeze(e);
-  Object.freeze(m.artifacts);
-  Object.freeze(m.bundles);
-  Object.freeze(m.sets);
-  return Object.freeze(m);
-}
-
-async function ensureManifest(): Promise<DevManifest> {
-  if (manifest) return manifest;
-  const res = await fetch(`${ARTIFACT_BASE}manifest.json`);
-  if (!res.ok) throw new Error(`manifest.json: HTTP ${res.status}`);
-  manifest = validateManifest((await res.json()) as DevManifest);
-  return manifest;
-}
-
-/** Fetch + verify every uncached bundle of the set, posting download
- * progress for the pending run. Returns the set's cached entries in
- * deps-first order. */
-async function ensureBundles(setKey: PySetKey): Promise<CachedBundle[]> {
+/** Ensure every bundle of the set is present + lock-verified, posting download
+ * progress for the pending run. Returns boot payloads in deps-first order —
+ * buffers are handed to the caller outright (transferred to the executor;
+ * persistence is the Cache API, not supervisor memory).
+ *
+ * Cache API over memory: works in a dedicated worker without a SW (THE offline
+ * path for tars) and shares URL keys with the SW's cache-first route. Hits are
+ * RE-VERIFIED against the lock — the SW route caches whatever the network
+ * returned, and a poisoned/stale entry must not reach a mount. `res.body`
+ * yields DECODED bytes, so counts + shas run over identity bytes even when the
+ * worker served `.br`. */
+async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
   const names = bundlesOf(setKey);
   if (names.length === 0) return [];
-  const m = await ensureManifest();
-  const toFetch = names.filter((n) => !bundleCache.has(n));
-  const total = toFetch.reduce((n, b) => n + (m.bundles[b]?.size ?? 0), 0);
+  const cache = await caches.open(PY_CACHE);
+  const byName = new Map<string, PyBundlePayload>();
+  const misses: string[] = [];
+  for (const name of names) {
+    const expected = BUILD_LOCK.bundles[name];
+    if (!expected) throw new Error(`bundle ${name} not in build-lock`);
+    const hit = await cache.match(`${ARTIFACT_BASE}bundles/${name}.tar`);
+    if (!hit) {
+      misses.push(name);
+      continue;
+    }
+    const bytes = new Uint8Array(await hit.arrayBuffer());
+    if (bytes.length !== expected.size || (await sha256Hex(bytes.buffer)) !== expected.sha256) {
+      // Unverified SW put (or a stale generation) — drop and refetch below.
+      await cache.delete(`${ARTIFACT_BASE}bundles/${name}.tar`);
+      misses.push(name);
+      continue;
+    }
+    const meta = parseTarMeta(bytes);
+    byName.set(name, { name, prefix: meta.prefix, loadOrder: meta.loadOrder, bytes: bytes.buffer });
+  }
+  const total = misses.reduce((n, b) => n + BUILD_LOCK.bundles[b].size, 0);
   let received = 0;
   const progress = () => {
     if (active && !active.dispatched) {
       post({ t: 'phase', runId: active.runId, phase: 'downloading', received, total });
     }
   };
-  progress();
-  for (const name of toFetch) {
-    const expected = m.bundles[name];
-    if (!expected) throw new Error(`bundle ${name} not in manifest`);
-    const res = await fetch(`${ARTIFACT_BASE}bundles/${name}.tar`);
+  if (misses.length > 0) progress();
+  for (const name of misses) {
+    const expected = BUILD_LOCK.bundles[name];
+    const url = `${ARTIFACT_BASE}bundles/${name}.tar`;
+    const res = await fetch(url);
     if (!res.ok || !res.body) throw new Error(`${name}.tar: HTTP ${res.status}`);
     const reader = res.body.getReader();
     const chunks: Uint8Array[] = [];
@@ -192,7 +181,7 @@ async function ensureBundles(setKey: PySetKey): Promise<CachedBundle[]> {
         // Abort BEFORE buffering an over-long body — the sha check below
         // would catch the mismatch, but only after holding the whole stream.
         void reader.cancel();
-        throw new Error(`${name}.tar exceeds manifest size (${expected.size} B) — staged artifacts drifted, re-run stage.mjs`);
+        throw new Error(`${name}.tar exceeds build-lock size (${expected.size} B) — artifact mix drifted from build-lock`);
       }
       chunks.push(value);
       received += value.length;
@@ -206,12 +195,28 @@ async function ensureBundles(setKey: PySetKey): Promise<CachedBundle[]> {
     }
     const sha = await sha256Hex(bytes.buffer);
     if (sha !== expected.sha256) {
-      throw new Error(`${name}.tar sha256 mismatch — staged artifacts drifted, re-run stage.mjs`);
+      throw new Error(`${name}.tar sha256 mismatch — artifact mix drifted from build-lock`);
     }
     const meta = parseTarMeta(bytes);
-    bundleCache.set(name, Object.freeze({ bytes: bytes.buffer, prefix: meta.prefix, loadOrder: meta.loadOrder }));
+    // Fresh Response copies the buffer per spec — safe to transfer `bytes.buffer`
+    // to the executor afterwards.
+    await cache.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/x-tar' } }));
+    byName.set(name, { name, prefix: meta.prefix, loadOrder: meta.loadOrder, bytes: bytes.buffer });
   }
-  return names.map((n) => bundleCache.get(n) as CachedBundle);
+  return names.map((n) => byName.get(n) as PyBundlePayload);
+}
+
+/** First-load-offline is a user situation, not an integrity failure — say so.
+ * X MB = everything a cold cache would need for this set (glue + wasm +
+ * stdlib + the set's tars). */
+function downloadFailureMessage(err: unknown, setKey: PySetKey): string {
+  if (err instanceof TypeError || !navigator.onLine) {
+    const bytes =
+      Object.values(BUILD_LOCK.artifacts).reduce((n, a) => n + a.size, 0) +
+      bundlesOf(setKey).reduce((n, b) => n + (BUILD_LOCK.bundles[b]?.size ?? 0), 0);
+    return `You're offline — connect once to download the Python runtime (~${Math.ceil(bytes / 1e6)} MB).`;
+  }
+  return `Python runtime download failed: ${String((err as Error)?.message ?? err)}`;
 }
 
 function clearRunTimers(run: ActiveRun): void {
@@ -221,10 +226,10 @@ function clearRunTimers(run: ActiveRun): void {
   run.softTimer = run.hardTimer = run.interruptRepeat = null;
 }
 
-/** Terminate + null the executor generation (heap + RAM freed; the bundle
- * cache SURVIVES — respawns re-mount from memory). Safe when already
- * dormant. Used for idle teardown AND broken-executor paths — a dead worker
- * left assigned would wedge the next run. */
+/** Terminate + null the executor generation (heap + RAM freed; verified tars
+ * persist in the Cache API — respawns re-match without a network trip). Safe
+ * when already dormant. Used for idle teardown AND broken-executor paths — a
+ * dead worker left assigned would wedge the next run. */
 function teardownExecutor(): void {
   executor?.terminate();
   executor = null;
@@ -247,19 +252,14 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
   executor = null;
   executorReady = false;
   bootedSetKey = null;
-  let bundles: CachedBundle[];
-  let stdlibSha256: string;
+  let payloads: PyBundlePayload[];
   try {
-    // Manifest is required for EVERY spawn (not just bundle sets) — the boot
-    // message carries the stdlib zip hash the executor verifies its MEMFS
-    // mount against (restage ⇒ recapture, the spike's standing guard).
-    stdlibSha256 = (await ensureManifest()).artifacts['python_stdlib.zip'].sha256;
-    bundles = await ensureBundles(setKey);
+    payloads = await ensureBundles(setKey);
   } catch (err) {
     if (token !== spawnToken) return;
     // Download/verify failure: surface as the pending run's result (or stay
     // dormant); the next click re-attempts.
-    if (active) failActiveRun(`Python runtime download failed: ${String((err as Error)?.message ?? err)}`, 'error', false);
+    if (active) failActiveRun(downloadFailureMessage(err, setKey), 'error', false);
     return;
   }
   if (token !== spawnToken) return; // superseded by a newer spawn
@@ -274,16 +274,17 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
     if (active) failActiveRun(`executor error: ${e.message}`, /out of memory|OOM/i.test(e.message) ? 'oom' : 'error');
     else teardownExecutor(); // dormant executor broke — never leave it assigned
   };
-  const names = bundlesOf(setKey);
-  // COPIES transfer to the executor; the cache keeps the originals.
-  const payloads: PyBundlePayload[] = bundles.map((b, i) => ({
-    name: names[i],
-    prefix: b.prefix,
-    loadOrder: b.loadOrder,
-    bytes: b.bytes.slice(0),
-  }));
+  // Boot message carries the LOCK's stdlib zip hash — the executor verifies its
+  // MEMFS mount against it (restage ⇒ recapture, the spike's standing guard).
+  // Buffers transfer outright: persistence is the Cache API, not this heap.
   executor.postMessage(
-    { t: 'boot', artifactBase: ARTIFACT_BASE, sab: sab.sab, stdlibSha256, bundles: payloads },
+    {
+      t: 'boot',
+      artifactBase: ARTIFACT_BASE,
+      sab: sab.sab,
+      stdlibSha256: BUILD_LOCK.artifacts['python_stdlib.zip'].sha256,
+      bundles: payloads,
+    },
     payloads.map((p) => p.bytes),
   );
   bootedSetKey = setKey;
@@ -394,11 +395,14 @@ function onExecutorMessage(m: ExecToSup): void {
         // would just boot a second doomed worker; go dormant instead and
         // let the next click re-attempt.
         const respawn = executorReady;
-        failActiveRun(
-          `Python runtime failed: ${m.error.split('\n')[0]}`,
-          /out of memory|OOM|RangeError/i.test(m.error) ? 'oom' : 'error',
-          respawn,
-        );
+        // Pyodide's internal indexURL fetches (glue/wasm/stdlib) fail here
+        // when offline-uncached — surface the same friendly offline message
+        // as the supervisor's own bundle fetches.
+        const message =
+          !respawn && !navigator.onLine
+            ? downloadFailureMessage(new TypeError('offline'), desiredSetKey)
+            : `Python runtime failed: ${m.error.split('\n')[0]}`;
+        failActiveRun(message, /out of memory|OOM|RangeError/i.test(m.error) ? 'oom' : 'error', respawn);
         if (!respawn) teardownExecutor();
       } else {
         // Boot failed with nothing pending (e.g. eager respawn while

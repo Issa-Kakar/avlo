@@ -20,5 +20,6 @@ export { AnonToken } from './zod/anon-token';
 export { assetKeyParam } from './zod/asset-key';
 export { avatarHashParam } from './zod/avatar-hash';
 export { contentLengthBound, MAX_UPLOAD_BYTES } from './zod/content-length';
+export { pyArtifactParam, pyBundleParam } from './zod/py-artifact';
 export { MetaEvent, MigrateEvent, VisitEvent } from './zod/room-event';
 export { unfurlQuery } from './zod/url-param';

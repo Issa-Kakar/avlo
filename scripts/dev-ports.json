@@ -1,8 +1,9 @@
 {
-  "_comment": "Base wrangler dev ports per worker. Order matters: `sync` is FIRST so the orchestrator makes it the Miniflare ENTRY worker (top-level port; the WS /sync/* upgrade + AvloDO stay on Miniflare's proven entry path). We deliberately skip 8788/8789 because some WSL2 / Windows-host environments reserve them (cloudflared / kernel mirror); 3001 is also reserved at the WSL2/Windows level on at least one of our hosts, which is why dev:p uses VITE_PORT=5180 instead of 3001. Parallel dev (npm run dev:p) sets PORT_OFFSET=10, so the offset must stay >= max(ports) - min(ports) + 1 = 8793 - 8787 + 1 = 7; 10 leaves headroom. Inspector ports are base+1000+offset, collision-free under the same constraint.",
+  "_comment": "Base wrangler dev ports per worker. Order matters: `sync` is FIRST so the orchestrator makes it the Miniflare ENTRY worker (top-level port; the WS /sync/* upgrade + AvloDO stay on Miniflare's proven entry path). We deliberately skip 8788/8789 because some WSL2 / Windows-host environments reserve them (cloudflared / kernel mirror); 3001 is also reserved at the WSL2/Windows level on at least one of our hosts, which is why dev:p uses VITE_PORT=5180 instead of 3001. Parallel dev (npm run dev:p) sets PORT_OFFSET=10, so the offset must stay >= max(ports) - min(ports) + 1 = 8794 - 8787 + 1 = 8; 10 leaves headroom. Inspector ports are base+1000+offset, collision-free under the same constraint.",
   "sync": 8787,
   "images": 8790,
   "unfurl": 8791,
   "auth": 8792,
-  "users": 8793
+  "users": 8793,
+  "py": 8794
 }

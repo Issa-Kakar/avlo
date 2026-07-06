@@ -16,6 +16,7 @@ const IMAGES_PORT = devPorts.images + portOffset;
 const UNFURL_PORT = devPorts.unfurl + portOffset;
 const AUTH_PORT = devPorts.auth + portOffset;
 const USERS_PORT = devPorts.users + portOffset;
+const PY_PORT = devPorts.py + portOffset;
 
 const proxyConfig = {
   // match SYNC_WS_PREFIX (@avlo/shared). No `rewrite` — the full /sync/rooms/<id> path must
@@ -46,6 +47,12 @@ const proxyConfig = {
     target: `http://localhost:${USERS_PORT}`,
     changeOrigin: true,
     rewrite: (p: string) => p.replace(/^\/api\/users/, ''),
+  },
+  // Python runtime artifacts (PY_ORIGIN in dev) — anonymous immutable GETs.
+  '/api/py': {
+    target: `http://localhost:${PY_PORT}`,
+    changeOrigin: true,
+    rewrite: (p: string) => p.replace(/^\/api\/py/, ''),
   },
 };
 
@@ -127,6 +134,7 @@ export default defineConfig({
       '@': path.resolve(__dirname_local, './src'),
       '@avlo/shared': path.resolve(__dirname_local, '../packages/shared/src'),
       '@avlo/api-client': path.resolve(__dirname_local, '../packages/api-client/src'),
+      '@avlo/py-loader': path.resolve(__dirname_local, '../packages/py-loader/src'),
     },
   },
   server: {

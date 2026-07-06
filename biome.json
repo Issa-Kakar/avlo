@@ -13,6 +13,7 @@
       "!**/.cache",
       "!**/.turbo",
       "!web/src/routeTree.gen.ts",
+      "!packages/py-loader/build-lock.json",
       "!web/src/core/code/vendor/sql/sql.grammar.js",
       "!web/src/core/code/vendor/sql/sql.grammar.terms.js",
       "!workers/**/worker-configuration.d.ts",

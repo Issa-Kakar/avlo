@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "buildHash": "bd8afa4e8f07f324",
+  "artifacts": {
+    "pyodide.asm.js": {
+      "sha256": "5cc6863c603b3ab6ab9503c63285ae515ccad25e7e0c5d0b218963839acb1090",
+      "size": 738996
+    },
+    "pyodide.asm.wasm": {
+      "sha256": "fdc91b4b6d5c62a9779fa0a230719fd38cef90c8779bc8e66c2d8f1efb1b0d9a",
+      "size": 7460952
+    },
+    "pyodide.mjs": {
+      "sha256": "c7f43ddf3cd9f47f8cdc0a3cbf339aaecbdf633b0bb16199ebd8dafb473b3248",
+      "size": 16734
+    },
+    "python_stdlib.zip": {
+      "sha256": "a720638cdc2511ddf637826c6858135ab26d7a18b80622f78fb658deca6fefe1",
+      "size": 3097052
+    }
+  },
+  "bundles": {
+    "numpy": {
+      "sha256": "db667bbb049b5cb0f4b4208c4d84486a4bad1f99da516275ba0cb92c5808ec0a",
+      "size": 9123840
+    },
+    "dateutil": {
+      "sha256": "1d3931018fa4733f79008c2e442e478099457add4c1d5d5c8b4d6c25d0dc5510",
+      "size": 368640
+    },
+    "pytz": {
+      "sha256": "31167d1795da3f47fe3e8696146e33179101334cb37f39705368a03bca1c63da",
+      "size": 1454080
+    },
+    "mpl-deps": {
+      "sha256": "ace406ee088e2a7f707f7a85ba6e2e4664677ab58c305a3ede4393788c358725",
+      "size": 1515520
+    },
+    "pandas": {
+      "sha256": "0fcc8fb473e205c9e06d852bfdc71586143e892b8833e5ddebe798ad20d2ea0d",
+      "size": 17704960
+    },
+    "matplotlib": {
+      "sha256": "fe89207007f9f88d23b6a2ff248a90d5f34ebc2ab505b65f60bb379cb380c893",
+      "size": 8796160
+    }
+  },
+  "sets": {
+    "numpy": [
+      "numpy"
+    ],
+    "numpy+pandas": [
+      "numpy",
+      "dateutil",
+      "pytz",
+      "pandas"
+    ],
+    "numpy+matplotlib": [
+      "numpy",
+      "dateutil",
+      "pytz",
+      "mpl-deps",
+      "matplotlib"
+    ],
+    "all": [
+      "numpy",
+      "dateutil",
+      "pytz",
+      "mpl-deps",
+      "pandas",
+      "matplotlib"
+    ]
+  }
+}

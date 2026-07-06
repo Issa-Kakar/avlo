@@ -4,6 +4,7 @@
  *
  * Strategies:
  *   images host (prod) / /api/images/* (dev)  cache-first (immutable, content-addressed)
+ *   py host (prod) / /api/py/* (dev)           cache-first (immutable, buildHash-keyed)
  *   /assets/*                                  cache-first (Vite-hashed, immutable)
  *   /fonts/*, /cursors/*                       cache-first
  *   navigation (HTML)                          network-first with cache fallback
@@ -13,13 +14,24 @@
  * never on the network. SW returns 404 on cache miss.
  */
 
-import { IMAGES_ORIGIN, SYNC_HOST_PROD } from '@avlo/api-client/origins';
-import { isImagesRequest, isSyncRequest } from '@avlo/api-client/sw-matchers';
+// BUILD_LOCK is pure JSON + types (no worker ambients) — SW-bundle-safe.
+import { IMAGES_ORIGIN, PY_ORIGIN, SYNC_HOST_PROD } from '@avlo/api-client/origins';
+import { isImagesRequest, isPyRequest, isSyncRequest } from '@avlo/api-client/sw-matchers';
+import { PY_BUILD_HASH } from '@avlo/py-loader';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
 const ASSET_CACHE = 'avlo-assets';
 const SHELL_CACHE = 'avlo-shell-v1';
+// Shared with the py supervisor's Cache API reads/writes (same URL keys). The
+// only way pyodide's INTERNAL indexURL fetches (glue/wasm/stdlib) become
+// offline-capable — the supervisor only fetches tars itself. Expect a benign
+// transient double-put on supervisor fetches (SW-controlled → same key); SW
+// puts are unverified, and the supervisor's hit-verify neutralizes them for
+// tars. Note: `.br`-served bodies cache DECODED with a Content-Encoding: br
+// header — Chrome serves that back fine; if an offline preview ever shows
+// decode errors, sanitize headers on put for this branch only.
+const PY_CACHE = `avlo-py-${PY_BUILD_HASH}`;
 
 // ── Install + Activate ──────────────────────────────────────
 
@@ -27,13 +39,20 @@ sw.addEventListener('install', () => sw.skipWaiting());
 
 sw.addEventListener('activate', (e) => {
   e.waitUntil(
-    sw.clients
-      .claim()
-      .then(() =>
-        caches
-          .keys()
-          .then((names) => Promise.all(names.filter((n) => n.startsWith('avlo-shell-') && n !== SHELL_CACHE).map((n) => caches.delete(n)))),
+    sw.clients.claim().then(() =>
+      caches.keys().then((names) =>
+        Promise.all(
+          names
+            .filter(
+              (n) =>
+                (n.startsWith('avlo-shell-') && n !== SHELL_CACHE) ||
+                // Stale py runtime generations — a new build-lock hash keys a new cache.
+                (n.startsWith('avlo-py-') && n !== PY_CACHE),
+            )
+            .map((n) => caches.delete(n)),
+        ),
       ),
+    ),
   );
 });
 
@@ -64,6 +83,13 @@ sw.addEventListener('fetch', (event) => {
   // Image assets: cache-first from avlo-assets (immutable, content-addressed)
   if (isImagesRequest(url, IMAGES_ORIGIN)) {
     event.respondWith(cacheFirst(request, ASSET_CACHE));
+    return;
+  }
+
+  // Python runtime artifacts: cache-first into the generation cache the
+  // supervisor shares (immutable — keys carry the build-lock hash).
+  if (isPyRequest(url, PY_ORIGIN)) {
+    event.respondWith(cacheFirst(request, PY_CACHE));
     return;
   }
 

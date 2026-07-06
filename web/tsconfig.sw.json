@@ -7,7 +7,8 @@
       "@avlo/shared": ["../packages/shared/src/index.ts"],
       "@avlo/shared/*": ["../packages/shared/src/*"],
       "@avlo/api-client": ["../packages/api-client/src/index.ts"],
-      "@avlo/api-client/*": ["../packages/api-client/src/*"]
+      "@avlo/api-client/*": ["../packages/api-client/src/*"],
+      "@avlo/py-loader": ["../packages/py-loader/src/index.ts"]
     }
   },
   "include": ["src/sw.ts"]

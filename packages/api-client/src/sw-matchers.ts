@@ -11,6 +11,14 @@ export function isImagesRequest(url: URL, imagesOrigin: string): boolean {
   return o.pathname === '/' || url.pathname.startsWith(`${o.pathname}/`);
 }
 
+// Same shape as `isImagesRequest` — py artifacts are a second immutable content-hashed
+// origin (`https://py.avlo.io` prod, `http://<host>/api/py` dev proxy).
+export function isPyRequest(url: URL, pyOrigin: string): boolean {
+  const o = new URL(pyOrigin);
+  if (url.origin !== o.origin) return false;
+  return o.pathname === '/' || url.pathname.startsWith(`${o.pathname}/`);
+}
+
 export function isSyncRequest(url: URL, syncHostProd: string | null): boolean {
   // '/sync/' must match SYNC_WS_PREFIX (@avlo/shared) — kept a literal so SW-graph code doesn't
   // pull @avlo/shared into the SW bundle (the CI isolation grep).

@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "avlo-py",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30", // pinned per-worker; bump uniformly when needed
+  "compatibility_flags": ["nodejs_compat"],
+
+  "r2_buckets": [{ "binding": "PY", "bucket_name": "avlo-py" }],
+
+  // routes uncommented post-DNS-transfer + remaining pre-prod essentials
+  // "routes": [{ "pattern": "py.avlo.io", "custom_domain": true }],
+
+  "dev": { "port": 8794 },
+  "observability": { "enabled": true },
+  "minify": true
+}

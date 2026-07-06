@@ -67,7 +67,7 @@ const logLevel = LOG_LEVELS[(process.env.MF_LOG_LEVEL ?? 'info').toLowerCase()] 
 // dir name → wrangler `name`. LOAD-BEARING: services + cross-script DO resolve by
 // wrangler NAME, not dir. A mismatch silently breaks every cross-worker edge
 // (the pre-flight assert below catches it loudly).
-const NAME = { sync: 'avlo-sync', images: 'avlo-images', unfurl: 'avlo-unfurl', auth: 'avlo-auth', users: 'avlo-users' };
+const NAME = { sync: 'avlo-sync', images: 'avlo-images', unfurl: 'avlo-unfurl', auth: 'avlo-auth', users: 'avlo-users', py: 'avlo-py' };
 
 // CRITICAL: `wrangler dev --persist-to <X>` (and `wrangler d1 migrations apply
 // --persist-to <X>`) store under `<X>/v3/{d1,r2,kv,do,cache}` — Miniflare's

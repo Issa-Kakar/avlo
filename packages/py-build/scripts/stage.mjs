@@ -18,6 +18,9 @@
 //                                       M3's R2 manifest)
 // Checked-in codegen:
 //   web/src/core/py/py-stdlib-modules.gen.ts
+//   packages/py-loader/build-lock.json   (the committed app↔artifact coupling;
+//                                         restage ⇒ new buildHash ⇒ reseed R2
+//                                         (publish.mjs) + commit the lock)
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -101,13 +104,36 @@ for (const [bundle, meta] of Object.entries(bundleMeta)) {
   for (const name of meta.provides) packageToSet[name] = smallest;
 }
 
+// ---- build-lock -------------------------------------------------------------
+// buildHash = 16-hex truncated sha256 over canonical (recursively key-sorted)
+// JSON of the slim sha tables — deterministic for identical artifact bytes.
+// The committed lock is the supervisor's ONLY artifact source of truth (no
+// boot-time manifest fetch); manifest.json stays the R2 completion marker +
+// provides/requires superset.
+const canonical = (v) =>
+  Array.isArray(v)
+    ? `[${v.map(canonical).join(',')}]`
+    : v && typeof v === 'object'
+      ? `{${Object.keys(v)
+          .sort()
+          .map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`)
+          .join(',')}}`
+      : JSON.stringify(v);
+const artifactTable = Object.fromEntries(
+  Object.keys(ARTIFACTS).map((name) => [name, { sha256: sha256(files.get(name)), size: files.get(name).length }]),
+);
+const bundleTable = Object.fromEntries(Object.entries(bundleMeta).map(([b, m]) => [b, { sha256: m.sha256, size: m.size }]));
+const buildHash = sha256(canonical({ artifacts: artifactTable, bundles: bundleTable, sets: SETS })).slice(0, 16);
+const buildLockPath = join(repoRoot, 'packages/py-loader/build-lock.json');
+const buildLockBytes = Buffer.from(
+  `${JSON.stringify({ schema: 1, buildHash, artifacts: artifactTable, bundles: bundleTable, sets: SETS }, null, 2)}\n`,
+);
+
 // ---- manifest + gen.ts ------------------------------------------------------
 const manifest = {
   schema: 1,
-  buildHash: 'dev',
-  artifacts: Object.fromEntries(
-    Object.keys(ARTIFACTS).map((name) => [name, { sha256: sha256(files.get(name)), size: files.get(name).length }]),
-  ),
+  buildHash,
+  artifacts: artifactTable,
   bundles: bundleMeta,
   sets: SETS,
   stdlibModules,
@@ -167,6 +193,7 @@ const compare = (path, want) => {
 if (check) {
   for (const [rel, buf] of files) compare(join(forkDir, rel), buf);
   compare(genPath, Buffer.from(genSource));
+  compare(buildLockPath, buildLockBytes);
   console.log(drift ? `stage --check: ${drift} file(s) drifted — rerun stage.mjs` : 'stage --check: clean');
   process.exit(drift ? 1 : 0);
 }
@@ -183,5 +210,7 @@ for (const dir of ['', 'bundles/']) {
   }
 }
 writeFileSync(genPath, genSource);
+writeFileSync(buildLockPath, buildLockBytes);
 console.log(`staged ${files.size} files -> ${forkDir}`);
 console.log(`wrote ${genPath} (${stdlibModules.length} stdlib modules, ${Object.keys(packageToSet).length} package roots)`);
+console.log(`wrote ${buildLockPath} (buildHash ${buildHash})`);

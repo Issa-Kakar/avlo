@@ -16,6 +16,10 @@
 // worker, and SW global scopes (all three are where this module is consumed).
 export const IMAGES_ORIGIN = import.meta.env.PROD ? 'https://images.avlo.io' : `${location.origin}/api/images`;
 export const UNFURL_ORIGIN = import.meta.env.PROD ? 'https://unfurl.avlo.io' : `${location.origin}/api/unfurl`;
+// Python runtime artifacts (immutable, content-hashed, anonymous GET). Consumed by the
+// py supervisor (dedicated worker: fetch + Cache API) and the SW's cache-first route —
+// both must derive the same URLs so the shared `avlo-py-<hash>` cache keys line up.
+export const PY_ORIGIN = import.meta.env.PROD ? 'https://py.avlo.io' : `${location.origin}/api/py`;
 // Credentialed subdomain workers (cookies ride via Domain=.avlo.io + CORS
 // credentials). Dev hits them through the Vite proxy (same-origin → cookies
 // auto-attach); prod is a true cross-origin subdomain.

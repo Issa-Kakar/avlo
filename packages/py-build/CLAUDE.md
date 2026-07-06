@@ -23,7 +23,8 @@ hash order).
 | `run-corpus.mjs` | Corpus runner: child process per group (RAM-bounded), mounts the REAL bundle tars (512-byte meta parse → tarfile extract → loadDynlib per loadOrder), mpl groups add the font gates (no findfont, no fontManager rebuild) + PNG decode (`lib/png.mjs`) of `/tmp/corpus-out/*.png` |
 | `compress.mjs` | Brotli q11 `.br` siblings for every servable artifact |
 | `check-budgets.mjs` | G1: per-artifact + composite `.br` ceilings from `build.config.json`; `--update` stamps measured +5% |
-| `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + dev `manifest.json`) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts`. `--check` = drift gate (any artifact/codegen divergence fails) |
+| `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + `manifest.json`, prunes strays) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts` + `packages/py-loader/build-lock.json` (buildHash = 16-hex sha256 of the canonical sha tables). `--check` = drift gate (any artifact/codegen/lock divergence fails) |
+| `publish.mjs` | Staged artifacts → R2 under `<buildHash>/…` (21 keys; manifest.json strictly LAST = completion marker). `--local` (default; `pnpm py:seed` from root) seeds the dev miniflare tree via `--persist-to <root>/.wrangler/state` (wrangler appends `v3`); `--remote` publishes to the real `avlo-py` bucket with a manifest divergence probe (absent→publish, identical→no-op, different→hash-bug hard error). Preflight re-hashes EVERY source byte against the build-lock + checks `.br` freshness (restage ⇒ reseed) |
 | `lib/det-env.mjs` | Deterministic capture env (entropy/Date.now/performance.now stand-ins) — shared by baseline + prebake |
 | `lib/png.mjs` | Minimal PNG decoder (filters 0-4) for corpus pixel assertions |
 
@@ -43,6 +44,12 @@ gitignored), `dist/` (raw fork output + staged artifacts — gitignored).
 - **Restage ⇒ recapture.** Any staged-stdlib change poisons held snapshots
   (zipimport TOC offsets live in the heap); make-baseline refuses raw-zip
   fallback, stage `--check` flags drift.
+- **Restage ⇒ reseed.** Every restage mints a new `buildHash` in the committed
+  build-lock (`packages/py-loader/`) — the app immediately fetches
+  `<origin>/<newHash>/…`, so R2 must be reseeded (`pnpm py:seed` local,
+  `publish:r2` remote) and the lock committed together. publish.mjs's
+  preflight re-hashes every source byte against the lock, so a stale mix
+  refuses loudly.
 - **meta.json is the FIRST tar entry** — JS mounts read it with one 512-byte
   ustar header parse, no tar library (spike, corpus, supervisor all rely on it).
 - **Deps-first set order = canonical cross-bundle DSO order**

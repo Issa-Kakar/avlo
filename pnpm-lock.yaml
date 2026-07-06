@@ -76,6 +76,8 @@ importers:
 
   packages/py-build: {}
 
+  packages/py-loader: {}
+
   packages/shared:
     dependencies:
       fractional-indexing:
@@ -128,6 +130,9 @@ importers:
       '@avlo/api-client':
         specifier: workspace:*
         version: link:../packages/api-client
+      '@avlo/py-loader':
+        specifier: workspace:*
+        version: link:../packages/py-loader
       '@codemirror/autocomplete':
         specifier: ^6.20.1
         version: 6.20.3
@@ -364,6 +369,28 @@ importers:
         version: 6.0.3
 
   workers/main: {}
+
+  workers/py:
+    dependencies:
+      '@avlo/worker-shared':
+        specifier: workspace:*
+        version: link:../../packages/worker-shared
+      '@hono/zod-validator':
+        specifier: ^0.7.6
+        version: 0.7.6(hono@4.12.27)(zod@4.4.3)
+      hono:
+        specifier: ^4.12.27
+        version: 4.12.27
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20251106.1
+        version: 4.20260613.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
   workers/sync:
     dependencies:

@@ -49,6 +49,59 @@ Slice plan (session 7): /home/issak/.claude/plans/packages-py-build-notes-md-hom
 - Stdlib prunes of now-dead `from js import …` code (webbrowser/antigravity/
   pyodide.http/pyodide._run_js) remain a documented follow-up, not this slice.
 
+## Session 7 — M3+P2 Commit 2: worker serving + P2 runtime swap
+- **New worker `workers/py/`** (`avlo-py`, dev :8794, prod `py.avlo.io`
+  commented like the fleet): anonymous immutable `GET /:hash/:file` +
+  `/:hash/bundles/:name` (worker-shared `pyArtifactParam`/`pyBundleParam`,
+  16-hex hash ≠ 64-hex assetKey), brotli via `.br` sibling keys +
+  `encodeBody:'manual'`, `application/wasm` MIME, asset-body CSP + CORP
+  cross-origin, NO caches.default (br↔identity variant poisoning), app-type
+  exempt (binary artifacts; documented beside sync's exemption).
+- **`packages/py-loader/`** (`@avlo/py-loader`): committed generated
+  `build-lock.json` + deep-frozen typed `BUILD_LOCK`/`PY_BUILD_HASH` —
+  stage.mjs now computes `buildHash` (16-hex sha256 of canonical sha tables;
+  this stage: `bd8afa4e8f07f324`), writes + byte-gates the lock (`--check`),
+  stamps the real hash into manifest.json (still the R2 completion marker).
+  biome excludes the lock (formatter would break the byte-compare).
+- **`publish.mjs`**: preflight re-hashes EVERY source byte vs the lock +
+  `.br` mtime freshness → 21-key sequential upload, manifest LAST;
+  `--local` → `--persist-to <root>/.wrangler/state` (wrangler appends v3 —
+  verified: 21 blobs in the live tree); `--remote` probes the manifest
+  (absent/identical/different → publish/no-op/hard error). Root `py:seed`.
+- **P2 supervisor swap**: `ARTIFACT_BASE = PY_ORIGIN/<lock.buildHash>/`;
+  manifest fetch/validate/memory-cache DELETED — lock import replaces it;
+  `ensureBundles` → Cache API `avlo-py-<hash>` (hits RE-verified vs lock —
+  the SW writes unverified; corrupt → delete → refetch), misses stream with
+  progress + size-abort + sha gate, `cache.put` then TRANSFER the buffer
+  (38 MB resident 'all' heap gone). Offline UX: TypeError/!onLine →
+  "connect once to download (~X MB)" on both the bundle-fetch and
+  exec-fatal boot paths. Executor/manager/imports/UI untouched.
+- **SW**: `isPyRequest → cacheFirst(PY_CACHE)` (covers pyodide's internal
+  indexURL fetches — glue/wasm/stdlib offline), activate evicts stale
+  `avlo-py-*`. `_headers` CSP: script-src += 'wasm-unsafe-eval'
+  https://py.avlo.io (NEVER exercised in dev — verify on first prod
+  deploy), connect-src += py.avlo.io. Dev wiring: dev-ports `py:8794`,
+  miniflare NAME map, Vite `/api/py` proxy + `@avlo/py-loader` alias.
+- **Verified**: typecheck 12/12 · stage:check clean (lock byte-gated) ·
+  seed dry-run = exact 21-key plan · real seed → 21 blobs ·
+  `pnpm build` + SW isolation grep EMPTY (py-loader/lock SW-safe) ·
+  G5 curls on :8794 (standalone worker vs the seeded tree): wasm+br → 200 +
+  application/wasm + Content-Encoding:br + Vary + CORP + sandbox CSP +
+  nosniff + immutable + ETag; **.br sibling proven byte-exact** (size ==
+  .br file, ETag == its md5); `curl --compressed numpy.tar | sha256sum` ==
+  lock sha (encodeBody:'manual' round-trip); manifest+br → identity object;
+  bad hash 400 / unknown 404 / If-None-Match 304 / encoded-`/` traversal 400.
+  Note: workerd normalizes inbound Accept-Encoding to "br, gzip" (prod edge
+  does the same) — the identity branch exists for br-less direct clients and
+  the manifest; the edge re-encodes per client.
+- **PENDING (needs dev-server restart — it was running mid-session and
+  predates the py worker)**: canvas demo via `/api/py/<hash>/…` (zero
+  `/py-dev/fork/` product fetches), Cache Storage `avlo-py-<hash>` +
+  no-refetch rerun, offline second-load via `vite preview`, offline-UX
+  message, PORT_OFFSET=10 smoke, Commit-1 browser board (guard-stripped
+  `import js` in real Chrome). Restart `pnpm dev` (picks up workers/py +
+  the Vite proxy) and run the board.
+
 ## Session 6 — verify Session 5 + fail-closed hardening + full-stack audit DONE
 - Owner decision: staying SAME-ORIGIN (no sandboxed iframe). That makes the
   `py-harden.ts` scrub THE authority boundary, not defense-in-depth — reinforced

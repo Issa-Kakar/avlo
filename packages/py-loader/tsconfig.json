@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "WebWorker"]
+  },
+  "include": ["src/**/*.ts", "build-lock.json"]
+}
