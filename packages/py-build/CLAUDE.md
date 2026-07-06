@@ -24,6 +24,7 @@ hash order).
 | `compress.mjs` | Brotli q11 `.br` siblings for every servable artifact |
 | `check-budgets.mjs` | G1: per-artifact + composite `.br` ceilings from `build.config.json`; `--update` stamps measured +5% |
 | `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + `manifest.json`, prunes strays) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts` + `packages/py-loader/build-lock.json` (buildHash = 16-hex sha256 of the canonical sha tables). `--check` = drift gate (any artifact/codegen/lock divergence fails) |
+| `run-harness.mjs` | Node verification harness (`pnpm harness`; Node ≥23.6 — type-strips the SHIPPED `py-harden.ts`/`py-harness.ts`/py-loader `verify.ts`): boots the staged fork per child section, mounts real tars in lock set order, re-enacts the exact executor boot (mounts → stdlib verify → scrub → harden → assert → harness), then drives the full board — scrub/freeze sweeps + negatives, 0008 closure probes, tombstones, sqlite3/numpy/seaborn+PNG post-freeze, staged-tree-vs-lock byte checks. Runs after any harden/verify/artifact change; never in Turbo/CI |
 | `publish.mjs` | Staged artifacts → R2 under `<buildHash>/…` (21 keys; manifest.json strictly LAST = completion marker). `--local` (default; `pnpm py:seed` from root) seeds the dev miniflare tree via `--persist-to <root>/.wrangler/state` (wrangler appends `v3`); `--remote` publishes to the real `avlo-py` bucket with a manifest divergence probe (absent→publish, identical→no-op, different→hash-bug hard error). Preflight re-hashes EVERY source byte against the build-lock + checks `.br` freshness (restage ⇒ reseed) |
 | `lib/det-env.mjs` | Deterministic capture env (entropy/Date.now/performance.now stand-ins) — shared by baseline + prebake |
 | `lib/png.mjs` | Minimal PNG decoder (filters 0-4) for corpus pixel assertions |
@@ -35,9 +36,17 @@ hash order).
 wheel; deletions are prune-list lines, never patches), `config/stdlib-prune.txt`
 + `config/pkg-prune/<pkg>.txt` (`# reason:` comments become tombstone text),
 `overlay/stdlib/` (sitecustomize tombstone finder + `_avlo_runtime`
-post-restore/tz-bridge + `_avlo_png` encoder), `corpus/{basic,numpy,pandas,mpl,all}/`
-(self-asserting samples), `.cache/` (wheels/stage/unpruned/trace/hosttools —
-gitignored), `dist/` (raw fork output + staged artifacts — gitignored).
+post-restore/tz-bridge + `_avlo_png` encoder),
+`corpus/{basic,sqlite,numpy,pandas,mpl,all,seaborn}/` (self-asserting
+samples; `# trace: skip` marks deliberate tombstone probes), `.cache/`
+(wheels/stage/unpruned/trace/hosttools — gitignored), `dist/` (raw fork
+output + staged artifacts — gitignored).
+
+Wheel pins live in `build.config.json` `recipes.wheels`; pins with a `url`
+are PyPI universal wheels absent from the stock lock (seaborn) — `--stamp`
+and the drift guard skip them, downloads go straight to the url (sha pin =
+provenance), and their `depends` field feeds `bundle_requires` in place of
+the lock's depends graph.
 
 ## Invariants
 

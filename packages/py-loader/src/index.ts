@@ -29,3 +29,5 @@ export const PY_BUILD_HASH: string = BUILD_LOCK.buildHash;
 
 /** Artifact URL base for a given py origin: `<origin>/<buildHash>/`. */
 export const pyArtifactBase = (origin: string): string => `${origin}/${PY_BUILD_HASH}/`;
+
+export { matchesLockEntry, sha256Hex } from './verify';

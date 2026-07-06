@@ -17,7 +17,7 @@
 // BUILD_LOCK is pure JSON + types (no worker ambients) — SW-bundle-safe.
 import { IMAGES_ORIGIN, PY_ORIGIN, SYNC_HOST_PROD } from '@avlo/api-client/origins';
 import { isImagesRequest, isPyRequest, isSyncRequest } from '@avlo/api-client/sw-matchers';
-import { PY_BUILD_HASH } from '@avlo/py-loader';
+import { BUILD_LOCK, matchesLockEntry, PY_BUILD_HASH } from '@avlo/py-loader';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
@@ -26,11 +26,13 @@ const SHELL_CACHE = 'avlo-shell-v1';
 // Shared with the py supervisor's Cache API reads/writes (same URL keys). The
 // only way pyodide's INTERNAL indexURL fetches (glue/wasm/stdlib) become
 // offline-capable — the supervisor only fetches tars itself. Expect a benign
-// transient double-put on supervisor fetches (SW-controlled → same key); SW
-// puts are unverified, and the supervisor's hit-verify neutralizes them for
-// tars. Note: `.br`-served bodies cache DECODED with a Content-Encoding: br
-// header — Chrome serves that back fine; if an offline preview ever shows
-// decode errors, sanitize headers on put for this branch only.
+// transient double-put on supervisor fetches (SW-controlled → same key).
+// CORE artifacts (the lock's `artifacts` table: glue/wasm/stdlib) go through
+// `verifiedPyFirst` — byte-verified against the committed lock on every hit
+// AND before every cache write, so the bytes pyodide executes are exactly the
+// bytes the lock pins. Tars stay streaming `cacheFirst`: the SUPERVISOR is
+// their verifier (fetch-path sha + hit re-verify) and buffering them here
+// would collapse its download-progress stream.
 const PY_CACHE = `avlo-py-${PY_BUILD_HASH}`;
 
 // ── Install + Activate ──────────────────────────────────────
@@ -71,6 +73,52 @@ async function cacheFirst(request: Request, cacheName: string): Promise<Response
   }
 }
 
+/** Lock `artifacts` entry iff the URL is `<py origin>/<PY_BUILD_HASH>/<core artifact>`.
+ * Bundle tars, manifest.json, and other-generation hashes return null (→ cacheFirst). */
+function pyCoreEntry(url: URL): { name: string; sha256: string; size: number } | null {
+  const base = new URL(PY_ORIGIN).pathname; // '/' (prod) or '/api/py' (dev proxy)
+  const rel = base === '/' ? url.pathname.slice(1) : url.pathname.startsWith(`${base}/`) ? url.pathname.slice(base.length + 1) : null;
+  if (!rel) return null;
+  const slash = rel.indexOf('/');
+  if (slash < 0 || rel.slice(0, slash) !== PY_BUILD_HASH) return null;
+  const name = rel.slice(slash + 1);
+  const entry = BUILD_LOCK.artifacts[name];
+  return entry ? { name, ...entry } : null;
+}
+
+/** Verify-first serving for the core artifacts (glue/wasm/stdlib): the bytes
+ * handed to pyodide's `import()`/internal fetches are exactly the committed
+ * lock's bytes. Cache hits are RE-verified (poisoned hit → delete → refetch,
+ * the supervisor's tar discipline); a network body that fails the lock is a
+ * 502 and NEVER cached. The synthetic Response carries Content-Type ONLY —
+ * `arrayBuffer()` yields DECODED bytes, so the network response's
+ * Content-Encoding/Content-Length (a `.br` body) must not ride along. */
+async function verifiedPyFirst(request: Request, entry: { name: string; sha256: string; size: number }): Promise<Response> {
+  let cache: Cache | null = null;
+  try {
+    cache = await caches.open(PY_CACHE);
+    const hit = await cache.match(request);
+    if (hit) {
+      if (await matchesLockEntry(await hit.clone().arrayBuffer(), entry)) return hit;
+      await cache.delete(request);
+    }
+  } catch {
+    cache = null; // Cache API unavailable — verification still mandatory below
+  }
+  const resp = await fetch(request);
+  if (!resp.ok) return resp;
+  const bytes = await resp.arrayBuffer();
+  if (!(await matchesLockEntry(bytes, entry))) {
+    return new Response(`${entry.name} failed build-lock verification`, { status: 502 });
+  }
+  const out = new Response(bytes, {
+    status: 200,
+    headers: { 'Content-Type': resp.headers.get('Content-Type') ?? 'application/octet-stream' },
+  });
+  cache?.put(request, out.clone());
+  return out;
+}
+
 // ── Fetch Handler ───────────────────────────────────────────
 
 sw.addEventListener('fetch', (event) => {
@@ -86,10 +134,12 @@ sw.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Python runtime artifacts: cache-first into the generation cache the
-  // supervisor shares (immutable — keys carry the build-lock hash).
+  // Python runtime artifacts: core artifacts are lock-verified before they
+  // are served or cached; tars stream cache-first (the supervisor verifies
+  // them — see the PY_CACHE comment).
   if (isPyRequest(url, PY_ORIGIN)) {
-    event.respondWith(cacheFirst(request, PY_CACHE));
+    const core = pyCoreEntry(url);
+    event.respondWith(core ? verifiedPyFirst(request, core) : cacheFirst(request, PY_CACHE));
     return;
   }
 

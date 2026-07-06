@@ -32,7 +32,7 @@
  */
 
 import { PY_ORIGIN } from '@avlo/api-client';
-import { BUILD_LOCK } from '@avlo/py-loader';
+import { BUILD_LOCK, matchesLockEntry } from '@avlo/py-loader';
 import {
   type ExecToSup,
   type MainToSup,
@@ -91,11 +91,6 @@ function setSatisfies(booted: PySetKey | null, need: PySetKey): boolean {
   return bundlesOf(need).every((b) => have.includes(b));
 }
 
-async function sha256Hex(buf: ArrayBuffer): Promise<string> {
-  const d = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 /** Every path from a tar meta may only address INTO its mount root. */
 const safePathSegs = (p: string): boolean => p.split('/').every((s) => s !== '' && s !== '.' && s !== '..');
 
@@ -148,7 +143,7 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
       continue;
     }
     const bytes = new Uint8Array(await hit.arrayBuffer());
-    if (bytes.length !== expected.size || (await sha256Hex(bytes.buffer)) !== expected.sha256) {
+    if (!(await matchesLockEntry(bytes.buffer, expected))) {
       // Unverified SW put (or a stale generation) — drop and refetch below.
       await cache.delete(`${ARTIFACT_BASE}bundles/${name}.tar`);
       misses.push(name);
@@ -193,8 +188,7 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
       bytes.set(c, off);
       off += c.length;
     }
-    const sha = await sha256Hex(bytes.buffer);
-    if (sha !== expected.sha256) {
+    if (!(await matchesLockEntry(bytes.buffer, expected))) {
       throw new Error(`${name}.tar sha256 mismatch — artifact mix drifted from build-lock`);
     }
     const meta = parseTarMeta(bytes);
@@ -204,6 +198,34 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
     byName.set(name, { name, prefix: meta.prefix, loadOrder: meta.loadOrder, bytes: bytes.buffer });
   }
   return names.map((n) => byName.get(n) as PyBundlePayload);
+}
+
+/** Verify the JS glue trio against the committed lock once per page load.
+ * These are the artifacts pyodide ingests through its OWN indexURL fetches
+ * (dynamic import + instantiateStreaming) — the supervisor never sees those
+ * bytes, so this preflight is the drift/corruption gate for contexts the
+ * verifying SW route doesn't cover (dev, first load before SW control).
+ * With the SW active it also warms the verified cache with the same
+ * responses the executor's import will hit. stdlib.zip is deliberately
+ * absent: verifyStdlibZip hashes it AS MOUNTED in every context. Memoized on
+ * SUCCESS only — a transient offline failure must not brick the page. */
+let gluePreflight: Promise<void> | null = null;
+function ensureGlueVerified(): Promise<void> {
+  gluePreflight ??= (async () => {
+    for (const name of ['pyodide.mjs', 'pyodide.asm.js', 'pyodide.asm.wasm'] as const) {
+      const expected = BUILD_LOCK.artifacts[name];
+      if (!expected) throw new Error(`${name} not in build-lock`);
+      const res = await fetch(`${ARTIFACT_BASE}${name}`);
+      if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+      if (!(await matchesLockEntry(await res.arrayBuffer(), expected))) {
+        throw new Error(`${name} drifted from the committed build-lock — refusing to boot`);
+      }
+    }
+  })().catch((err) => {
+    gluePreflight = null;
+    throw err;
+  });
+  return gluePreflight;
 }
 
 /** First-load-offline is a user situation, not an integrity failure — say so.
@@ -254,6 +276,7 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
   bootedSetKey = null;
   let payloads: PyBundlePayload[];
   try {
+    await ensureGlueVerified();
     payloads = await ensureBundles(setKey);
   } catch (err) {
     if (token !== spawnToken) return;

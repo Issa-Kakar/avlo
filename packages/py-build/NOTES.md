@@ -7,6 +7,70 @@ Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
 Slice plan (session 7): /home/issak/.claude/plans/packages-py-build-notes-md-home-issak-c-scalable-quiche.md
 Slice plan (session 8): /home/issak/.claude/plans/home-issak-claude-plans-prompt-md-i-cop-toasty-flask.md
 
+## Session 8 — Commit 2: client-side artifact verification + freeze hardening
+- **The gap (owner-flagged)**: pyodide.mjs / pyodide.asm.js / pyodide.asm.wasm
+  were NEVER byte-verified against the committed lock — they ride pyodide's
+  internal indexURL fetches and could be served from an unverified SW cache
+  write. (Tars were verified incl. cache-hit re-verify; stdlib post-mount.)
+- **Design (owner picked, correctness-argued)**: the SW is the ONLY point
+  that binds verified-bytes-to-execution for every artifact type INCLUDING
+  the JS glue — a fork boot-from-bytes patch can't verify the JS that would
+  receive the bytes, so it adds ~nil security and is DEFERRED to P3 (where
+  executor boot inputs get reworked anyway).
+  1. `sw.ts` `verifiedPyFirst`: the 4 core artifacts (lock `artifacts`
+     table) are buffered + `matchesLockEntry`-checked before EVERY cache
+     write AND on every hit; mismatch = 502 fail-closed, never cached.
+     Synthetic Response carries Content-Type ONLY (a `.br` body's
+     Content-Encoding/Length must not ride decoded bytes — closes the old
+     sanitize-headers nit). Tars/manifest stay streaming cacheFirst (the
+     supervisor is their verifier; buffering would collapse download
+     progress). Wrong-hash URLs fall through untouched.
+  2. Supervisor `ensureGlueVerified()`: fetch+verify the glue trio vs the
+     lock once per page load (memoized on SUCCESS only), first line of
+     spawnExecutor's try — covers dev/no-SW for drift/corruption, warms the
+     verified cache under a SW; failures flow the existing
+     downloadFailureMessage path (offline stays friendly, drift says
+     "drifted from the committed build-lock — refusing to boot").
+  3. `@avlo/py-loader` grew `sha256Hex`/`matchesLockEntry` in a NEW
+     dependency-free `src/verify.ts` (index re-exports; separate file so the
+     Node harness imports the exact shipped code without index's JSON lock
+     import, which Node ESM rejects without import attributes). Supervisor's
+     local sha helper deleted.
+  Residual (documented): first-load-without-SW TOCTOU against an ACTIVELY
+  malicious origin — unclosable without script-src blob: (worse trade); every
+  realistic corruption (bad seed, stale mix, poisoned cache) fails closed.
+- **Freeze hardening (owner-requested)**: `hardenRealm` now freezes the
+  Function/String/Number/Boolean/RegExp/Error constructors (+ ArrayBuffer/
+  SharedArrayBuffer/Uint8Array/TextDecoder/TextEncoder — same additive
+  class; prototypes were already frozen). Refactor: one labeled
+  `freezeTargets()` list (call-time built — SAB absent in non-isolated
+  realms) shared by hardenRealm AND assertRealmHardened, whose freeze check
+  went from a 4-object sample to a FULL sweep naming survivors (fixes the
+  under-sampled gate). Prop-tamper protection only — call/new/subclass all
+  still work; eval/Function posture unchanged.
+- **Node harness COMMITTED**: `scripts/run-harness.mjs` (`pnpm harness`;
+  Node ≥23.6 type-stripping imports the shipped py-harden/py-harness/
+  verify.ts directly; never in Turbo/CI). The session-5/6/7 scratchpad board
+  is now permanent, three child sections: **base 42/42** (numpy set — which
+  now mounts sqlite3 FIRST — scrub sweep + planted-fetch negative, compile
+  surface, FULL freeze sweep, frozen-ctor functional probes
+  (expando-write throws / Error subclasses / RegExp exec / per-run
+  TextDecoder), 0008 guard-stripped closure board, tombstones, protocol
+  sabotage, sqlite3 CRUD+MEMFS-file post-freeze) · **seaborn 18/18** (all
+  set: every tar lock-verified at mount, import+scatter→PNG pixel decode,
+  vendored-KDE scipy-free, load_dataset http tombstone, seaborn.objects
+  tombstone, pandas↔sqlite3 roundtrip, font gates — ALL post-freeze) ·
+  **verify 8/8** (gate names unfrozen intrinsics pre-harden; staged tree ==
+  lock for all 4 artifacts; flipped-byte + truncated-buffer negatives).
+- `pnpm typecheck` 12/12 green with all of the above.
+- **PENDING (browser board, needs dev server)**: canvas sqlite3+seaborn
+  runs + download prompts, preflight-once network trace, preflight negative
+  (corrupt local R2 blob → refusal), SW 502 negative + no-cache-write
+  (vite preview), offline second-load (validates nested-worker SW control),
+  plus the session-7 PENDING sweep (zero /py-dev/fork/ product fetches,
+  avlo-py-<hash> no-refetch rerun, offline-UX message, PORT_OFFSET=10,
+  guard-stripped import js in real Chrome).
+
 ## Session 8 — Commit 1: sqlite3 + seaborn bundles (scope-guard relaxation)
 - Owner decisions: packages = sqlite3 + seaborn; sqlite3 bundle RIDES EVERY
   SET (first position, prefix-consistent DSO order for P3 stacking) + a

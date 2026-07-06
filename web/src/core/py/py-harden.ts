@@ -88,43 +88,68 @@ export function scrubWorkerScope(): void {
  * can poison them for the runs that follow in the same generation (the
  * interpreter is shared until P3's blit reset): JSON.parse authenticates
  * harness results, Atomics carries PY_SAB state, and every message crosses
- * the frozen prototypes. Pyodide only ever READS these post-boot — verified
- * by the py-build Node harness against a real fork boot + numpy mount.
+ * the frozen prototypes. Constructors AND prototypes are both frozen —
+ * freezing a constructor object blocks property tampering (Error
+ * stackTraceLimit games, RegExp static abuse, expando smuggling between
+ * runs), while calling/`new`-ing and subclassing it keep working; the
+ * eval/Function posture above is unchanged (this freezes the OBJECTS, it
+ * does not remove code execution). Pyodide only ever READS these post-boot —
+ * verified by the py-build Node harness against a real fork boot + mounts.
  */
+
+/** Labeled freeze list, shared verbatim by hardenRealm (writer) and
+ * assertRealmHardened (gate) so the two can never drift. Built at CALL time:
+ * SharedArrayBuffer only exists in crossOriginIsolated realms and this file
+ * must import cleanly anywhere (Node harness, tests). Exported ONLY for the
+ * py-build Node harness's independent full-sweep assertion. */
+export function freezeTargets(): readonly (readonly [string, object])[] {
+  return [
+    ['Object', Object],
+    ['Object.prototype', Object.prototype],
+    ['Array', Array],
+    ['Array.prototype', Array.prototype],
+    ['Function', Function],
+    ['Function.prototype', Function.prototype],
+    ['String', String],
+    ['String.prototype', String.prototype],
+    ['Number', Number],
+    ['Number.prototype', Number.prototype],
+    ['Boolean', Boolean],
+    ['Boolean.prototype', Boolean.prototype],
+    ['RegExp', RegExp],
+    ['RegExp.prototype', RegExp.prototype],
+    ['Error', Error],
+    ['Error.prototype', Error.prototype],
+    ['Date', Date],
+    ['Date.prototype', Date.prototype],
+    ['Promise', Promise],
+    ['Promise.prototype', Promise.prototype],
+    ['ArrayBuffer', ArrayBuffer],
+    ['ArrayBuffer.prototype', ArrayBuffer.prototype],
+    ['SharedArrayBuffer', SharedArrayBuffer],
+    ['SharedArrayBuffer.prototype', SharedArrayBuffer.prototype],
+    ['Uint8Array', Uint8Array],
+    ['Uint8Array.prototype', Uint8Array.prototype],
+    ['%TypedArray%', Object.getPrototypeOf(Uint8Array) as object],
+    ['%TypedArray%.prototype', Object.getPrototypeOf(Uint8Array.prototype) as object],
+    ['TextDecoder', TextDecoder],
+    ['TextDecoder.prototype', TextDecoder.prototype],
+    ['TextEncoder', TextEncoder],
+    ['TextEncoder.prototype', TextEncoder.prototype],
+    ['JSON', JSON],
+    ['Math', Math],
+    ['Reflect', Reflect],
+    ['Atomics', Atomics],
+    ['WebAssembly', WebAssembly],
+  ];
+}
+
 export function hardenRealm(): void {
   for (const name of ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming', 'Module']) {
     const d = Object.getOwnPropertyDescriptor(WebAssembly, name);
     if (d?.configurable) delete (WebAssembly as unknown as Record<string, unknown>)[name];
   }
-  const intrinsics: object[] = [
-    Object,
-    Object.prototype,
-    Array,
-    Array.prototype,
-    Function.prototype,
-    String.prototype,
-    Number.prototype,
-    Boolean.prototype,
-    RegExp.prototype,
-    Date,
-    Date.prototype,
-    Error.prototype,
-    Promise,
-    Promise.prototype,
-    ArrayBuffer.prototype,
-    SharedArrayBuffer.prototype,
-    Uint8Array.prototype,
-    Object.getPrototypeOf(Uint8Array), // %TypedArray%
-    Object.getPrototypeOf(Uint8Array.prototype), // %TypedArray%.prototype
-    TextDecoder.prototype,
-    TextEncoder.prototype,
-    JSON,
-    Math,
-    Reflect,
-    Atomics,
-    WebAssembly,
-  ];
-  for (const o of intrinsics) Object.freeze(o);
+  for (const [, o] of freezeTargets()) Object.freeze(o);
 }
 
 /** WebAssembly names hardenRealm() removes — re-checked absent by the gate. */
@@ -151,9 +176,13 @@ export function assertRealmHardened(): void {
   if (compileSurvivors.length > 0) {
     throw new Error(`realm hardening incomplete — WebAssembly compile surface present: ${compileSurvivors.join(', ')}`);
   }
-  // Sample the freeze: hardenRealm freezes in one straight-line loop, so any one
-  // still mutable means it never ran (or was reverted before this gate).
-  if (!(Object.isFrozen(JSON) && Object.isFrozen(Atomics) && Object.isFrozen(Object.prototype) && Object.isFrozen(Array.prototype))) {
-    throw new Error('realm hardening incomplete — protocol intrinsics not frozen');
+  // Full freeze sweep over the SAME list hardenRealm froze — an entry dropped
+  // from the writer (or a freeze that silently no-op'd) is named here and
+  // aborts the boot instead of running with a mutable intrinsic.
+  const unfrozen = freezeTargets()
+    .filter(([, o]) => !Object.isFrozen(o))
+    .map(([name]) => name);
+  if (unfrozen.length > 0) {
+    throw new Error(`realm hardening incomplete — intrinsics not frozen: ${unfrozen.join(', ')}`);
   }
 }

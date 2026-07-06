@@ -14,6 +14,7 @@
     "bundles": "python3.13 scripts/pack-package.py --all --repro",
     "trace": "node scripts/trace-imports.mjs",
     "trace:check": "node scripts/trace-imports.mjs --check",
+    "harness": "node scripts/run-harness.mjs",
     "compress": "node scripts/compress.mjs",
     "budgets": "node scripts/check-budgets.mjs",
     "stage": "node scripts/stage.mjs",

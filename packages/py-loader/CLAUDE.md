@@ -15,7 +15,8 @@ wrapper). They just share a name.
 | File | Role |
 |---|---|
 | `build-lock.json` | GENERATED — only py-build's `stage.mjs` writes it (byte-gated by `stage --check`; excluded from biome so the formatter can't break the compare). `{ schema, buildHash, artifacts: {name:{sha256,size}}, bundles, sets }` |
-| `src/index.ts` | `BUILD_LOCK` (typed + deep-frozen at module scope), `PY_BUILD_HASH`, `pyArtifactBase(origin)` |
+| `src/index.ts` | `BUILD_LOCK` (typed + deep-frozen at module scope), `PY_BUILD_HASH`, `pyArtifactBase(origin)`; re-exports `verify.ts` |
+| `src/verify.ts` | `sha256Hex` + `matchesLockEntry(bytes, {sha256,size})` — THE verification predicate for every lock-gated consumer (supervisor tar/glue checks, SW core-artifact route, py-build Node harness). Dependency-free and separate from index so the harness can import the exact shipped code without index's JSON import (Node ESM demands import attributes there) |
 
 ## Invariants
 
