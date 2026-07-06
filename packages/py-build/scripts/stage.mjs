@@ -9,9 +9,9 @@
 //                                    # staged zip must equal the built zip)
 //
 // Staged tree (web/public/py-dev/fork/, gitignored):
-//   pyodide.asm.js / pyodide.asm.wasm / pyodide.mjs / pyodide.js  (dist/raw)
-//   package.json                       (boot crutch until fork patch 0006)
-//   pyodide-lock.json                  (111-byte stub — dist/stage)
+//   pyodide.asm.js / pyodide.asm.wasm / pyodide.mjs   (dist/raw; patch 0006
+//                                       dropped the pyodide.js/package.json/
+//                                       pyodide-lock.json boot crutch)
 //   python_stdlib.zip                  (pruned zip — dist/stage)
 //   bundles/<name>.tar                 (dist/stage/bundles)
 //   manifest.json                      (generated here; field-compatible with
@@ -19,7 +19,7 @@
 // Checked-in codegen:
 //   web/src/core/py/py-stdlib-modules.gen.ts
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,9 +39,6 @@ const ARTIFACTS = {
   'pyodide.asm.js': 'dist/raw/pyodide.asm.js',
   'pyodide.asm.wasm': 'dist/raw/pyodide.asm.wasm',
   'pyodide.mjs': 'dist/raw/pyodide.mjs',
-  'pyodide.js': 'dist/raw/pyodide.js',
-  'package.json': 'dist/raw/package.json',
-  'pyodide-lock.json': 'dist/stage/pyodide-lock.json',
   'python_stdlib.zip': 'dist/stage/python_stdlib.zip',
 };
 const files = new Map(); // staged rel path -> Buffer
@@ -175,6 +172,16 @@ if (check) {
 }
 mkdirSync(join(forkDir, 'bundles'), { recursive: true });
 for (const [rel, buf] of files) writeFileSync(join(forkDir, rel), buf);
+// Prune strays — the fork dir is gitignored, so a dropped artifact (e.g. the
+// pre-0006 boot crutch) would otherwise linger unseen by --check forever.
+for (const dir of ['', 'bundles/']) {
+  for (const entry of readdirSync(join(forkDir, dir || '.'), { withFileTypes: true })) {
+    if (entry.isFile() && !files.has(dir + entry.name)) {
+      rmSync(join(forkDir, dir, entry.name));
+      console.log(`pruned stray ${dir}${entry.name}`);
+    }
+  }
+}
 writeFileSync(genPath, genSource);
 console.log(`staged ${files.size} files -> ${forkDir}`);
 console.log(`wrote ${genPath} (${stdlibModules.length} stdlib modules, ${Object.keys(packageToSet).length} package roots)`);

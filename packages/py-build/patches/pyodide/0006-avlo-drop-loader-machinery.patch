@@ -1,0 +1,345 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: drop loadPackage/lockfile/micropip loader machinery
+
+Sever the two import edges into load-package.ts (api.ts:4, types.ts:9) so
+esbuild tree-shakes load-package/installer/packaging-utils out of both
+bundles, then delete the lockfile plumbing in pyodide.ts: config fields
+lockFileURL/lockFileContents/packageBaseUrl/packageCacheDir/cdnUrl, the
+boot-time pyodide-lock.json fetch, API.lockFilePromise, and the
+packageIndexReady await. AVLO artifacts mount everything explicitly
+(stdLibURL + bundle tars); nothing reads a lockfile or hits a CDN, and
+the package.json/pyodide-lock.json/pyodide.js boot crutch goes away.
+The dead sources stay on disk but leave the tsc program (tsconfig
+exclude) — the outer-bundle make rule runs `tsc --noEmit` first.
+Snapshot seams (_makeSnapshot/_loadSnapshot/_snapshotDeserializer/
+BUILD_ID), stdLibURL, and packages/fullStdLib stay untouched.
+
+One survivor is re-anchored: dynload.ts was reachable only through
+load-package (via installer), and its module scope attaches
+API.loadDynlib plus the DSO snapshot record/replay surface (0005) —
+severing the edges tree-shook it out of the glue, killing bundle
+mounts and makeSnapshot. A bare side-effect import in api.ts keeps it
+in the graph (src/js has no sideEffects flag, so esbuild preserves it).
+
+--- a/src/js/api.ts	2026-07-06 10:00:00.000000000 -0700
++++ b/src/js/api.ts	2026-07-06 10:00:00.000000000 -0700
+@@ -1,13 +1,16 @@
+ import { ffi } from "./ffi";
+ import { CanvasInterface, canvas } from "./canvas";
+
+-import { loadPackage, loadedPackages } from "./load-package";
+ import { type PyProxy, type PyDict } from "generated/pyproxy";
+-import { loadBinaryFile, nodeFSMod } from "./compat";
++// AVLO (0006): load-package (via installer) was dynload's only value-importer.
++// Keep it in the bundle graph — its module scope attaches API.loadDynlib plus
++// the DSO snapshot record/replay surface (0005) that makeSnapshot/restore use.
++import "./dynload";
++import { nodeFSMod } from "./compat";
+ import { version } from "./version";
+ import { setStdin, setStdout, setStderr } from "./streams";
+ import { scheduleCallback } from "./scheduler";
+-import { TypedArray, PackageData, FSType, Lockfile } from "./types";
++import { TypedArray, FSType } from "./types";
+ import { RUNTIME_ENV } from "./environments";
+ // @ts-ignore
+ import LiteralMap from "./common/literal-map";
+@@ -21,9 +20,6 @@ import {
+ import { unpackArchiveMetadata } from "./constants";
+ import { syncLocalToRemote, syncRemoteToLocal } from "./nativefs";
+ 
+-// Exported for micropip
+-API.loadBinaryFile = loadBinaryFile;
+-
+ /**
+  * Runs code after python vm has been initialized but prior to any bootstrapping.
+  */
+@@ -121,10 +117,6 @@ export class PyodideAPI_ {
+   /** @hidden */
+   static version = version;
+   /** @hidden */
+-  static loadPackage = loadPackage;
+-  /** @hidden */
+-  static loadedPackages = loadedPackages;
+-  /** @hidden */
+   static ffi = ffi;
+   /** @hidden */
+   static setStdin = setStdin;
+@@ -185,64 +177,6 @@ export class PyodideAPI_ {
+    */
+   static pyodide_py = {} as PyProxy; // actually defined in loadPyodide (see pyodide.js)
+ 
+-  /**
+-   * Inspect a Python code chunk and use :js:func:`pyodide.loadPackage` to install
+-   * any known packages that the code chunk imports. Uses the Python API
+-   * :func:`pyodide.code.find\_imports` to inspect the code.
+-   *
+-   * For example, given the following code as input
+-   *
+-   * .. code-block:: python
+-   *
+-   *    import numpy as np
+-   *    x = np.array([1, 2, 3])
+-   *
+-   * :js:func:`loadPackagesFromImports` will call
+-   * ``pyodide.loadPackage(['numpy'])``.
+-   *
+-   * @param code The code to inspect.
+-   * @param options Options passed to :js:func:`pyodide.loadPackage`.
+-   * @param options.messageCallback A callback, called with progress messages
+-   *    (optional)
+-   * @param options.errorCallback A callback, called with error/warning messages
+-   *    (optional)
+-   * @param options.checkIntegrity If true, check the integrity of the downloaded
+-   *    packages (default: true)
+-   */
+-  static async loadPackagesFromImports(
+-    code: string,
+-    options: {
+-      messageCallback?: (message: string) => void;
+-      errorCallback?: (message: string) => void;
+-      checkIntegrity?: boolean;
+-    } = {
+-      checkIntegrity: true,
+-    },
+-  ): Promise<Array<PackageData>> {
+-    let pyimports = API.pyodide_code.find_imports(code);
+-    let imports;
+-    try {
+-      imports = pyimports.toJs();
+-    } finally {
+-      pyimports.destroy();
+-    }
+-    if (imports.length === 0) {
+-      return [];
+-    }
+-
+-    let packageNames = API._import_name_to_package_name;
+-    let packages: Set<string> = new Set();
+-    for (let name of imports) {
+-      if (packageNames.has(name)) {
+-        packages.add(packageNames.get(name)!);
+-      }
+-    }
+-    if (packages.size) {
+-      return await loadPackage(Array.from(packages), options);
+-    }
+-    return [];
+-  }
+-
+   /**
+    * Runs a string of Python code from JavaScript, using :py:func:`~pyodide.code.eval_code`
+    * to evaluate the code. If the last statement in the Python code is an
+@@ -686,23 +620,6 @@ export class PyodideAPI_ {
+     }
+     return API.makeSnapshot(serializer);
+   }
+-
+-  /**
+-   * Returns the pyodide lockfile used to load the current Pyodide instance.
+-   * The format of the lockfile is defined in the `pyodide/pyodide-lock
+-   * <https://github.com/pyodide/pyodide-lock>`_ repository.
+-   */
+-  static get lockfile(): Lockfile {
+-    return API.lockfile;
+-  }
+-
+-  /**
+-   * Returns the URL or path with respect to which relative paths in the lock
+-   * file are resolved, or undefined.
+-   */
+-  static get lockfileBaseUrl(): string | undefined {
+-    return API.config.packageCacheDir ?? API.config.packageBaseUrl;
+-  }
+ }
+ 
+ /**
+--- a/src/js/pyodide.ts	2026-07-06 10:00:00.000000000 -0700
++++ b/src/js/pyodide.ts	2026-07-06 10:00:00.000000000 -0700
+@@ -6,8 +6,6 @@ import {
+   loadScript,
+   initNodeModules,
+   resolvePath,
+-  loadLockFile,
+-  calculateInstallBaseUrl,
+ } from "./compat";
+ 
+ import { createSettings } from "./emscripten-settings";
+@@ -63,42 +61,6 @@ export interface PyodideConfig {
+    * (``pyodide.js`` or ``pyodide.mjs``) removed.
+    */
+   indexURL?: string;
+-  /**
+-   * The file path where packages will be cached in node. If a package
+-   * exists in ``packageCacheDir`` it is loaded from there, otherwise it is
+-   * downloaded from the JsDelivr CDN and then cached into ``packageCacheDir``.
+-   * Only applies when running in node; ignored in browsers.
+-   *
+-   * Default: same as indexURL
+-   */
+-  packageCacheDir?: string;
+-
+-  /**
+-   * The URL from which Pyodide will load the Pyodide ``pyodide-lock.json`` lock
+-   * file. You can produce custom lock files with :py:func:`micropip.freeze`.
+-   * Default: ```${indexURL}/pyodide-lock.json```
+-   */
+-  lockFileURL?: string;
+-  /**
+-   * The contents of a lockfile. If a string, it should be valid json and
+-   * ``JSON.parse()`` should return a ``Lockfile`` instance. See
+-   * :js:interface:`~pyodide.Lockfile` for the schema.
+-   */
+-  lockFileContents?: Lockfile | string | Promise<Lockfile | string>;
+-  /**
+-   * The base url relative to which a relative value of
+-   * :js:attr:`~pyodide.LockfilePackage.file_name` is interpreted. If
+-   * ``lockfileContents`` is provided, then ``lockFileContents`` must be
+-   * provided explicitly in order to install packages with relative paths.
+-   *
+-   * Otherwise, the default is calculated as follows:
+-   *
+-   * 1. If `lockFileURL` contains a ``/``, the default is everything before the last
+-   *    ``/`` in ``lockFileURL``.
+-   * 2. If in the browser, the default is ``location.toString()``.
+-   * 3. Otherwise, the default is `'.'`.
+-   */
+-  packageBaseUrl?: string;
+   /**
+    * Load the full Python standard library. Setting this to false excludes
+    * unvendored modules from the standard library.
+@@ -229,8 +191,6 @@ export interface PyodideConfig {
+   /** @ignore */
+   BUILD_ID?: string;
+ 
+-  /** @ignore */
+-  cdnUrl?: string;
+ }
+ 
+ /**
+@@ -248,36 +208,11 @@ async function initializeConfiguration(
+ ): Promise<PyodideConfigWithDefaults> {
+   await initNodeModules();
+ 
+-  if (options.lockFileContents && options.lockFileURL) {
+-    throw new Error("Can't pass both lockFileContents and lockFileURL");
+-  }
+-
+   let indexURL = options.indexURL || (await calculateDirname());
+   indexURL = withTrailingSlash(resolvePath(indexURL)); // A relative indexURL causes havoc.
+ 
+-  options.packageBaseUrl = withTrailingSlash(options.packageBaseUrl);
+-  // cdnUrl only for node. withTrailingSlash is a no-op, but just in case to prevent future human errors.
+-  options.cdnUrl = withTrailingSlash(
+-    options.packageBaseUrl ??
+-      `https://cdn.jsdelivr.net/pyodide/v${version}/full/`,
+-  );
+-
+-  if (!options.lockFileContents) {
+-    const lockFileURL = options.lockFileURL ?? indexURL + "pyodide-lock.json";
+-    options.lockFileContents = loadLockFile(lockFileURL);
+-    // packageBaseUrl isn't present, try using base location of lockFileUrl. If
+-    // lockFileURL is relative, use location as the base URL.
+-    options.packageBaseUrl ??= calculateInstallBaseUrl(lockFileURL);
+-  }
+-
+   options.indexURL = indexURL;
+ 
+-  if (options.packageCacheDir) {
+-    options.packageCacheDir = withTrailingSlash(
+-      resolvePath(options.packageCacheDir),
+-    );
+-  }
+-
+   const defaultConfig: PyodideConfig = {
+     fullStdLib: false,
+     jsglobals: globalThis,
+@@ -285,7 +220,6 @@ async function initializeConfiguration(
+     args: [],
+     env: {},
+     packages: [],
+-    packageCacheDir: options.packageBaseUrl,
+     enableRunUntilComplete: true,
+     checkAPIVersion: true,
+     BUILD_ID,
+@@ -316,9 +250,6 @@ function createEmscriptenSettings(
+   config: PyodideConfigWithDefaults,
+ ): EmscriptenSettings {
+   const emscriptenSettings = createSettings(config);
+-  const API = emscriptenSettings.API;
+-  API.lockFilePromise = Promise.resolve(config.lockFileContents);
+-
+   return emscriptenSettings;
+ }
+ 
+@@ -448,10 +379,7 @@ async function finalizeSetup(
+   API.sys.path.insert(0, "");
+ 
+   API._pyodide.set_excepthook();
+-  await API.packageIndexReady;
+ 
+-  // I think we want this initializeStreams call to happen after
+-  // packageIndexReady? I don't remember why.
+   API.initializeStreams(config.stdin, config.stdout, config.stderr);
+ 
+   return pyodide;
+--- a/src/js/tsconfig.json	2026-07-06 10:00:00.000000000 -0700
++++ b/src/js/tsconfig.json	2026-07-06 10:00:00.000000000 -0700
+@@ -22,5 +22,10 @@
+     }
+   },
+   "include": ["../**/*.ts", "*.json"],
+-  "exclude": ["../**/*test*/**/*"]
++  "exclude": [
++    "../**/*test*/**/*",
++    "load-package.ts",
++    "installer.ts",
++    "packaging-utils.ts"
++  ]
+ }
+--- a/src/js/types.ts	2026-07-06 10:00:00.000000000 -0700
++++ b/src/js/types.ts	2026-07-06 10:00:00.000000000 -0700
+@@ -6,7 +6,6 @@ import { type InFuncType } from "./streams";
+ import { type RuntimeEnv } from "./environments";
+ import { SnapshotConfig } from "./snapshot";
+ import { ResolvablePromise } from "./common/resolveable";
+-import { PackageManager } from "./load-package";
+ /**
+  * @docgroup pyodide.ffi
+  */
+@@ -462,7 +461,6 @@ export interface API {
+   maybe_fatal_error: (e: any) => void;
+   public_api: PyodideAPI;
+   config: PyodideConfigWithDefaults;
+-  packageIndexReady: Promise<void>;
+   bootstrapFinalizedPromise: Promise<void>;
+   typedArrayAsUint8Array: (buffer: TypedArray | ArrayBuffer) => Uint8Array;
+   initializeStreams: (
+@@ -502,14 +500,11 @@ export interface API {
+   package_loader: any;
+   importlib: any;
+   _import_name_to_package_name: Map<string, string>;
+-  lockFilePromise: Promise<Lockfile | string>;
+   lockfile_unvendored_stdlibs: string[];
+   lockfile_unvendored_stdlibs_and_test: string[];
+   lockfile: Lockfile;
+   lockfile_info: LockfileInfo;
+   lockfile_packages: Record<string, LockfilePackage>;
+-  packageManager: PackageManager;
+-  flushPackageManagerBuffers: () => void;
+   defaultLdLibraryPath: string[];
+   sitepackages: string;
+   loadBinaryFile: (
+@@ -582,12 +577,7 @@ export type PackageManagerAPI = Pick<
+   | "sitepackages"
+   | "defaultLdLibraryPath"
+   | "version"
+-> & {
+-  config: Pick<
+-    PyodideConfigWithDefaults,
+-    "packageCacheDir" | "packageBaseUrl" | "cdnUrl"
+-  >;
+-};
++>;
+ /**
+  * @hidden
+  */

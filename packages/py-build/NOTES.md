@@ -4,6 +4,50 @@ Master plan: /home/issak/.claude/plans/prompt-md-i-copied-my-synthetic-octopus.m
 Pickup plan (session 3): /home/issak/.claude/plans/original-prompt-was-here-graceful-cocke.md
 Slice plan (session 4): /home/issak/.claude/plans/packages-py-build-notes-md-view-the-two-zazzy-pascal.md
 Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
+Slice plan (session 7): /home/issak/.claude/plans/packages-py-build-notes-md-home-issak-c-scalable-quiche.md
+
+## Session 7 — M3+P2 Commit 1: fork patches 0006 + 0008 landed
+- **0006 (drop loader machinery)**: severed load-package's two import edges
+  (api.ts/types.ts) + deleted the pyodide.ts lockfile plumbing — esbuild
+  tree-shakes load-package/installer/packaging-utils out of both bundles; the
+  pyodide.js/package.json/pyodide-lock.json boot crutch is GONE (stage.mjs
+  ARTIFACTS → 4 entries + stray-prune of the gitignored fork dir).
+- **0008 (js-bridge closure)**: the one-line `register_js_module("js",
+  jsglobals)` deletion in finalizeBootstrap — `import js` is now
+  finder-level ModuleNotFoundError INDEPENDENT of the harness guard.
+  webloop deps kept (register_js_finder + pyodide_js registration).
+- **Two rebuild regressions found + fixed** (both invisible to `tsc`, both
+  would've shipped without the gate board):
+  1. snapshot.ts `getExpectedKeys()` hardcodes the first hiwire-table slots
+     in boot-allocation order; the "js" registration was what interned
+     jsglobals (slot 1) + a trailing `{}` (slot 6). makeSnapshot died in
+     checkEntry stringifying public_api (circular Module.FS root) vs the
+     stale jsglobals expectation. 0008 now also rewrites the list to the
+     empirical post-0008 table `[null, public_api, API, scheduleCallback,
+     API]` (stable across warmups+gc; capture/restore share it; BUILD_ID
+     gates reject pre-0008 snaps).
+  2. dynload.ts was reachable ONLY via load-package→installer — 0006's
+     severing tree-shook it out, killing API.loadDynlib + the whole DSO
+     record/replay surface (0005) in the shipped glue. 0006 now re-anchors
+     it with a bare side-effect import in api.ts (src/js has no sideEffects
+     flag). New standing grep gate: `loadDynlib` present in the glue.
+- **Gate board GREEN**: A3 greps (js-reg 0 / pyjs-reg 1 / finder 1 / lockfile
+  0 / cdn 0 / drift 1 / loadDynlib 8) · pack:stdlib byte-identical (raw zip
+  unchanged by the JS-only rebuild) · baseline --repro G0 byte-identical +
+  restore-verify (21.0MB, builtin-modules refreshed, 63 builtins) · corpus
+  all groups (basic 6/6, numpy 4/4, pandas 5/5, mpl 4/4, all 1/1) ·
+  compress + G1 budgets (glue 0.13MB br) · stage + stage:check clean
+  (11 files staged; pruned stray package.json/pyodide-lock.json/pyodide.js)
+  · Node harness **43/43** (was 33): +webloop-alive, +guard-STRIPPED
+  `import js`/importlib → ModuleNotFoundError (the load-bearing closure
+  proof), +sys.modules sweep, +run_js dies at the lazy `from js import
+  eval`, +documented residual (pyodide_js reachable guard-stripped,
+  jsglobals.fetch scrubbed), +guard-restored re-refusals ·
+  `pnpm typecheck` 11/11.
+- **NOT yet done**: Chrome spike board + canvas smoke for Commit 1 (needs
+  dev server) — folded into the Commit 2 verification pass (same session).
+- Stdlib prunes of now-dead `from js import …` code (webbrowser/antigravity/
+  pyodide.http/pyodide._run_js) remain a documented follow-up, not this slice.
 
 ## Session 6 — verify Session 5 + fail-closed hardening + full-stack audit DONE
 - Owner decision: staying SAME-ORIGIN (no sandboxed iframe). That makes the
