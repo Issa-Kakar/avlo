@@ -15,7 +15,7 @@
  */
 
 // BUILD_LOCK is pure JSON + types (no worker ambients) — SW-bundle-safe.
-import { IMAGES_ORIGIN, PY_ORIGIN, SYNC_HOST_PROD } from '@avlo/api-client/origins';
+import { IMAGES_ORIGIN, PY_ORIGIN, SYNC_HOST } from '@avlo/api-client/origins';
 import { isImagesRequest, isPyRequest, isSyncRequest } from '@avlo/api-client/sw-matchers';
 import { BUILD_LOCK, matchesLockEntry, PY_BUILD_HASH } from '@avlo/py-loader';
 
@@ -32,7 +32,9 @@ const SHELL_CACHE = 'avlo-shell-v1';
 // AND before every cache write, so the bytes pyodide executes are exactly the
 // bytes the lock pins. Tars stay streaming `cacheFirst`: the SUPERVISOR is
 // their verifier (fetch-path sha + hit re-verify) and buffering them here
-// would collapse its download-progress stream.
+// would collapse its download-progress stream. `baseline.snap` is the one
+// `artifacts` entry deliberately carved OUT of the verified route (tar
+// posture: supervisor-verified, ~21 MB — buffering it here buys nothing).
 const PY_CACHE = `avlo-py-${PY_BUILD_HASH}`;
 
 // ── Install + Activate ──────────────────────────────────────
@@ -74,7 +76,8 @@ async function cacheFirst(request: Request, cacheName: string): Promise<Response
 }
 
 /** Lock `artifacts` entry iff the URL is `<py origin>/<PY_BUILD_HASH>/<core artifact>`.
- * Bundle tars, manifest.json, and other-generation hashes return null (→ cacheFirst). */
+ * Bundle tars, `baseline.snap`, manifest.json, and other-generation hashes
+ * return null (→ cacheFirst; the supervisor verifies snapshots + tars). */
 function pyCoreEntry(url: URL): { name: string; sha256: string; size: number } | null {
   const base = new URL(PY_ORIGIN).pathname; // '/' (prod) or '/api/py' (dev proxy)
   const rel = base === '/' ? url.pathname.slice(1) : url.pathname.startsWith(`${base}/`) ? url.pathname.slice(base.length + 1) : null;
@@ -82,6 +85,7 @@ function pyCoreEntry(url: URL): { name: string; sha256: string; size: number } |
   const slash = rel.indexOf('/');
   if (slash < 0 || rel.slice(0, slash) !== PY_BUILD_HASH) return null;
   const name = rel.slice(slash + 1);
+  if (name.endsWith('.snap')) return null; // snapshot streams cacheFirst — the supervisor is its verifier
   const entry = BUILD_LOCK.artifacts[name];
   return entry ? { name, ...entry } : null;
 }
@@ -135,7 +139,7 @@ sw.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
 
   // Never intercept: sync routes (WebSocket), non-GET (PUT uploads, etc.)
-  if (isSyncRequest(url, SYNC_HOST_PROD) || request.method !== 'GET') return;
+  if (isSyncRequest(url, SYNC_HOST) || request.method !== 'GET') return;
 
   // Image assets: cache-first from avlo-assets (immutable, content-addressed)
   if (isImagesRequest(url, IMAGES_ORIGIN)) {

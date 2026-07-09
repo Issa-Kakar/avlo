@@ -11,7 +11,7 @@ The package publishes TS source directly via `exports` (no dist build).
 | File | Exports |
 |---|---|
 | `src/index.ts` | Barrel: origins + matchers + clients + AppType types |
-| `src/origins.ts` | `AUTH_ORIGIN`, `IMAGES_ORIGIN`, `UNFURL_ORIGIN`, `USERS_ORIGIN`, `SYNC_HOST_PROD` — driven by `import.meta.env.PROD`. Has a file-scoped `/// <reference types="vite/client" />` for `ImportMetaEnv` resolution under path-mapped compilation (e.g., when api-client typechecks in isolation or via a workspace include from outside). |
+| `src/origins.ts` | `AUTH_ORIGIN`, `IMAGES_ORIGIN`, `UNFURL_ORIGIN`, `USERS_ORIGIN`, `PY_ORIGIN`, `SYNC_HOST` — driven by the `VITE_TARGET` deploy selector (`local` fallback / `staging` / `production`), NOT `import.meta.env.PROD` (which is true for a local preview build too — the bug that made preview target prod infra). `local` = same-origin Vite `/api/*` proxy; staging/production = subdomains. Has a file-scoped `/// <reference types="vite/client" />` for `ImportMetaEnv` resolution under path-mapped compilation (e.g., when api-client typechecks in isolation or via a workspace include from outside). |
 | `src/sw-matchers.ts` | `isImagesRequest(url, origin)`, `isSyncRequest(url, syncHostProd)` — zero-dep URL matching for the SW fetch handler. |
 | `src/auth.ts` | `authClient = hc<AuthApp>(AUTH_ORIGIN, { init: { credentials: 'include' } })` — the `/me` identity resolver; the cookie rides via `credentials:'include'`. Re-exports `MeResponse` (through `AuthApp`). |
 | `src/users.ts` | `usersClient = hc<UsersApp>(USERS_ORIGIN)` (credentials:'include') — `GET /rooms` + `PATCH /rooms/:id/permission`. Re-exports `RoomListEntry`/`RoomListResponse`. |
@@ -53,4 +53,4 @@ JSON-bodied calls (the unfurl GET) use `$get` directly and get full type inferen
 
 ## What the SW Uses
 
-Only `IMAGES_ORIGIN` / `SYNC_HOST_PROD` constants and the `isImagesRequest` / `isSyncRequest` matchers. The clients (`imagesClient`, `unfurlClient`) are NOT used in the SW — `hc` is unused there because the SW only *recognizes* request URLs, doesn't *construct* them. The full package is import-safe in the SW anyway (the build-time discipline above keeps it that way), so a future SW use case can pull `imagesClient` in without changing the build invariants.
+Only `IMAGES_ORIGIN` / `PY_ORIGIN` / `SYNC_HOST` constants and the `isImagesRequest` / `isPyRequest` / `isSyncRequest` matchers. The clients (`imagesClient`, `unfurlClient`) are NOT used in the SW — `hc` is unused there because the SW only *recognizes* request URLs, doesn't *construct* them. The full package is import-safe in the SW anyway (the build-time discipline above keeps it that way), so a future SW use case can pull `imagesClient` in without changing the build invariants.

@@ -27,6 +27,16 @@
  * - Repeat SIGINT writes every PY_LIMITS.interruptRepeatMs until the run
  *   resolves — converts any one-shot swallow into bounded extra latency.
  *
+ * Snapshot discipline (P3):
+ * - stdlib boots restore the prebuilt `baseline.snap` (lock-verified, Cache
+ *   API — tar posture); package-set boots restore the set's OPFS snapshot
+ *   (generated client-side on first use, sha-sealed + buildHash-bound wrapper,
+ *   zero bundle fetches on hit) or generate one (baseline restore + mounts +
+ *   capture riding the boot). Snapshots ACCELERATE, never gate: any
+ *   fetch/verify/restore failure lands on the cold path, and a snapshot-fed
+ *   boot that dies pre-ready deletes its artifact and retries cold ONCE with
+ *   the run still pending.
+ *
  * Single-flight: main's manager serializes runs; at most one run is active or
  * pending here at any time.
  */
@@ -44,6 +54,7 @@ import {
   type RunMsg,
 } from './py-protocol';
 import { allocPySab, clearInterrupt, EPOCH, PyCancelKind, type PySabViews, writeInterrupt } from './py-sab';
+import { deleteSetSnapshot, type PackedTree, readSetSnapshot, writeSetSnapshot } from './py-snapshot';
 import { SET_BUNDLES } from './py-stdlib-modules.gen';
 
 // Immutable content-hashed artifact origin — the committed lock pins the hash,
@@ -77,6 +88,17 @@ let bootedSetKey: PySetKey | null = null;
 let desiredSetKey: PySetKey = 'stdlib';
 /** Guards overlapping async spawns; only the latest token may proceed. */
 let spawnToken = 0;
+/** What the CURRENT generation booted from — routes the poison path when a
+ * snapshot-fed boot dies pre-ready ('stacked' → drop the OPFS wrapper,
+ * 'baseline' → drop its Cache API entry). */
+let bootSnapshotKind: 'stacked' | 'baseline' | null = null;
+/** The set whose snapshot fed the current boot (poison-delete target). */
+let bootSnapshotSetKey: PySetKey | null = null;
+/** One cold retry per failure — a second pre-ready fatal surfaces normally. */
+let snapshotRetried = false;
+/** Human label for the CURRENT generation's boot path — logged with bootMs on
+ * exec-ready (the snapshot-used / cold-boot signal). Set in spawnExecutor. */
+let bootDescription = '';
 
 function post(msg: unknown, transfer?: Transferable[]): void {
   (self as unknown as Worker).postMessage(msg, transfer ?? []);
@@ -233,6 +255,38 @@ function ensureGlueVerified(): Promise<void> {
   return gluePreflight;
 }
 
+/** Fetch + lock-verify the prebuilt baseline snapshot. Cache API persistent
+ * (tar posture: the SW streams `.snap` cacheFirst UNVERIFIED — this check is
+ * the integrity leg; hits are re-verified for the same reason). Returns null
+ * when the lock carries no baseline entry, on any fetch/verify failure, or
+ * offline-uncached: snapshots accelerate boots, they never brick them. */
+async function ensureBaseline(): Promise<ArrayBuffer | null> {
+  const expected = BUILD_LOCK.artifacts['baseline.snap'];
+  if (!expected) return null;
+  const url = `${ARTIFACT_BASE}baseline.snap`;
+  try {
+    const cache = await caches.open(PY_CACHE);
+    const hit = await cache.match(url);
+    if (hit) {
+      const bytes = await hit.arrayBuffer();
+      if (await matchesLockEntry(bytes, expected)) return bytes;
+      await cache.delete(url);
+    }
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`baseline.snap: HTTP ${res.status}`);
+    const bytes = await res.arrayBuffer();
+    if (!(await matchesLockEntry(bytes, expected))) {
+      throw new Error('baseline.snap drifted from the committed build-lock');
+    }
+    // Fresh Response copies the buffer per spec — safe to transfer afterwards.
+    await cache.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream' } }));
+    return bytes;
+  } catch (err) {
+    console.warn('py: baseline snapshot unavailable (cold boot) —', err);
+    return null;
+  }
+}
+
 /** First-load-offline is a user situation, not an integrity failure — say so.
  * X MB = everything a cold cache would need for this set (glue + wasm +
  * stdlib + the set's tars). */
@@ -263,27 +317,54 @@ function teardownExecutor(): void {
   executorReady = false;
   sab = null;
   bootedSetKey = null;
+  bootSnapshotKind = null;
+  bootSnapshotSetKey = null;
 }
 
 function armIdleTeardown(): void {
   if (idleTimer !== null) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     idleTimer = null;
-    if (active === null) teardownExecutor(); // respawn is cheap (snapshots at P3)
+    if (active === null) teardownExecutor(); // respawn restores from OPFS/baseline in ~0.5 s
   }, PY_LIMITS.idleTeardownMs);
 }
 
-async function spawnExecutor(setKey: PySetKey): Promise<void> {
+async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }): Promise<void> {
   const token = ++spawnToken;
   executor?.terminate();
   executor = null;
   executorReady = false;
   bootedSetKey = null;
-  let payloads: PyBundlePayload[];
+  bootSnapshotKind = null;
+  bootSnapshotSetKey = null;
+  const useSnapshot = !opts?.noSnapshot;
+  let payloads: PyBundlePayload[] = [];
+  let snapshot: ArrayBuffer | undefined;
+  let tree: PackedTree | undefined;
+  let capture = false;
   try {
-    // Independent I/O chains (glue trio hash vs tar fetches) — overlap them
-    // on the cold first spawn (ensureGlueVerified memoizes on success).
-    [, payloads] = await Promise.all([ensureGlueVerified(), ensureBundles(setKey)]);
+    // Independent I/O chains (glue trio hash vs snapshot/tar reads) — overlap
+    // them on the cold first spawn (ensureGlueVerified memoizes on success).
+    if (setKey === 'stdlib') {
+      // The baseline IS the stdlib set's snapshot — no OPFS entry, no bundles.
+      const [, baseline] = await Promise.all([ensureGlueVerified(), useSnapshot ? ensureBaseline() : null]);
+      snapshot = baseline ?? undefined;
+    } else {
+      const [, held] = await Promise.all([ensureGlueVerified(), useSnapshot ? readSetSnapshot(BUILD_LOCK.buildHash, setKey) : null]);
+      if (held) {
+        // OPFS hit — the wrapper carries site-packages (DSO bytes + mtimes),
+        // so the boot needs ZERO bundle fetches: the offline win.
+        snapshot = held.container;
+        tree = held.tree;
+      } else {
+        // Generation: baseline restore + mounts + capture riding the boot.
+        // Baseline null (offline/unshipped) still generates — cold + capture.
+        const [baseline, fetched] = await Promise.all([useSnapshot ? ensureBaseline() : null, ensureBundles(setKey)]);
+        payloads = fetched;
+        snapshot = baseline ?? undefined;
+        capture = useSnapshot;
+      }
+    }
   } catch (err) {
     if (token !== spawnToken) return;
     // Download/verify failure: surface as the pending run's result (or stay
@@ -303,9 +384,15 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
     if (active) failActiveRun(`executor error: ${e.message}`, /out of memory|OOM/i.test(e.message) ? 'oom' : 'error');
     else teardownExecutor(); // dormant executor broke — never leave it assigned
   };
+  if (snapshot && active && !active.dispatched) {
+    post({ t: 'phase', runId: active.runId, phase: 'restoring' });
+  }
   // Boot message carries the LOCK's stdlib zip hash — the executor verifies its
   // MEMFS mount against it (restage ⇒ recapture, the spike's standing guard).
-  // Buffers transfer outright: persistence is the Cache API, not this heap.
+  // Buffers transfer outright: persistence is the Cache API / OPFS, not this heap.
+  const transfer: Transferable[] = payloads.map((p) => p.bytes);
+  if (snapshot) transfer.push(snapshot);
+  if (tree) transfer.push(tree.blob);
   executor.postMessage(
     {
       t: 'boot',
@@ -313,10 +400,24 @@ async function spawnExecutor(setKey: PySetKey): Promise<void> {
       sab: sab.sab,
       stdlibSha256: BUILD_LOCK.artifacts['python_stdlib.zip'].sha256,
       bundles: payloads,
+      snapshot,
+      tree,
+      ...(capture ? { capture: true, captureKey: setKey } : {}),
     },
-    payloads.map((p) => p.bytes),
+    transfer,
   );
   bootedSetKey = setKey;
+  bootSnapshotKind = tree ? 'stacked' : snapshot ? 'baseline' : null;
+  bootSnapshotSetKey = snapshot ? setKey : null;
+  bootDescription = tree
+    ? 'restored OPFS set snapshot (stacked, zero bundle fetches)'
+    : capture
+      ? snapshot
+        ? 'generating set snapshot on a baseline restore'
+        : 'generating set snapshot cold (no baseline)'
+      : snapshot
+        ? 'restored baseline snapshot'
+        : 'cold boot (no snapshot)';
 }
 
 function dispatch(run: ActiveRun): void {
@@ -386,12 +487,21 @@ function onExecutorMessage(m: ExecToSup): void {
   switch (m.t) {
     case 'exec-ready': {
       executorReady = true;
+      snapshotRetried = false;
+      console.warn(`py: ${bootedSetKey} executor ready — ${bootDescription}, boot ${m.bootMs.toFixed(0)} ms`);
       if (active && !active.dispatched) dispatch(active);
       else armIdleTeardown();
       break;
     }
     case 'exec-stdout': {
       if (active?.runId === m.runId) post({ t: 'stdout', runId: m.runId, chunk: m.chunk });
+      break;
+    }
+    case 'exec-snapshot': {
+      // Only a BOOT-time capture is legitimate — once ready, user code has
+      // run, and a forged capture must never reach persistent storage.
+      // Persistence overlaps the pending run (fire-and-forget; best-effort).
+      if (!executorReady) void writeSetSnapshot(BUILD_LOCK.buildHash, m.captureKey, m.container, m.tree);
       break;
     }
     case 'exec-done': {
@@ -428,10 +538,33 @@ function onExecutorMessage(m: ExecToSup): void {
         } satisfies ResultMsg,
         m.figures.map((f) => f.png),
       );
-      armIdleTeardown();
+      if (m.needsRespawn) {
+        // Blit failed/skipped or the heap outgrew the reset image — the NEXT
+        // run needs a fresh generation for isolation, and an eager respawn
+        // (cached bundles / OPFS snapshot) also reclaims the grown memory now.
+        teardownExecutor();
+        void spawnExecutor(desiredSetKey);
+      } else {
+        armIdleTeardown();
+      }
       break;
     }
     case 'exec-fatal': {
+      if (!executorReady && bootSnapshotKind !== null && !snapshotRetried) {
+        // A snapshot-fed boot died pre-ready (BUILD_ID gate, DSO table drift,
+        // hook replay error, stdlib drift over a poisoned image…). Drop the
+        // artifact, retry ONCE cold with the run still pending — a snapshot
+        // failure must be invisible to the user.
+        console.warn(`py: ${bootSnapshotKind} snapshot boot failed — retrying cold:`, m.error.split('\n')[0]);
+        if (bootSnapshotKind === 'stacked' && bootSnapshotSetKey) {
+          void deleteSetSnapshot(BUILD_LOCK.buildHash, bootSnapshotSetKey);
+        } else {
+          void caches.open(PY_CACHE).then((c) => c.delete(`${ARTIFACT_BASE}baseline.snap`));
+        }
+        snapshotRetried = true;
+        void spawnExecutor(desiredSetKey, { noSnapshot: true });
+        break;
+      }
       if (active) {
         // Boot failure (executor never became ready) → an eager respawn
         // would just boot a second doomed worker; go dormant instead and

@@ -43,7 +43,15 @@
     </div>
     <script>
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js', { updateViaCache: 'all' }).catch(() => {});
+        // Prod (avlo.io) registers a CLASSIC service worker — Firefox has no module-SW support.
+        // Any other host (localhost, e.g. `pnpm preview`) registers a MODULE worker so the built
+        // sw.js — which Vite/Rolldown emits as an ES module importing a shared chunk — actually
+        // loads under a classic-incapable `import`. LOCALHOST SW-TESTING ONLY: the real prod fix
+        // is a self-contained (import-free) sw.js bundle, so prod can stay classic for Firefox.
+        const h = location.hostname;
+        const prod = h === 'avlo.io' || h.endsWith('.avlo.io');
+        const swOpts = prod ? { updateViaCache: 'all' } : { type: 'module', updateViaCache: 'all' };
+        navigator.serviceWorker.register('/sw.js', swOpts).catch(() => {});
       }
     </script>
     <script type="module" src="/src/main.tsx"></script>

@@ -17,6 +17,10 @@ dist/
 .dev.vars
 **/.dev.vars
 *.pem
+# ...except the committed, non-secret deploy-target selectors (VITE_* is baked into the
+# client bundle anyway; these pick prod/staging origins — see api-client/src/origins.ts).
+!web/.env.production
+!web/.env.staging
 
 # Tooling caches (Wrangler/Miniflare, Turborepo, TanStack Router)
 .wrangler/

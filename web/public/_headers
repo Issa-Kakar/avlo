@@ -11,7 +11,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://py.avlo.io 'sha256-mB3L55QrwHlNxgJC8J/yDkEe+Z301KZThyJEOvKEbWw='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io https://auth.avlo.io https://users.avlo.io https://py.avlo.io wss://sync.avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://py.avlo.io 'sha256-CbsDCwEqTzIC3agp6I97lLxY3OgZofof3XYLhBBwkaw='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' https://images.avlo.io data: blob:; connect-src 'self' https://images.avlo.io https://unfurl.avlo.io https://auth.avlo.io https://users.avlo.io https://py.avlo.io wss://sync.avlo.io; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; frame-ancestors 'none'
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

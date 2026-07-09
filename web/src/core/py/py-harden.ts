@@ -85,8 +85,8 @@ export function scrubWorkerScope(): void {
  * wasm-EH paths use them at runtime.
  *
  * Then the intrinsics the run protocol flows through are frozen, so no run
- * can poison them for the runs that follow in the same generation (the
- * interpreter is shared until P3's blit reset): JSON.parse authenticates
+ * can poison them for the runs that follow in the same generation (the blit
+ * reset rewinds the HEAP, never the JS realm): JSON.parse authenticates
  * harness results, Atomics carries PY_SAB state, and every message crosses
  * the frozen prototypes. Constructors AND prototypes are both frozen —
  * freezing a constructor object blocks property tampering (Error

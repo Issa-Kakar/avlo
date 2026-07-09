@@ -6,9 +6,10 @@
  * snapshot capture (a live PyProxy aborts serializeHiwireState).
  *
  * Contract (master plan §Execution semantics):
- * - whole block source, FRESH `__main__` namespace per run — but the
- *   interpreter (sys.modules, module-level state) is SHARED across runs
- *   within an executor generation until P3's blit reset lands;
+ * - whole block source, FRESH `__main__` namespace per run — and since P3's
+ *   blit reset, the WHOLE interpreter (sys.modules, module-level state)
+ *   rewinds to the boot ready-point after every run: runs are stateless and
+ *   reproducible (the fresh-`__main__` here is now belt-and-braces);
  * - compiled as '<block>' with linecache seeded so user frames keep source;
  * - Jupyter-style last-expression echo (ast split; `df.head()` must print);
  * - tracebacks drop harness frames; user frames show source lines; stdlib
@@ -123,8 +124,8 @@ def _harvest_figures(interrupted):
 
 
 def run(code):
-    # Fresh namespace per run. NOT stateless: the interpreter is shared
-    # across runs until P3's blit reset (imported modules keep their state).
+    # Fresh namespace per run; the executor's post-run blit reset rewinds the
+    # rest of the interpreter (sys.modules, module state) to the ready-point.
     g = {"__name__": "__main__", "__builtins__": builtins}
     lines = code.splitlines(keepends=True)
     linecache.cache[_BLOCK] = (len(code), None, lines, _BLOCK)

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "buildHash": "6d447a5ba051a748",
+  "buildHash": "01ba07e1133d0342",
   "artifacts": {
     "pyodide.asm.js": {
       "sha256": "5cc6863c603b3ab6ab9503c63285ae515ccad25e7e0c5d0b218963839acb1090",
@@ -17,6 +17,10 @@
     "python_stdlib.zip": {
       "sha256": "a720638cdc2511ddf637826c6858135ab26d7a18b80622f78fb658deca6fefe1",
       "size": 3097052
+    },
+    "baseline.snap": {
+      "sha256": "6078d79ea48701dd5688d41ae3cc6a20c7918f314f4fe06fb9af9a1f090e523c",
+      "size": 20971936
     }
   },
   "bundles": {

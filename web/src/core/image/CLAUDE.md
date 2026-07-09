@@ -514,9 +514,9 @@ Driven by `scripts/dev-ports.json` (single source of truth) + `PORT_OFFSET`:
 
 Client port: 3000 (`VITE_PORT`). Base worker ports: sync 8787, images 8790, unfurl 8791. Parallel dev (`pnpm dev:p` → `PORT_OFFSET=10 VITE_PORT=5180 pnpm dev`) shifts all uniformly.
 
-Client URL building uses `@avlo/api-client` typed `hc<App>` — `imagesClient[':key'].$url({ param: { key: id } })` produces the right cross-origin URL in prod (`https://images.avlo.io/<key>`) and an absolute localhost URL in dev (`${location.origin}/api/images/<key>` → e.g. `http://localhost:3000/api/images/<key>`), driven by `import.meta.env.PROD` in `packages/api-client/src/origins.ts`. The dev origin must be absolute: a bare path base throws `Invalid URL` inside Hono's `$url(...)` URL constructor.
+Client URL building uses `@avlo/api-client` typed `hc<App>` — `imagesClient[':key'].$url({ param: { key: id } })` produces the right cross-origin URL in prod (`https://images.avlo.io/<key>`) and an absolute localhost URL in dev (`${location.origin}/api/images/<key>` → e.g. `http://localhost:3000/api/images/<key>`), driven by the `VITE_TARGET` deploy selector in `packages/api-client/src/origins.ts` (`local` fallback = the Vite `/api/*` proxy, staging/production = subdomains). The local origin must be absolute: a bare path base throws `Invalid URL` inside Hono's `$url(...)` URL constructor.
 
-**Testing SW:** `pnpm --filter @avlo/web build && pnpm --filter @avlo/web preview` (preview has same proxy config). Dev mode doesn't build SW — worker's `readAssetBlob()` handles this transparently.
+**Testing SW:** `pnpm preview` (root) — `build:preview` (`vite build --mode preview` → local origins, emits `sw.js`) then Vite preview + the local Miniflare workers concurrently, all through the Vite proxy. Do NOT use a bare `pnpm --filter @avlo/web build` for this: it defaults to production mode and bakes the `*.avlo.io` subdomains, so a local preview would target prod infra. Dev mode doesn't build SW — worker's `readAssetBlob()` handles this transparently.
 
 ---
 

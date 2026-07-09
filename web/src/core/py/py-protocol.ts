@@ -10,6 +10,8 @@
  *     executor's event loop is blocked in synchronous Python.
  */
 
+import type { PackedTree } from './py-snapshot';
+
 /** Mirrors the code block's Y `outputStatus` field — renderer drives tint. */
 export type PyRunStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
 
@@ -102,8 +104,17 @@ export interface ExecBootMsg {
   stdlibSha256: string;
   /** Package bundles to mount before the harness installs (M2). */
   bundles?: PyBundlePayload[];
-  /** Snapshot restore payload (P3); absent = cold boot. */
+  /** Snapshot restore payload (fork container bytes); absent = cold boot. */
   snapshot?: ArrayBuffer;
+  /** Packed site-packages tree for STACKED restores — the `_preRestoreHook`
+   * rebuilds MEMFS + replays DSOs from it before the heap overwrite. */
+  tree?: PackedTree;
+  /** Generation boot: bake the set's imports, capture, post `exec-snapshot`.
+   * Arms `_makeSnapshot` in the loader — required for capture (fork gate). */
+  capture?: boolean;
+  /** Set the capture is for — echoed back on `exec-snapshot` (bootedSetKey
+   * can move under a late message). */
+  captureKey?: PySetKey;
 }
 export interface ExecRunMsg {
   t: 'exec';
@@ -134,12 +145,25 @@ export interface ExecDoneMsg {
   output: string;
   durationMs: number;
   figures: PyFigure[];
+  /** Blit reset failed/skipped (wasm table grew, no reset image, fixup threw)
+   * or the heap grew past 1.5× the image — supervisor respawns eagerly
+   * instead of arming idle teardown (isolation + memory reclaim). */
+  needsRespawn: boolean;
+}
+/** Generation capture riding the boot (before exec-ready, before ANY user
+ * code — the supervisor drops it once `executorReady`). Transfer list:
+ * `[container, tree.blob]`. */
+export interface ExecSnapshotMsg {
+  t: 'exec-snapshot';
+  captureKey: PySetKey;
+  container: ArrayBuffer;
+  tree: PackedTree;
 }
 export interface ExecFatalMsg {
   t: 'exec-fatal';
   error: string;
 }
-export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecFatalMsg;
+export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecSnapshotMsg | ExecFatalMsg;
 
 // ------------------------------------------------------------------- limits
 
@@ -160,8 +184,10 @@ export const PY_LIMITS = Object.freeze({
   /** stdout relay batching. */
   stdoutFlushMs: 100,
   stdoutFlushBytes: 8_192,
-  /** Idle executor teardown (snapshots make respawn cheap). */
-  idleTeardownMs: 120_000,
+  /** Idle executor teardown — THE memory-reclaim product knob: snapshots put
+   * respawn at ~0.5 s (OPFS restore), so torn-down is the default state.
+   * Field-tune downward (60 s → 30 s candidate) once restore timings hold. */
+  idleTeardownMs: 60_000,
   maxFigures: 4,
   maxFigurePx: 2_048,
   /** Final-output char cap — mirrors MAX_OUTPUT_CHARS in code-tokens.ts. */

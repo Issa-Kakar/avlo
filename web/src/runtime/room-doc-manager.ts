@@ -2,7 +2,7 @@
  * RoomDocManager - Central authority for Y.Doc and real-time collaboration
  */
 
-import { SYNC_HOST_PROD } from '@avlo/api-client';
+import { SYNC_HOST } from '@avlo/api-client';
 import { getZ, isZKey, Permission, type RoomId, SYNC_WS_PREFIX, type UserId, type YObjects, type ZKey } from '@avlo/shared';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
@@ -534,9 +534,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private initializeWebSocketProvider(): void {
     try {
-      // prod: sync.avlo.io (cross-origin, cookie rides via Domain=.avlo.io); dev: the Vite
+      // remote: sync.<domain> (cross-origin, cookie rides via Domain=.avlo.io); local: the Vite
       // host (localhost:<vite>) so the /sync proxy forwards the upgrade to the sync worker.
-      const host = SYNC_HOST_PROD ?? window.location.host;
+      const host = SYNC_HOST ?? window.location.host;
 
       this.websocketProvider = new YProvider(host, this.roomId, this.ydoc, {
         connect: true,

@@ -50,7 +50,7 @@ All paths relative to `web/src/` unless noted.
 | `SurfaceManager.ts` | DOM refs (contexts, editorHost, cursorHost) + resize/DPR + deferred canvas resize |
 | `tool-registry.ts` | Self-constructing tool singletons + lookup helpers (pen/highlighter/shape→drawingTool, text/note→textTool, image→one-shot file picker, rest→own singleton) |
 | `room-runtime.ts` | Module-level room context — `connectRoom`/`disconnectRoom` + imperative getters |
-| `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring. WS provider → `wss://sync.avlo.io/sync/rooms/<id>` (prod; host = `SYNC_HOST_PROD`, prefix = `SYNC_WS_PREFIX`) — cross-origin to the SPA, gated server-side by the CSWSH Origin allowlist in sync's `on-before-connect` |
+| `room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, deep observer, presence wiring. WS provider → `wss://sync.avlo.io/sync/rooms/<id>` (host = `SYNC_HOST` — `sync.<domain>` remote / null local → `window.location.host` via the Vite `/sync` proxy; prefix = `SYNC_WS_PREFIX`) — cross-origin to the SPA, gated server-side by the CSWSH Origin allowlist in sync's `on-before-connect` |
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide |
 | `input/InputManager.ts` | DOM event forwarder + modifier state (shift/ctrl/meta) |
 | `input/keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |

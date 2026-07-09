@@ -107,7 +107,9 @@ del _t`);
     ),
   );
 
-  pyodide.runPython('import _avlo_runtime; _avlo_runtime.ensure_tzpath(); del _avlo_runtime');
+  // Mirrors py-executor.ts boot exactly: post_restore (reseed + cache drop +
+  // tz bridge) replaced ensure_tzpath at P3.
+  pyodide.runPython('import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime');
 
   harden.scrubWorkerScope();
   harden.hardenRealm();
@@ -122,8 +124,20 @@ del _t`);
   let outBuf = '';
   let stdoutDecoder = new TextDecoder();
   let stderrDecoder = new TextDecoder();
-  pyodide.setStdout({ write: (buf) => ((outBuf += stdoutDecoder.decode(buf, { stream: true })), buf.length), isatty: false });
-  pyodide.setStderr({ write: (buf) => ((outBuf += stderrDecoder.decode(buf, { stream: true })), buf.length), isatty: false });
+  pyodide.setStdout({
+    write: (buf) => {
+      outBuf += stdoutDecoder.decode(buf, { stream: true });
+      return buf.length;
+    },
+    isatty: false,
+  });
+  pyodide.setStderr({
+    write: (buf) => {
+      outBuf += stderrDecoder.decode(buf, { stream: true });
+      return buf.length;
+    },
+    isatty: false,
+  });
   pyodide.setInterruptBuffer(new Uint8Array(new SharedArrayBuffer(64))); // post-freeze API liveness
   pyodide.runPython(HARNESS_INSTALL);
 
@@ -414,11 +428,7 @@ if (section === 'verify') {
   } catch (e) {
     msg = e.message;
   }
-  check(
-    'gate names unfrozen intrinsics pre-harden',
-    msg !== null && msg.includes('not frozen') && msg.includes('JSON'),
-    msg ?? 'did not throw',
-  );
+  check('gate names unfrozen intrinsics pre-harden', msg?.includes('not frozen') && msg.includes('JSON'), msg ?? 'did not throw');
   harden.hardenRealm();
   let clean = true;
   try {

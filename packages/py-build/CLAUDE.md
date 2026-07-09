@@ -19,13 +19,14 @@ hash order).
 | `pack-package.py` | Bundle tars (D2-D6): wheel patches (`patches/wheels/<pkg>/`) → global excludes → prune (`config/pkg-prune/`) → [mpl: font subset via pinned host fontTools venv + fontlist prebake] → pyc `-o 1` → `_avlo_pruned_<bundle>` → meta.json-first deterministic ustar → `dist/stage/bundles/`. `--unpruned` materializes tracer trees; `--stage-only`/`--tar-only` split at the prebake seam |
 | `prebake-fontcache.mjs` | Bakes `matplotlib/fontlist.json` over the SUBSET faces (fork boot on staged trees, det-env kit, canonical JSON). The wheel ships a stale 39-face list — deleted before the rebuild |
 | `trace-imports.mjs` + `.py` | Import tracer (G3): runs package corpus groups over UNPRUNED trees (raw stdlib; pillow/fonttools mounted for mpl groups) recording attempts + loads. `--check`: trace ∩ prune = ∅ AND no PIL/fontTools attempt. `--propose <pkg>`: unreached-subtree prune candidates. Samples marked `# trace: skip` (deliberate tombstone probes, packed-artifact assertions) are excluded |
-| `make-baseline.mjs` | `dist/baseline.snap` (det-env kit, `--repro` = G0 byte-identity, restore-verify) + `builtin-modules.json`. HARD-ERRORS on missing staged zip (restage ⇒ recapture) |
+| `make-baseline.mjs` | `dist/baseline.snap` (det-env kit, `--repro` = G0 byte-identity — baked into the `baseline` script, restore-verify) + `builtin-modules.json`. HARD-ERRORS on missing staged zip (restage ⇒ recapture). The snapshot is a LOCK ARTIFACT: staged + published + budget-gated like the glue trio |
+| `verify-stacking.mjs` | G-P3.0 (`pnpm verify:stacking`): capture-after-restore probe — boot `_loadSnapshot(baseline)`+`_makeSnapshot` → mount sqlite3+numpy → set imports → stacked capture → restore via the production `_preRestoreHook` port in-process → numpy/sqlite3/lazy-submodule asserts + blit probe. The one fork path the browser spike never ran; green = per-set generation may stack on a restored baseline |
 | `run-corpus.mjs` | Corpus runner: child process per group (RAM-bounded), mounts the REAL bundle tars (512-byte meta parse → tarfile extract → loadDynlib per loadOrder), mpl groups add the font gates (no findfont, no fontManager rebuild) + PNG decode (`lib/png.mjs`) of `/tmp/corpus-out/*.png` |
 | `compress.mjs` | Brotli q11 `.br` siblings for every servable artifact |
 | `check-budgets.mjs` | G1: per-artifact + composite `.br` ceilings from `build.config.json`; `--update` stamps measured +5% |
 | `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + `manifest.json`, prunes strays) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts` + `packages/py-loader/build-lock.json` (buildHash = 16-hex sha256 of the canonical sha tables). `--check` = drift gate (any artifact/codegen/lock divergence fails) |
 | `run-harness.mjs` | Node verification harness (`pnpm harness`; Node ≥23.6 — type-strips the SHIPPED `py-harden.ts`/`py-harness.ts`/py-loader `verify.ts`): boots the staged fork per child section, mounts real tars in lock set order, re-enacts the exact executor boot (mounts → stdlib verify → scrub → harden → assert → harness), then drives the full board — scrub/freeze sweeps + negatives, 0008 closure probes, tombstones, sqlite3/numpy/seaborn+PNG post-freeze, staged-tree-vs-lock byte checks. Runs after any harden/verify/artifact change; never in Turbo/CI |
-| `publish.mjs` | Staged artifacts → R2 under `<buildHash>/…` (21 keys; manifest.json strictly LAST = completion marker). `--local` (default; `pnpm py:seed` from root) seeds the dev miniflare tree via `--persist-to <root>/.wrangler/state` (wrangler appends `v3`); `--remote` publishes to the real `avlo-py` bucket with a manifest divergence probe (absent→publish, identical→no-op, different→hash-bug hard error). Preflight re-hashes EVERY source byte against the build-lock + checks `.br` freshness (restage ⇒ reseed) |
+| `publish.mjs` | Staged artifacts → R2 under `<buildHash>/…` (every lock artifact + bundle tar, each with its `.br` sibling; manifest.json strictly LAST = completion marker). `--local` (default; `pnpm py:seed` from root) seeds the dev miniflare tree via `--persist-to <root>/.wrangler/state` (wrangler appends `v3`); `--remote` publishes to the real `avlo-py` bucket with a manifest divergence probe (absent→publish, identical→no-op, different→hash-bug hard error). Preflight re-hashes EVERY source byte against the build-lock + checks `.br` freshness (restage ⇒ reseed) |
 | `lib/det-env.mjs` | Deterministic capture env (entropy/Date.now/performance.now stand-ins) — shared by baseline + prebake |
 | `lib/png.mjs` | Minimal PNG decoder (filters 0-4) for corpus pixel assertions |
 
@@ -52,7 +53,10 @@ the lock's depends graph.
 
 - **Restage ⇒ recapture.** Any staged-stdlib change poisons held snapshots
   (zipimport TOC offsets live in the heap); make-baseline refuses raw-zip
-  fallback, stage `--check` flags drift.
+  fallback, stage `--check` flags drift. `baseline.snap` bytes are IN the
+  lock's artifacts table, so a byte-different recapture rotates `buildHash`
+  (identical inputs reproduce byte-identically ⇒ no-op) — and a rotated hash
+  auto-invalidates every client's OPFS per-set snapshots (dir GC) + Cache API.
 - **Restage ⇒ reseed.** Every restage mints a new `buildHash` in the committed
   build-lock (`packages/py-loader/`) — the app immediately fetches
   `<origin>/<newHash>/…`, so R2 must be reseeded (`pnpm py:seed` local,

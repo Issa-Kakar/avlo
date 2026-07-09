@@ -14,7 +14,7 @@ wrapper). They just share a name.
 
 | File | Role |
 |---|---|
-| `build-lock.json` | GENERATED — only py-build's `stage.mjs` writes it (byte-gated by `stage --check`; excluded from biome so the formatter can't break the compare). `{ schema, buildHash, artifacts: {name:{sha256,size}}, bundles, sets }` |
+| `build-lock.json` | GENERATED — only py-build's `stage.mjs` writes it (byte-gated by `stage --check`; excluded from biome so the formatter can't break the compare). `{ schema, buildHash, artifacts: {name:{sha256,size}}, bundles, sets }`. Artifacts table = glue trio + stdlib zip + `baseline.snap` — the snapshot is the ONE artifacts entry the SW serves streaming `cacheFirst` instead of `verifiedPyFirst` (the supervisor's `ensureBaseline` is its verifier; buffering ~21 MB in the SW buys nothing) |
 | `src/index.ts` | `BUILD_LOCK` (typed + deep-frozen at module scope), `PY_BUILD_HASH`, `pyArtifactBase(origin)`; re-exports `verify.ts` |
 | `src/verify.ts` | `sha256Hex` + `matchesLockEntry(bytes, {sha256,size})` — THE verification predicate for every lock-gated consumer (supervisor tar/glue checks, SW core-artifact route, py-build Node harness). Dependency-free and separate from index so the harness can import the exact shipped code without index's JSON import (Node ESM demands import attributes there) |
 
@@ -28,4 +28,6 @@ wrapper). They just share a name.
   the SW bundle (CI isolation grep unaffected) and in dedicated workers.
 - `buildHash` = 16-hex truncated sha256 of the canonical (recursively
   key-sorted) `{artifacts, bundles, sets}` slim tables — deterministic for
-  identical artifact bytes.
+  identical artifact bytes. It doubles as the **snapshot lock binding**: OPFS
+  per-set snapshot wrappers embed it (`py-snapshot.ts` verify chain), so an
+  image generated under one lock can never restore under another.

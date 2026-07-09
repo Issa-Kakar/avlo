@@ -13,6 +13,8 @@
 //                                       dropped the pyodide.js/package.json/
 //                                       pyodide-lock.json boot crutch)
 //   python_stdlib.zip                  (pruned zip — dist/stage)
+//   baseline.snap                      (interpreter+stdlib snapshot — dist/,
+//                                       make-baseline.mjs; restore ⇒ recapture)
 //   bundles/<name>.tar                 (dist/stage/bundles)
 //   manifest.json                      (generated here; field-compatible with
 //                                       M3's R2 manifest)
@@ -43,6 +45,7 @@ const ARTIFACTS = {
   'pyodide.asm.wasm': 'dist/raw/pyodide.asm.wasm',
   'pyodide.mjs': 'dist/raw/pyodide.mjs',
   'python_stdlib.zip': 'dist/stage/python_stdlib.zip',
+  'baseline.snap': 'dist/baseline.snap',
 };
 const files = new Map(); // staged rel path -> Buffer
 for (const [name, rel] of Object.entries(ARTIFACTS)) {

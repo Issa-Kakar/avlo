@@ -8,9 +8,9 @@
 // RESEED — every uploaded byte is re-hashed against the committed build-lock,
 // so a stale dist/ or a stale lock refuses loudly instead of serving a mix.
 //
-// Upload plan (21 keys): 4 artifacts + 4 .br + 6 bundle tars + 6 .br +
-// manifest.json strictly LAST — an aborted upload leaves an incomplete prefix
-// WITHOUT its completion marker, which the probe treats as unpublished.
+// Upload plan: every lock artifact + bundle tar, each with its .br sibling,
+// then manifest.json strictly LAST — an aborted upload leaves an incomplete
+// prefix WITHOUT its completion marker, which the probe treats as unpublished.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -33,7 +33,10 @@ const SOURCES = {
   'pyodide.asm.wasm': 'dist/raw/pyodide.asm.wasm',
   'pyodide.mjs': 'dist/raw/pyodide.mjs',
   'python_stdlib.zip': 'dist/stage/python_stdlib.zip',
+  'baseline.snap': 'dist/baseline.snap',
 };
+// NOTE: contentType has no fallback — an unmapped extension would pass the
+// literal string "undefined" to `wrangler --content-type`.
 const MIME = {
   '.mjs': 'text/javascript',
   '.js': 'text/javascript',
@@ -41,6 +44,7 @@ const MIME = {
   '.zip': 'application/zip',
   '.json': 'application/json',
   '.tar': 'application/x-tar',
+  '.snap': 'application/octet-stream',
 };
 const contentType = (file) => MIME[file.slice(file.lastIndexOf('.'))];
 
