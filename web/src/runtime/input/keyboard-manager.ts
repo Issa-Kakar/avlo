@@ -233,6 +233,7 @@ const TOOL_KEYS: Record<string, Tool> = {
   v: 'select',
   h: 'pan',
   a: 'connector',
+  c: 'code',
 };
 
 const SHAPE_KEYS: Record<string, ShapeVariant> = {

@@ -3,7 +3,7 @@ import { createJSONStorage, persist, subscribeWithSelector } from 'zustand/middl
 import { immer } from 'zustand/middleware/immer';
 import type { ConnectorVariantId } from '@/components/toolbar/connector-variants';
 import { CONNECTOR_VARIANT_SPECS } from '@/components/toolbar/connector-variants';
-import type { FontFamily, TextAlignV } from '@/core/accessors';
+import type { CodeLanguage, FontFamily, TextAlignV } from '@/core/accessors';
 import type { ConnectorCap, ConnectorType } from '@/core/connectors/types';
 import { getCanvasElement } from './camera-store';
 
@@ -110,7 +110,7 @@ export interface DeviceUIState {
   connector: { color: string; width: number; type: ConnectorType; startCap: ConnectorCap; endCap: ConnectorCap };
   text: { color: string; align: TextAlign; size: number; fontFamily: FontFamily; highlightColor: string | null; fillColor: string | null };
   note: { align: TextAlign; alignV: TextAlignV; fontFamily: FontFamily; fillColor: string };
-  code: { lineNumbers: boolean; headerVisible: boolean };
+  code: { language: CodeLanguage; lineNumbers: boolean; headerVisible: boolean };
 
   pointerInput: PointerInputKind;
   gridEnabled: boolean;
@@ -165,6 +165,7 @@ export interface DeviceUIActions {
   setNoteFontFamily(family: FontFamily): void;
   setNoteFillColor(color: string): void;
 
+  setCodeLanguage(v: CodeLanguage): void;
   setCodeLineNumbers(v: boolean): void;
   setCodeHeaderVisible(v: boolean): void;
 
@@ -226,7 +227,7 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           fillColor: NOTE_COLOR_PALETTE[0].fill,
         },
 
-        code: { lineNumbers: true, headerVisible: true },
+        code: { language: 'typescript', lineNumbers: true, headerVisible: true },
 
         pointerInput: 'mouse',
         gridEnabled: false,
@@ -379,6 +380,10 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
             state.note.fillColor = color;
           }),
 
+        setCodeLanguage: (v) =>
+          set((state) => {
+            state.code.language = v;
+          }),
         setCodeLineNumbers: (v) =>
           set((state) => {
             state.code.lineNumbers = v;
@@ -418,8 +423,8 @@ export const useDeviceUIStore = create<DeviceUIStore>()(
           }),
       })),
       {
-        name: 'avlo.toolbar.v3',
-        version: 3,
+        name: 'avlo.toolbar.v4',
+        version: 4,
         storage: createJSONStorage(() => localStorage),
         partialize: (s) => ({
           strokeWidth: s.strokeWidth,
@@ -477,6 +482,7 @@ export const {
   openStickyPanel,
   closeStickyPanel,
   toggleStickyPanel,
+  setCodeLanguage,
   setCodeLineNumbers,
   setCodeHeaderVisible,
   setPointerInput,

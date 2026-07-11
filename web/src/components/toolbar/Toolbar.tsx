@@ -117,7 +117,7 @@ export function Toolbar() {
         <ToolButton isActive={isStrokeTool(activeTool)} tooltip="Pen (P)" onClick={clickPen}>
           <IconPen className="icon" />
         </ToolButton>
-        <ToolButton isActive={activeTool === 'code'} tooltip="Code" onClick={clickCode}>
+        <ToolButton isActive={activeTool === 'code'} tooltip="Code (C)" onClick={clickCode}>
           <IconCode className="icon" />
         </ToolButton>
         <ToolButton isActive={false} tooltip="Image (I)" onClick={clickImage}>

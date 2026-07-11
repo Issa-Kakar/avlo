@@ -241,7 +241,7 @@ export class CodeTool implements PointerTool {
       yObj.set('kind', 'code');
       yObj.set('origin', [originX, originY]);
       yObj.set('content', new Y.Text());
-      yObj.set('language', 'typescript');
+      yObj.set('language', ui.code.language);
       yObj.set('fontSize', fontSize);
       yObj.set('width', width);
       yObj.set('lineNumbers', lineNumbers);

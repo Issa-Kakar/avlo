@@ -107,7 +107,13 @@ export const convertSelectionToShape = (shapeType: string): void => convertObjec
 
 // === Code Block Actions ===
 
-export const setSelectedCodeLanguage = (language: CodeLanguage): void => applyField(getCodeIds(), CODE_LANGUAGE, language);
+export const setSelectedCodeLanguage = (language: CodeLanguage): void => {
+  applyField(getCodeIds(), CODE_LANGUAGE, language);
+  // Persist on EVERY switch, independent of selection state. applyField's descriptor
+  // persist is gated on selectionKind !== 'none', but a freshly-created block edits with
+  // an empty selection (codeEditingId set, selectedIds empty) → 'none' → would be skipped.
+  useDeviceUIStore.getState().setCodeLanguage(language);
+};
 export const setSelectedCodeFontSize = (size: number): void => applyField(getCodeIds(), CODE_FONT_SIZE, clampInt(size, 1, 999));
 export const incrementCodeFontSize = (): void =>
   adjustByPresets(getCodeIds(), CODE_FONT_SIZE, TEXT_FONT_SIZE_PRESETS, 'up', currentCodeFontSize(), 10, 144);
