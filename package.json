@@ -18,6 +18,10 @@
     "typecheck": "turbo run typecheck",
     "typecheck:tsc": "turbo run typecheck:tsc",
     "verify:snap": "node scripts/verify/snap.mjs",
+    "test": "turbo run test",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:py": "uv run --directory packages/py-build pytest",
     "deploy:main": "pnpm --filter @avlo/main deploy",
     "deploy:sync": "pnpm --filter @avlo/sync deploy",
     "deploy:images": "pnpm --filter @avlo/images deploy",
@@ -42,6 +46,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.0",
+    "@cloudflare/vitest-pool-workers": "0.18.4",
+    "@playwright/test": "^1.61.1",
     "@types/node": "^24.13.2",
     "@typescript/native-preview": "beta",
     "concurrently": "^10.0.3",
@@ -52,6 +58,7 @@
     "playwright": "^1.61.1",
     "turbo": "^2.9.18",
     "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
     "wrangler": "~4.106.0"
   }
 }

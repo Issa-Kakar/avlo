@@ -103,7 +103,7 @@
       }
     },
     {
-      "includes": ["scripts/**"],
+      "includes": ["scripts/**", "playwright.config.ts", "e2e/**"],
       "linter": {
         "rules": {
           "suspicious": {

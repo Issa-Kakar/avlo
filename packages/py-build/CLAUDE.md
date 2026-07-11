@@ -16,7 +16,7 @@ hash order).
 | `packlib.py` | Shared pack primitives: hashseed re-exec guard, `compile_pyc` (UNCHECKED_HASH), prune-rule parsing + EXACT dotted tombstone keys (`xml/sax/` → `xml.sax`; data-file rules mint none), deterministic zip/ustar writers, canonical JSON |
 | `pack-stdlib.py` | Pruned pyc-only stdlib zip (`-o 2`, DEFLATED 9) + overlay modules + `_avlo_pruned` registry → `dist/stage/python_stdlib.zip` + `stdlib-modules.json` |
 | `fetch-wheels.mjs` | Downloads the pinned recipes wheels → `.cache/wheels/` (sha-verified; release asset → CDN mirror fallback). `--stamp` re-pins from the stock lock |
-| `pack-package.py` | Bundle tars (D2-D6): wheel patches (`patches/wheels/<pkg>/`) → global excludes → prune (`config/pkg-prune/`) → [mpl: font subset via pinned host fontTools venv + fontlist prebake] → pyc `-o 1` → `_avlo_pruned_<bundle>` → meta.json-first deterministic ustar → `dist/stage/bundles/`. `--unpruned` materializes tracer trees; `--stage-only`/`--tar-only` split at the prebake seam |
+| `pack-package.py` | Bundle tars (D2-D6): wheel patches (`patches/wheels/<pkg>/`) → global excludes → prune (`config/pkg-prune/`) → [mpl: font subset via pinned host fontTools (`uvx --from fonttools==<hostTools pin>`) + fontlist prebake] → pyc `-o 1` → `_avlo_pruned_<bundle>` → meta.json-first deterministic ustar → `dist/stage/bundles/`. `--unpruned` materializes tracer trees; `--stage-only`/`--tar-only` split at the prebake seam |
 | `prebake-fontcache.mjs` | Bakes `matplotlib/fontlist.json` over the SUBSET faces (fork boot on staged trees, det-env kit, canonical JSON). The wheel ships a stale 39-face list — deleted before the rebuild |
 | `trace-imports.mjs` + `.py` | Import tracer (G3): runs package corpus groups over UNPRUNED trees (raw stdlib; pillow/fonttools mounted for mpl groups) recording attempts + loads. `--check`: trace ∩ prune = ∅ AND no PIL/fontTools attempt. `--propose <pkg>`: unreached-subtree prune candidates. Samples marked `# trace: skip` (deliberate tombstone probes, packed-artifact assertions) are excluded |
 | `make-baseline.mjs` | `dist/baseline.snap` (det-env kit, `--repro` = G0 byte-identity — baked into the `baseline` script, restore-verify) + `builtin-modules.json`. HARD-ERRORS on missing staged zip (restage ⇒ recapture). The snapshot is a LOCK ARTIFACT: staged + published + budget-gated like the glue trio |
@@ -40,7 +40,7 @@ wheel; deletions are prune-list lines, never patches), `config/stdlib-prune.txt`
 post-restore/tz-bridge + `_avlo_png` encoder),
 `corpus/{basic,sqlite,numpy,pandas,mpl,all,seaborn}/` (self-asserting
 samples; `# trace: skip` marks deliberate tombstone probes), `.cache/`
-(wheels/stage/unpruned/trace/hosttools — gitignored), `dist/` (raw fork
+(wheels/stage/unpruned/trace — gitignored), `dist/` (raw fork
 output + staged artifacts — gitignored).
 
 Wheel pins live in `build.config.json` `recipes.wheels`; pins with a `url`

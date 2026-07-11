@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.13"
+# dependencies = ["fonttools[woff]>=4.63"]
+# ///
 """Subset MuseoModerno — the "avlo" logo wordmark font.
 
-Source: client/public/fonts/MuseoModerno[wght].ttf (variable wght 100-900, ~184 KB,
+Source: web/public/fonts/MuseoModerno[wght].ttf (variable wght 100-900, ~184 KB,
         the raw Google Fonts download).
-Output: client/public/fonts/MuseoModerno[wght].woff2 (self-hosted, replaces the
+Output: web/public/fonts/MuseoModerno[wght].woff2 (self-hosted, replaces the
         Google Fonts <link> in index.html).
 
 Mirrors scripts/subset-schibsted.py — MuseoModerno is UI chrome (the logo), not
@@ -19,13 +23,13 @@ canvas content, so it gets the same treatment as Schibsted Grotesk:
   - Hinting kept (cheap; benefits any small-size UI use).
   - All name records kept (OFL license + attribution).
 
-The source .ttf is deleted after a successful run (public/fonts/ ships woff2
+The source .ttf is deleted after a successful run (web/public/fonts/ ships woff2
 only). To re-run, re-fetch the upstream original first:
-    curl -sL -o 'client/public/fonts/MuseoModerno[wght].ttf' \
+    curl -sL -o 'web/public/fonts/MuseoModerno[wght].ttf' \
       'https://github.com/google/fonts/raw/main/ofl/museomoderno/MuseoModerno%5Bwght%5D.ttf'
 
-Run from repo root (uses the venv at /home/issak/dev/avlo/.venv):
-    .venv/bin/python scripts/subset-museomoderno.py
+Run from repo root (uv reads the inline deps above — no venv needed):
+    uv run scripts/subset-museomoderno.py
 """
 
 from __future__ import annotations
@@ -39,8 +43,8 @@ from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC = REPO_ROOT / "client/public/fonts/MuseoModerno[wght].ttf"
-OUT = REPO_ROOT / "client/public/fonts/MuseoModerno[wght].woff2"
+SRC = REPO_ROOT / "web/public/fonts/MuseoModerno[wght].ttf"
+OUT = REPO_ROOT / "web/public/fonts/MuseoModerno[wght].woff2"
 
 # Google Fonts "latin" subset — identical to subset-schibsted.py and the
 # self-hosted content fonts in this folder.

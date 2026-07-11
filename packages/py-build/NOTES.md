@@ -7,6 +7,54 @@ Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
 Slice plan (session 7): /home/issak/.claude/plans/packages-py-build-notes-md-home-issak-c-scalable-quiche.md
 Slice plan (session 8): /home/issak/.claude/plans/home-issak-claude-plans-prompt-md-i-cop-toasty-flask.md
 
+## Session 10 — tooling/test cleanup (pre-314 rewrite) + direction grounding
+- **Repo hygiene**: Python project config moved OFF the repo root INTO
+  `packages/py-build/` (`pyproject.toml` scoped to pytest-only + its config,
+  `.python-version`, regenerated `uv.lock`). Root no longer reads as a Python
+  project. `pnpm test:py` → `uv run --directory packages/py-build pytest`.
+  Leftover root `.venv` removed.
+- **uv put to work correctly**: (1) the mpl-font subset's determinism-critical
+  fontTools switched from `venv`+`pip` to `uvx --from fonttools==<hostTools pin>`
+  in `pack-package.py` — SAME exact pin (byte-repro unaffected — the pin, not
+  the installer, fixes the subset bytes), now cache-deduped across worktrees;
+  `hosttools_python()` + the `.cache/hosttools` venv are deleted. (2)
+  `scripts/subset-{museomoderno,schibsted}.py` fixed (`client/`→`web/` paths,
+  dead `.venv` refs dropped) + made PEP-723 self-contained (`uv run
+  scripts/subset-x.py`; `fonttools[woff]` inline). (3) numpy dropped from any
+  committed env — it was never a subset-script dep; ad-hoc via `uv run --with
+  numpy` when pixel-debugging renders.
+- **Test scaffolding kept as-is** (vitest node + pool-workers, playwright,
+  pytest; TESTING.md): sound and survives the rewrite.
+
+### 314 rewrite direction (researched this session — NOT yet acted on)
+- **Target**: pyodide `0.29.4 → 314.x` (CPython 3.13→**3.14.2**, Emscripten
+  4.0.9→**5.0.3**, ABI `2025_0`→**2026_0**, wheel tag `pyemscripten_2026_0`).
+  New scheme: major = CPython minor (314=3.14, next 315=3.15, ~annual).
+- **Own the snapshot like workerd** (`dev/workerd/src/pyodide/snapshot.ts`):
+  do NOT call pyodide `_loadSnapshot`. Drive raw Emscripten — memcpy heap →
+  `Module.HEAP8`, then **`Module.API.finalizeBootstrap(fromSnapshot,
+  deserializer)`** (hiwire captured via `Module.API.serializeHiwireState`).
+  Their container = magic + JSON-meta + heap-copy (≈ our `baseline.snap`). DSO
+  record/replay (`recordDsoHandles`/`getMemoryPatched`/`preloadDynamicLibs`) is
+  what our patch 0005 + emsdk dsoBaseHook + `_preRestoreHook` already do;
+  baseline vs dedicated snapshot = our baseline vs per-set stacked.
+- **Patch-friction fix**: workerd string-patches `pyodide.asm.mjs` post-download
+  (`src/pyodide/helpers.bzl` `_REPLACEMENTS`) over a fetched release
+  `pyodide-core-<ver>.tar.bz2` — NO source fork / docker for
+  sandboxing/dynlib/entropy/module-format. Only the C-extension drop (our 0003)
+  truly needs the rebuild. Candidate: collapse most of 0001/0005/0007/0008 into
+  glue string-patches, keep docker for 0003 only.
+- **314 base changes that delete our work**: sqlite3 + lzma now bundled in base
+  → **drop the set-riding sqlite3 bundle AND its snapshot** (owner call — too
+  small to warrant a snapshot regardless); `ssl` is a stub; no builtin package
+  lock (vendored `.so`s via `loadDynlibFromVendor`); the full tarball ships a
+  top-level `fonts/` but for *matplotlib-pyodide* (canvas backend) — our Agg
+  mpl-data DejaVu subset likely still stands (VERIFY during the rewrite).
+- **Versions**: fonttools latest 4.63.0; 314 bundles 4.62.1; our hostTools pin
+  4.56.0 (bump during the rewrite if the subset gate stays green). CF's Pyodide
+  lead = Hood Chatham (also CF Python Workers); CF's `pywrangler` packaging is
+  uv-based — validates the uv direction here.
+
 ## Session 9 — figures → canvas images + connectors, review sweep, WYSIWYG fixes
 - **P4 figure pipeline LANDED** (client-side only, no rebuild/restage): harness
   `_harvest_figures` (Gcf via `sys.modules['matplotlib._pylab_helpers']` —

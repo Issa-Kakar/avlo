@@ -1,0 +1,26 @@
+[project]
+name = "avlo-py-build"
+version = "0"
+requires-python = ">=3.13"
+
+# uv-managed dev/test env for the py-build TOOLCHAIN's pure-CPython logic
+# (pytest over scripts/*.py). Nothing to build — this project only carries the
+# test env. Replaces the old repo-root pyproject + .venv: avlo is a TS monorepo,
+# so Python lives scoped to this one subpackage, not at the root.
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[tool.uv]
+package = false # tooling env — nothing to install/build
+
+# Determinism boundary — do NOT cross: the reproducible pack path
+# (pack-package.py's mpl DejaVu subset) runs fontTools at the EXACT
+# build.config.json `hostTools.fonttools` pin via an isolated
+# `uvx --from fonttools==<pin>` call. The pin (not the installer) fixes the
+# subset bytes, so `--repro` byte-identity is unaffected, and it is decoupled
+# from THIS dev env (which carries no fonttools). Ad-hoc numpy/fonttools tasks
+# use throwaway `uv run --with …` envs — never a committed dep here.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"] # makes `import packlib` resolve
+python_files = ["test_*.py"]

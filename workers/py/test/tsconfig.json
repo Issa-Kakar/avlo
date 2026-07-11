@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/vitest-pool-workers/types", "../worker-configuration.d.ts"],
+    "allowSyntheticDefaultImports": true,
+    "paths": {
+      "@avlo/shared": ["../../../packages/shared/src/index.ts"],
+      "@avlo/shared/*": ["../../../packages/shared/src/*"],
+      "@avlo/worker-shared": ["../../../packages/worker-shared/src/index.ts"],
+      "@avlo/worker-shared/*": ["../../../packages/worker-shared/src/*"]
+    }
+  },
+  "include": ["**/*.ts", "../src/index.ts"]
+}

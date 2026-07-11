@@ -1,7 +1,8 @@
 # Dependencies
 node_modules/
 
-# Python venv (scripts/subset-*.py)
+# Python virtualenvs (uv-managed — e.g. packages/py-build/.venv). Ad-hoc script
+# runs (uv run scripts/subset-*.py) use uv's shared cache, not a checked-in venv.
 .venv/
 
 # Build output
@@ -30,10 +31,11 @@ dist/
 .tanstack/
 */.tanstack/
 
-# Verification harness output + future Playwright artifacts
+# Verification harness output + Playwright artifacts + Vitest coverage
 .verify/
 test-results/
 playwright-report/
+coverage/
 
 # Editor / IDE
 .vscode/

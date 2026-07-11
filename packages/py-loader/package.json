@@ -18,6 +18,7 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "typecheck:tsc": "tsc --noEmit"
+    "typecheck:tsc": "tsc --noEmit",
+    "test": "vitest run"
   }
 }

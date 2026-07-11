@@ -60,30 +60,21 @@ BUNDLES = {k: v for k, v in CONFIG["bundles"].items() if not k.startswith("$")}
 BUNDLE_OF = {w: b for b, members in BUNDLES.items() for w in members}
 
 
-def hosttools_python() -> str:
-    """Venv python with the PINNED fontTools (config hostTools) — created on
-    first use under .cache/hosttools/."""
-    pin = CONFIG["hostTools"]["fonttools"]
-    venv = ROOT / ".cache/hosttools"
-    vpy = venv / "bin/python"
-    stamp = venv / f".fonttools-{pin}"
-    if not stamp.exists():
-        shutil.rmtree(venv, ignore_errors=True)
-        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
-        subprocess.run([str(vpy), "-m", "pip", "install", "--quiet", f"fonttools=={pin}"], check=True)
-        stamp.touch()
-    return str(vpy)
-
-
 def subset_mpl_fonts(stage: Path) -> None:
     """Keep the configured faces: text faces subset to the pinned unicode
-    ranges (host fontTools; --no-recalc flags keep bytes stable), mathtext
-    fallback faces shipped whole (config `keepUnsubset`)."""
+    ranges, mathtext fallback faces shipped whole (config `keepUnsubset`).
+
+    fontTools runs at the EXACT `hostTools.fonttools` pin via an isolated
+    `uvx --from fonttools==<pin>` invocation — uv's content-addressed cache
+    dedups the download across worktrees, and the pin (not the installer) is
+    what fixes the subset bytes, so `--repro` byte-identity is unaffected.
+    Decoupled from any project/dev env; the --no-recalc flags keep bytes
+    stable."""
     fonts = CONFIG["fonts"]
+    pin = CONFIG["hostTools"]["fonttools"]
     ttf_dir = stage / "matplotlib/mpl-data/fonts/ttf"
     keep = set(fonts["faces"])
     whole = set(fonts["keepUnsubset"])
-    vpy = hosttools_python()
     for f in sorted(ttf_dir.iterdir()):
         if f.name.startswith("LICENSE"):
             continue  # STIX faces ship too — both license files stay
@@ -95,9 +86,13 @@ def subset_mpl_fonts(stage: Path) -> None:
         tmp = f.with_suffix(".subset.ttf")
         subprocess.run(
             [
-                vpy,
-                "-m",
-                "fontTools.subset",
+                "uvx",
+                "--python",
+                "3.13",
+                "--from",
+                f"fonttools=={pin}",
+                "fonttools",
+                "subset",
                 str(f),
                 f"--unicodes={fonts['unicodes']}",
                 f"--output-file={tmp}",

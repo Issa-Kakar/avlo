@@ -17,7 +17,6 @@
       "outputs": ["dist/**"]
     },
     "test": {
-      "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
     }
   }

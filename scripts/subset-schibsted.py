@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.13"
+# dependencies = ["fonttools[woff]>=4.63"]
+# ///
 """Subset Schibsted Grotesk — the canvas UI / brand font.
 
-Source: client/public/fonts/SchibstedGrotesk[wght].woff2 (variable wght 400-900, ~70 KB).
+Source: web/public/fonts/SchibstedGrotesk[wght].woff2 (variable wght 400-900, ~70 KB).
 Output: same path, in-place overwrite.
 
 Choices (different from Inter/Lora/Grandstander/JBMono in this repo because this
@@ -14,9 +18,8 @@ font is UI chrome, not canvas content):
   - Hinting kept (prep + gasp benefit UI at small sizes).
   - All name records kept (OFL license + brand attribution).
 
-Run from repo root:
-    .venv/bin/python scripts/subset-schibsted.py
-(uses the venv at /home/issak/dev/avlo/.venv)
+Run from repo root (uv reads the inline deps above — no venv needed):
+    uv run scripts/subset-schibsted.py
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC = REPO_ROOT / "client/public/fonts/SchibstedGrotesk[wght].woff2"
+SRC = REPO_ROOT / "web/public/fonts/SchibstedGrotesk[wght].woff2"
 
 # Google Fonts "latin" subset — matches the other woff2s in this folder.
 LATIN_UNICODE_RANGES = (
