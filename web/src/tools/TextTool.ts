@@ -442,7 +442,13 @@ export class TextTool implements PointerTool {
         mainUndoManager: getActiveRoomDoc().getUndoManager(),
         onPropsSync: (keys) => this.syncProps(keys),
       }),
-      autofocus: isNew ? 'end' : false,
+      // Focus at doc end whenever there's no click point to place the caret — that's
+      // both create (isNew) AND keyboard Enter-to-edit (existing object, no entryPoint →
+      // clickWorld null). Only a real click keeps this `false` and defers to the PHASE 6
+      // rAF, which maps the click through posAtCoords. Keying off isNew alone left the
+      // Enter path unfocused (autofocus false + PHASE 6 gated on clickWorld) — mounted but
+      // untypeable until a manual click.
+      autofocus: clickWorld ? false : 'end',
       onCreate: ({ editor: ed }) => {
         syncInlineStylesToStore(ed);
         useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));

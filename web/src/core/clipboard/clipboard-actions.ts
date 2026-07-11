@@ -11,7 +11,7 @@
 import { generateNZAtTop, generateZAtTop, normalizeUrl } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import { getLockedFlags } from '@/core/locks/lock-table';
+import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getLastCursorWorld } from '@/runtime/input/cursor-tracking';
 import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
@@ -539,9 +539,14 @@ export function duplicateSelected(): void {
 export function selectAll(): void {
   const objectsById = getObjectsById();
   const lf = getLockedFlags();
+  const lo = getLockOwners();
   const ids: string[] = [];
   for (const h of objectsById.values()) {
-    if (lf[h.slot] !== 1) ids.push(h.id); // durably-locked ids never join a selection
+    // Neither durably-locked (lf===1) nor ephemerally peer-locked (lo>1) ids join a
+    // selection. Ctrl+A bypasses the click/marquee pickers, so it must re-apply both
+    // filters here — else a remote grab (e.g. a peer's text edit) lands in selectedIds
+    // and the guard-free mutation paths (delete/z-order/cut) write straight through it.
+    if (lf[h.slot] !== 1 && lo[h.slot] <= 1) ids.push(h.id);
   }
   if (ids.length === 0) return;
 
