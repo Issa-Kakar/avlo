@@ -1,13 +1,13 @@
---- a/pandas/core/interchange/from_dataframe.py	2026-07-05 16:17:03.649216901 -0700
-+++ b/pandas/core/interchange/from_dataframe.py	2026-07-05 16:17:03.706262754 -0700
+--- a/pandas/core/interchange/from_dataframe.py	2026-07-19 05:47:18.062993589 -0700
++++ b/pandas/core/interchange/from_dataframe.py	2026-07-19 05:47:18.366029264 -0700
 @@ -1,6 +1,5 @@
  from __future__ import annotations
  
 -import ctypes
  import re
- from typing import Any
- 
-@@ -461,6 +460,10 @@
+ from typing import (
+     Any,
+@@ -495,6 +494,10 @@
      responsible for keeping the memory owner object alive as long as
      the returned NumPy array is being used.
      """

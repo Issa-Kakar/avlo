@@ -39,8 +39,8 @@ matplotlib/backends/backend_wxcairo.py
 matplotlib/backends/qt_compat.py
 matplotlib/backends/web_backend/
 # data-file rules (no tombstone): DSOs only the pruned backends load
-matplotlib/backends/_tkagg.cpython-313-wasm32-emscripten.so
-matplotlib/_ttconv.cpython-313-wasm32-emscripten.so
+# (_ttconv left the wheel at mpl 3.10 — rule retired with it)
+matplotlib/backends/_tkagg.cpython-314-wasm32-emscripten.so
 # reason: test tooling is stripped from canvas bundles
 matplotlib/testing/
 # reason: GUI toolbar icons, demo data and sphinx tooling have no canvas use

@@ -11,23 +11,18 @@ pyodide/_pyodide coverage). register_js_finder() and the "pyodide_js"
 registration stay: webloop does `from pyodide_js._api import
 scheduleCallback` at import time and pyodide/__init__ runs
 _initialize_event_loop() during boot — removing either breaks boot.
-jsglobals itself stays referenced by the snapshot branch (restore
-rebuilds jsproxies from the captured _state image; the baseline is
-recaptured post-0008, restage => recapture).
 
-Snapshot consequence: getExpectedKeys() hardcodes the first hiwire
-regular-table entries in boot allocation order, and the "js"
-registration was what interned jsglobals (slot 1) plus a trailing {}
-(slot 6). Post-0008 the table is [null, public_api, API,
-scheduleCallback, API] (verified empirically, stable across warmups+gc)
-— without this update makeSnapshot's checkEntry dies stringifying
-public_api (circular Module.FS root) against the stale jsglobals
-expectation. Capture and restore share the list; BUILD_ID gating
-rejects pre-0008 snapshots.
+P1 note: this patch's former snapshot half (the getExpectedKeys hiwire
+table rewrite in src/js/snapshot.ts) is PARKED in
+patches/parked/pyodide/0008b-avlo-expected-keys.reference.patch until
+P2's owned-capture rewrite — snapshots are dormant for all of Phase 1
+(the client forces cold boots).
 
---- a/src/js/api.ts	2026-07-06 10:00:00.000000000 -0700
-+++ b/src/js/api.ts	2026-07-06 10:00:00.000000000 -0700
-@@ -731,7 +731,6 @@ API.finalizeBootstrap = function (
+diff --git a/src/js/api.ts b/src/js/api.ts
+index 8f73e57..6531895 100644
+--- a/src/js/api.ts
++++ b/src/js/api.ts
+@@ -755,7 +755,6 @@ API.finalizeBootstrap = function (
      syncUpSnapshotLoad2(jsglobals, snapshotConfig, snapshotDeserializer);
    } else {
      importhook.register_js_finder();
@@ -35,27 +30,3 @@ rejects pre-0008 snapshots.
      importhook.register_js_module("pyodide_js", pyodide);
      importhook.register_windows_finder();
    }
---- a/src/js/snapshot.ts	2026-07-06 10:00:00.000000000 -0700
-+++ b/src/js/snapshot.ts	2026-07-06 10:00:00.000000000 -0700
-@@ -18,15 +18,12 @@ declare var Module: any;
-
- /** @private */
- API.getExpectedKeys = function () {
--  return [
--    null,
--    API.config.jsglobals,
--    API.public_api,
--    API,
--    scheduleCallback,
--    API,
--    {},
--  ];
-+  // AVLO (0008): with register_js_module("js", jsglobals) gone, jsglobals is
-+  // never interned and the trailing {} entry that registration produced is
-+  // gone too — the post-boot table is exactly these five entries. Restore
-+  // (syncUpSnapshotLoad2) re-interns the same list, and BUILD_ID gating
-+  // rejects any snapshot captured under the old layout.
-+  return [null, API.public_api, API, scheduleCallback, API];
- };
-
- // Symbol used in our serializer to get the access list

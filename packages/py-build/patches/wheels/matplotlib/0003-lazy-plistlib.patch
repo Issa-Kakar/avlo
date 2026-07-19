@@ -1,0 +1,20 @@
+--- a/matplotlib/font_manager.py	2026-07-19 05:45:26.594698910 -0700
++++ b/matplotlib/font_manager.py	2026-07-19 06:01:41.129719463 -0700
+@@ -38,7 +38,6 @@
+ from numbers import Number
+ import os
+ from pathlib import Path
+-import plistlib
+ import re
+ import subprocess
+ import sys
+@@ -264,6 +263,9 @@
+ @lru_cache
+ def _get_macos_fonts():
+     """Cache and list the font paths known to ``system_profiler SPFontsDataType``."""
++    # avlo: lazy — darwin-only path; plistlib pulls xml.parsers.expat, whose
++    # pyexpat C module is disabled in this build (precise tombstone at use)
++    import plistlib
+     try:
+         d, = plistlib.loads(
+             subprocess.check_output(["system_profiler", "-xml", "SPFontsDataType"]))

@@ -1,38 +1,42 @@
 From: avlo-py-build <py-build@avlo.local>
 Subject: [PATCH] AVLO: drop loadPackage/lockfile/micropip loader machinery
 
-Sever the two import edges into load-package.ts (api.ts:4, types.ts:9) so
+Sever the two import edges into load-package.ts (api.ts, types.ts) so
 esbuild tree-shakes load-package/installer/packaging-utils out of both
 bundles, then delete the lockfile plumbing in pyodide.ts: config fields
 lockFileURL/lockFileContents/packageBaseUrl/packageCacheDir/cdnUrl, the
 boot-time pyodide-lock.json fetch, API.lockFilePromise, and the
 packageIndexReady await. AVLO artifacts mount everything explicitly
-(stdLibURL + bundle tars); nothing reads a lockfile or hits a CDN, and
-the package.json/pyodide-lock.json/pyodide.js boot crutch goes away.
-The dead sources stay on disk but leave the tsc program (tsconfig
-exclude) — the outer-bundle make rule runs `tsc --noEmit` first.
+(stdLibURL + bundle tars); nothing reads a lockfile or hits a CDN. The
+dead sources stay on disk but leave the tsc program (tsconfig exclude).
 Snapshot seams (_makeSnapshot/_loadSnapshot/_snapshotDeserializer/
-BUILD_ID), stdLibURL, and packages/fullStdLib stay untouched.
+BUILD_ID) and stdLibURL stay untouched. Re-derived against 314.0.2 (the
+loader shape survived the 0.29->314 jump nearly verbatim; 314-new
+nodesockfs/wintercg imports untouched).
 
 One survivor is re-anchored: dynload.ts was reachable only through
 load-package (via installer), and its module scope attaches
-API.loadDynlib plus the DSO snapshot record/replay surface (0005) —
-severing the edges tree-shook it out of the glue, killing bundle
-mounts and makeSnapshot. A bare side-effect import in api.ts keeps it
-in the graph (src/js has no sideEffects flag, so esbuild preserves it).
+API.loadDynlib — severing the edges would tree-shake it out of the glue,
+killing bundle mounts. A bare side-effect import in api.ts keeps it in
+the graph (src/js has no sideEffects flag, so esbuild preserves it).
+P1 note: on 0.29 this anchor also protected the 0005 DSO record/replay
+surface; 0005 is parked until P2, the anchor stays for API.loadDynlib
+alone.
 
---- a/src/js/api.ts	2026-07-06 10:00:00.000000000 -0700
-+++ b/src/js/api.ts	2026-07-06 10:00:00.000000000 -0700
+diff --git a/src/js/api.ts b/src/js/api.ts
+index 173dd40..8f73e57 100644
+--- a/src/js/api.ts
++++ b/src/js/api.ts
 @@ -1,13 +1,16 @@
  import { ffi } from "./ffi";
  import { CanvasInterface, canvas } from "./canvas";
-
+ 
 -import { loadPackage, loadedPackages } from "./load-package";
  import { type PyProxy, type PyDict } from "generated/pyproxy";
 -import { loadBinaryFile, nodeFSMod } from "./compat";
 +// AVLO (0006): load-package (via installer) was dynload's only value-importer.
-+// Keep it in the bundle graph — its module scope attaches API.loadDynlib plus
-+// the DSO snapshot record/replay surface (0005) that makeSnapshot/restore use.
++// Keep it in the bundle graph — its module scope attaches API.loadDynlib,
++// which bundle mounts (and P2's owned restore) depend on.
 +import "./dynload";
 +import { nodeFSMod } from "./compat";
  import { version } from "./version";
@@ -43,9 +47,9 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
  import { RUNTIME_ENV } from "./environments";
  // @ts-ignore
  import LiteralMap from "./common/literal-map";
-@@ -21,9 +20,6 @@ import {
- import { unpackArchiveMetadata } from "./constants";
- import { syncLocalToRemote, syncRemoteToLocal } from "./nativefs";
+@@ -23,9 +26,6 @@ import { syncLocalToRemote, syncRemoteToLocal } from "./nativefs";
+ import { initializeNodeSockFS } from "./fs/nodesockfs";
+ import type { ConnectFunc } from "./fs/wintercg-sockets";
  
 -// Exported for micropip
 -API.loadBinaryFile = loadBinaryFile;
@@ -53,7 +57,7 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
  /**
   * Runs code after python vm has been initialized but prior to any bootstrapping.
   */
-@@ -121,10 +117,6 @@ export class PyodideAPI_ {
+@@ -125,10 +125,6 @@ export class PyodideAPI_ {
    /** @hidden */
    static version = version;
    /** @hidden */
@@ -64,7 +68,7 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
    static ffi = ffi;
    /** @hidden */
    static setStdin = setStdin;
-@@ -185,64 +177,6 @@ export class PyodideAPI_ {
+@@ -189,64 +185,6 @@ export class PyodideAPI_ {
     */
    static pyodide_py = {} as PyProxy; // actually defined in loadPyodide (see pyodide.js)
  
@@ -129,7 +133,7 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
    /**
     * Runs a string of Python code from JavaScript, using :py:func:`~pyodide.code.eval_code`
     * to evaluate the code. If the last statement in the Python code is an
-@@ -686,23 +620,6 @@ export class PyodideAPI_ {
+@@ -706,23 +644,6 @@ export class PyodideAPI_ {
      }
      return API.makeSnapshot(serializer);
    }
@@ -153,8 +157,10 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
  }
  
  /**
---- a/src/js/pyodide.ts	2026-07-06 10:00:00.000000000 -0700
-+++ b/src/js/pyodide.ts	2026-07-06 10:00:00.000000000 -0700
+diff --git a/src/js/pyodide.ts b/src/js/pyodide.ts
+index 297380c..5407515 100644
+--- a/src/js/pyodide.ts
++++ b/src/js/pyodide.ts
 @@ -6,8 +6,6 @@ import {
    loadScript,
    initNodeModules,
@@ -205,18 +211,19 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
 -   */
 -  packageBaseUrl?: string;
    /**
-    * Load the full Python standard library. Setting this to false excludes
-    * unvendored modules from the standard library.
-@@ -229,8 +191,6 @@ export interface PyodideConfig {
+    * Deprecated: This option has no effect.
+    */
+@@ -236,9 +198,6 @@ export interface PyodideConfig {
+ 
    /** @ignore */
    BUILD_ID?: string;
- 
+-
 -  /** @ignore */
 -  cdnUrl?: string;
  }
  
  /**
-@@ -248,36 +208,11 @@ async function initializeConfiguration(
+@@ -256,43 +215,17 @@ async function initializeConfiguration(
  ): Promise<PyodideConfigWithDefaults> {
    await initNodeModules();
  
@@ -251,9 +258,8 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
 -  }
 -
    const defaultConfig: PyodideConfig = {
-     fullStdLib: false,
      jsglobals: globalThis,
-@@ -285,7 +220,6 @@ async function initializeConfiguration(
+     stdin: globalThis.prompt ? () => globalThis.prompt() : undefined,
      args: [],
      env: {},
      packages: [],
@@ -261,7 +267,7 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
      enableRunUntilComplete: true,
      checkAPIVersion: true,
      BUILD_ID,
-@@ -316,9 +250,6 @@ function createEmscriptenSettings(
+@@ -323,9 +256,6 @@ function createEmscriptenSettings(
    config: PyodideConfigWithDefaults,
  ): EmscriptenSettings {
    const emscriptenSettings = createSettings(config);
@@ -271,7 +277,7 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
    return emscriptenSettings;
  }
  
-@@ -448,10 +379,7 @@ async function finalizeSetup(
+@@ -452,10 +382,7 @@ async function finalizeSetup(
    API.sys.path.insert(0, "");
  
    API._pyodide.set_excepthook();
@@ -282,8 +288,10 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
    API.initializeStreams(config.stdin, config.stdout, config.stderr);
  
    return pyodide;
---- a/src/js/tsconfig.json	2026-07-06 10:00:00.000000000 -0700
-+++ b/src/js/tsconfig.json	2026-07-06 10:00:00.000000000 -0700
+diff --git a/src/js/tsconfig.json b/src/js/tsconfig.json
+index 1bfe3fd..2809176 100644
+--- a/src/js/tsconfig.json
++++ b/src/js/tsconfig.json
 @@ -22,5 +22,10 @@
      }
    },
@@ -296,17 +304,19 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
 +    "packaging-utils.ts"
 +  ]
  }
---- a/src/js/types.ts	2026-07-06 10:00:00.000000000 -0700
-+++ b/src/js/types.ts	2026-07-06 10:00:00.000000000 -0700
-@@ -6,7 +6,6 @@ import { type InFuncType } from "./streams";
- import { type RuntimeEnv } from "./environments";
+diff --git a/src/js/types.ts b/src/js/types.ts
+index 6bb6425..655aae2 100644
+--- a/src/js/types.ts
++++ b/src/js/types.ts
+@@ -7,7 +7,6 @@ import { type RuntimeEnv } from "./environments";
+ import type { initializeNodeSockFS } from "./fs/nodesockfs";
  import { SnapshotConfig } from "./snapshot";
  import { ResolvablePromise } from "./common/resolveable";
 -import { PackageManager } from "./load-package";
  /**
   * @docgroup pyodide.ffi
   */
-@@ -462,7 +461,6 @@ export interface API {
+@@ -482,7 +481,6 @@ export interface API {
    maybe_fatal_error: (e: any) => void;
    public_api: PyodideAPI;
    config: PyodideConfigWithDefaults;
@@ -314,7 +324,7 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
    bootstrapFinalizedPromise: Promise<void>;
    typedArrayAsUint8Array: (buffer: TypedArray | ArrayBuffer) => Uint8Array;
    initializeStreams: (
-@@ -502,14 +500,11 @@ export interface API {
+@@ -522,14 +520,11 @@ export interface API {
    package_loader: any;
    importlib: any;
    _import_name_to_package_name: Map<string, string>;
@@ -329,7 +339,7 @@ in the graph (src/js has no sideEffects flag, so esbuild preserves it).
    defaultLdLibraryPath: string[];
    sitepackages: string;
    loadBinaryFile: (
-@@ -582,12 +577,7 @@ export type PackageManagerAPI = Pick<
+@@ -593,12 +588,7 @@ export type PackageManagerAPI = Pick<
    | "sitepackages"
    | "defaultLdLibraryPath"
    | "version"

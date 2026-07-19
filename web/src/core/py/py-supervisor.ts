@@ -112,7 +112,7 @@ function post(msg: unknown, transfer?: Transferable[]): void {
 
 setTraceSink((line) => post({ t: 'trace', line }));
 
-const bundlesOf = (setKey: PySetKey): readonly string[] => (setKey === 'stdlib' ? [] : (SET_BUNDLES[setKey] ?? []));
+const bundlesOf = (setKey: PySetKey): readonly string[] => (setKey === 'stdlib' ? [] : SET_BUNDLES[setKey]);
 
 /** Does the booted generation's bundle set cover the run's needs? */
 function setSatisfies(booted: PySetKey | null, need: PySetKey): boolean {
@@ -247,7 +247,7 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
 let gluePreflight: Promise<void> | null = null;
 function ensureGlueVerified(): Promise<void> {
   gluePreflight ??= (async () => {
-    for (const name of ['pyodide.mjs', 'pyodide.asm.js', 'pyodide.asm.wasm'] as const) {
+    for (const name of ['pyodide.mjs', 'pyodide.asm.mjs', 'pyodide.asm.wasm'] as const) {
       const expected = BUILD_LOCK.artifacts[name];
       if (!expected) throw new Error(`${name} not in build-lock`);
       const res = await fetch(`${ARTIFACT_BASE}${name}`);
@@ -337,6 +337,13 @@ function armIdleTeardown(): void {
   }, PY_LIMITS.idleTeardownMs);
 }
 
+/** Redesign P1: snapshot machinery is PARKED until P2's build-side owned
+ * snapshots land — every boot is a cold mount boot. The fork's snapshot
+ * patches (0005/0007/0008b + emsdk dsoBaseHook) are parked too, so flipping
+ * this back on would run the 0.29-era capture path against a fork that no
+ * longer records DSO bases: don't. P2 replaces this whole branch. */
+const SNAPSHOTS_ENABLED = false;
+
 async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }): Promise<void> {
   const token = ++spawnToken;
   executor?.terminate();
@@ -347,7 +354,7 @@ async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }):
   bootSnapshotSetKey = null;
   traceReset();
   const spawnStart = performance.now();
-  const useSnapshot = !opts?.noSnapshot;
+  const useSnapshot = SNAPSHOTS_ENABLED && !opts?.noSnapshot;
   let payloads: PyBundlePayload[] = [];
   let snapshot: ArrayBuffer | undefined;
   let tree: PackedTree | undefined;

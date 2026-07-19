@@ -1,7 +1,7 @@
 # self-asserting: Agg backend renders a figure into a correctly-sized RGBA buffer
 import matplotlib
 
-assert matplotlib.__version__ == "3.8.4", matplotlib.__version__
+assert matplotlib.__version__ == "3.10.8", matplotlib.__version__
 assert matplotlib.get_backend().lower() == "agg", matplotlib.get_backend()
 
 import matplotlib.pyplot as plt

@@ -17,7 +17,10 @@ import { installDeterministicEnv } from './lib/det-env.mjs';
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const stageRoot = join(pkgRoot, '.cache/stage');
-const PREFIX = '/lib/python3.13/site-packages';
+const config = JSON.parse(readFileSync(join(pkgRoot, 'build.config.json'), 'utf8'));
+// site-packages prefix follows the toolchain pin — never hardcode the minor.
+const PY_MM = config.toolchain.python.split('.').slice(0, 2).join('.');
+const PREFIX = `/lib/python${PY_MM}/site-packages`;
 // matplotlib's mount closure (pandas not needed to import font_manager).
 const MOUNT = ['numpy', 'dateutil', 'pytz', 'mpl-deps', 'matplotlib'];
 
@@ -78,7 +81,7 @@ const parsed = JSON.parse(rawList);
 if (!parsed._version || !Array.isArray(parsed.ttflist) || parsed.ttflist.length === 0) {
   throw new Error(`prebake: implausible fontlist: ${rawList.slice(0, 200)}`);
 }
-const fontsCfg = JSON.parse(readFileSync(join(pkgRoot, 'build.config.json'), 'utf8')).fonts;
+const fontsCfg = config.fonts;
 const faces = new Set([...fontsCfg.faces, ...fontsCfg.keepUnsubset]);
 for (const e of parsed.ttflist) {
   const base = e.fname.split('/').pop();

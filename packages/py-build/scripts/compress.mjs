@@ -13,13 +13,7 @@ const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const force = process.argv.includes('--force');
 
 export function artifactPaths() {
-  const list = [
-    'dist/raw/pyodide.asm.js',
-    'dist/raw/pyodide.asm.wasm',
-    'dist/raw/pyodide.mjs',
-    'dist/stage/python_stdlib.zip',
-    'dist/baseline.snap',
-  ];
+  const list = ['dist/raw/pyodide.asm.mjs', 'dist/raw/pyodide.asm.wasm', 'dist/raw/pyodide.mjs', 'dist/stage/python_stdlib.zip'];
   const bundles = join(pkgRoot, 'dist/stage/bundles');
   if (existsSync(bundles)) {
     for (const f of readdirSync(bundles).sort()) {

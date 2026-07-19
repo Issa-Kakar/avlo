@@ -29,11 +29,10 @@ const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 // Raw source locations (the .br siblings live beside them — they never reach fork/).
 const SOURCES = {
-  'pyodide.asm.js': 'dist/raw/pyodide.asm.js',
+  'pyodide.asm.mjs': 'dist/raw/pyodide.asm.mjs',
   'pyodide.asm.wasm': 'dist/raw/pyodide.asm.wasm',
   'pyodide.mjs': 'dist/raw/pyodide.mjs',
   'python_stdlib.zip': 'dist/stage/python_stdlib.zip',
-  'baseline.snap': 'dist/baseline.snap',
 };
 // NOTE: contentType has no fallback — an unmapped extension would pass the
 // literal string "undefined" to `wrangler --content-type`.

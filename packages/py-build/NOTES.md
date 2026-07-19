@@ -72,7 +72,7 @@ Master plan (pre-redesign): /home/issak/.claude/plans/prompt-md-i-copied-my-synt
   (baseline's own dso list, 0.7 ms) · executor worker spin-up costs
   35–51 ms per generation (boot-wait − bootMs) · no-SW dev numbers can't
   see the SW re-buffer cost the P4 overhaul removes — re-baseline via
-  `vite preview` at P4 if the prod path needs its own before/after.
+  `pnpm preview` at P4 if the prod path needs its own before/after.
 - **Gate**: `pnpm typecheck` 12/12 · trace JSON captured for stdlib +
   all-set boots (hit, generation, warm-run, blit) · ledger committed.
 Pickup plan (session 3): /home/issak/.claude/plans/original-prompt-was-here-graceful-cocke.md
@@ -688,3 +688,166 @@ Slice plan (session 8): /home/issak/.claude/plans/home-issak-claude-plans-prompt
 - Deferred nits: pydoc allowlisted but trips the _pyrepl tombstone at
   runtime (pydoc.py:80 top-level import; precise error, fine);
   `.is-runnable` retoggle on language switch (still in polish backlog).
+
+## Session 12 — Redesign P1: 314.0.2/emsdk-5.0.3 toolchain jump (Loop A in flight)
+
+- **Owner-approved deviations executed** (plan: home-issak-claude-plans-…-whimsical-dewdrop.md):
+  (1) ALL snapshot machinery PARKED to P2 — pyodide 0005/0007 + 0008's snapshot.ts hunk +
+  emsdk dsoBaseHook moved to `patches/parked/`, make-baseline/verify:stacking package.json
+  scripts stubbed to loud errors, `baseline.snap` dropped from stage/lock/budgets/compress/
+  publish, client forces cold boots (`SNAPSHOTS_ENABLED = false` gate at the existing
+  `useSnapshot` seam, zero deletions); (2) incremental-GOT patch deferred to P2's rebuild;
+  (3) git-native patch authoring — patches regenerated from .work commits, never hand-edited.
+- **Landed (pre-flight + Loop A authoring)**: config pins {314.0.2, image 20260211-…-py314
+  (digest sha256:6daf5010…), py 3.14.2 / emsdk 5.0.3 / abi 2026_0, recipes 314-20260629,
+  mirror v314.0.2}; sqlite3 wheel/bundle/set DELETED (static in 314) — sets are now
+  {numpy, numpy+pandas, numpy+matplotlib, all}; wheels re-stamped (numpy 2.4.3,
+  **pandas 3.0.2 (major)**, mpl 3.10.8, contourpy 1.3.3, kiwisolver 1.5.0, pyparsing 3.3.2,
+  packaging 26.1 (down from 26.2!), pytz 2026.1.post1, pillow 12.2.0 / fonttools 4.62.1
+  traceOnly; host fonttools pin → 4.62.1); fetch-wheels now auto-fetches the stock lock from
+  the mirror when absent/stale (info.version-keyed — the fork's own emitted lock can never
+  clobber it; build.sh stopped copying it). Fork patches 0001/0003/0006/0008 re-derived
+  against a fresh 314.0.2 clone and validated end-to-end (`git apply --index` from clean tag
+  = exact build.sh replay). Wheel patches: mpl 0002 pillow-ectomy re-derived vs 3.10.8
+  (imsave gained Colorizer + np.require; new PIL backends all covered by the existing
+  backend prune), pandas 0001/0002 re-derived vs 3.0.2 (errors/__init__ gained `import abc`
+  context; io/clipboard's new top-level ctypes rides the existing prune); dateutil/seaborn
+  apply clean at fuzz=0. Stdlib prune: +compression/{bz2.py,lzma.py,zstd/} (3.14 wrappers
+  over disabled C modules; gzip/zlib wrappers stay), b03 tombstone probe extended with
+  compression.zstd; annotationlib deliberately KEPT (PEP 649 — typing depends on it).
+  pack scripts + prebake/trace PREFIX + _avlo_runtime tz_root now derive the python minor
+  from config/sys.version_info (hardcode class killed); pack:stdlib/bundles run python3.14
+  (uv-installed 3.14.6; pyc magic per-minor). stage.mjs now EMITS `PySetKey`
+  (py-protocol re-exports type-only) + Exclude<'stdlib'>-typed set tables; NEW
+  dump-builtins.mjs replaces make-baseline as builtin-modules.json producer (asserts
+  _sqlite3 present). Client: glue trio → pyodide.asm.mjs; bundlesOf/resolveImports
+  fail-closed (`?? []`/`?? 'all'` dead); marquee spans stdlib so sqlite3 keeps billing;
+  BUNDLE_IMPORTS.sqlite3 dropped. run-corpus/trace: sqlite group is bundle-less stdlib now.
+- **Free wins / corrections vs the master plan** (fold into master doc at Gate B):
+  - **No emsdk patches needed in P1 at all.** The INSTALLED 5.0.3 SDK (sdk-releases
+    065bfade…) already throws named errors unconditionally on BOTH unresolved-symbol
+    surfaces — lazy stubs (`Dynamic linking error: cannot resolve symbol <name>`,
+    libdylink.js:791) and GOT entries (`…undefined symbol '<name>'`, :344). The planned
+    Loop-B stub-throw patch is upstream behavior; the git-TAG file the fact-check read
+    differs from the released SDK build. Loop B's tripwire = explicit
+    ERROR_ON_UNDEFINED_SYMBOLS=1 at link + these throws.
+  - **_lzma was NEVER in the 0.29 fork** (it sat in stock 0.29's *disabled* list; the old
+    0003 context lines were disabled-section entries, misread as "keeps"). 314 rebase keeps
+    it disabled and strips upstream's new `-llzma` WITH `-lzstd` (both modules disabled);
+    `lzma.py` prune + tombstone unchanged. Plan-file text "keep -llzma" was wrong.
+  - Upstream 314 Setup.local disables pwd/_ssl/_hashlib/_uuid itself and adds static
+    _hmac (HACL) + _sqlite3 — both kept. `_ttconv.so` left the mpl wheel at 3.10 (prune
+    rule retired); `_tkagg` prune rule re-pinned cpython-313→314 (filename-keyed data rule
+    would have silently missed).
+  - emsdk "main modules non-relocatable" arrived in 4.0.19 → free via the 4.0.9→5.0.3 jump;
+    "pin ≥5.0.5" referenced a nonexistent version (5.0.3 is the tip).
+  - 314 still ships the full loader machinery (the "no builtin package lock" session-10
+    note was wrong) — 0006 re-derived nearly hunk-for-hunk (loader shape survived 0.29→314
+    almost verbatim; new nodesockfs/wintercg imports untouched).
+- **Loop A docker build**: **1208 s (~20 min)** — fresh emsdk 5.0.3 install + cpython 3.14
+  + lzma/zstd/sqlite/ffi deps + main link on the 2-core WSL2 pin (far under the feared
+  multi-hour; the env image's apt/ccache layers carry most of it). In-container
+  `tsc --noEmit` over src/js passed = 0006/0008 typecheck in the fork's own build.
+- **GATE A: GREEN (all 8 checks)** — dist/raw = exactly {pyodide.asm.mjs 849,194 ·
+  pyodide.asm.wasm 7,952,003 (**8,015 exports** under EXPORT_ALL — the Loop-B baseline;
+  0.29 had 9,651) · pyodide.mjs 16,999 · python_stdlib.zip 2,552,235}; pack:stdlib ×2
+  byte-identical (a0d5747c…, 487 entries / 85 pruned / 29 tombstones); dump-builtins 77
+  builtins incl. _sqlite3; bundles all --repro byte-identical (matplotlib.tar 10.1 MB /
+  pandas.tar grew with 3.0.2); **corpus all groups pass**; trace G3 OK (6 traces, 95
+  prune rules, ∩=∅, no PIL/fontTools); stage --check clean, buildHash ca1a27d668ff97b5
+  (INTERIM — rotates at Gate B); `pnpm typecheck` 12/12; harness base 41/41 + seaborn
+  22/22 + verify 8/8.
+- **Loop-A fallout fixed en route**: (1) mpl 3.10 imports plistlib at font_manager module
+  scope → xml.parsers.expat → pyexpat tombstone; NEW wheel patch
+  matplotlib/0003-lazy-plistlib (darwin-only use, lazy at _get_macos_fonts). (2)
+  **pandas 3.0 dropped pytz as its tz backend** — every tz op rides zoneinfo now, so the
+  ensure_tzpath bridge must be up BEFORE pandas tz ops; run-corpus/trace-imports now
+  mirror the executor contract (post-mount ensure_tzpath) and p02_time reordered; the
+  pytz bundle's remaining role is purely the TZif database. (3) three sample version-pin
+  asserts bumped (3.10.8/2.4.3/3.0.2). (4) .orig backup files from fuzzy patch
+  application leaked into a regenerated wheel patch (would have SHIPPED in the tar) —
+  caught by size; workbench now deletes them before diffing.
+- **Loop B prepped**: link-sos extraction rides fetch-wheels (67 post-prune DSOs +
+  link.rsp response file; /pb mounts ro so extraction is host-side); 0001 rewritten to
+  MAIN_MODULE=2 + AUTOLOAD_DYLIBS=0 + ERROR_ON_UNDEFINED_SYMBOLS=1 +
+  @link.rsp; verified in 5.0.3's link.py: side-module strong imports land in
+  user_requested_exports / EXPORT_IF_DEFINED (link-time diagnosable), needed-entry
+  resolution hard-errors, and ERROR_ON_UNDEFINED_SYMBOLS defaults to 1 on our path.
+
+### HANDOFF — Loop B in progress, stopped mid-debug (owner request). State + next steps.
+
+**Where things stand.** Gate A is fully green and its artifacts are coherent: the staged
+fork dir (`web/public/py-dev/fork/`) + committed-format `build-lock.json` (buildHash
+`ca1a27d668ff97b5`) + gen.ts are the LOOP A (MAIN_MODULE=1) build, and harness/corpus/
+tracer/typecheck all passed against them. `dist/raw/` however now holds the LATEST LOOP B
+attempt (MAIN_MODULE=2), whose main module builds fine (17-19 s incremental rebuilds)
+but FAILS AT BOOT — do not restage until fixed. NOTHING IS COMMITTED yet: the entire P1
+is working-tree changes; do not stash/checkout anything under packages/py-build or
+web/src without reading this first.
+
+**Loop B chronology (each fix landed in the committed 0001 patch file):**
+1. Flip to MAIN_MODULE=2 + AUTOLOAD_DYLIBS=0 + ERROR_ON_UNDEFINED_SYMBOLS=1 +
+   `@/pb/.cache/link-sos/link.rsp` (67 post-prune DSOs, emitted host-side by
+   fetch-wheels.mjs — /pb mounts ro in-container). First build: exports 8,015 → 1,005,
+   wasm 7,952,003 → 6,860,568 (−13.7%), glue 849 KB → 632 KB. Link passed clean.
+2. Boot failure #1: `Module.FS.mkdirTree undefined` at preRun — EXPORT_ALL was what
+   exported the JS runtime methods. FIXED: EXPORTED_RUNTIME_METHODS now carries
+   upstream's own curated no-EXPORT_ALL list (copied from its DISABLE_DYLINK branch:
+   FS, ENV, heaps, stack helpers). This fix is in the committed 0001.
+3. Boot failure #2 (CURRENT BLOCKER): at startup, `loadDylibs → reportUndefinedSymbols`
+   throws `Dynamic linking error: undefined symbol
+   '_ZNSt3__215basic_stringbufIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev'`
+   (std::__2::basic_stringbuf<char> dtor). Attempts that did NOT fix it:
+   (a) `-Wl,--whole-archive -lstdc++` — dead end, emcc maps `-lstdc++` to NOTHING
+   (link.py:2686 `'stdc++': []`; libc++ is a default lib appended elsewhere), and the
+   symbol is NOT in libc++.a anyway (sstream classes are not explicitly instantiated
+   by libc++). (b) `-Wl,-u,<sym>` sweep for all 1,762 imported func/global symbols of
+   the 67 DSOs (now emitted into link.rsp by fetch-wheels) — same failure.
+
+**Decisive diagnostic (ran last, evidence not theory):** across the 67 DSOs the symbol
+is EXPORTED by exactly one — kiwisolver `_cext.cpython-314-wasm32-emscripten.so` —
+which also imports it (classic weak/COMDAT template-instantiation pattern). The Loop-B
+MAIN module imports it as BOTH `env.<sym>` and `GOT.func.<sym>`, and main-module
+startup GOT resolution demands it before any DSO is loaded. Under 0.29/Loop A this
+symbol resolved LAZILY at dlopen from the sibling DSO (cross-DSO resolution).
+
+**Next steps, in order:**
+1. **Filter the -u sweep** in fetch-wheels.mjs link-sos block: emit `-Wl,-u,<sym>` only
+   for `union(DSO imports) − union(DSO exports)` — symbols the MAIN module must supply.
+   Cross-DSO symbols (like this dtor) must stay OUT of the main link so they stay lazy.
+   Cheap to test: `node scripts/fetch-wheels.mjs && node scripts/run-build.mjs` (~20 s
+   incremental) then `node scripts/dump-builtins.mjs` (boot probe; errors print a giant
+   glue line — filter with `awk 'length($0)<1200'` on captured stderr).
+2. **If the same failure persists even without that -u** (plausible — failure #2's boot
+   error predated the -u sweep, so the main-module GOT import may come from link.py
+   itself): investigate emscripten's stub-object path — building.py:160-171
+   (`create_stub_object(external_symbols)` + `--export-if-defined` for side-module
+   deps) and whether side-module imports get marked WEAK in the main module
+   (webassembly.get_weak_imports; libdylink.js reportUndefinedSymbols SKIPS weak
+   imports at ~line 336, throws for strong at :344). The fix shape is likely: make
+   cross-DSO-satisfiable GOT entries weak, or keep them out of the stub set. An emsdk
+   patch here would need build.sh's emsdk block re-armed (it is conditional on
+   patches/emsdk/*.patch existing; AVLO marker grep + forced relink already in place).
+3. **Escape hatch (fully shippable)**: revert 0001 to its Loop-A form and ship P1 at
+   MAIN_MODULE=1 — Gate A was green end-to-end. The exact Loop-A tree state lives in
+   .work/pyodide's orphaned commits from the Gate-A build: `git -C .work/pyodide show
+   09937fa` (0001 Loop-A) / 89c6ac3 (0003) / f09485c (0006) / 6c7494b (0008); the
+   Loop-A 0001 = current minus {MAIN_MODULE=2→1, +EXPORT_ALL=1, −AUTOLOAD_DYLIBS,
+   −ERROR_ON_UNDEFINED_SYMBOLS, −@link.rsp, EXPORTED_RUNTIME_METHODS back to
+   'wasmTable,ERRNO_CODES'}. MAIN_MODULE=2 would then move to P2's rebuild.
+
+**Remaining for Gate B once boots are green** (plan file: home-issak-claude-plans-…-
+whimsical-dewdrop.md): corpus + harness on the =2 build (closed-world proof over every
+DSO) → `node scripts/compress.mjs` → `node scripts/check-budgets.mjs --update` + hand-set
+composites (sqlite3.tar gone from both) → `node scripts/stage.mjs` (buildHash rotates)
++ `--check` → `pnpm typecheck` → vitest suites (workers/py, py-loader) → `pnpm py:seed`
+→ browser dev-board matrix (`pnpm dev` — ASK THE OWNER FIRST per repo rule; per-set
+snippets incl. sqlite3 CRUD, ctypes + compression.zstd tombstones, mpl figure, seaborn,
+refusal, cancel/timeout; every boot must log cold) → cold-boot trace ledger row here →
+master-plan checkbox ticks + deviation notes → CLAUDE.md interim banners (py-build +
+core/py: snapshots parked, cold boots forced) → TWO commits with owner OK (Gate A
+checkpoint: rebase+toolchain; Gate B: flip+lock+seed).
+
+**Wall-clocks:** Loop A full build 1,208 s; Loop B incremental rebuilds 17-19 s.
+**Interim buildHash** `ca1a27d668ff97b5` (Loop A) — rotates at Gate B restage; client
+`SNAPSHOTS_ENABLED=false` means stale OPFS snapshots are inert regardless.

@@ -45,7 +45,7 @@ def ensure_tzpath() -> None:
     reset_tzpath covers an already-imported one."""
     import os
 
-    tz_root = "/lib/python3.13/site-packages/pytz/zoneinfo"
+    tz_root = f"/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/pytz/zoneinfo"
     if not os.path.isdir(tz_root):
         return
     os.environ["PYTHONTZPATH"] = tz_root

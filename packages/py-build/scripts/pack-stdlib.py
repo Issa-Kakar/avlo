@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.13
+#!/usr/bin/env python3.14
 """Build the pruned, pyc-only stdlib zip for the AVLO Python runtime.
 
 Input : dist/raw/python_stdlib.zip  (fork build output)
@@ -8,8 +8,9 @@ Output: dist/stage/python_stdlib.zip
         dist/stage/stdlib-modules.json  (top-level names for the generated
                                          import-gate allowlist, D9)
 
-Must run under CPython 3.13 (pyc MAGIC must match the wasm interpreter);
-re-execs itself with PYTHONHASHSEED=0 (marshalled sets iterate in hash order).
+Must run under the CPython minor pinned in build.config.json (pyc MAGIC must
+match the wasm interpreter); re-execs itself with PYTHONHASHSEED=0
+(marshalled sets iterate in hash order).
 
 Layout notes:
 - zipimport loads `foo.pyc` stored NEXT TO where foo.py would live (legacy
@@ -55,8 +56,9 @@ DEFAULT_REASON = "stripped from the canvas Python build"
 
 
 def main() -> None:
-    if sys.version_info[:2] != (3, 13):
-        sys.exit(f"need CPython 3.13 (pyc magic), got {sys.version}")
+    want = tuple(int(p) for p in CONFIG["toolchain"]["python"].split(".")[:2])
+    if sys.version_info[:2] != want:
+        sys.exit(f"need CPython {want[0]}.{want[1]} (pyc magic must match the wasm interpreter), got {sys.version}")
     rules = packlib.load_prune_rules(PRUNE_TXT)
     reasons = packlib.parse_reasons(PRUNE_TXT, DEFAULT_REASON)
     src = zipfile.ZipFile(SRC_ZIP)

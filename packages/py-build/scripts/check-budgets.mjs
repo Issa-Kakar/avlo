@@ -17,11 +17,10 @@ const update = process.argv.includes('--update');
 
 // artifact name (as budget key) -> repo path
 const PATHS = {
-  'pyodide.asm.js': 'dist/raw/pyodide.asm.js',
+  'pyodide.asm.mjs': 'dist/raw/pyodide.asm.mjs',
   'pyodide.asm.wasm': 'dist/raw/pyodide.asm.wasm',
   'pyodide.mjs': 'dist/raw/pyodide.mjs',
   'python_stdlib.zip': 'dist/stage/python_stdlib.zip',
-  'baseline.snap': 'dist/baseline.snap',
 };
 for (const b of Object.keys(config.bundles).filter((k) => !k.startsWith('$'))) {
   PATHS[`bundles/${b}.tar`] = `dist/stage/bundles/${b}.tar`;

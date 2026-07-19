@@ -28,10 +28,11 @@ const bundleDir = join(pkgRoot, 'dist/stage/bundles');
 
 const config = JSON.parse(readFileSync(join(pkgRoot, 'build.config.json'), 'utf8'));
 const SETS = config.sets;
-// corpus group -> set key ('basic' runs on the bare stdlib).
+// corpus group -> set key ('basic' and 'sqlite' run on the bare stdlib —
+// sqlite3 went static in the 314 main module, so its group needs no tars).
 const GROUP_SET = {
   basic: null,
-  sqlite: 'sqlite3',
+  sqlite: null,
   numpy: 'numpy',
   pandas: 'numpy+pandas',
   mpl: 'numpy+matplotlib',
@@ -111,6 +112,11 @@ os.remove('/tmp/_avlo_bundle.tar')`,
     await py._api.loadDynlib(`${meta.prefix}/${so}`);
   }
   console.log(`mounted ${b} (${meta.counts.files} files, ${meta.counts.so} DSOs)`);
+}
+if (bundles.length > 0) {
+  // Mirror the executor contract: post_restore (⊃ ensure_tzpath) runs after
+  // mounts, before user code — pandas 3 rides zoneinfo for every tz op.
+  py.runPython('import _avlo_runtime; _avlo_runtime.ensure_tzpath()');
 }
 
 const hasMpl = bundles.includes('matplotlib');

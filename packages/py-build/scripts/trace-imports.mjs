@@ -31,13 +31,17 @@ const opt = (name, dflt) => {
 const config = JSON.parse(readFileSync(join(pkgRoot, 'build.config.json'), 'utf8'));
 const BUNDLES = Object.fromEntries(Object.entries(config.bundles).filter(([k]) => !k.startsWith('$')));
 const SETS = config.sets;
-const PREFIX = '/lib/python3.13/site-packages';
+// site-packages prefix follows the toolchain pin — never hardcode the minor.
+const PY_MM = config.toolchain.python.split('.').slice(0, 2).join('.');
+const PREFIX = `/lib/python${PY_MM}/site-packages`;
 const corpusDir = join(pkgRoot, 'corpus');
 const traceDir = join(pkgRoot, '.cache/trace');
 const unprunedRoot = join(pkgRoot, '.cache/unpruned');
 
-// Package groups only — 'basic' tests the PRUNED artifact's own behavior.
-const GROUP_SET = { sqlite: 'sqlite3', numpy: 'numpy', pandas: 'numpy+pandas', mpl: 'numpy+matplotlib', all: 'all', seaborn: 'all' };
+// Package groups only — 'basic' tests the PRUNED artifact's own behavior and
+// 'sqlite' rides the bare stdlib since 314 made _sqlite3 static (no package
+// tree to trace).
+const GROUP_SET = { numpy: 'numpy', pandas: 'numpy+pandas', mpl: 'numpy+matplotlib', all: 'all', seaborn: 'all' };
 const setWheels = (setKey) => SETS[setKey].flatMap((b) => BUNDLES[b]);
 
 function loadTraces() {
@@ -231,6 +235,9 @@ for (const w of wheels) {
 }
 sos.sort();
 for (const so of sos) await py._api.loadDynlib(`${PREFIX}/${so}`);
+// Mirror the executor contract: ensure_tzpath after mounts, before samples
+// (pandas 3 rides zoneinfo for every tz op).
+py.runPython('import _avlo_runtime; _avlo_runtime.ensure_tzpath()');
 console.log(`${groupArg}: mounted ${wheels.join(', ')} (${sos.length} DSOs)`);
 
 const samples = readdirSync(join(corpusDir, groupArg))

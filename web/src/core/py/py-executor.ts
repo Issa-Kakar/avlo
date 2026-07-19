@@ -46,7 +46,6 @@ let tableLenAtReady = 0;
  * MUST bake numpy.random: numpy 2.x defers the global RandomState, and an
  * unbaked global re-seeds fresh at first touch after every restore (G8R). */
 const BUNDLE_IMPORTS: Record<string, string> = {
-  sqlite3: 'import sqlite3',
   numpy: 'import numpy, numpy.random\n_ = numpy.random.get_state()\ndel _',
   dateutil: 'import dateutil',
   pytz: 'import pytz',

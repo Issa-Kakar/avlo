@@ -15,10 +15,14 @@ import type { PackedTree } from './py-snapshot';
 /** Mirrors the code block's Y `outputStatus` field — renderer drives tint. */
 export type PyRunStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
 
-/** Package-set key: which bundles a run needs (P1 ships stdlib-only).
- * MUST mirror build.config.json `sets` keys — the gen.ts cast in
- * py-imports.ts (SET_KEYS_BY_SIZE) silently lies if this union lags. */
-export type PySetKey = 'stdlib' | 'sqlite3' | 'numpy' | 'numpy+pandas' | 'numpy+matplotlib' | 'all';
+/** Package-set key: which bundles a run needs. GENERATED with the set tables
+ * — stage.mjs emits the union from build.config.json `sets`, so the type can
+ * never lag the data again. Re-exported here so protocol consumers keep one
+ * import site (type-only: erased in every bundle and under Node
+ * type-stripping, so the harness's protocol import stays value-free). */
+import type { PySetKey } from './py-stdlib-modules.gen';
+
+export type { PySetKey };
 
 /** Live phase for the run store / play-button UI (never written to Y). */
 export type PyRunPhase = 'queued' | 'booting' | 'downloading' | 'restoring' | 'running' | 'cancelling';

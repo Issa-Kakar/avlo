@@ -154,8 +154,8 @@ del _t`);
 
 // ---------------------------------------------------------------- base
 // The sessions-5/6/7 board (scrub/freeze/0008-closure/tombstones/protocol)
-// over the product `numpy` set — which now mounts sqlite3 FIRST — plus the
-// constructor-freeze sweep and post-freeze sqlite3 proofs.
+// over the product `numpy` set, plus the constructor-freeze sweep and
+// post-freeze sqlite3 proofs (sqlite3 is STATIC since 314 — zero tars).
 if (section === 'base') {
   const { pyodide, run } = await bootHardened('numpy');
 

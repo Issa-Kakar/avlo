@@ -1,8 +1,8 @@
-#!/usr/bin/env python3.13
+#!/usr/bin/env python3.14
 """Build deterministic package-bundle tars for the AVLO Python runtime (M2).
 
-  python3.13 scripts/pack-package.py <bundle>|--all [--repro] [--stage-only|--tar-only]
-  python3.13 scripts/pack-package.py --unpruned [wheel ...]
+  python3.14 scripts/pack-package.py <bundle>|--all [--repro] [--stage-only|--tar-only]
+  python3.14 scripts/pack-package.py --unpruned [wheel ...]
 
 Pipeline per bundle (D2-D6): for each member wheel — unzip (sha-verified vs
 build.config.json) -> wheel patches (patches/wheels/<pkg>/NNNN-*.patch, sorted,
@@ -51,7 +51,10 @@ PATCHES = ROOT / "patches/wheels"
 PRUNES = ROOT / "config/pkg-prune"
 OUT_DIR = ROOT / "dist/stage/bundles"
 
-PREFIX = "/lib/python3.13/site-packages"
+# site-packages prefix + host-tool interpreter follow the toolchain pin —
+# never hardcode the minor.
+PY_MM = ".".join(CONFIG["toolchain"]["python"].split(".")[:2])
+PREFIX = f"/lib/python{PY_MM}/site-packages"
 SCHEMA = 1
 DEFAULT_REASON = "stripped from the canvas Python bundle"
 
@@ -88,7 +91,7 @@ def subset_mpl_fonts(stage: Path) -> None:
             [
                 "uvx",
                 "--python",
-                "3.13",
+                PY_MM,
                 "--from",
                 f"fonttools=={pin}",
                 "fonttools",
@@ -304,8 +307,9 @@ def unpruned(names: list[str]) -> None:
 
 
 def main() -> None:
-    if sys.version_info[:2] != (3, 13):
-        sys.exit(f"need CPython 3.13 (pyc magic), got {sys.version}")
+    want = tuple(int(p) for p in CONFIG["toolchain"]["python"].split(".")[:2])
+    if sys.version_info[:2] != want:
+        sys.exit(f"need CPython {want[0]}.{want[1]} (pyc magic must match the wasm interpreter), got {sys.version}")
     args = [a for a in sys.argv[1:]]
     flags = {a for a in args if a.startswith("--")}
     rest = [a for a in args if not a.startswith("--")]

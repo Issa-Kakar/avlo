@@ -1,5 +1,6 @@
 # self-asserting: pruned modules raise the friendly tombstone error
-for name in ("ctypes", "bz2", "http"):
+# (compression.zstd: the 3.14 wrapper over the disabled _zstd)
+for name in ("ctypes", "bz2", "http", "compression.zstd"):
     try:
         __import__(name)
     except ModuleNotFoundError as e:

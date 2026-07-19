@@ -84,7 +84,7 @@ export function scanPythonImports(source: string): string[] {
 
 /** Sets ordered smallest-first for the upward merge below. */
 const SET_KEYS_BY_SIZE = Object.freeze(
-  (Object.keys(SET_BUNDLES) as PySetKey[]).sort((a, b) => SET_BUNDLES[a].length - SET_BUNDLES[b].length),
+  (Object.keys(SET_BUNDLES) as (keyof typeof SET_BUNDLES)[]).sort((a, b) => SET_BUNDLES[a].length - SET_BUNDLES[b].length),
 );
 
 /**
@@ -108,7 +108,11 @@ export function resolveImports(modules: string[], availablePackages: ReadonlySet
   }
   let setKey: PySetKey = 'stdlib';
   if (neededBundles.size > 0) {
-    setKey = SET_KEYS_BY_SIZE.find((k) => [...neededBundles].every((b) => SET_BUNDLES[k].includes(b))) ?? 'all';
+    const covering = SET_KEYS_BY_SIZE.find((k) => [...neededBundles].every((b) => SET_BUNDLES[k].includes(b)));
+    // 'all' covers every bundle by construction — a miss means the generated
+    // tables and this resolver diverged; fail loud, never guess a set.
+    if (covering === undefined) throw new Error(`resolveImports: no set covers [${[...neededBundles].join(', ')}]`);
+    setKey = covering;
   }
   return { setKey, missing };
 }
@@ -116,7 +120,9 @@ export function resolveImports(modules: string[], availablePackages: ReadonlySet
 /** The user-facing refusal line (rendered error-tinted in the output panel). */
 export function unavailableMessage(missing: string[]): string {
   const list = missing.map((m) => `'${m}'`).join(', ');
-  const marquee = ['numpy', 'pandas', 'matplotlib', 'seaborn', 'sqlite3'].filter((p) => AVAILABLE_PACKAGES.has(p));
+  // sqlite3 is stdlib since the 314 toolchain (static _sqlite3) — the marquee
+  // check spans both tables so it keeps its billing.
+  const marquee = ['numpy', 'pandas', 'matplotlib', 'seaborn', 'sqlite3'].filter((p) => AVAILABLE_PACKAGES.has(p) || STDLIB_MODULES.has(p));
   const avail = marquee.length > 0 ? `${marquee.join(', ')} + the Python standard library` : 'the Python standard library';
   return `ImportError: ${list} ${missing.length === 1 ? 'is' : 'are'} not available in canvas Python. Available: ${avail}.`;
 }

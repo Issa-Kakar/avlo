@@ -33,6 +33,28 @@ const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const wheels = config.recipes.wheels;
 const names = Object.keys(wheels).filter((n) => !n.startsWith('$') && (!only || only.has(n)));
 
+// The stock full lock is the pin source for --stamp and the drift guard.
+// Auto-fetch from the CDN mirror when absent or from a different pyodide
+// release — dist/raw goes stale across toolchain jumps until the first fork
+// build, and the fork's own emitted lock (if any) must never clobber this
+// full one, so provenance lives here, not in build.sh's copy list.
+const lockIsCurrent = () => {
+  try {
+    return JSON.parse(readFileSync(lockPath, 'utf8')).info?.version === config.pyodide.tag;
+  } catch {
+    return false;
+  }
+};
+if (!lockIsCurrent()) {
+  const url = `${config.recipes.mirror}/pyodide-lock.json`;
+  process.stdout.write(`lock    fetching stock ${config.pyodide.tag} lock ... `);
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  writeFileSync(lockPath, Buffer.from(await res.arrayBuffer()));
+  console.log('ok');
+}
+
 const lockEntry = (lock, name) => lock.packages[name] ?? lock.packages[name.replace(/-/g, '_')];
 
 if (args.includes('--stamp')) {

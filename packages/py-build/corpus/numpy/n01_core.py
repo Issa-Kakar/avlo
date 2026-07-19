@@ -1,7 +1,7 @@
 # self-asserting: numpy core — pinned version, ufuncs, linalg + fft DSOs
 import numpy as np
 
-assert np.__version__ == "2.2.5", np.__version__
+assert np.__version__ == "2.4.3", np.__version__
 a = np.ones(4)
 assert float(a.sum()) == 4.0
 b = np.arange(12, dtype=np.float64).reshape(3, 4)

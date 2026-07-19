@@ -23,29 +23,36 @@ for p in /pb/patches/pyodide/*.patch; do
   git apply --index "$p"
   git commit -qm "$(basename "$p")"
 done
-# emsdk patches ride pyodide's own emsdk patch mechanism (applied by make -C emsdk).
-for p in /pb/patches/emsdk/*.patch; do
-  echo "=== staging emsdk patch $(basename "$p")"
-  cp "$p" emsdk/patches/
-done
-
-# The top-level Makefile's `emsdk/emsdk/.complete:` rule has NO prerequisites,
-# so staged emsdk patches are inert on incremental builds (the patch wildcard
-# only fires inside `make -C emsdk`, which full rebuilds run). Direct-apply
-# any patch the installed tree is missing, then hard-assert hook liveness —
-# a silently-unpatched dylink layer produces snapshots that fail only at
-# numpy-replay time, hours downstream.
-EMSCRIPTEN_DIR=emsdk/emsdk/upstream/emscripten
-if [ -d "$EMSCRIPTEN_DIR" ]; then
-  for p in /pb/patches/emsdk/*.patch; do
-    if patch -p1 -N --dry-run -d "$EMSCRIPTEN_DIR" < "$p" >/dev/null 2>&1; then
-      echo "=== direct-applying emsdk patch $(basename "$p") (installed tree predates it)"
-      patch -p1 -N -d "$EMSCRIPTEN_DIR" < "$p"
-    fi
+# emsdk patches ride pyodide's own emsdk patch mechanism (applied by make -C
+# emsdk). Every AVLO emsdk patch embeds an `AVLO` marker in its added lines —
+# the liveness grep keys on the marker, not on any one patch's symbol, so the
+# whole block is a no-op while patches/emsdk/ is empty (P1 parks dsoBaseHook).
+EMSDK_PATCHES=(/pb/patches/emsdk/*.patch)
+if [ -e "${EMSDK_PATCHES[0]:-}" ]; then
+  for p in "${EMSDK_PATCHES[@]}"; do
+    echo "=== staging emsdk patch $(basename "$p")"
+    cp "$p" emsdk/patches/
   done
-  grep -q dsoBaseHook "$EMSCRIPTEN_DIR/src/lib/libdylink.js" || {
-    echo "!!! emsdk dsoBaseHook missing from installed emscripten after patching"; exit 1;
-  }
+  # The top-level Makefile's `emsdk/emsdk/.complete:` rule has NO prerequisites,
+  # so staged emsdk patches are inert on incremental builds (the patch wildcard
+  # only fires inside `make -C emsdk`, which full rebuilds run). Direct-apply
+  # any patch the installed tree is missing, then hard-assert marker liveness —
+  # a silently-unpatched dylink layer fails only at runtime, hours downstream.
+  EMSCRIPTEN_DIR=emsdk/emsdk/upstream/emscripten
+  if [ -d "$EMSCRIPTEN_DIR" ]; then
+    for p in "${EMSDK_PATCHES[@]}"; do
+      if patch -p1 -N --dry-run -d "$EMSCRIPTEN_DIR" < "$p" >/dev/null 2>&1; then
+        echo "=== direct-applying emsdk patch $(basename "$p") (installed tree predates it)"
+        patch -p1 -N -d "$EMSCRIPTEN_DIR" < "$p"
+        # dist/pyodide.asm.* make rules do NOT depend on emsdk sources — force
+        # the relink so an incremental build can't ship unpatched glue.
+        rm -f dist/pyodide.asm.*
+      fi
+    done
+    grep -q AVLO "$EMSCRIPTEN_DIR/src/lib/libdylink.js" || {
+      echo "!!! AVLO emsdk marker missing from installed emscripten after patching"; exit 1;
+    }
+  fi
 fi
 shopt -u nullglob
 
@@ -54,7 +61,7 @@ echo "=== make ${TARGETS}"
 make ${TARGETS}
 
 mkdir -p /out/raw
-for f in dist/pyodide.asm.js dist/pyodide.asm.wasm dist/pyodide.js dist/pyodide.mjs dist/python_stdlib.zip dist/snapshot.bin dist/package.json; do
+for f in dist/pyodide.asm.mjs dist/pyodide.asm.wasm dist/pyodide.mjs dist/python_stdlib.zip; do
   [ -f "$f" ] && cp -f "$f" /out/raw/ && echo "=== copied $f"
 done
 echo "=== build.sh done"

@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-assert pd.__version__ == "2.3.3", pd.__version__
+assert pd.__version__ == "3.0.2", pd.__version__
 df = pd.DataFrame({"a": [1, 2, 3, 4], "b": list("xyxy")})
 assert int(df["a"].sum()) == 10
 g = df.groupby("b")["a"].sum()

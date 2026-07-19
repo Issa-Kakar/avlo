@@ -1,33 +1,50 @@
 From: avlo-py-build <py-build@avlo.local>
-Subject: [PATCH] AVLO: drop _ctypes, _bz2, CJK codecs, pyexpat, _lsprof
+Subject: [PATCH] AVLO: drop _ctypes, _bz2, _lzma, _zstd, CJK codecs, pyexpat, _lsprof
 
 Canvas snippets need none of these; _ctypes additionally grows the wasm
 table at runtime (callback trampolines), which would defeat the blit-reset
-run-isolation guard. Rollback of any single drop is one Setup.local line.
+run-isolation guard. Rebased to 314's Setup.local: upstream now disables
+pwd/_ssl/_hashlib/_uuid itself and builds _hmac (HACL) + _sqlite3 static —
+both KEPT (sqlite3-static kills the old set-riding sqlite3 bundle). _lzma
+was disabled on the 0.29 fork too (never shipped); _zstd is its 3.14-new
+sibling and follows it. Rollback of any single drop is one Setup.local
+line.
 
---- a/cpython/Setup.local	2026-07-04 22:39:37.962585280 -0700
-+++ b/cpython/Setup.local	2026-07-04 22:39:38.026585479 -0700
-@@ -6,12 +6,10 @@
+diff --git a/cpython/Setup.local b/cpython/Setup.local
+index 9ea6c46..3b6b7ac 100644
+--- a/cpython/Setup.local
++++ b/cpython/Setup.local
+@@ -6,21 +6,34 @@
  
  *static*
  
 -CTYPES_FLAGS=-DHAVE_FFI_PREP_CIF_VAR=1 -DHAVE_FFI_PREP_CLOSURE_LOC=1 -DHAVE_FFI_CLOSURE_ALLOC=1 -I ../libffi/include
 -_ctypes _ctypes/_ctypes.c _ctypes/callbacks.c _ctypes/callproc.c _ctypes/cfield.c _ctypes/stgdict.c $(CTYPES_FLAGS)
 -
-+# AVLO: _ctypes and _bz2 dropped (canvas snippets need neither; ctypes also
-+# grows the wasm table at runtime, which would defeat blit-reset run isolation).
++# AVLO: _ctypes, _bz2, _lzma, _zstd dropped from the static set (canvas
++# snippets need none — the 0.29 fork shipped without lzma too; ctypes also
++# grows the wasm table at runtime, which would defeat blit-reset run
++# isolation). Their bare names ride *disabled* below alongside our codec/
++# profiling/xml drops. Rollback of any single drop is one line.
  _posixsubprocess _posixsubprocess.c
  
 -_bz2 _bz2module.c -lbz2
  zlib zlibmodule.c
  
+ _hmac hmacmodule.c _hacl/Hacl_Hash_MD5.c _hacl/Hacl_Hash_SHA1.c _hacl/Hacl_Hash_SHA2.c _hacl/Hacl_Hash_SHA3.c _hacl/Hacl_Hash_Blake2b.c _hacl/Hacl_Hash_Blake2s.c _hacl/Hacl_HMAC.c _hacl/Hacl_Streaming_HMAC.c _hacl/Lib_Memzero0.c -I$(srcdir)/Modules/_hacl -I$(srcdir)/Modules/_hacl/include -I$(srcdir)/Modules/_hacl/internal
+ _sqlite3 _sqlite/blob.c _sqlite/connection.c _sqlite/cursor.c _sqlite/microprotocols.c _sqlite/module.c _sqlite/prepare_protocol.c _sqlite/row.c _sqlite/statement.c _sqlite/util.c -lsqlite3
+-_lzma _lzmamodule.c -I../lzma/dist/include -L../lzma/dist/lib -llzma
+-_zstd _zstd/_zstdmodule.c _zstd/compressor.c _zstd/decompressor.c _zstd/zstddict.c -I../zstd/dist/include -L../zstd/dist/lib -lzstd
  
-@@ -22,3 +20,15 @@
- _lzma
- _hashlib
+ *disabled*
+ pwd
  _uuid
+ _ssl
+ _hashlib
 +_ctypes
 +_bz2
++_lzma
++_zstd
 +_codecs_cn
 +_codecs_hk
 +_codecs_iso2022
