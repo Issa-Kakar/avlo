@@ -2,8 +2,9 @@
 
 **Date:** 2026-07-19 · **Build analyzed:** `58ae9021763d19f0` (Pyodide 314.0.2 / CPython 3.14.2
 / emsdk 5.0.3 / ABI 2026_0, MAIN_MODULE=2 closed world) · **Status:** investigation only, no
-code changed. Analyzer script: scratchpad `analyze-dsos.mjs` (parses every shipped `.so` out of
-`dist/stage/bundles/*.tar` + the main wasm; promote into `scripts/` at replan time).
+code changed. Analyzer: `scripts/analyze-dsos.mjs` (`pnpm --filter @avlo/py-build dsos`) —
+parses every shipped `.so` out of `dist/stage/bundles/*.tar` + the main wasm; `dsos:check`
+gates PyInit-shortname uniqueness per bundle + no-PyInit-less-DSO on any restage.
 
 ## Verdict
 
@@ -295,8 +296,8 @@ buildHash rotates (restage ⇒ reseed as usual).
    First step of implementation: add a `mount-extract` vs `mount-dlopen` trace split so the
    cold-path win is measured, not estimated.
 2. **P2 proceeds against the 4-DSO world** with its scope reduced as in §8.
-3. Analyzer promotion: move `analyze-dsos.mjs` into `scripts/` as a standing gate
-   (collision audit + shortname audit + import-closure check on every restage).
+3. Analyzer is promoted (`scripts/analyze-dsos.mjs`); run `dsos:check` on every restage
+   and extend it with the group-link input-dedup audit once the `.o` stash exists.
 
 ## Appendix: prior-art index
 

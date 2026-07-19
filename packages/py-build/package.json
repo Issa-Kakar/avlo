@@ -12,6 +12,8 @@
     "verify:stacking": "echo 'PARKED until P2: snapshot capture moves to the build-side Playwright harness (redesign P1 deviation 1)' && exit 1",
     "builtins": "node scripts/dump-builtins.mjs",
     "corpus": "node scripts/run-corpus.mjs",
+    "dsos": "node scripts/analyze-dsos.mjs",
+    "dsos:check": "node scripts/analyze-dsos.mjs --check",
     "wheels": "node scripts/fetch-wheels.mjs",
     "bundles": "python3.14 scripts/pack-package.py --all --repro",
     "trace": "node scripts/trace-imports.mjs",
