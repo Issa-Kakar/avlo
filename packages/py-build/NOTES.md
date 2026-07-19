@@ -851,3 +851,74 @@ checkpoint: rebase+toolchain; Gate B: flip+lock+seed).
 **Wall-clocks:** Loop A full build 1,208 s; Loop B incremental rebuilds 17-19 s.
 **Interim buildHash** `ca1a27d668ff97b5` (Loop A) — rotates at Gate B restage; client
 `SNAPSHOTS_ENABLED=false` means stale OPFS snapshots are inert regardless.
+
+## Session 13 — Loop B UNBLOCKED + Gate B (browser board pending owner)
+
+- **Root cause of the stringbuf boot failure — NOT what the handoff guessed.** Neither
+  the -u sweep nor link.py's user_requested_exports: putting the 67 `.so`s on the
+  wasm-ld command line let lld apply the ELF shared-def-beats-weak-def rule — the MAIN
+  module's own WEAK (C++ COMDAT vague-linkage) basic_stringbuf/stringstream
+  instantiations (Loop A exported the full 33-symbol family; main's own C++ uses
+  stringstream) were DISCARDED in favor of runtime imports of kiwisolver's `_cext.so`
+  strong exports (env + GOT.func, non-weak ⇒ `required`), and startup
+  reportUndefinedSymbols throws before any bundle can mount. The handoff's step 1
+  (filtered -u) could never fix this — the imports predate the sweep and persist as
+  long as the DSOs ride the link line. Diagnosis evidence: LOOP-A wasm exports the
+  family / imports none; LOOP-B imported exactly the 2 dtors that kiwisolver exports
+  strong (flags=None in its dylink import_info); the other 891 cross-DSO-satisfiable
+  symbols never became main imports (they aren't referenced by main objects).
+- **Fix (no emsdk patch needed): DSOs OFF the link line.** fetch-wheels' link-sos block
+  now emits link.rsp = one `-Wl,--export-if-defined=<sym>` per symbol in the union of
+  all 67 post-prune DSOs' func/global/tag imports (1,764; invoke_* excluded), scanned
+  in-memory from the wheels — no .so extraction, no -u, no .so paths. This reproduces
+  the ONLY effect we need from emcc's process_dynamic_libs (main-defined DSO-needed
+  symbols survive metadce as exports — the same mechanism that produced the ~1k export
+  set) while main keeps its own COMDAT copies; cross-DSO symbols resolve lazily at
+  dlopen exactly as under Loop A, whose full green corpus is the proof main defines
+  everything the DSOs need from it. `-s AUTOLOAD_DYLIBS=0` dropped (inert with nothing
+  on the link line).
+- **Second (shallower) failure class found + fixed: the no-EXPORT_ALL JS surface.**
+  First mount died at `Module._dlerror is not a function` — dynload.ts's dlopen path
+  needs Module surface that only EXPORT_ALL used to provide. Fixed by enumerating EVERY
+  `(Module|#module).prop` access across src/js against the built wasm's exports:
+  EXPORTS += `_dlerror` + `_emscripten_dlopen_promise` (musl/dynlink.c — pyodide's own
+  core C rides EMSCRIPTEN_KEEPALIVE, these two don't); EXPORTED_RUNTIME_METHODS +=
+  `UTF8ToString,getPromise,promiseMap` (JS-library symbols). False positives ruled out:
+  `_PropagatePythonError` is a pyodide-JS class self-attached to Module;
+  addRunDependency etc. already present (boot proved it).
+- **Gate B board GREEN** (browser matrix pending): corpus ALL 7 groups on the =2 build
+  (basic 6/6 · sqlite 3/3 stdlib-static · numpy 4/4 · pandas 5/5 · mpl 4/4 · all 2/2 ·
+  seaborn 6/6 w/ 4 PNGs pixel-decoded) — the closed-world proof, every DSO dlopens,
+  zero named-stub throws · compress + budgets restamped (11 artifact ceilings;
+  composites hand-set +5%: numpy-path 7,702,265 br / pandas-mpl 15,361,657 br —
+  measured 7.34/14.63 MB) · stage → **buildHash `58ae9021763d19f0`** + `--check` clean
+  · typecheck 12/12 · vitest workers/py 3/3 + py-loader verify 2/2 · `pnpm py:seed`
+  23 keys (manifest last).
+- **Loop B final numbers** (vs Loop A 8,015-export / 7,952,003 B wasm / 849,194 B glue):
+  wasm **6,858,149 B (−13.8%)**, exports **1,013**, glue **343,521 B (−60%** — the
+  earlier 632 KB Loop-B glue was carrying ~290 KB of JS-library stubs that
+  DEFAULT_LIBRARY_FUNCS_TO_INCLUDE pulled in for the on-the-line DSOs; off the line
+  they vanish), GOT imports **0**. Incremental rebuild ~19 s.
+- **PENDING (owner):** the TWO commits (Gate A checkpoint: rebase+toolchain; Gate B:
+  flip+lock+seed). Browser board + cold-boot ledger DONE below (owner authorized the
+  dev server same-session).
+- **Browser dev board GREEN (Chrome, dev server, room PySmokeCommit1)** — every check
+  of the Gate-B matrix: stdlib print+echo+sqlite3 `:memory:` CRUD (`[(6,)]`/`42`) ·
+  `import ctypes` + `import compression.zstd` → precise runtime tombstones
+  (python314.zip sitecustomize) · numpy 4.0 · pandas groupby `{'a': 3, 'b': 7}` +
+  `pd.read_sql` sqlite roundtrip `10` · mpl `plt.plot` → figure PLACED on canvas with
+  auto-connector · seaborn scatterplot figure placed (all set) · `import requests` →
+  instant refusal, marquee still bills sqlite3 via STDLIB_MODULES · cancel mid
+  `while True` → "Run cancelled." · 30 s soft timeout → "Run timed out after 30 s." ·
+  idle-teardown + eager respawn observed healthy (uncounted `reqToReady=undefined`
+  re-boots in the trace ring).
+- **P1 COLD-BOOT LEDGER (dev, no SW, local R2; every boot `path=cold boot (no
+  snapshot)` — the P2 baseline).** click→ready = sup reqToReadyMs; exec boot in ():
+  **stdlib 574 ms** (451: load-pyodide 392 · stdlib-verify 8 · post-restore 16 ·
+  harden 1 · harness 7 · reset-image 21 @31 MB) · **numpy 1030** (624: +mount 206
+  @1 tar) · **numpy+pandas 1341** (1168: mount 200 @4 tars, bundles-fetch 126) ·
+  **numpy+matplotlib 1472** (1025: mount 179 @5 tars) · **all 1854** (1362: mount 197
+  @7 tars, bundles-fetch 150). load-pyodide is a steady ~360-395 ms every boot (main
+  compile+instantiate+CPython init). vs P0: old `all` OPFS-restore was 1224-1252
+  click→ready and old cold GENERATION 4588 — the new pure cold mount boot (1854, no
+  snapshot at all) sits between them; P2 restores attack the remaining gap.

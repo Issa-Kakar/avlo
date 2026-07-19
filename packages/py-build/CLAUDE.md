@@ -1,5 +1,14 @@
 # py-build — AVLO Python toolchain
 
+> **P1 INTERIM STATE (redesign, Session 12-13 — NOTES.md):** fork is **Pyodide
+> 314.0.2** / CPython 3.14 / emsdk 5.0.3 / **MAIN_MODULE=2** (closed world =
+> `-Wl,--export-if-defined` union in `.cache/link-sos/link.rsp`, emitted by
+> fetch-wheels; DSOs deliberately NOT on the link line). Snapshot capture
+> (make-baseline/verify-stacking + patches 0005/0007/0008b/dsoBaseHook) is
+> **PARKED in `patches/parked/`** until P2; `builtin-modules.json` comes from
+> `dump-builtins.mjs`. Glue is `pyodide.asm.mjs`. Prose below predates the
+> jump where it conflicts; full rewrite lands P5.
+
 Forked-Pyodide build + artifact packing for the in-browser Python runtime
 (`web/src/core/py/`). Everything is pinned in `build.config.json`
 (reproducibility root); in-flight cross-session state lives in `NOTES.md`.

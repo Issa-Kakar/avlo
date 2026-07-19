@@ -1,79 +1,65 @@
 {
   "schema": 1,
-  "buildHash": "01ba07e1133d0342",
+  "buildHash": "58ae9021763d19f0",
   "artifacts": {
-    "pyodide.asm.js": {
-      "sha256": "5cc6863c603b3ab6ab9503c63285ae515ccad25e7e0c5d0b218963839acb1090",
-      "size": 738996
+    "pyodide.asm.mjs": {
+      "sha256": "724153ec5017a03fe1950641471ca227606448605f060b3bfcbc7988fd0b250c",
+      "size": 343521
     },
     "pyodide.asm.wasm": {
-      "sha256": "fdc91b4b6d5c62a9779fa0a230719fd38cef90c8779bc8e66c2d8f1efb1b0d9a",
-      "size": 7460952
+      "sha256": "873b808aa1cf909029b55b0f5b8168dc24115158135abf574792bfa41a73558a",
+      "size": 6858149
     },
     "pyodide.mjs": {
-      "sha256": "c7f43ddf3cd9f47f8cdc0a3cbf339aaecbdf633b0bb16199ebd8dafb473b3248",
-      "size": 16734
+      "sha256": "51e871bc0b935ffae9dd094dfe412f9084051292e093047d3a6cd9c5bf91c264",
+      "size": 16999
     },
     "python_stdlib.zip": {
-      "sha256": "a720638cdc2511ddf637826c6858135ab26d7a18b80622f78fb658deca6fefe1",
-      "size": 3097052
-    },
-    "baseline.snap": {
-      "sha256": "6078d79ea48701dd5688d41ae3cc6a20c7918f314f4fe06fb9af9a1f090e523c",
-      "size": 20971936
+      "sha256": "a0d5747ce42fcfc7596bf4828bc72b95ccaf25db6e13ea7d88745d302fe8762c",
+      "size": 3354675
     }
   },
   "bundles": {
-    "sqlite3": {
-      "sha256": "410da0da0d183b0d1cf96174523c58eeadfb68b8f9027de8f07431ee4dbc0ca9",
-      "size": 1464320
-    },
     "numpy": {
-      "sha256": "db667bbb049b5cb0f4b4208c4d84486a4bad1f99da516275ba0cb92c5808ec0a",
-      "size": 9123840
+      "sha256": "7dd77d49e37e6ad214416e9bfccf9d8b296fa2e39ed2c2b313be02e8c28983db",
+      "size": 9441280
     },
     "dateutil": {
-      "sha256": "1d3931018fa4733f79008c2e442e478099457add4c1d5d5c8b4d6c25d0dc5510",
-      "size": 368640
+      "sha256": "a644441edccbee8e141ecbaab08430d2c7e123dd6cffe25bbc0067ebe2394413",
+      "size": 378880
     },
     "pytz": {
-      "sha256": "31167d1795da3f47fe3e8696146e33179101334cb37f39705368a03bca1c63da",
-      "size": 1454080
+      "sha256": "16020f63f41c50d6ea306a8e35ab755d942c5d2b563a1ccc77cc8425043cbc95",
+      "size": 1474560
     },
     "mpl-deps": {
-      "sha256": "ace406ee088e2a7f707f7a85ba6e2e4664677ab58c305a3ede4393788c358725",
-      "size": 1515520
+      "sha256": "648cca773f8cb5426e3efc04a2305f1ca4fe6148aabff7073a58073801d9aa6d",
+      "size": 1710080
     },
     "pandas": {
-      "sha256": "0fcc8fb473e205c9e06d852bfdc71586143e892b8833e5ddebe798ad20d2ea0d",
-      "size": 17704960
+      "sha256": "afdec1c6de8d7c19817803e2eb3d0fcee004446a651f4d2eaf3e6fee9c8df460",
+      "size": 17950720
     },
     "matplotlib": {
-      "sha256": "fe89207007f9f88d23b6a2ff248a90d5f34ebc2ab505b65f60bb379cb380c893",
-      "size": 8796160
+      "sha256": "99bacbc23873847ce7afe0ba5dca394425e28149eda9b2a4edcec09b605d8d7a",
+      "size": 10106880
     },
     "seaborn": {
-      "sha256": "123174bf41c19144d374036d8b86e56e5ab53d650918436a07b037c5b8558759",
-      "size": 1003520
+      "sha256": "84dc2f98c70b7c3ba351240f46171ca810e18c5ed2a79423c5de8004b2e422c2",
+      "size": 1044480
     }
   },
   "sets": {
-    "sqlite3": [
-      "sqlite3"
-    ],
     "numpy": [
-      "sqlite3",
       "numpy"
     ],
     "numpy+pandas": [
-      "sqlite3",
       "numpy",
       "dateutil",
       "pytz",
       "pandas"
     ],
     "numpy+matplotlib": [
-      "sqlite3",
       "numpy",
       "dateutil",
       "pytz",
@@ -81,7 +67,6 @@
       "matplotlib"
     ],
     "all": [
-      "sqlite3",
       "numpy",
       "dateutil",
       "pytz",

@@ -1,5 +1,11 @@
 # Python Runtime (`core/py/`)
 
+> **P1 INTERIM STATE (redesign, Session 12-13 — NOTES.md in py-build):** fork is now
+> Pyodide **314.0.2** / CPython 3.14 / emsdk 5.0.3 / MAIN_MODULE=2. ALL snapshot
+> machinery is **PARKED until P2** (`SNAPSHOTS_ENABLED = false` in py-supervisor —
+> every boot is a cold mount boot; sqlite3 is static/stdlib, no bundle). Snapshot
+> prose below describes the pre-P1 world; full rewrite lands P5.
+
 In-browser Python execution for code blocks — forked Pyodide 0.29.4 (built by
 `packages/py-build/`; artifacts + bundle tars served from the **py worker
 origin** `PY_ORIGIN/<buildHash>/…` — `py.avlo.io` prod, `/api/py` Vite proxy

@@ -1,40 +1,102 @@
 From: avlo-py-build <py-build@avlo.local>
-Subject: [PATCH] AVLO: strip graphics/FS JS libs, 2GB cap, snapshot exports
+Subject: [PATCH] AVLO: MAIN_MODULE=2 closed world, strip graphics/FS libs, 2GB/5MB
 
 One consolidated Makefile patch (single-writer for Makefile.envs so queue
-hunks never conflict):
-- drop GL/egl/webgl/html5_webgl/sdl + idbfs/nodefs/proxyfs/workerfs/websocket
-  JS libs and the embuilder libgl step (headless AGG canvas needs none;
-  loaders feed buffers, never mount host FS). html5.js + eventloop.js KEPT
-  (stack-switching scheduler) — candidates for a later bisect.
-- MAXIMUM_MEMORY 4GB->2GB; drop FS_DEBUG; drop USE_BZIP2 (module gone in 0003).
-- EXPORTED_RUNTIME_METHODS += loadWebAssemblyModule,newDSO,LDSO,
-  getEmptyTableSlot,freeTableIndexes,growMemory (needed by DSO replay).
-  MAIN_MODULE=1 + EXPORT_ALL=1 untouched (frozen ABI guarantee).
+hunks never conflict), against 314.0.2 / emsdk 5.0.3. Loop-B form: the
+link model is the closed world.
+- MAIN_MODULE=1 + EXPORT_ALL=1 -> MAIN_MODULE=2. The closed world rides
+  @/pb/.cache/link-sos/link.rsp (emitted host-side by fetch-wheels.mjs):
+  one -Wl,--export-if-defined=<sym> per symbol in the UNION of the
+  post-prune DSO set's func/global/tag imports. That reproduces the only
+  effect we need from emcc's process_dynamic_libs — every symbol main
+  defines that a DSO imports survives metadce as an export — while the
+  DSOs themselves stay OFF the link line. They must: wasm-ld resolves a
+  main-object WEAK (C++ COMDAT vague-linkage) definition against a strong
+  export from a dylib on the command line (ELF shared-def-beats-weak-def),
+  which turned main's own basic_stringbuf/stringstream instantiations
+  into required boot-time imports of kiwisolver's _cext.so — unresolvable
+  before any bundle mounts, so reportUndefinedSymbols threw at startup.
+  Off the line, main keeps its own COMDAT copies and cross-DSO symbols
+  resolve lazily at dlopen exactly as under MAIN_MODULE=1 (Gate A proved
+  the main link defines everything the 67 DSOs need from it).
+- ERROR_ON_UNDEFINED_SYMBOLS=1 pinned explicitly as the main-link
+  tripwire (it is the 5.0.3 default on this path, but the setting IS the
+  contract). Runtime backstop is upstream 5.0.3's unconditional named
+  throws (libdylink lazy stubs + reportUndefinedSymbols) — no emsdk patch
+  needed; the closed-world proof is corpus+harness dlopening every DSO.
+- drop GL/egl/webgl/html5_webgl/sdl + idbfs/nodefs/proxyfs/workerfs/
+  websocket JS libs and the embuilder libgl step (headless AGG canvas
+  needs none; loaders feed buffers, never mount host FS). html5.js +
+  eventloop.js KEPT (stack-switching scheduler); libjsverror.js KEPT.
+- MAXIMUM_MEMORY 4GB->2GB; STACK_SIZE 10MB->5MB (static reserve rides in
+  every P2 snapshot; corpus-validated); drop FS_DEBUG; drop USE_BZIP2 and
+  -llzma/-lzstd (modules disabled in 0003; _lzma was never in the 0.29
+  fork either); -lsqlite3 KEPT (sqlite3-static kills the old set-riding
+  sqlite3 bundle).
+- EXPORTED_RUNTIME_METHODS = upstream's own curated no-EXPORT_ALL list
+  (from its DISABLE_DYLINK branch: FS/ENV/heaps/stack helpers) — with
+  EXPORT_ALL gone these no longer ride along implicitly, and the loader's
+  preRun (FS.mkdirTree/chdir, stdlib install) + the executor blit (HEAP8,
+  wasmTable) need them — PLUS the dynload.ts dlopen-path surface that
+  DISABLE_DYLINK builds never exercise: UTF8ToString, getPromise,
+  promiseMap (JS-library symbols; EXPORT_ALL used to hoist them onto
+  Module). Same story on the C side: EXPORTS += _dlerror +
+  _emscripten_dlopen_promise — pyodide's own core C rides
+  EMSCRIPTEN_KEEPALIVE, but these two live in musl/dynlink.c and only
+  dynload.ts calls them. The full JS-visible surface was enumerated by
+  grepping every (Module|#module).prop access in src/js against the
+  built wasm's exports. The six DSO-replay exports stay PARKED with 0005
+  until P2.
 
---- a/Makefile.envs	2026-07-04 22:35:45.618638531 -0700
-+++ b/Makefile.envs	2026-07-04 22:42:29.486538286 -0700
-@@ -161,15 +161,13 @@
+diff --git a/Makefile b/Makefile
+index e6ca08c..53b95ed 100644
+--- a/Makefile
++++ b/Makefile
+@@ -116,7 +116,6 @@ dist/pyodide.asm.mjs: \
+ 	@date +"[%F %T] Building pyodide.asm.mjs..."
+    # TODO(ryanking13): Link libgl to a side module not to the main module.
+    # For unknown reason, a side module cannot see symbols when libGL is linked to it.
+-	embuilder build libgl
+ 	$(CXX) -o dist/pyodide.asm.mjs -lpyodide src/core/main.o $(MAIN_MODULE_LDFLAGS)
+ 
+ 	if [[ -n $${PYODIDE_SOURCEMAP+x} ]] || [[ -n $${PYODIDE_SYMBOLS+x} ]] || [[ -n $${PYODIDE_DEBUG_JS+x} ]]; then \
+diff --git a/Makefile.envs b/Makefile.envs
+index 0ba8b4b..61f9241 100644
+--- a/Makefile.envs
++++ b/Makefile.envs
+@@ -155,20 +155,18 @@ export CXXFLAGS_BASE=
+ 
+ export MAIN_MODULE_LDFLAGS= $(LDFLAGS_BASE) \
+ 	-s ENVIRONMENT=web,webview,worker,node,shell \
+-	-s MAIN_MODULE=1 \
++	-s MAIN_MODULE=2 \
++	-s ERROR_ON_UNDEFINED_SYMBOLS=1 \
  	-s LZ4=1 \
  	-s EXPORT_NAME="'_createPyodideModule'" \
  	-s EXPORT_EXCEPTION_HANDLING_HELPERS \
 -	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES' \
-+	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES,loadWebAssemblyModule,newDSO,LDSO,getEmptyTableSlot,freeTableIndexes,growMemory' \
++	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES,FS,ENV,UTF8ToString,getPromise,promiseMap,stringToNewUTF8,stringToUTF8OnStack,addFunction,stackSave,stackRestore,runtimeKeepalivePush,SOCKFS,HEAP8,HEAPU8,HEAP16,HEAPU16,HEAP32,HEAPU32,HEAP64,HEAPU64,HEAPF32,HEAPF64' \
  	-s USE_ZLIB \
 -	-s USE_BZIP2 \
  	-s FORCE_FILESYSTEM=1 \
- 	-s INITIAL_MEMORY=20971520 \
+ 	-s INITIAL_MEMORY=31457280 \
  	-s ALLOW_MEMORY_GROWTH=1 \
 -	-s MAXIMUM_MEMORY=4GB \
-+	-s MAXIMUM_MEMORY=2GB \
- 	-s EXPORT_ALL=1 \
+-	-s EXPORT_ALL=1 \
 -	-s FS_DEBUG=1 \
- 	-s STACK_SIZE=5MB \
+-	-s STACK_SIZE=10MB \
++	-s MAXIMUM_MEMORY=2GB \
++	-s STACK_SIZE=5MB \
  	-s AUTO_JS_LIBRARIES=0 \
  	-s AUTO_NATIVE_LIBRARIES=0 \
-@@ -182,22 +180,10 @@
+ 	-s NODEJS_CATCH_EXIT=0 \
+@@ -178,27 +176,14 @@ export MAIN_MODULE_LDFLAGS= $(LDFLAGS_BASE) \
+ 	\
  	-lpython$(PYMAJOR).$(PYMINOR)$(CPYTHON_ABI_FLAGS) \
  	-lffi \
+-	-llzma \
+ 	-lsqlite3 \
+-	-lzstd \
  	-lstdc++ \
 -	-lidbfs.js \
 -	-lnodefs.js \
@@ -47,22 +109,23 @@ hunks never conflict):
 -	-lGL \
 -	-legl.js \
 -	-lwebgl.js \
--	-lhtml5.js \
+ 	-lhtml5.js \
 -	-lhtml5_webgl.js \
 -	-lsdl.js \
+ 	--js-library=src/core/libjsverror.js \
 -	-sMAX_WEBGL_VERSION=2  \
 -	-sGL_WORKAROUND_SAFARI_GETCONTEXT_BUG=0
-+	-lhtml5.js
++	@/pb/.cache/link-sos/link.rsp
  
  EXPORTS=_main \
     ,_free \
---- a/Makefile	2026-07-04 22:42:29.514538249 -0700
-+++ b/Makefile	2026-07-04 22:42:29.514538249 -0700
-@@ -116,7 +116,6 @@
- 	[ -d dist ] || mkdir dist
-    # TODO(ryanking13): Link libgl to a side module not to the main module.
-    # For unknown reason, a side module cannot see symbols when libGL is linked to it.
--	embuilder build libgl
- 	$(CXX) -o dist/pyodide.asm.js -lpyodide src/core/main.o $(MAIN_MODULE_LDFLAGS)
+@@ -256,6 +241,9 @@ EXPORTS=_main \
+    \
+    ,___stack_low \
+    ,___stack_high \
++   \
++   ,_dlerror \
++   ,_emscripten_dlopen_promise \
  
- 	if [[ -n $${PYODIDE_SOURCEMAP+x} ]] || [[ -n $${PYODIDE_SYMBOLS+x} ]] || [[ -n $${PYODIDE_DEBUG_JS+x} ]]; then \
+ 
+ ifeq ($(DISABLE_DYLINK), 1)
