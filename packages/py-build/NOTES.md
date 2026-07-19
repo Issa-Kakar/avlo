@@ -1,924 +1,394 @@
-# py-build working notes (in-flight state)
+# py-build NOTES — cross-session state for the Python-runtime redesign
 
-Redesign plan (P0–P5, authoritative):
-/home/issak/.claude/plans/docs-local-py-runtime-redesign-condense-parsed-piglet.md
-Master plan (pre-redesign): /home/issak/.claude/plans/prompt-md-i-copied-my-synthetic-octopus.md
+**What this file is:** durable, load-bearing knowledge for agents working the
+py-runtime redesign — current state, the measurement ledgers every phase gate
+compares against, hard-won learnings, and open items. It is NOT a changelog:
+when a phase lands, append a compact entry to the phase log at the bottom and
+fold its durable facts into the sections above it. Kill anything here that a
+later phase makes false.
 
-## Session 11 — Redesign Phase 0 DONE: boot trace + baseline ledger
+**Authoritative plan (P0–P5):**
+`/home/issak/.claude/plans/docs-local-py-runtime-redesign-condense-parsed-piglet.md`
+(carries per-phase checkboxes, targets table, risk register, rejected
+alternatives — do not re-litigate those without new data).
 
-- **Landed**: `web/src/core/py/py-trace.ts` (always-on span buffer →
-  `performance.measure` + ONE `console.info('py:trace', json)` per boot/run
-  per thread; dependency-free) with marks threaded through py-supervisor
-  (spawn/glue-preflight/snapshot-read/baseline/bundles/boot-wait/req-to-
-  dispatch/run), py-executor (boot-pyodide/mount/stdlib-verify/post-restore/
-  capture-* /harden/harness/reset-image; run-python/figures/blit/post-run-
-  reset), py-loader (glue-import/load-pyodide/tree-write/dso-replay with
-  per-DSO max), py-snapshot (opfs-read/snap-verify-sha/snap-reconstruct/
-  snap-encode/snap-seal-sha/opfs-write). `installWasmTimers()` shims the
-  WebAssembly compile surface for the boot window only (uninstalled BEFORE
-  scrub/harden — `Instance` isn't on harden's delete list and must not stay
-  wrapped) → splits side-module compile/instantiate out of replay without
-  touching the glue.
-- **Trace relay** (pulled forward from the P2 e2e plumbing): worker console
-  is invisible to automation, so `traceEmit` routes through a sink —
-  executor→`exec-trace`→supervisor→`trace`→main; py-manager owns the single
-  visible console line + a 100-line ring buffer exported as `pyTraceLines`
-  (`window.__avloPyTraces` in DEV). Protocol grew `ExecTraceMsg`/`TraceMsg`.
-- **BASELINE LEDGER** (dev board: Chrome via local miniflare workers, no SW,
-  WSL2; buildHash `01ba07e1133d0342`, fork 0.29.4. The redesign targets
-  table compares against THESE numbers per phase gate):
-  - **stdlib, baseline restore (Cache API hit), cold page** (n=1):
-    click→ready **419 ms** = sup spawn 88 (baseline read+verify 68 ∥ glue
-    preflight 87) + spin-up ~51 + exec boot **279** (glue-import 4 ·
-    load-pyodide 186 [main instantiateStreaming 36 · 8 side Modules 0.7] ·
-    stdlib-verify 11 · post-restore 54 · harden 0.8 · harness 16 ·
-    reset-image 5 @21 MB). Warm run 13 ms (python 4.6 · blit 2.4 ·
-    post-run-reset 5.1).
-  - **all, OPFS stacked hit, cold page** (n=2, + 1 warm-sup sample):
-    click→ready **1224–1252 ms**, click→result 1257 = sup spawn **360–382**
-    (opfs-read 191–196 @107 MB · snap-verify-sha 106–135 · snap-reconstruct
-    25–29 @1011 pages→75 MB; glue preflight 77–82 overlapped) + spin-up
-    ~35 + exec boot **803–877** (tree-write 104–108 @154 dirs/1553 files/
-    40 MB · dso-replay **428–464** @67 DSOs [side compile: Module n=75
-    82–86 + Instance n=74 26–29; max single replay _multiarray_umath
-    18–22] · main instantiateStreaming 40–43 · stdlib-verify 12 ·
-    post-restore 8 · harness 23 · reset-image 20–24 @75 MB). Run 29 ms
-    (python 12 · blit 8.6 · post-run-reset 6.9).
-  - **all, generation (OPFS miss, Cache-API-warm tars), cold page** (n=1):
-    click→ready **4588 ms**, click→result 4609 = sup spawn 683 (bundles
-    fetch+re-verify 611 · baseline 67 · preflight 71 · OPFS miss probe 10)
-    + exec boot **3735** (baseline restore 239 · mounts Σ≈1518: pandas 519,
-    pytz 334, numpy 315, matplotlib 142, sqlite3 91, mpl-deps 66, dateutil
-    30, seaborn 21 [async instantiate n=68 = 120 ms] · **capture-imports
-    1777** · capture-snapshot 39 · pack-tree 86 · reset-image 23); sup
-    post: snap-encode 48 + snap-seal-sha 124 @107 MB (opfs-write completed
-    off-trace). Self-heal verified live: deleted `all.snap` → generation →
-    reload → clean stacked restore.
-- **Prediction 1 CONFIRMED (structure)**: pre-spawn = OPFS read + SHA +
-  reconstruct (322–355 of the 360–382 ms spawn) + glue hashing overlapped.
-  Magnitude on THIS box is ~360–380 ms, not the plan-context ~670 — the
-  trace is the arbiter; deltas measure against this ledger.
-- **Prediction 2 CONFIRMED (first order)**: of dso-replay 428–464 ms, real
-  wasm work is only 108–115 ms (compile+instantiate) → **~320–350 ms is
-  glue-side bookkeeping** (mergeLibSymbols + reportUndefinedSymbols + LDSO
-  registration) ≈ 40% of the whole boot, ~75% of the replay span.
-  Per-function attribution needs a worker CPU profile (automation can't
-  reach nested workers); Loop-B's incremental-GOT patch proves causality by
-  delta instead.
-- **Surprises worth keeping**: `all` tree is 1553 files/40 MB (the "~380
-  writes" in the plan context was the numpy set) · pytz mount is 334 ms —
-  wildly disproportionate to its size (many-small-files extractall) — dies
-  with P2/P3 anyway · the baseline stdlib restore replays 8 side Modules
-  (baseline's own dso list, 0.7 ms) · executor worker spin-up costs
-  35–51 ms per generation (boot-wait − bootMs) · no-SW dev numbers can't
-  see the SW re-buffer cost the P4 overhaul removes — re-baseline via
-  `pnpm preview` at P4 if the prod path needs its own before/after.
-- **Gate**: `pnpm typecheck` 12/12 · trace JSON captured for stdlib +
-  all-set boots (hit, generation, warm-run, blit) · ledger committed.
-Pickup plan (session 3): /home/issak/.claude/plans/original-prompt-was-here-graceful-cocke.md
-Slice plan (session 4): /home/issak/.claude/plans/packages-py-build-notes-md-view-the-two-zazzy-pascal.md
-Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
-Slice plan (session 7): /home/issak/.claude/plans/packages-py-build-notes-md-home-issak-c-scalable-quiche.md
-Slice plan (session 8): /home/issak/.claude/plans/home-issak-claude-plans-prompt-md-i-cop-toasty-flask.md
+---
 
-## Session 10 — tooling/test cleanup (pre-314 rewrite) + direction grounding
-- **Repo hygiene**: Python project config moved OFF the repo root INTO
-  `packages/py-build/` (`pyproject.toml` scoped to pytest-only + its config,
-  `.python-version`, regenerated `uv.lock`). Root no longer reads as a Python
-  project. `pnpm test:py` → `uv run --directory packages/py-build pytest`.
-  Leftover root `.venv` removed.
-- **uv put to work correctly**: (1) the mpl-font subset's determinism-critical
-  fontTools switched from `venv`+`pip` to `uvx --from fonttools==<hostTools pin>`
-  in `pack-package.py` — SAME exact pin (byte-repro unaffected — the pin, not
-  the installer, fixes the subset bytes), now cache-deduped across worktrees;
-  `hosttools_python()` + the `.cache/hosttools` venv are deleted. (2)
-  `scripts/subset-{museomoderno,schibsted}.py` fixed (`client/`→`web/` paths,
-  dead `.venv` refs dropped) + made PEP-723 self-contained (`uv run
-  scripts/subset-x.py`; `fonttools[woff]` inline). (3) numpy dropped from any
-  committed env — it was never a subset-script dep; ad-hoc via `uv run --with
-  numpy` when pixel-debugging renders.
-- **Test scaffolding kept as-is** (vitest node + pool-workers, playwright,
-  pytest; TESTING.md): sound and survives the rewrite.
+## Current state — Phase 1 COMPLETE (committed), next up: Phase 2
 
-### 314 rewrite direction (researched this session — NOT yet acted on)
-- **Target**: pyodide `0.29.4 → 314.x` (CPython 3.13→**3.14.2**, Emscripten
-  4.0.9→**5.0.3**, ABI `2025_0`→**2026_0**, wheel tag `pyemscripten_2026_0`).
-  New scheme: major = CPython minor (314=3.14, next 315=3.15, ~annual).
-- **Own the snapshot like workerd** (`dev/workerd/src/pyodide/snapshot.ts`):
-  do NOT call pyodide `_loadSnapshot`. Drive raw Emscripten — memcpy heap →
-  `Module.HEAP8`, then **`Module.API.finalizeBootstrap(fromSnapshot,
-  deserializer)`** (hiwire captured via `Module.API.serializeHiwireState`).
-  Their container = magic + JSON-meta + heap-copy (≈ our `baseline.snap`). DSO
-  record/replay (`recordDsoHandles`/`getMemoryPatched`/`preloadDynamicLibs`) is
-  what our patch 0005 + emsdk dsoBaseHook + `_preRestoreHook` already do;
-  baseline vs dedicated snapshot = our baseline vs per-set stacked.
-- **Patch-friction fix**: workerd string-patches `pyodide.asm.mjs` post-download
-  (`src/pyodide/helpers.bzl` `_REPLACEMENTS`) over a fetched release
-  `pyodide-core-<ver>.tar.bz2` — NO source fork / docker for
-  sandboxing/dynlib/entropy/module-format. Only the C-extension drop (our 0003)
-  truly needs the rebuild. Candidate: collapse most of 0001/0005/0007/0008 into
-  glue string-patches, keep docker for 0003 only.
-- **314 base changes that delete our work**: sqlite3 + lzma now bundled in base
-  → **drop the set-riding sqlite3 bundle AND its snapshot** (owner call — too
-  small to warrant a snapshot regardless); `ssl` is a stub; no builtin package
-  lock (vendored `.so`s via `loadDynlibFromVendor`); the full tarball ships a
-  top-level `fonts/` but for *matplotlib-pyodide* (canvas backend) — our Agg
-  mpl-data DejaVu subset likely still stands (VERIFY during the rewrite).
-- **Versions**: fonttools latest 4.63.0; 314 bundles 4.62.1; our hostTools pin
-  4.56.0 (bump during the rewrite if the subset gate stays green). CF's Pyodide
-  lead = Hood Chatham (also CF Python Workers); CF's `pywrangler` packaging is
-  uv-based — validates the uv direction here.
+- **Toolchain:** Pyodide **314.0.2** / CPython **3.14.2** / emsdk **5.0.3** /
+  ABI `2026_0`, **MAIN_MODULE=2** closed world (see next section). Image
+  `pyodide/pyodide-env:20260211-chrome145-firefox146-py314` (digest pinned in
+  `build.config.json`). Glue is **`pyodide.asm.mjs`** (ESM; renamed from
+  `.asm.js` in 314).
+- **buildHash `58ae9021763d19f0`** (committed in `packages/py-loader/build-lock.json`),
+  seeded to local R2 (23 keys). Commits: `c6db3ea` (P0 trace+ledger),
+  `479b0f0` (P1 Loop A rebase), `8653e84` (P1 Loop B flip + lock + seed).
+- **Sets:** `{stdlib, numpy, numpy+pandas, numpy+matplotlib, all}` — stdlib is
+  the implicit no-bundle set; the other four are `build.config.json` `sets`.
+  sqlite3 is **static in the main module** (314 upstream) — its old wheel,
+  bundle, and standalone set are gone; `import sqlite3` works on every set.
+  `PySetKey` is codegen'd by `stage.mjs` into `py-stdlib-modules.gen.ts`
+  (py-protocol re-exports it type-only); `bundlesOf`/`resolveImports` are
+  fail-closed on unknown keys.
+- **Snapshots are PARKED — every boot is cold** (fetch + mount + in-run
+  imports). Gate: `SNAPSHOTS_ENABLED = false` in `py-supervisor.ts` at the
+  `useSnapshot` seam. Parked machinery (dormant, NOT deleted): client
+  `py-snapshot.ts` (AVS1 sparse codec + OPFS wrapper) + capture legs in
+  executor/supervisor; `patches/parked/` holds pyodide 0005 (DSO
+  record/replay), 0007 (snapshot meta v1), 0008b expected-keys reference,
+  emsdk dsoBaseHook. `package.json` `baseline`/`verify:stacking` are stubbed
+  to loud errors; `make-baseline.mjs`/`verify-stacking.mjs` remain on disk as
+  reference. **P2 replaces all of this** (container v2, build-side Playwright
+  capture, client restore-only — the client capture path gets deleted, not
+  revived). Stale OPFS snapshots on dev machines are inert (≤1 GB, GC'd by
+  P2's buildHash rotation).
+- **Live fork patches:** pyodide `0001` (linkflags/memory/exports — carries
+  the whole Loop-B link model), `0003` (drop C extensions; 314 upstream now
+  disables pwd/_ssl/_hashlib/_uuid itself and adds static `_hmac`+`_sqlite3`,
+  both kept; we add `_zstd`; `_lzma` stays disabled — it was never enabled in
+  our fork), `0006` (drop loader machinery — survived 0.29→314 nearly
+  hunk-for-hunk), `0008` (js-bridge closure, api.ts one-liner only; its
+  snapshot.ts expected-keys hunk is parked). **Zero emsdk patches** — 5.0.3
+  already throws named errors on both unresolved-symbol surfaces (lazy stub
+  and GOT), so the planned stub-throw patch is upstream behavior.
+- **Wheel patches (all re-derived against current wheels):** matplotlib
+  0001 rc-backend-agg / 0002 pillow-ectomy / 0003 lazy-plistlib; pandas
+  0001 no-toplevel-ctypes / 0002 lazy-ctypes-interchange; dateutil 0001
+  quiet-pruned-tzdata; seaborn 0001 lazy-urllib / 0002 pydoc→inspect.
+  Wheels: numpy 2.4.3, **pandas 3.0.2**, matplotlib 3.10.8, seaborn 0.13.2
+  (URL-pinned — absent from the stock lock), pillow/fonttools traceOnly.
+- **Serving:** `workers/py` serves `<buildHash>/<file>` with brotli `.br`
+  siblings **and an edge cache** (`caches.default` with synthetic
+  per-encoding-class keys — this superseded the earlier "no edge cache,
+  variant poisoning" stance; see `workers/py/src/index.ts` header). SW:
+  `verifiedPyFirst` for the 4 core artifacts (byte-verified vs the lock on
+  every hit AND before every write, 502 fail-closed), `cacheFirst` for tars
+  (`avlo-py-<hash>` cache, supervisor is their verifier), stale generations
+  evicted on activate. P4 will relax hit-verification to at-fill-only.
+- **Figures pipeline** (client, landed pre-redesign): `py-figures.ts`
+  `placeRunFigures` — run-produced matplotlib PNGs ingest through the image
+  pipeline, dedup by assetId vs the block's live `figureIds` (same plot =
+  no-op; create-only, never update/move/delete), placed 400wu east of the
+  block slid clear vertically, one user-origin transact per figure (image +
+  elbow connector + figureIds append — undo-tracked; output text stays
+  `PY_RUN_ORIGIN`, not undo-tracked).
+- **Docs debt:** `packages/py-build/CLAUDE.md` and `web/src/core/py/CLAUDE.md`
+  carry P1 interim banners; their prose (and the root CLAUDE.md py rows, e.g.
+  the stale "no edge cache" claim) predates parts of the current tree. Full
+  rewrites are Phase 5 — trust THIS file + the code over them where they
+  conflict.
 
-## Session 9 — figures → canvas images + connectors, review sweep, WYSIWYG fixes
-- **P4 figure pipeline LANDED** (client-side only, no rebuild/restage): harness
-  `_harvest_figures` (Gcf via `sys.modules['matplotlib._pylab_helpers']` —
-  never imports mpl; dpi-scaled to maxFigurePx, first maxFigures, PNGs to
-  `/tmp/_avlo_figN.png`, `destroy_all()` UNCONDITIONAL + start-of-run sweep,
-  skip-dump-on-interrupt, `plt.show()` UserWarning filtered at module level;
-  caps are LOCAL literals — py-harness must stay import-free for the Node
-  harness's type-strip, drift pinned by PY_LIMITS-driven board checks) →
-  executor `FS.readFile().slice()` fresh buffers + unlink + TRANSFER lists on
-  exec-done AND the sup→main relay → NEW `py-figures.ts`:
-  `placeRunFigures` — ingest via the image pipeline, assetId dedup vs the
-  block's live `figureIds` images (owner semantics: same plot = NO-OP,
-  create-only, never update/move/delete), east placement 400wu wide
-  (drag-drop parity) slid vertically by `slideClear`, ONE user-origin
-  transact per figure (insertImage + elbow insertConnector code-E→image-W
-  none→arrow + figureIds append — UNDO-TRACKED, owner decision; output text
-  stays PY_RUN_ORIGIN), per-block stale-batch guard.
-- **Reuse extractions** (behavior-identical): `slideClear` + scratches →
-  `core/spatial/clear-placement.ts` (connector-flow imports it; core/py must
-  not import tools/); `insertImage(r, frame, z)` out of createImageFromBlob
-  (mirror of insertConnector); py-loader gained a lock-free `./verify`
-  subpath export (executor's inline sha256 deleted — the stdlib as-mounted
-  gate now shares THE verification predicate without carrying the lock JSON).
-- **Review sweep (code-review high, 8 finder angles + verify pass; 10
-  findings, 9 fixed)**: supervisor `beginInterrupt` — UserCancel now OUTRANKS
-  an armed SoftTimeout (re-arms the kill on the 2 s cancel grace; closures
-  read `run.cancelKind` live so forced-kill labels match exec-done; was: ??=
-  kept the 5 s timer + stale closure kind → Stop during grace reported
-  'timeout' up to 5 s late) · py-manager `invalidateBlock` guards
-  `hasActiveRoom()` (ticker/result paths outlive the room; getBbox throws
-  bare → wedged queue) · DOM run button seeds from the current run store
-  (editor opened on a running block showed Play that actually cancels) ·
-  executor drains the streaming TextDecoders at run end (mid-character final
-  chunk lost its glyphs) · py-imports splits compound `import a; import b`
-  statements on the STRIPPED line (gate gap; string-safe by construction) ·
-  SW verified-route put now rides `event.waitUntil` (multi-MB write could die
-  with the SW → offline boot silently lost artifacts) · cold-boot I/O
-  parallelized (glue preflight ∥ bundle fetches; tar misses via Promise.all —
-  sum→max) · dead isRunActive + stale /py-dev/fork/ comments dropped.
-  REFUTED (documented): SIGINT-in-finally boundary race (only reachable
-  under active cancellation), SW non-ok passthrough (fail-visible — module
-  import/instantiateStreaming/preflight all reject non-ok), re-verify-on-
-  every-hit costs (THE fail-closed invariant). Deferred note: SW cacheFirst
-  tar put races the supervisor's identity-normalized put on the same key —
-  self-healing (hits re-verified), watch on the preview board.
-- **Output-panel WYSIWYG fixes**: DOM ok-path text now `palette[S.DEFAULT]`
-  (#F8F8F2) like canvas — vestigial `chrome.outputText` (#AEAEAE) deleted ·
-  canvas clips the output-line loop to the frame (long tracebacks painted
-  past `totalWidth` outside the published bbox → dirty-rect ghosts; vertical
-  was never broken — 12-line cap shared by height+paint) · DOM panel height
-  now EXPLICIT `min(logicalLines,12)×outputLH` with `white-space: pre` (no
-  wrap — canvas never wraps) + sep at -1 px flow height ⇒ equals
-  `outputPanelHeight` exactly, >12 lines scroll in the fixed box ·
-  `.is-runnable` retoggles live on language switch (handler always wired,
-  runnability re-checked at click).
-- **Verified**: typecheck 12/12 · harness base 42/42 + seaborn 23/23 (+5
-  figure-harvest checks: triple+decode, plt.show filter, cross-run Gcf empty,
-  cap=PY_LIMITS.maxFigures, dpi-scale ≤ maxFigurePx) + verify 8/8 · Chrome
-  dev board pending this session (figures on canvas, dedup no-op rerun,
-  undo, clip/height parity).
+## MAIN_MODULE=2 closed world — how the link works (load-bearing)
 
-## Session 8 — Commit 2: client-side artifact verification + freeze hardening
-- **The gap (owner-flagged)**: pyodide.mjs / pyodide.asm.js / pyodide.asm.wasm
-  were NEVER byte-verified against the committed lock — they ride pyodide's
-  internal indexURL fetches and could be served from an unverified SW cache
-  write. (Tars were verified incl. cache-hit re-verify; stdlib post-mount.)
-- **Design (owner picked, correctness-argued)**: the SW is the ONLY point
-  that binds verified-bytes-to-execution for every artifact type INCLUDING
-  the JS glue — a fork boot-from-bytes patch can't verify the JS that would
-  receive the bytes, so it adds ~nil security and is DEFERRED to P3 (where
-  executor boot inputs get reworked anyway).
-  1. `sw.ts` `verifiedPyFirst`: the 4 core artifacts (lock `artifacts`
-     table) are buffered + `matchesLockEntry`-checked before EVERY cache
-     write AND on every hit; mismatch = 502 fail-closed, never cached.
-     Synthetic Response carries Content-Type ONLY (a `.br` body's
-     Content-Encoding/Length must not ride decoded bytes — closes the old
-     sanitize-headers nit). Tars/manifest stay streaming cacheFirst (the
-     supervisor is their verifier; buffering would collapse download
-     progress). Wrong-hash URLs fall through untouched.
-  2. Supervisor `ensureGlueVerified()`: fetch+verify the glue trio vs the
-     lock once per page load (memoized on SUCCESS only), first line of
-     spawnExecutor's try — covers dev/no-SW for drift/corruption, warms the
-     verified cache under a SW; failures flow the existing
-     downloadFailureMessage path (offline stays friendly, drift says
-     "drifted from the committed build-lock — refusing to boot").
-  3. `@avlo/py-loader` grew `sha256Hex`/`matchesLockEntry` in a NEW
-     dependency-free `src/verify.ts` (index re-exports; separate file so the
-     Node harness imports the exact shipped code without index's JSON lock
-     import, which Node ESM rejects without import attributes). Supervisor's
-     local sha helper deleted.
-  Residual (documented): first-load-without-SW TOCTOU against an ACTIVELY
-  malicious origin — unclosable without script-src blob: (worse trade); every
-  realistic corruption (bad seed, stale mix, poisoned cache) fails closed.
-- **Freeze hardening (owner-requested)**: `hardenRealm` now freezes the
-  Function/String/Number/Boolean/RegExp/Error constructors (+ ArrayBuffer/
-  SharedArrayBuffer/Uint8Array/TextDecoder/TextEncoder — same additive
-  class; prototypes were already frozen). Refactor: one labeled
-  `freezeTargets()` list (call-time built — SAB absent in non-isolated
-  realms) shared by hardenRealm AND assertRealmHardened, whose freeze check
-  went from a 4-object sample to a FULL sweep naming survivors (fixes the
-  under-sampled gate). Prop-tamper protection only — call/new/subclass all
-  still work; eval/Function posture unchanged.
-- **Node harness COMMITTED**: `scripts/run-harness.mjs` (`pnpm harness`;
-  Node ≥23.6 type-stripping imports the shipped py-harden/py-harness/
-  verify.ts directly; never in Turbo/CI). The session-5/6/7 scratchpad board
-  is now permanent, three child sections: **base 42/42** (numpy set — which
-  now mounts sqlite3 FIRST — scrub sweep + planted-fetch negative, compile
-  surface, FULL freeze sweep, frozen-ctor functional probes
-  (expando-write throws / Error subclasses / RegExp exec / per-run
-  TextDecoder), 0008 guard-stripped closure board, tombstones, protocol
-  sabotage, sqlite3 CRUD+MEMFS-file post-freeze) · **seaborn 18/18** (all
-  set: every tar lock-verified at mount, import+scatter→PNG pixel decode,
-  vendored-KDE scipy-free, load_dataset http tombstone, seaborn.objects
-  tombstone, pandas↔sqlite3 roundtrip, font gates — ALL post-freeze) ·
-  **verify 8/8** (gate names unfrozen intrinsics pre-harden; staged tree ==
-  lock for all 4 artifacts; flipped-byte + truncated-buffer negatives).
-- `pnpm typecheck` 12/12 green with all of the above.
-- **Browser/dev board (run post-commit, same session)**: canvas sqlite3 run
-  (Python block → downloads only sqlite3.tar → `(6, 3)` output) + seaborn
-  figure VERIFIED by the owner on the live dev instance; the orchestrator
-  R2 wiring proven end-to-end (py worker on :8794 → bad hash 400 / glue 200
-  with exact lock size + immutable/ETag/sandbox-CSP/CORP headers /
-  sqlite3.tar byte-exact through the Vite proxy). Preflight POSITIVE is
-  implicit in every successful canvas boot (spawn happens only after
-  ensureGlueVerified); preflight NEGATIVE observed live: a real 404 on the
-  glue surfaced as "Python runtime download failed: pyodide.mjs: HTTP 404"
-  error-tinted with NO executor spawn and clean retry on next click.
-  Debugging artifact worth keeping: TWO dev instances were up (main repo on
-  base ports + avlo-parallel on dev:p's +10) — a THIRD dev:p from the main
-  repo collides with the parallel one silently (workerd binds fail, curls
-  hit the OTHER checkout's workers + state → phantom 404s). Check
-  `ss -tlnp` pids before diagnosing "missing" R2 keys.
-- **Still deferred to the next preview pass** (needs `vite preview` + SW,
-  not the dev path): SW verified-route 502 negative + no-cache-write,
-  offline second-load (the nested-worker-SW-control validation), zero
-  `/py-dev/fork/` product-fetch sweep, guard-stripped `import js` re-probe
-  in real Chrome (Node harness covers the closure 43-board meanwhile).
+The design that survived Loop B's two boot failures. Anyone touching the link
+line, exports, or DSO handling must understand this:
 
-## Session 8 — Commit 1: sqlite3 + seaborn bundles (scope-guard relaxation)
-- Owner decisions: packages = sqlite3 + seaborn; sqlite3 bundle RIDES EVERY
-  SET (first position, prefix-consistent DSO order for P3 stacking) + a
-  standalone `sqlite3` set; seaborn joins `all` only. openpyxl DEFERRED
-  (needs the pyexpat revert in patch 0003 + un-pruning xml/parsers/ = docker
-  rebuild reversing a deliberate prune, and no file-ingestion path exists);
-  xlrd rejected (.xls-only); plotly rejected (HTML+plotly.js output model
-  conflicts with the js-bridge closure + PNG figure pipeline).
-- **sqlite3**: stock-lock unvendored wheel (1 top-level `_sqlite3.so` 1.43MB
-  + 4-file pure-py pkg) — rode the existing pipeline untouched; loadOrder
-  picked up the DSO, provides=['sqlite3'].
-- **seaborn 0.13.2**: NOT in the stock lock → new per-wheel pin fields in
-  build.config.json: `url` (PyPI wheel URL; --stamp SKIPS url pins and the
-  drift guard ignores them; download goes straight to the url — the sha pin
-  keeps provenance equivalent) + `depends` (hand-pinned direct deps feeding
-  the new `wheel_depends()` in pack-package.py; lock wheels stay loud on a
-  miss).
-- **seaborn eager-import land mines** (both would have killed `import
-  seaborn` on the pruned stdlib; found by static sweep, confirmed by gates):
-  wheel patch 0001 lazifies `from urllib.request import urlopen/urlretrieve`
-  (utils.py top-level; urllib.request pulls the pruned http stack) into the
-  two dataset functions; 0002 swaps `import pydoc` → inspect.getdoc in
-  _docstrings.py + external/docscrape.py (pydoc trips the _pyrepl tombstone
-  at import — the known pydoc nit, now load-bearing).
-- **seaborn prune** (tracer --propose confirmed every entry unreached):
-  objects.py + _core/{plot,subplots,moves,properties,exceptions}.py +
-  _marks/ + _stats/{aggregation,order,regression}.py + _testing.py —
-  seaborn.objects is PIL-dead by construction (plot.py imports PIL at top;
-  pillow never ships) and tombstones precisely (sb06). KEPT: _core/{data,
-  typing,rules,groupby,scales}, _stats/{base,counting,density} (classic API
-  reaches them), external/appdirs (EAGER via utils), external/kde (the
-  vendored scipy-free gaussian_kde — kdeplot works, sb03 asserts scipy
-  never enters sys.modules).
-- Corpus: new `sqlite/` group (set sqlite3 — :memory: CRUD, MEMFS file-db
-  reopen, types/rollback/Row; NB legacy isolation: commit before a rollback
-  probe or the implicit tx swallows prior inserts) + `seaborn/` group (set
-  all — scatter/heatmap/kde/theme PNG-gated + font gates; sb05/sb06 are
-  `# trace: skip` tombstone probes) + all/a02_read_sql (pandas↔sqlite3
-  DBAPI2 roundtrip, no sqlalchemy). GROUP_SET wired in run-corpus +
-  trace-imports.
-- Client: PySetKey += 'sqlite3' (py-protocol.ts — the CAST-SHADOWED union;
-  comment now warns), marquee += seaborn/sqlite3 (py-imports.ts).
-- **Gate board GREEN**: fetch (2 new wheels sha-ok) · unpruned 15 trees ·
-  trace 6 groups · G3 (93 rules, ∩=∅, no PIL/fontTools) · bundles ×8 --repro
-  byte-identical (sqlite3.tar 1.46MB/0.44br, seaborn.tar 1.00MB/0.31br) ·
-  corpus 7 groups (sqlite 3/3, seaborn 6/6 w/ 4 PNGs pixel-decoded, all 2/2)
-  · budgets --update diff = 2 new ceilings + benign ratchet-downs (session-7
-  glue rebuild shrank core artifacts; ceilings never re-stamped) · composites
-  numpy-path 7.44MB / pandas-mpl 14.38MB vs 12.58/16.78 ceilings · stage →
-  buildHash `6d447a5ba051a748` (PACKAGE_TO_SET sqlite3→'sqlite3',
-  seaborn→'all' auto-derived) · typecheck 12/12 · stage:check clean · seed
-  25 keys (was 21).
+- **DSOs are deliberately NOT on the main link line.** `fetch-wheels.mjs`'s
+  link-sos block scans every post-prune DSO's dylink imports **in-memory from
+  the wheels** (67 DSOs, 1,764 func/global/tag symbols, `invoke_*` excluded)
+  and emits `.cache/link-sos/link.rsp` = one `-Wl,--export-if-defined=<sym>`
+  per symbol. That reproduces the only effect we need from emcc's
+  `process_dynamic_libs` (main-defined DSO-needed symbols survive metadce as
+  exports) while cross-DSO symbols keep resolving lazily at dlopen.
+- **Why not the obvious ".so files on the link line":** wasm-ld applies the
+  ELF shared-def-beats-weak rule — a dylib's strong exports (kiwisolver's
+  C++ `basic_stringbuf` dtors) preempt main's own weak COMDAT
+  instantiations, turning them into hard startup GOT imports that
+  `reportUndefinedSymbols` throws on before any bundle can mount. Not
+  fixable with `-u` sweeps or `--whole-archive -lstdc++` (emcc maps
+  `-lstdc++` to nothing; the symbols aren't in libc++.a).
+- **No-EXPORT_ALL Module surface:** dropping `EXPORT_ALL` requires
+  re-providing what the JS runtime reads off `Module`:
+  `EXPORTED_RUNTIME_METHODS` = upstream's curated DISABLE_DYLINK list +
+  `UTF8ToString,getPromise,promiseMap`; `EXPORTS` += `_dlerror` +
+  `_emscripten_dlopen_promise` (musl dynlink.c — not KEEPALIVE-annotated).
+  When changing exports, enumerate every `(Module|#module).prop` access
+  across the fork's `src/js` against the built wasm's export list.
+- **Tripwires:** `ERROR_ON_UNDEFINED_SYMBOLS=1` at link; 5.0.3's named
+  runtime throws on both unresolved surfaces; corpus (all 7 groups) is the
+  closed-world proof — every DSO dlopens, zero stub throws.
+- **Numbers (Loop B vs Loop A / 0.29):** wasm 6,858,149 B (−13.8% vs Loop A's
+  7,952,003; 0.29 was ~7.47 MB), exports 1,013 (Loop A EXPORT_ALL: 8,015;
+  0.29: 9,651), glue 343,521 B (−60% — DSOs on the line had dragged ~290 KB
+  of JS-library stubs in via `DEFAULT_LIBRARY_FUNCS_TO_INCLUDE`), GOT
+  imports 0. Stdlib zip: 487 entries / 85 pruned / 29 tombstones; 77
+  builtins incl. `_sqlite3`.
+- **Build mechanics:** full Docker build **1,208 s** on the 2-core WSL2 pin
+  (~9 GB RAM box — keep jobs at 2); incremental main-link rebuilds **~19 s**.
+  `run-build.mjs` skips cloning when `.work/pyodide/.git` exists — changing
+  the pyodide tag requires `rm -rf .work/pyodide`. Image digest is
+  drift-checked: clear it to `""` when changing the image ref.
 
-## Session 7 — M3+P2 Commit 1: fork patches 0006 + 0008 landed
-- **0006 (drop loader machinery)**: severed load-package's two import edges
-  (api.ts/types.ts) + deleted the pyodide.ts lockfile plumbing — esbuild
-  tree-shakes load-package/installer/packaging-utils out of both bundles; the
-  pyodide.js/package.json/pyodide-lock.json boot crutch is GONE (stage.mjs
-  ARTIFACTS → 4 entries + stray-prune of the gitignored fork dir).
-- **0008 (js-bridge closure)**: the one-line `register_js_module("js",
-  jsglobals)` deletion in finalizeBootstrap — `import js` is now
-  finder-level ModuleNotFoundError INDEPENDENT of the harness guard.
-  webloop deps kept (register_js_finder + pyodide_js registration).
-- **Two rebuild regressions found + fixed** (both invisible to `tsc`, both
-  would've shipped without the gate board):
-  1. snapshot.ts `getExpectedKeys()` hardcodes the first hiwire-table slots
-     in boot-allocation order; the "js" registration was what interned
-     jsglobals (slot 1) + a trailing `{}` (slot 6). makeSnapshot died in
-     checkEntry stringifying public_api (circular Module.FS root) vs the
-     stale jsglobals expectation. 0008 now also rewrites the list to the
-     empirical post-0008 table `[null, public_api, API, scheduleCallback,
-     API]` (stable across warmups+gc; capture/restore share it; BUILD_ID
-     gates reject pre-0008 snaps).
-  2. dynload.ts was reachable ONLY via load-package→installer — 0006's
-     severing tree-shook it out, killing API.loadDynlib + the whole DSO
-     record/replay surface (0005) in the shipped glue. 0006 now re-anchors
-     it with a bare side-effect import in api.ts (src/js has no sideEffects
-     flag). New standing grep gate: `loadDynlib` present in the glue.
-- **Gate board GREEN**: A3 greps (js-reg 0 / pyjs-reg 1 / finder 1 / lockfile
-  0 / cdn 0 / drift 1 / loadDynlib 8) · pack:stdlib byte-identical (raw zip
-  unchanged by the JS-only rebuild) · baseline --repro G0 byte-identical +
-  restore-verify (21.0MB, builtin-modules refreshed, 63 builtins) · corpus
-  all groups (basic 6/6, numpy 4/4, pandas 5/5, mpl 4/4, all 1/1) ·
-  compress + G1 budgets (glue 0.13MB br) · stage + stage:check clean
-  (11 files staged; pruned stray package.json/pyodide-lock.json/pyodide.js)
-  · Node harness **43/43** (was 33): +webloop-alive, +guard-STRIPPED
-  `import js`/importlib → ModuleNotFoundError (the load-bearing closure
-  proof), +sys.modules sweep, +run_js dies at the lazy `from js import
-  eval`, +documented residual (pyodide_js reachable guard-stripped,
-  jsglobals.fetch scrubbed), +guard-restored re-refusals ·
-  `pnpm typecheck` 11/11.
-- **NOT yet done**: Chrome spike board + canvas smoke for Commit 1 (needs
-  dev server) — folded into the Commit 2 verification pass (same session).
-- Stdlib prunes of now-dead `from js import …` code (webbrowser/antigravity/
-  pyodide.http/pyodide._run_js) remain a documented follow-up, not this slice.
+## Trace ledgers (phase gates measure against these — do not lose)
 
-## Session 7 — M3+P2 Commit 2: worker serving + P2 runtime swap
-- **New worker `workers/py/`** (`avlo-py`, dev :8794, prod `py.avlo.io`
-  commented like the fleet): anonymous immutable `GET /:hash/:file` +
-  `/:hash/bundles/:name` (worker-shared `pyArtifactParam`/`pyBundleParam`,
-  16-hex hash ≠ 64-hex assetKey), brotli via `.br` sibling keys +
-  `encodeBody:'manual'`, `application/wasm` MIME, asset-body CSP + CORP
-  cross-origin, NO caches.default (br↔identity variant poisoning), app-type
-  exempt (binary artifacts; documented beside sync's exemption).
-- **`packages/py-loader/`** (`@avlo/py-loader`): committed generated
-  `build-lock.json` + deep-frozen typed `BUILD_LOCK`/`PY_BUILD_HASH` —
-  stage.mjs now computes `buildHash` (16-hex sha256 of canonical sha tables;
-  this stage: `bd8afa4e8f07f324`), writes + byte-gates the lock (`--check`),
-  stamps the real hash into manifest.json (still the R2 completion marker).
-  biome excludes the lock (formatter would break the byte-compare).
-- **`publish.mjs`**: preflight re-hashes EVERY source byte vs the lock +
-  `.br` mtime freshness → 21-key sequential upload, manifest LAST;
-  `--local` → `--persist-to <root>/.wrangler/state` (wrangler appends v3 —
-  verified: 21 blobs in the live tree); `--remote` probes the manifest
-  (absent/identical/different → publish/no-op/hard error). Root `py:seed`.
-- **P2 supervisor swap**: `ARTIFACT_BASE = PY_ORIGIN/<lock.buildHash>/`;
-  manifest fetch/validate/memory-cache DELETED — lock import replaces it;
-  `ensureBundles` → Cache API `avlo-py-<hash>` (hits RE-verified vs lock —
-  the SW writes unverified; corrupt → delete → refetch), misses stream with
-  progress + size-abort + sha gate, `cache.put` then TRANSFER the buffer
-  (38 MB resident 'all' heap gone). Offline UX: TypeError/!onLine →
-  "connect once to download (~X MB)" on both the bundle-fetch and
-  exec-fatal boot paths. Executor/manager/imports/UI untouched.
-- **SW**: `isPyRequest → cacheFirst(PY_CACHE)` (covers pyodide's internal
-  indexURL fetches — glue/wasm/stdlib offline), activate evicts stale
-  `avlo-py-*`. `_headers` CSP: script-src += 'wasm-unsafe-eval'
-  https://py.avlo.io (NEVER exercised in dev — verify on first prod
-  deploy), connect-src += py.avlo.io. Dev wiring: dev-ports `py:8794`,
-  miniflare NAME map, Vite `/api/py` proxy + `@avlo/py-loader` alias.
-- **Verified**: typecheck 12/12 · stage:check clean (lock byte-gated) ·
-  seed dry-run = exact 21-key plan · real seed → 21 blobs ·
-  `pnpm build` + SW isolation grep EMPTY (py-loader/lock SW-safe) ·
-  G5 curls on :8794 (standalone worker vs the seeded tree): wasm+br → 200 +
-  application/wasm + Content-Encoding:br + Vary + CORP + sandbox CSP +
-  nosniff + immutable + ETag; **.br sibling proven byte-exact** (size ==
-  .br file, ETag == its md5); `curl --compressed numpy.tar | sha256sum` ==
-  lock sha (encodeBody:'manual' round-trip); manifest+br → identity object;
-  bad hash 400 / unknown 404 / If-None-Match 304 / encoded-`/` traversal 400.
-  Note: workerd normalizes inbound Accept-Encoding to "br, gzip" (prod edge
-  does the same) — the identity branch exists for br-less direct clients and
-  the manifest; the edge re-encodes per client.
-- **PENDING (needs dev-server restart — it was running mid-session and
-  predates the py worker)**: canvas demo via `/api/py/<hash>/…` (zero
-  `/py-dev/fork/` product fetches), Cache Storage `avlo-py-<hash>` +
-  no-refetch rerun, offline second-load via `vite preview`, offline-UX
-  message, PORT_OFFSET=10 smoke, Commit-1 browser board (guard-stripped
-  `import js` in real Chrome). Restart `pnpm dev` (picks up workers/py +
-  the Vite proxy) and run the board.
+Trace plumbing: `py-trace.ts` is always-on — one `console.info('py:trace',
+json)` per boot/run per thread; worker consoles are invisible to automation so
+executor traces relay exec→sup→main; `window.__avloPyTraces` (DEV) is a
+100-line ring. `installWasmTimers()` wraps the WebAssembly compile surface
+during boot only and MUST be uninstalled before scrub/harden.
 
-## Session 6 — verify Session 5 + fail-closed hardening + full-stack audit DONE
-- Owner decision: staying SAME-ORIGIN (no sandboxed iframe). That makes the
-  `py-harden.ts` scrub THE authority boundary, not defense-in-depth — reinforced
-  by the CSP: the app's `connect-src 'self' … wss://sync.avlo.io` is inherited
-  by same-origin worker scripts, so even in prod the executor CSP permits
-  `'self'`+backend egress; only the scrub actually stops it. So the enumeration
-  model must (a) be exhaustive and (b) fail closed.
-- **Fail-closed gate**: new `assertRealmHardened()` (py-harden.ts), called in
-  py-executor `boot()` right after scrub+harden, inside the exec-fatal try. Re-
-  reads the realm: every SCRUBBED_GLOBALS name undefined, WebAssembly compile
-  surface gone, protocol intrinsics frozen — THROWS on any survivor ⇒ boot
-  aborts (no harness, no runs) instead of running unconfined on a silent
-  scrub no-op (e.g. a non-configurable accessor on some engine).
-- **Scrub gap closed**: added `RTCPeerConnection`/`RTCDataChannel` (WebRTC — raw
-  egress NOT governed by connect-src, per the M3 exploration's platform verdict
-  #7) + `SharedWorker` (realm-mint escape alongside Worker). Window-only today
-  ⇒ absent-and-skipped in a worker; free future-proofing.
-- **Full-stack security audit (no rebuild needed — C surface confirmed solid):**
-  `_ctypes` double-dead (not compiled + `ctypes` tombstoned) ⇒ no in-wasm FFI;
-  `_ssl`/http gone; `_socket` compiled but `-lwebsocket.js` dropped ⇒ transport-
-  less; `pyexpat`/`_elementtree` dropped (C XML parser gone; ElementTree pure-py
-  stays); 2 GB mem cap. matplotlib pillow-ectomy fully severs untrusted-image
-  decode (`imread`→hard raise). Python overlay/wheel patches add no capability.
-- **Documented residuals (deferred, NOT fixed this session):** (1) `js` proxy
-  reachable-if-guard-stripped until fork patch 0006 (the definitive FFI closure,
-  M3, needs docker rebuild) — but authority-free post-scrub (postMessage-spoof
-  reaches only the user's own block). (2) `subprocess`/`multiprocessing` blocked
-  by wasm-syscall-absence, not policy — explicit prune is build-side + risks
-  benign transitive imports. (3) `sitecustomize` registry `__import__` of an
-  attacker-planted `_avlo_pruned_*.py` across runs in a generation — contained
-  (no authority), real fix is P3's per-run MEMFS/blit reset. (4) build-side
-  niceties: `DISABLE_DYLINK` dead 4GB/host-FS Makefile block (CI-assert unset),
-  `ssl`/`sqlite3` bare (non-tombstoned) errors.
-- **Verified GREEN.** Node harness (scratchpad, exact shipped code vs real fork +
-  numpy mount): 33/33 — reproduces Session-5's 22 + the gate passes clean/THROWS
-  on a restored global + WebRTC scrubbed + ctypes tombstoned + subprocess/os.fork
-  inert. **Browser smoke (the Session-5 untested gap — NOW DONE, Chrome via the
-  real supervisor→executor chain + a canvas run):** guard-stripped `js` proxy ⇒
-  all 16 authority names unreachable (incl. `navigator` deleted — the thing Node
-  can't validate); `print(1+1)`→2 on canvas; numpy 4.0/24; matplotlib Agg→valid
-  PNG; cancel mid-`while True`→"Run cancelled."; import-gate refuses `requests`.
-  Fail-closed assert did NOT false-trip a real boot. `pnpm typecheck` (10/10),
-  biome (clean), `stage --check` (clean — no generated files touched).
+**P0 baseline — OLD 0.29.4 fork with client snapshots, buildHash
+`01ba07e1133d0342`** (dev board: Chrome, local miniflare, no SW, WSL2). The
+redesign targets table compares against these:
+- stdlib, baseline restore (Cache API hit), cold page: click→ready **419 ms**
+  = sup spawn 88 + spin-up ~51 + exec boot 279 (load-pyodide 186, post-restore
+  54, harness 16).
+- all, OPFS stacked hit, cold page: click→ready **1224–1252 ms** = sup spawn
+  360–382 (opfs-read 191–196 @107 MB · sha-verify 106–135 · sparse-reconstruct
+  25–29) + exec boot 803–877 (tree-write 104–108 @1553 files/40 MB ·
+  **dso-replay 428–464 @67 DSOs, of which only 108–115 ms is real wasm
+  compile+instantiate — ~75% of the replay span is glue-side GOT/merge
+  bookkeeping**, the P2 incremental-GOT target · reset-image 20–24 @75 MB).
+  Warm run 29 ms (python 12 · blit 8.6 · post-run-reset 6.9).
+- all, client generation (OPFS miss): click→ready **4588 ms** (mounts
+  Σ≈1518 ms — pytz alone 334, many-small-files extractall · capture-imports
+  1777). This path is deleted; kept for the before/after story.
+- Executor worker spin-up costs 35–51 ms per generation (boot-wait − bootMs).
+- These are no-SW dev numbers — they cannot see the SW re-buffer cost P4
+  removes. If the prod path needs its own before/after, re-baseline via
+  `pnpm preview` at P4.
 
-## Session 5 — same-origin realm hardening (pre-M3) DONE
-- Threat-model finalized for the no-iframe reality: the executor is a
-  SAME-ORIGIN worker with the origin's full ambient authority at birth.
-  New `web/src/core/py/py-harden.ts` (dependency-free, Node-verifiable):
-  - `scrubWorkerScope()` supersedes scrubNetworkScope — network (fetch/XHR/
-    WS/WebSocketStream/ES/WebTransport) + fresh-realm escapes (Worker,
-    importScripts) + origin storage (indexedDB=room docs, caches=SW cache,
-    cookieStore, navigator=OPFS/locks/GPU) + BroadcastChannel; own props AND
-    prototype chain; strict-mode-safe (configurable→delete, else
-    writable→undefined — bare `delete` THROWS on non-configurable props).
-  - `hardenRealm()` — deletes WebAssembly compile surface (compile/
-    instantiate/*Streaming/Module; all DSO loads are boot-time, new set ⇒ new
-    worker) and freezes protocol-bearing intrinsics (Object/Array/Function/
-    String/typed-array/Promise prototypes, JSON, Atomics, Math, Reflect,
-    Date, WebAssembly). eval/Function stay: unblockable in-language, no I/O
-    authority left to exfiltrate with — posture is authority removal.
-- Executor: one-boot-per-generation guard; postMessage captured at module
-  load (result delivery survives global tampering); whole boot body in the
-  exec-fatal try; verifyStdlibZip — hashes python_stdlib.zip AS MOUNTED in
-  MEMFS vs the boot-msg manifest sha (spike's standing guard productionized;
-  restage ⇒ recapture; the anchor P3 snapshots key on).
-- Supervisor: manifest now REQUIRED for every spawn (stdlib sha rides boot),
-  shape-validated (hex64 + positive int sizes) + deep-frozen; tar meta
-  prefix/loadOrder path-validated (absolute-into-root / relative, no
-  ..//empty segs) + frozen; bundle streaming aborts past manifest size
-  (bounds memory before the sha check would catch it); frozen cache entries;
-  non-crossOriginIsolated contexts refused with a precise run result.
-- Frozen constants: PY_LIMITS, PyExecState, PyCancelKind, SET_KEYS_BY_SIZE;
-  stage.mjs codegen now emits Object.freeze for PACKAGE_TO_SET/SET_BUNDLES
-  (gen file hand-mirrored; `stage --check` byte-parity CLEAN). NB Sets are
-  NOT frozen — Object.freeze can't reach Set internals; ReadonlySet is the
-  contract there.
-- Verified: Node harness (scratchpad) boots the staged fork, mounts the real
-  numpy.tar, runs the SHIPPED py-harden + py-harness — 22/22: stdlib readback
-  hash == manifest, scrub holds, compile surface gone/runtime wasm types
-  kept, intrinsics frozen, print/echo/traceback-with-source/js-refusal/
-  __import__-refusal/numpy/numpy.random/SystemExit all green, protocol
-  survives json.dumps sabotage, guard-strip probe still sees js.fetch
-  undefined. `pnpm typecheck` + biome + `stage --check` clean.
-- NOT yet browser-smoked (no dev server this session): canvas run + cancel
-  path under the new boot order — worth one Chrome pass next session.
+**P1 cold-boot ledger — CURRENT build `58ae9021763d19f0`, every boot
+`path=cold boot (no snapshot)`. THE P2 baseline** (dev, no SW, local R2;
+click→ready = sup reqToReadyMs, exec boot in parens):
+- **stdlib 574 ms** (451: load-pyodide 392 · stdlib-verify 8 · post-restore 16
+  · harden 1 · harness 7 · reset-image 21 @31 MB)
+- **numpy 1030** (624: +mount 206 @1 tar)
+- **numpy+pandas 1341** (1168: mount 200 @4 tars, bundles-fetch 126)
+- **numpy+matplotlib 1472** (1025: mount 179 @5 tars)
+- **all 1854** (1362: mount 197 @7 tars, bundles-fetch 150)
+- load-pyodide is a steady ~360–395 ms every boot (main compile + instantiate
+  + CPython init). Context: old `all` OPFS-restore was 1224–1252 and old cold
+  generation 4588 — pure cold mounts (1854) sit between; P2 restores attack
+  the remaining gap.
 
-## Session 4 — Commit 1 (P1 hardening) DONE
-- A1 isolation: `scrubNetworkScope()` in py-executor (deletes fetch/XHR/WS/ES
-  own+prototype-chain after boot — AUTHORITATIVE layer); harness meta_path
-  guard blocks {js,pyodide_js,pyodide,_pyodide} + pops js/pyodide_js from
-  sys.modules (defense-in-depth); pyDevStatic resolve-then-contain (encoded
-  `..` 404s — verified with curl); `_dumps = json.dumps` captured.
-- A2: per-run TextDecoder recreation; MEM_BYTES→MEM_KIB (>>>10); startedAt
-  re-stamped at phase 'running'; supervisor teardownExecutor() on dormant
-  onerror + no-respawn on boot-failure exec-fatal; manager resetRuntime() on
-  sup-fatal (was: wedged supervisor got redispatched); +stat/multiprocessing/
-  pydoc/netrc/modulefinder/rlcompleter in STDLIB allowlist.
-- Canvas smoke (Chrome, fresh room): print→2; `__import__('js')`→
-  ModuleNotFoundError tinted; guard-bypass probe (strip meta_path guard,
-  importlib js) → fetch/XHR/WS/ES all MISSING (scrub holds); 5/6 new stdlib
-  mods import (pydoc gate-passes but hits the _pyrepl tombstone at runtime —
-  pydoc.py:80 top-level import; precise error, acceptable; revisit at Step 1
-  if cheap); requests → instant refusal; Ctrl+Enter toggle cancels
-  mid-`while True` → "Run cancelled."; 30s soft timeout observed live.
-- Known nit re-confirmed (already in backlog): language-switch WHILE EDITING
-  doesn't retoggle `.is-runnable` — DOM button dead until editor reopen;
-  Ctrl+Enter unaffected.
+## Security model (durable; the redesign does not change it)
 
-## Done
-- P0-A PASSED on stock AND fork (Chrome): fork fresh boot ~2.2-2.4s (stock 5.2s),
-  baseline snapshot 21.0MB, restore-boot ~420-550ms, kill+respawn ~416ms,
-  interrupt 26ms. Harness: web/src/dev/py-spike-{main,supervisor,executor,snap}.ts.
-- **P0-B PASSED — SNAPSHOT DESIGN FROZEN** (fork, Chrome):
-  G6 baseline meta v1 ✓ · G6.5 dsoBaseHook liveness ✓ · G7 numpy record (13 .so
-  loadDynlib'd lexicographic, import numpy, ones(4).sum()==4, loadOrder==13,
-  site-packages tree 380 files/10.2MB read back WITH mtimes AFTER import) ✓ ·
-  stacked capture 36.3MB/16ms, meta {stacked, loadOrder 13, dsoHandles 13} ✓ ·
-  G8 replay in fresh worker via _preRestoreHook(avlo, Module) — restore-boot
-  ~530-555ms, numpy works, lazy `numpy.testing` import works, x=41 roundtrips ✓ ·
-  G8R RNG (state identical across restores; explicit os.urandom reseed differs) ✓ ·
-  BLIT reset 3.4-3.9ms for 36.3MB image (globals gone, fractions unimported,
-  numpy still works) ✓ · G9 rotated loadOrder → "snapshot DSO table drift" ✓.
-  G6ctypes = EXPECTED-FAIL until the Step-3 cpython rebuild lands.
-- Step 1 fixes that made P0-B possible:
-  - **patch 0007 revised**: `_preRestoreHook(avlo, Module)` — hook fires inside
-    restoreSnapshot BEFORE loadPyodide resolves, so the caller has no Module/API
-    otherwise. Module.API + Module.FS are the replay handles.
-  - **emsdk 0005 was NOT in the built glue** (top-level Makefile rule
-    `emsdk/emsdk/.complete:` has no prereqs → staged patches inert on
-    incremental builds). Hand-applied to
-    .work/pyodide/emsdk/emsdk/upstream/emscripten; build.sh now direct-applies
-    missing emsdk patches (dry-run + patch -N) and HARD-ASSERTS dsoBaseHook in
-    libdylink.js. Standing prestage gate:
-    `grep -c "snapshot DSO table drift" fork/pyodide.asm.js` ≥ 1.
-- build.config.json pins unchanged (pyodide 0.29.4, image digest, recipes
-  0.29-20260507). Fork staged at web/public/py-dev/fork/ (+release package.json
-  + pyodide-lock.json until patch 0006).
+- **Same-origin worker, no sandboxed iframe (owner-settled).** The executor is
+  born with the origin's full ambient authority and the CSP inherits
+  `'self'` + backend egress — so `scrubWorkerScope()` (py-harden.ts) is THE
+  authority boundary, not defense-in-depth: network + fresh-realm escapes
+  (Worker/SharedWorker/importScripts) + origin storage (indexedDB, caches,
+  navigator incl. OPFS/locks/GPU) + BroadcastChannel + WebRTC (raw egress NOT
+  governed by connect-src), own props AND prototype chain, strict-mode-safe.
+- `hardenRealm()` deletes the WebAssembly compile surface (all DSO loads are
+  boot-time; new set ⇒ new worker) and freezes protocol-bearing intrinsics +
+  constructors. eval/Function stay: unblockable in-language, and post-scrub
+  there is no I/O authority left to exfiltrate with — the posture is
+  authority removal.
+- **`assertRealmHardened()` is the fail-closed gate** — full re-sweep right
+  after scrub+harden inside the exec-fatal try; any survivor aborts the boot.
+  Never let a scrub become a silent no-op.
+- `import js` is finder-level `ModuleNotFoundError` **independent of the
+  harness guard** (fork patch 0008 removes the `register_js_module` call);
+  the harness meta_path guard is defense-in-depth on top.
+- Verification chain: SW `verifiedPyFirst` (4 core artifacts, verify on every
+  hit + before write) · supervisor `ensureGlueVerified()` once per page
+  (covers dev/no-SW) · tars sha-gated by the supervisor, Cache-API hits
+  RE-verified (the SW writes tars unverified) · `verifyStdlibZip` hashes the
+  stdlib AS MOUNTED vs the boot manifest. `@avlo/py-loader`'s `./verify`
+  subpath is the shared predicate (dependency-free; Node harness imports the
+  exact shipped code).
+- **Open residuals (accepted/deferred, do not rediscover):** (1)
+  first-load-without-SW TOCTOU vs an ACTIVELY malicious origin — unclosable
+  without a worse trade (`script-src blob:`); every realistic corruption
+  fails closed. (2) MEMFS file mutations survive blit resets — a planted
+  `_avlo_pruned_*.py` can be re-imported across runs within one generation
+  (authority-free, contained); real fix is P3 WasmFS (FS rides the heap
+  image, blit resets it). (3) `subprocess`/`multiprocessing` are blocked by
+  wasm-syscall absence, not policy.
 
 ## Hard-won learnings (do not re-derive)
-- **Zombie-executor interrupt steal**: Worker.terminate() on an executor
-  blocked in a wasm busy loop closes its ports immediately but the THREAD keeps
-  spinning until its next yield; its Python signal check keeps consuming SIGINT
-  from a shared interrupt SAB — the next executor's first interrupt vanishes
-  (repro: fork suite G5 hang; byte 2→0 with no KI; second write delivered).
-  FIXES (both now in spike supervisor, REQUIRED in production py-supervisor):
-  (1) fresh interrupt SAB per executor spawn — never reuse across generations;
-  (2) repeat SIGINT writes every 50ms until exec-result (soft-cancel loop).
-- **numpy 2.x defers numpy.random**: `import numpy` does NOT seed the global
-  RandomState. Bake it explicitly during per-set snapshot generation
-  (`import numpy.random`) or every restore re-seeds fresh at first touch —
-  breaks run determinism. Baseline warmup list + per-set import lists must pin
-  the full module set they claim (G8R caught this).
-- Site-packages tree MUST be read back AFTER `import numpy` (import-generated
-  __pycache__ pycs are heap-referenced) and restored with mtimes
-  (FS.utime(path, m, m)) — MEMFS has one ms timestamp per node.
-- Snapshot container: u32[0] magic / u32[1] payloadOffset / u32[2] jsonLen /
-  bytes 16..48 BUILD_ID / JSON at 48 / heap at payloadOffset (py-spike-snap.ts
-  is the shared parser).
-- Capture requires primitive-only Python↔JS traffic (live PyProxy aborts
-  serializeHiwireState at snapshot.ts:218). runJson pattern in the executor.
-- stdlib.zip byte-identity is NOT guarded by BUILD_ID — spike hashes it at
-  every fork boot and refuses capture/restore drift. Restage ⇒ recapture.
-- Vite: public-dir files cannot be ESM-imported → pyDevStatic middleware serves
-  /py-dev/* raw (also sets COOP/COEP). git apply must run from .work/pyodide.
-  WSL2 ~9GB RAM → build jobs pinned to 2 cores.
 
-## M1 COMPLETE (Step 3 done; patch 0006 deferred)
-- Full CPython rebuild landed patch 0003: _ctypes/_bz2/pyexpat/_elementtree/
-  _lsprof/_multibytecodec all raise; zlib/_socket/select/_decimal/_zoneinfo/
-  hashlib kept. wasm 8,540,853 → **7,471,023**. G6ctypes → PASS.
-  (emsdk NOT re-setup — hand-applied patch persists, build.sh guard covers it;
-  from-scratch official-mechanism repro deferred to the G0 CI gate in M4.)
-- pack-stdlib.py: pruned pyc-only zip (77 entries pruned, 16 tombstoned
-  top-levels), DEFLATED(9) — 2.42MB src → **3.09MB** (STORED was 7.2MB; the
-  zip is MEMFS-resident so RAM wins; NB: writestr with explicit ZipInfo
-  ignores the archive default — pass compress_type per entry). Deterministic
-  (sorted + fixed dates). Corpus basic/ 5/5 PASS (tombstones, traceback shape,
-  overlay import, post_restore callable).
-- make-baseline.mjs: dist/baseline.snap 21.0MB, **G0 OK (byte-identical
-  --repro)** + restore-verify. Determinism kit (runtime-side replacement for
-  dropped fork patch 0008) intercepts THREE sources found by byte-diffing:
-  (1) node:crypto randomFillSync/randomBytes — Emscripten PREFERS these over
-  webcrypto in Node, a webcrypto-only patch sees 0 draws; (2) Date.now —
-  MEMFS stamps every node, the stdlib zip mtime lands in zipimport's heap
-  cache; (3) performance.now — clock_gettime anchors. PYTHONHASHSEED=0 rides
-  loadPyodide env (hash_randomization asserted 0).
-- **patch 0006 DEFERRED to M3/M4** (delta vs master plan): a 111-byte stub
-  pyodide-lock.json ({info, packages:{}}) boots fine → the 122KB lockfile boot
-  dependency is gone without touching the loader. Full machinery deletion is
-  now pure hardening; do it alongside M3 serving (it changes runtime.js only).
-  Node quirk: lockFileURL must be a PATH in Node, not a file:// URL.
-- Fork restaged (glue+wasm+PRUNED stdlib+stub lock): fresh boot **860ms** (was
-  2.3s), stacked numpy snapshot 30.2MB (was 36.3), restore-boot ~450-512ms,
-  interrupt 9ms, blit 3.1ms. FULL GREEN BOARD: P0-A(stock) 5/5, P0-A(fork)
-  5/5, P0-B 9/9.
+**Snapshots / capture (P2 must honor all of these):**
+- **Zombie-executor interrupt steal:** `Worker.terminate()` on a wasm busy
+  loop closes ports but the thread spins until its next yield and keeps
+  consuming SIGINT from a shared interrupt SAB — the next executor's first
+  interrupt vanishes. Production supervisor already does both fixes: fresh
+  interrupt SAB per spawn (never reuse across generations) + repeat SIGINT
+  writes every 50 ms until exec-result.
+- **numpy 2.x defers `numpy.random`:** `import numpy` does not seed the
+  global RandomState — capture must bake `import numpy.random` explicitly or
+  every restore re-seeds at first touch (breaks run determinism).
+- Capture requires **primitive-only Python↔JS traffic** — a live PyProxy
+  aborts `serializeHiwireState`.
+- MEMFS-era capture: read the site-packages tree back **AFTER** imports
+  (import-generated `__pycache__` pycs are heap-referenced) and restore with
+  mtimes (`FS.utime`); MEMFS has one ms timestamp per node.
+- **Restage ⇒ recapture:** stdlib zip byte-identity is NOT covered by
+  BUILD_ID — zipimport TOC offsets live in the heap. `verifyStdlibZip`
+  as-mounted is the anchor; a byte-different restage rotates buildHash which
+  invalidates every downstream cache.
+- 0008's expected-keys list (`getExpectedKeys` in the fork's snapshot.ts,
+  parked reference patch): hiwire slot expectations are **boot-allocation-
+  order empirical**, not derivable — re-derive from a live table after any
+  boot-sequence change. Post-0008 table was
+  `[null, public_api, API, scheduleCallback, API]`.
+- det-env (deterministic capture) must intercept THREE entropy/clock sources,
+  found by byte-diffing: `node:crypto` randomFillSync/randomBytes (Emscripten
+  PREFERS these over webcrypto under Node — a webcrypto-only shim sees 0
+  draws), `Date.now` (MEMFS stamps every node), `performance.now`. Plus
+  `PYTHONHASHSEED=0` via the loadPyodide env. P2's browser-worker capture
+  needs a det-env variant sharing one source with the Node kit.
 
-## P1 COMPLETE (task #4) — Python runs on the canvas
-- `web/src/core/py/` landed: protocol/sab/harness/imports/run-store/loader/
-  executor/supervisor/manager + CLAUDE.md. Y wiring: `mutateWithOrigin` +
-  `PY_RUN_ORIGIN` + `transactPyOutput`; `outputStatus` field everywhere
-  (objects.ts CodeOutputStatus, accessors, render-accessors scratch). UI: live
-  play/stop button (canvas hit + SelectTool `playButton` DownHit + CodeTool
-  end + DOM `.is-runnable` + Mod-Enter), "Running… N s" header status +
-  ticker, outputError tint (canvas AND DOM overlay).
-- VERIFIED in Chrome (fresh room): print→"2" on canvas; Jupyter echo (`x`
-  last-expr → 42); traceback with USER SOURCE + caret (linecache seeding);
-  cancel → SIGINT → "Run cancelled." status=cancelled; 30s soft timeout →
-  status=timeout (canonical message appended in supervisor — graceful
-  interrupts print nothing themselves); undo untouched (PY_RUN_ORIGIN not
-  tracked — Cmd+Z with only run-writes since load = no-op). Typecheck clean.
-- Cold boot ~0.9s per executor spawn (fork + pruned stdlib + stub lockfile);
-  2min idle teardown + eager respawn already in.
-- NOT yet live-verified: peer-sees-final-only (by construction — zero Y writes
-  until result), FF/Safari sweep, hard-kill grace path in product (spike-
-  proven). Polish backlog: live stdout streaming into the DOM editing overlay
-  (run-store already accumulates it), stop-square SVG centroid offset in DOM,
-  language-switch while editing doesn't retoggle `.is-runnable`.
+**Toolchain / build:**
+- **emsdk patches are inert on incremental builds** — the top-level make rule
+  has no emsdk prereqs, so a staged patch ships an unpatched glue.
+  `build.sh` direct-applies missing patches, force-relinks when one fires,
+  and greps an `AVLO` marker in BOTH the installed source and the built glue.
+  Any future emsdk patch must embed `AVLO` in its added lines.
+- Verify emsdk behavior against the **installed SDK build**, not the git tag
+  — they differ (the "5.0.3 needs a stub-throw patch" plan item died this
+  way; the released SDK already throws named errors).
+- Wheel-patch workbench: unpack the pristine wheel twice (`a/`, `b/`), edit
+  `b/`, `diff -ru a b`. **Delete `.orig` files before diffing** — fuzzy
+  `patch` leaves them and they will SHIP inside the tar (caught by size once
+  already). Fork patches: git-native flow — commit in `.work/pyodide`,
+  regenerate the diff body, splice under the committed patch header; never
+  hand-edit a unified diff. `build.sh` replays from a clean tag checkout
+  (`git checkout -f` discards local commits — export before rebuilding).
+- `git apply` for fork patches must run from `.work/pyodide`. Vite public-dir
+  files can't be ESM-imported (the `pyDevStatic`/staging split exists for
+  this).
+- Pack scripts derive the python minor from config/`sys.version_info` (pyc
+  magic is per-minor); `zipfile.writestr` with an explicit ZipInfo ignores
+  the archive-level compression default — pass `compress_type` per entry.
+- 0006 tree-shake trap: `dynload.ts` is reachable only via a deliberate bare
+  side-effect import in api.ts — without it, esbuild drops `API.loadDynlib`
+  and the whole DSO surface from the shipped glue. Standing grep gate:
+  `loadDynlib` present in the built glue.
 
-## Session 4 — Commit 2: M2 COMPLETE (bundles + dev mount)
-- **Full gate board green**: pack-stdlib double-run byte-identical · corpus
-  basic 6/6 numpy 4/4 pandas 5/5 mpl 4/4 all 1/1 (real tars, PNG decode,
-  font gates) · every tar `--repro` byte-identical (incl. mpl subset+prebake)
-  · G3 tracer 4 traces/81 rules ∩=∅ no PIL/fontTools · G1 budgets
-  (numpy-path 7.01MB br / pandas-mpl 13.64MB br vs 12/16MiB ceilings) ·
-  spike P0-A(fork) 5/5 + P0-B 9/9 through numpy.tar · stage --check clean ·
-  typecheck clean. **Canvas demo**: numpy.ones(4).sum()→4.0, pandas
-  groupby+describe (Jupyter echo), `import requests` instant refusal listing
-  the real set, stat/multiprocessing un-refused.
-- Pipeline: fetch-wheels (13 pins from stock lock; release-asset 404s →
-  jsdelivr CDN mirror, sha-equivalence) → packlib.py (hashseed re-exec,
-  dotted tombstones D6, deterministic zip/ustar) → pack-package.py (D2-D6;
-  ustar meta-first; --unpruned/--stage-only/--tar-only) → tracer →
-  compress/budgets → stage.mjs (dev manifest + py-stdlib-modules.gen.ts,
-  --check drift gate).
-- **Wheel patches born of gates** (all generated as exact-context diffs):
-  pandas 0001 (top-level `import ctypes` in pandas.errors — EAGER, would
-  have broken `import pandas` entirely on the ctypes-less fork; tracer found
-  it) + 0002 (lazy ctypes in interchange.from_dataframe); dateutil 0001
-  (silence the missing-tzdata UserWarning — tarball pruned, pytz is THE tz
-  db via the reworked path-probed ensure_tzpath, now called by the executor
-  after every mount); matplotlib 0001 (rc backend: Agg) + 0002
-  (pillow-ectomy: imsave/print_png → _avlo_png, imread/others → clear
-  ValueError, colors._repr_png_, lazy PillowWriter).
-- **Font learnings**: the recipes mpl wheel SHIPS matplotlib/fontlist.json
-  (39 faces, RELATIVE fnames — pyodide-patched font_manager loads
-  package-local, so planned patch 0003 was unnecessary); prebake deletes it
-  and rebuilds over the shipped faces. 5-face subset alone sprays ~20
-  findfont warnings into user output (mathtext dejavusans fontset probes
-  STIX/cm/Display fallbacks) → ship those 25 faces UNSUBSET (+1.56MB raw,
-  ~0.7MB br; subsetting them is glyph-index-fragile, STIXNonUni rides PUA).
-  Corpus font gates: matplotlib-logger tap asserts no findfont + no
-  "generated new fontManager" (proves baked-list consumption).
-- pandas 2.3 reality: io wrappers (excel/html/xml/sql/sas front doors) are
-  EAGERLY imported by pandas.io.api — only lazy internals prunable
-  (style/styler, clipboard, sas readers, _numba kernels). numpy: recipes
-  wheel ships no tests; pruned f2py+_pyinstaller only.
-- Runtime wiring: supervisor fetches per dev manifest w/ sha verify
-  (stale-mix refusal), in-memory bundle cache across generations (copies
-  transferred, originals kept), downloading phase w/ streamed progress,
-  set-aware respawn (supersets satisfy); executor mounts (extract →
-  loadDynlib per loadOrder → ensure_tzpath) BEFORE network scrub + harness.
-  py-imports/manager consume the GENERATED allowlist (hand-set deleted).
+**Packages:**
+- **pandas 3.0 dropped pytz as its tz backend** — everything rides zoneinfo,
+  so the `ensure_tzpath` bridge (executor runs it after every mount) must be
+  up BEFORE any pandas tz op; run-corpus/trace-imports mirror that contract.
+  The pytz bundle's only remaining role is the TZif database.
+- matplotlib fonts: the wheel SHIPS a stale 39-face `fontlist.json` —
+  `prebake-fontcache.mjs` deletes and rebuilds it over the staged subset
+  faces. The 5-face subset alone sprays ~20 findfont warnings (mathtext
+  probes STIX/cm fallbacks) → the 25 mathtext faces ship UNSUBSET (~0.7 MB
+  br; subsetting them is glyph-index-fragile). Corpus font gates assert no
+  findfont + no "generated new fontManager".
+- seaborn eager-import land mines (why patches 0001/0002 exist): top-level
+  `urllib.request` (pulls the pruned http stack) and `import pydoc` (trips
+  the `_pyrepl` tombstone). `seaborn.objects` + `_marks`/`_stats` extras are
+  pruned (PIL-dead by construction); the vendored scipy-free
+  `external/kde` keeps `kdeplot` working. Package additions considered and
+  settled: openpyxl deferred (needs pyexpat revert + un-prune + no
+  file-ingestion path exists), xlrd rejected (.xls-only), plotly rejected
+  (HTML+plotly.js output model conflicts with the js-bridge closure + PNG
+  figure pipeline).
+- pandas io front doors (excel/html/xml/sql/sas) are EAGERLY imported by
+  `pandas.io.api` — only lazy internals are prunable.
 
-## Next: M3+P2 (worker serving + full patch 0006) → P3 snapshots → P4+M4
-- P3 groundwork already proven in the spike: stacked capture 30.2MB / restore
-  ~0.5s / blit 3.1ms; py-loader has the `_loadSnapshot` seam; supervisor has
-  idle teardown + respawn; bundle mounts feed the per-set snapshot recipe.
-- M3 note: supervisor's in-memory bundle cache (~38MB raw for 'all') is the
-  dev stopgap — P2 swaps fetches to Cache API + build-lock origin.
-- Deferred nits: pydoc allowlisted but trips the _pyrepl tombstone at
-  runtime (pydoc.py:80 top-level import; precise error, fine);
-  `.is-runnable` retoggle on language switch (still in polish backlog).
+**Environment / ops:**
+- TWO dev instances collide silently: a `dev:p` launched from the main repo
+  fights the avlo-parallel one (workerd binds fail; curls hit the OTHER
+  checkout's workers/state → phantom 404s). Check `ss -tlnp` pids before
+  diagnosing "missing" R2 keys.
+- workerd (and the prod edge) normalize inbound `Accept-Encoding` to
+  `br, gzip` — the identity branch in workers/py exists for br-less direct
+  clients and the manifest.
+- Ask the owner before starting `pnpm dev` (repo rule).
 
-## Session 12 — Redesign P1: 314.0.2/emsdk-5.0.3 toolchain jump (Loop A in flight)
+## Verification surfaces + last-green stamps
 
-- **Owner-approved deviations executed** (plan: home-issak-claude-plans-…-whimsical-dewdrop.md):
-  (1) ALL snapshot machinery PARKED to P2 — pyodide 0005/0007 + 0008's snapshot.ts hunk +
-  emsdk dsoBaseHook moved to `patches/parked/`, make-baseline/verify:stacking package.json
-  scripts stubbed to loud errors, `baseline.snap` dropped from stage/lock/budgets/compress/
-  publish, client forces cold boots (`SNAPSHOTS_ENABLED = false` gate at the existing
-  `useSnapshot` seam, zero deletions); (2) incremental-GOT patch deferred to P2's rebuild;
-  (3) git-native patch authoring — patches regenerated from .work commits, never hand-edited.
-- **Landed (pre-flight + Loop A authoring)**: config pins {314.0.2, image 20260211-…-py314
-  (digest sha256:6daf5010…), py 3.14.2 / emsdk 5.0.3 / abi 2026_0, recipes 314-20260629,
-  mirror v314.0.2}; sqlite3 wheel/bundle/set DELETED (static in 314) — sets are now
-  {numpy, numpy+pandas, numpy+matplotlib, all}; wheels re-stamped (numpy 2.4.3,
-  **pandas 3.0.2 (major)**, mpl 3.10.8, contourpy 1.3.3, kiwisolver 1.5.0, pyparsing 3.3.2,
-  packaging 26.1 (down from 26.2!), pytz 2026.1.post1, pillow 12.2.0 / fonttools 4.62.1
-  traceOnly; host fonttools pin → 4.62.1); fetch-wheels now auto-fetches the stock lock from
-  the mirror when absent/stale (info.version-keyed — the fork's own emitted lock can never
-  clobber it; build.sh stopped copying it). Fork patches 0001/0003/0006/0008 re-derived
-  against a fresh 314.0.2 clone and validated end-to-end (`git apply --index` from clean tag
-  = exact build.sh replay). Wheel patches: mpl 0002 pillow-ectomy re-derived vs 3.10.8
-  (imsave gained Colorizer + np.require; new PIL backends all covered by the existing
-  backend prune), pandas 0001/0002 re-derived vs 3.0.2 (errors/__init__ gained `import abc`
-  context; io/clipboard's new top-level ctypes rides the existing prune); dateutil/seaborn
-  apply clean at fuzz=0. Stdlib prune: +compression/{bz2.py,lzma.py,zstd/} (3.14 wrappers
-  over disabled C modules; gzip/zlib wrappers stay), b03 tombstone probe extended with
-  compression.zstd; annotationlib deliberately KEPT (PEP 649 — typing depends on it).
-  pack scripts + prebake/trace PREFIX + _avlo_runtime tz_root now derive the python minor
-  from config/sys.version_info (hardcode class killed); pack:stdlib/bundles run python3.14
-  (uv-installed 3.14.6; pyc magic per-minor). stage.mjs now EMITS `PySetKey`
-  (py-protocol re-exports type-only) + Exclude<'stdlib'>-typed set tables; NEW
-  dump-builtins.mjs replaces make-baseline as builtin-modules.json producer (asserts
-  _sqlite3 present). Client: glue trio → pyodide.asm.mjs; bundlesOf/resolveImports
-  fail-closed (`?? []`/`?? 'all'` dead); marquee spans stdlib so sqlite3 keeps billing;
-  BUNDLE_IMPORTS.sqlite3 dropped. run-corpus/trace: sqlite group is bundle-less stdlib now.
-- **Free wins / corrections vs the master plan** (fold into master doc at Gate B):
-  - **No emsdk patches needed in P1 at all.** The INSTALLED 5.0.3 SDK (sdk-releases
-    065bfade…) already throws named errors unconditionally on BOTH unresolved-symbol
-    surfaces — lazy stubs (`Dynamic linking error: cannot resolve symbol <name>`,
-    libdylink.js:791) and GOT entries (`…undefined symbol '<name>'`, :344). The planned
-    Loop-B stub-throw patch is upstream behavior; the git-TAG file the fact-check read
-    differs from the released SDK build. Loop B's tripwire = explicit
-    ERROR_ON_UNDEFINED_SYMBOLS=1 at link + these throws.
-  - **_lzma was NEVER in the 0.29 fork** (it sat in stock 0.29's *disabled* list; the old
-    0003 context lines were disabled-section entries, misread as "keeps"). 314 rebase keeps
-    it disabled and strips upstream's new `-llzma` WITH `-lzstd` (both modules disabled);
-    `lzma.py` prune + tombstone unchanged. Plan-file text "keep -llzma" was wrong.
-  - Upstream 314 Setup.local disables pwd/_ssl/_hashlib/_uuid itself and adds static
-    _hmac (HACL) + _sqlite3 — both kept. `_ttconv.so` left the mpl wheel at 3.10 (prune
-    rule retired); `_tkagg` prune rule re-pinned cpython-313→314 (filename-keyed data rule
-    would have silently missed).
-  - emsdk "main modules non-relocatable" arrived in 4.0.19 → free via the 4.0.9→5.0.3 jump;
-    "pin ≥5.0.5" referenced a nonexistent version (5.0.3 is the tip).
-  - 314 still ships the full loader machinery (the "no builtin package lock" session-10
-    note was wrong) — 0006 re-derived nearly hunk-for-hunk (loader shape survived 0.29→314
-    almost verbatim; new nodesockfs/wintercg imports untouched).
-- **Loop A docker build**: **1208 s (~20 min)** — fresh emsdk 5.0.3 install + cpython 3.14
-  + lzma/zstd/sqlite/ffi deps + main link on the 2-core WSL2 pin (far under the feared
-  multi-hour; the env image's apt/ccache layers carry most of it). In-container
-  `tsc --noEmit` over src/js passed = 0006/0008 typecheck in the fork's own build.
-- **GATE A: GREEN (all 8 checks)** — dist/raw = exactly {pyodide.asm.mjs 849,194 ·
-  pyodide.asm.wasm 7,952,003 (**8,015 exports** under EXPORT_ALL — the Loop-B baseline;
-  0.29 had 9,651) · pyodide.mjs 16,999 · python_stdlib.zip 2,552,235}; pack:stdlib ×2
-  byte-identical (a0d5747c…, 487 entries / 85 pruned / 29 tombstones); dump-builtins 77
-  builtins incl. _sqlite3; bundles all --repro byte-identical (matplotlib.tar 10.1 MB /
-  pandas.tar grew with 3.0.2); **corpus all groups pass**; trace G3 OK (6 traces, 95
-  prune rules, ∩=∅, no PIL/fontTools); stage --check clean, buildHash ca1a27d668ff97b5
-  (INTERIM — rotates at Gate B); `pnpm typecheck` 12/12; harness base 41/41 + seaborn
-  22/22 + verify 8/8.
-- **Loop-A fallout fixed en route**: (1) mpl 3.10 imports plistlib at font_manager module
-  scope → xml.parsers.expat → pyexpat tombstone; NEW wheel patch
-  matplotlib/0003-lazy-plistlib (darwin-only use, lazy at _get_macos_fonts). (2)
-  **pandas 3.0 dropped pytz as its tz backend** — every tz op rides zoneinfo now, so the
-  ensure_tzpath bridge must be up BEFORE pandas tz ops; run-corpus/trace-imports now
-  mirror the executor contract (post-mount ensure_tzpath) and p02_time reordered; the
-  pytz bundle's remaining role is purely the TZif database. (3) three sample version-pin
-  asserts bumped (3.10.8/2.4.3/3.0.2). (4) .orig backup files from fuzzy patch
-  application leaked into a regenerated wheel patch (would have SHIPPED in the tar) —
-  caught by size; workbench now deletes them before diffing.
-- **Loop B prepped**: link-sos extraction rides fetch-wheels (67 post-prune DSOs +
-  link.rsp response file; /pb mounts ro so extraction is host-side); 0001 rewritten to
-  MAIN_MODULE=2 + AUTOLOAD_DYLIBS=0 + ERROR_ON_UNDEFINED_SYMBOLS=1 +
-  @link.rsp; verified in 5.0.3's link.py: side-module strong imports land in
-  user_requested_exports / EXPORT_IF_DEFINED (link-time diagnosable), needed-entry
-  resolution hard-errors, and ERROR_ON_UNDEFINED_SYMBOLS defaults to 1 on our path.
+All from `packages/py-build/` via `pnpm --filter @avlo/py-build <script>`
+(or root aliases where noted). None run in Turbo/CI.
 
-### HANDOFF — Loop B in progress, stopped mid-debug (owner request). State + next steps.
+- `pack:stdlib` ×2 → byte-identical zips · `bundles -- --all --repro` →
+  byte-identical tars · `trace` + `trace:check` (G3: trace ∩ prune = ∅, no
+  PIL/fontTools) · `corpus` (7 groups; child process per group; mounts REAL
+  tars; mpl groups add font gates + PNG pixel decode) · `harness`
+  (run-harness.mjs: Node ≥23.6 type-strips the SHIPPED
+  py-harden/py-harness/verify.ts, re-enacts the exact executor boot, then
+  drives scrub/freeze sweeps + negatives, 0008 closure probes, tombstones,
+  post-freeze package boards, staged-tree-vs-lock byte checks) · `compress` →
+  `budgets` (G1 ceilings) · `stage` + `stage:check` (drift gate; rotates
+  buildHash) · `pnpm typecheck` · vitest (workers/py routes, py-loader
+  verify) · `pnpm py:seed` (publish --local; preflight re-hashes every byte,
+  manifest LAST).
+- **Last-green (P1):** Gate B on the =2 build — corpus 7/7 groups (basic 6 ·
+  sqlite 3 stdlib-static · numpy 4 · pandas 5 · mpl 4 · all 2 · seaborn 6
+  w/ 4 PNGs pixel-decoded) · budgets restamped (composites: numpy-path
+  7,702,265 br / pandas-mpl 15,361,657 br ceilings; measured 7.34/14.63 MB) ·
+  typecheck 12/12 · vitest 3/3 + 2/2 · seed 23 keys. Harness last recorded
+  green at Gate A (Loop-A build: base 41 · seaborn 22 · verify 8) — it was
+  not re-recorded on the Loop-B build, so run it before trusting it green
+  there.
+- **Browser dev board (Gate-B matrix, all green on the current build):**
+  stdlib print/echo + sqlite3 `:memory:` CRUD · `import ctypes` +
+  `import compression.zstd` → precise tombstones · numpy 4.0 · pandas
+  groupby + `pd.read_sql` roundtrip · mpl figure placed with auto-connector ·
+  seaborn scatterplot (all set) · `import requests` instant refusal (marquee
+  bills sqlite3 via STDLIB_MODULES) · cancel mid-loop · 30 s soft timeout ·
+  idle-teardown + eager respawn healthy.
 
-**Where things stand.** Gate A is fully green and its artifacts are coherent: the staged
-fork dir (`web/public/py-dev/fork/`) + committed-format `build-lock.json` (buildHash
-`ca1a27d668ff97b5`) + gen.ts are the LOOP A (MAIN_MODULE=1) build, and harness/corpus/
-tracer/typecheck all passed against them. `dist/raw/` however now holds the LATEST LOOP B
-attempt (MAIN_MODULE=2), whose main module builds fine (17-19 s incremental rebuilds)
-but FAILS AT BOOT — do not restage until fixed. NOTHING IS COMMITTED yet: the entire P1
-is working-tree changes; do not stash/checkout anything under packages/py-build or
-web/src without reading this first.
+## Open items / backlog
 
-**Loop B chronology (each fix landed in the committed 0001 patch file):**
-1. Flip to MAIN_MODULE=2 + AUTOLOAD_DYLIBS=0 + ERROR_ON_UNDEFINED_SYMBOLS=1 +
-   `@/pb/.cache/link-sos/link.rsp` (67 post-prune DSOs, emitted host-side by
-   fetch-wheels.mjs — /pb mounts ro in-container). First build: exports 8,015 → 1,005,
-   wasm 7,952,003 → 6,860,568 (−13.7%), glue 849 KB → 632 KB. Link passed clean.
-2. Boot failure #1: `Module.FS.mkdirTree undefined` at preRun — EXPORT_ALL was what
-   exported the JS runtime methods. FIXED: EXPORTED_RUNTIME_METHODS now carries
-   upstream's own curated no-EXPORT_ALL list (copied from its DISABLE_DYLINK branch:
-   FS, ENV, heaps, stack helpers). This fix is in the committed 0001.
-3. Boot failure #2 (CURRENT BLOCKER): at startup, `loadDylibs → reportUndefinedSymbols`
-   throws `Dynamic linking error: undefined symbol
-   '_ZNSt3__215basic_stringbufIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev'`
-   (std::__2::basic_stringbuf<char> dtor). Attempts that did NOT fix it:
-   (a) `-Wl,--whole-archive -lstdc++` — dead end, emcc maps `-lstdc++` to NOTHING
-   (link.py:2686 `'stdc++': []`; libc++ is a default lib appended elsewhere), and the
-   symbol is NOT in libc++.a anyway (sstream classes are not explicitly instantiated
-   by libc++). (b) `-Wl,-u,<sym>` sweep for all 1,762 imported func/global symbols of
-   the 67 DSOs (now emitted into link.rsp by fetch-wheels) — same failure.
+- **P2 SW change required:** `.snap` currently falls through to `cacheFirst`
+  — per-set snapshots (~100 MB) would double-store in CacheStorage next to
+  OPFS. Add the explicit passthrough branch when snapshots return.
+- **Preview-board pass never done** (needs `vite preview` + SW, not the dev
+  path): SW verified-route 502 negative + no-cache-write, offline
+  second-load (nested-worker-under-SW validation), zero `/py-dev/fork/`
+  product-fetch sweep, guard-stripped `import js` probe in real Chrome (the
+  Node harness covers the closure board meanwhile).
+- SW `cacheFirst` tar put races the supervisor's identity-normalized put on
+  the same key — self-healing (hits are re-verified) but watch on the
+  preview board.
+- Prod CSP additions (`wasm-unsafe-eval`, py.avlo.io in script/connect-src)
+  have never been exercised — verify on first prod deploy.
+- Client polish (pre-redesign backlog, last known open): live stdout
+  streaming into the DOM editing overlay (run-store already accumulates it);
+  stop-square SVG centroid offset in the DOM button.
+- pydoc is allowlisted but trips the `_pyrepl` tombstone at runtime
+  (top-level import at pydoc.py:80; precise error — acceptable).
+- FF/Safari sweep never done (Chrome-only verification to date).
 
-**Decisive diagnostic (ran last, evidence not theory):** across the 67 DSOs the symbol
-is EXPORTED by exactly one — kiwisolver `_cext.cpython-314-wasm32-emscripten.so` —
-which also imports it (classic weak/COMDAT template-instantiation pattern). The Loop-B
-MAIN module imports it as BOTH `env.<sym>` and `GOT.func.<sym>`, and main-module
-startup GOT resolution demands it before any DSO is loaded. Under 0.29/Loop A this
-symbol resolved LAZILY at dlopen from the sibling DSO (cross-DSO resolution).
+---
 
-**Next steps, in order:**
-1. **Filter the -u sweep** in fetch-wheels.mjs link-sos block: emit `-Wl,-u,<sym>` only
-   for `union(DSO imports) − union(DSO exports)` — symbols the MAIN module must supply.
-   Cross-DSO symbols (like this dtor) must stay OUT of the main link so they stay lazy.
-   Cheap to test: `node scripts/fetch-wheels.mjs && node scripts/run-build.mjs` (~20 s
-   incremental) then `node scripts/dump-builtins.mjs` (boot probe; errors print a giant
-   glue line — filter with `awk 'length($0)<1200'` on captured stderr).
-2. **If the same failure persists even without that -u** (plausible — failure #2's boot
-   error predated the -u sweep, so the main-module GOT import may come from link.py
-   itself): investigate emscripten's stub-object path — building.py:160-171
-   (`create_stub_object(external_symbols)` + `--export-if-defined` for side-module
-   deps) and whether side-module imports get marked WEAK in the main module
-   (webassembly.get_weak_imports; libdylink.js reportUndefinedSymbols SKIPS weak
-   imports at ~line 336, throws for strong at :344). The fix shape is likely: make
-   cross-DSO-satisfiable GOT entries weak, or keep them out of the stub set. An emsdk
-   patch here would need build.sh's emsdk block re-armed (it is conditional on
-   patches/emsdk/*.patch existing; AVLO marker grep + forced relink already in place).
-3. **Escape hatch (fully shippable)**: revert 0001 to its Loop-A form and ship P1 at
-   MAIN_MODULE=1 — Gate A was green end-to-end. The exact Loop-A tree state lives in
-   .work/pyodide's orphaned commits from the Gate-A build: `git -C .work/pyodide show
-   09937fa` (0001 Loop-A) / 89c6ac3 (0003) / f09485c (0006) / 6c7494b (0008); the
-   Loop-A 0001 = current minus {MAIN_MODULE=2→1, +EXPORT_ALL=1, −AUTOLOAD_DYLIBS,
-   −ERROR_ON_UNDEFINED_SYMBOLS, −@link.rsp, EXPORTED_RUNTIME_METHODS back to
-   'wasmTable,ERRNO_CODES'}. MAIN_MODULE=2 would then move to P2's rebuild.
+## Phase log (compact; newest first — append here each session)
 
-**Remaining for Gate B once boots are green** (plan file: home-issak-claude-plans-…-
-whimsical-dewdrop.md): corpus + harness on the =2 build (closed-world proof over every
-DSO) → `node scripts/compress.mjs` → `node scripts/check-budgets.mjs --update` + hand-set
-composites (sqlite3.tar gone from both) → `node scripts/stage.mjs` (buildHash rotates)
-+ `--check` → `pnpm typecheck` → vitest suites (workers/py, py-loader) → `pnpm py:seed`
-→ browser dev-board matrix (`pnpm dev` — ASK THE OWNER FIRST per repo rule; per-set
-snippets incl. sqlite3 CRUD, ctypes + compression.zstd tombstones, mpl figure, seaborn,
-refusal, cancel/timeout; every boot must log cold) → cold-boot trace ledger row here →
-master-plan checkbox ticks + deviation notes → CLAUDE.md interim banners (py-build +
-core/py: snapshots parked, cold boots forced) → TWO commits with owner OK (Gate A
-checkpoint: rebase+toolchain; Gate B: flip+lock+seed).
+### Phase 1 — toolchain jump + link-model flip (Sessions 12–13, committed)
 
-**Wall-clocks:** Loop A full build 1,208 s; Loop B incremental rebuilds 17-19 s.
-**Interim buildHash** `ca1a27d668ff97b5` (Loop A) — rotates at Gate B restage; client
-`SNAPSHOTS_ENABLED=false` means stale OPFS snapshots are inert regardless.
+Loop A: pure rebase 0.29.4 → 314.0.2 at MAIN_MODULE=1 (Gate A green: docker
+1,208 s, all boards, interim hash `ca1a27d668ff97b5`). Loop B: MAIN_MODULE=2
+flip — first attempt put the 67 DSOs on the link line and died at boot on
+weak-COMDAT preemption (see the closed-world section for the root cause +
+fix: `--export-if-defined` union, DSOs off the line); second failure class
+was the no-EXPORT_ALL Module surface. Gate B green, buildHash
+`58ae9021763d19f0`, browser board + cold-boot ledger recorded above.
+Corrections vs the plan discovered en route (now folded into the master
+doc): mergeLibSymbols walks the SIDE module's exports (=2 doesn't shrink
+per-dlopen merge; the GOT scan is the P2 target) · non-relocatable main
+modules landed in emsdk 4.0.19 (free via the jump) · `_lzma` was never
+enabled in our fork · zero emsdk patches needed in P1 · 314 still ships the
+full loader machinery (0006 survived nearly verbatim).
 
-## Session 13 — Loop B UNBLOCKED + Gate B (browser board pending owner)
+### Phase 0 — always-on trace + baseline ledger (Session 11, committed)
 
-- **Root cause of the stringbuf boot failure — NOT what the handoff guessed.** Neither
-  the -u sweep nor link.py's user_requested_exports: putting the 67 `.so`s on the
-  wasm-ld command line let lld apply the ELF shared-def-beats-weak-def rule — the MAIN
-  module's own WEAK (C++ COMDAT vague-linkage) basic_stringbuf/stringstream
-  instantiations (Loop A exported the full 33-symbol family; main's own C++ uses
-  stringstream) were DISCARDED in favor of runtime imports of kiwisolver's `_cext.so`
-  strong exports (env + GOT.func, non-weak ⇒ `required`), and startup
-  reportUndefinedSymbols throws before any bundle can mount. The handoff's step 1
-  (filtered -u) could never fix this — the imports predate the sweep and persist as
-  long as the DSOs ride the link line. Diagnosis evidence: LOOP-A wasm exports the
-  family / imports none; LOOP-B imported exactly the 2 dtors that kiwisolver exports
-  strong (flags=None in its dylink import_info); the other 891 cross-DSO-satisfiable
-  symbols never became main imports (they aren't referenced by main objects).
-- **Fix (no emsdk patch needed): DSOs OFF the link line.** fetch-wheels' link-sos block
-  now emits link.rsp = one `-Wl,--export-if-defined=<sym>` per symbol in the union of
-  all 67 post-prune DSOs' func/global/tag imports (1,764; invoke_* excluded), scanned
-  in-memory from the wheels — no .so extraction, no -u, no .so paths. This reproduces
-  the ONLY effect we need from emcc's process_dynamic_libs (main-defined DSO-needed
-  symbols survive metadce as exports — the same mechanism that produced the ~1k export
-  set) while main keeps its own COMDAT copies; cross-DSO symbols resolve lazily at
-  dlopen exactly as under Loop A, whose full green corpus is the proof main defines
-  everything the DSOs need from it. `-s AUTOLOAD_DYLIBS=0` dropped (inert with nothing
-  on the link line).
-- **Second (shallower) failure class found + fixed: the no-EXPORT_ALL JS surface.**
-  First mount died at `Module._dlerror is not a function` — dynload.ts's dlopen path
-  needs Module surface that only EXPORT_ALL used to provide. Fixed by enumerating EVERY
-  `(Module|#module).prop` access across src/js against the built wasm's exports:
-  EXPORTS += `_dlerror` + `_emscripten_dlopen_promise` (musl/dynlink.c — pyodide's own
-  core C rides EMSCRIPTEN_KEEPALIVE, these two don't); EXPORTED_RUNTIME_METHODS +=
-  `UTF8ToString,getPromise,promiseMap` (JS-library symbols). False positives ruled out:
-  `_PropagatePythonError` is a pyodide-JS class self-attached to Module;
-  addRunDependency etc. already present (boot proved it).
-- **Gate B board GREEN** (browser matrix pending): corpus ALL 7 groups on the =2 build
-  (basic 6/6 · sqlite 3/3 stdlib-static · numpy 4/4 · pandas 5/5 · mpl 4/4 · all 2/2 ·
-  seaborn 6/6 w/ 4 PNGs pixel-decoded) — the closed-world proof, every DSO dlopens,
-  zero named-stub throws · compress + budgets restamped (11 artifact ceilings;
-  composites hand-set +5%: numpy-path 7,702,265 br / pandas-mpl 15,361,657 br —
-  measured 7.34/14.63 MB) · stage → **buildHash `58ae9021763d19f0`** + `--check` clean
-  · typecheck 12/12 · vitest workers/py 3/3 + py-loader verify 2/2 · `pnpm py:seed`
-  23 keys (manifest last).
-- **Loop B final numbers** (vs Loop A 8,015-export / 7,952,003 B wasm / 849,194 B glue):
-  wasm **6,858,149 B (−13.8%)**, exports **1,013**, glue **343,521 B (−60%** — the
-  earlier 632 KB Loop-B glue was carrying ~290 KB of JS-library stubs that
-  DEFAULT_LIBRARY_FUNCS_TO_INCLUDE pulled in for the on-the-line DSOs; off the line
-  they vanish), GOT imports **0**. Incremental rebuild ~19 s.
-- **PENDING (owner):** the TWO commits (Gate A checkpoint: rebase+toolchain; Gate B:
-  flip+lock+seed). Browser board + cold-boot ledger DONE below (owner authorized the
-  dev server same-session).
-- **Browser dev board GREEN (Chrome, dev server, room PySmokeCommit1)** — every check
-  of the Gate-B matrix: stdlib print+echo+sqlite3 `:memory:` CRUD (`[(6,)]`/`42`) ·
-  `import ctypes` + `import compression.zstd` → precise runtime tombstones
-  (python314.zip sitecustomize) · numpy 4.0 · pandas groupby `{'a': 3, 'b': 7}` +
-  `pd.read_sql` sqlite roundtrip `10` · mpl `plt.plot` → figure PLACED on canvas with
-  auto-connector · seaborn scatterplot figure placed (all set) · `import requests` →
-  instant refusal, marquee still bills sqlite3 via STDLIB_MODULES · cancel mid
-  `while True` → "Run cancelled." · 30 s soft timeout → "Run timed out after 30 s." ·
-  idle-teardown + eager respawn observed healthy (uncounted `reqToReady=undefined`
-  re-boots in the trace ring).
-- **P1 COLD-BOOT LEDGER (dev, no SW, local R2; every boot `path=cold boot (no
-  snapshot)` — the P2 baseline).** click→ready = sup reqToReadyMs; exec boot in ():
-  **stdlib 574 ms** (451: load-pyodide 392 · stdlib-verify 8 · post-restore 16 ·
-  harden 1 · harness 7 · reset-image 21 @31 MB) · **numpy 1030** (624: +mount 206
-  @1 tar) · **numpy+pandas 1341** (1168: mount 200 @4 tars, bundles-fetch 126) ·
-  **numpy+matplotlib 1472** (1025: mount 179 @5 tars) · **all 1854** (1362: mount 197
-  @7 tars, bundles-fetch 150). load-pyodide is a steady ~360-395 ms every boot (main
-  compile+instantiate+CPython init). vs P0: old `all` OPFS-restore was 1224-1252
-  click→ready and old cold GENERATION 4588 — the new pure cold mount boot (1854, no
-  snapshot at all) sits between them; P2 restores attack the remaining gap.
+`py-trace.ts` + marks through supervisor/executor/loader/snapshot + the
+exec→sup→main trace relay. Baseline ledger recorded (see Trace ledgers).
+Both plan predictions confirmed: pre-spawn ≈ OPFS read + SHA + reconstruct;
+~75% of dso-replay is glue-side GOT/merge bookkeeping, not wasm work.
+
+### Pre-redesign milestones (0.29.4 era — heavily superseded, kept as one
+paragraph)
+
+Fork + patch queue + deterministic packing pipeline built (M1–M2) · canvas
+runtime landed: protocol/sab/harness/run-store/supervisor/executor/manager,
+play/stop UI, cancel/timeout, traceback with user source (old P1) · worker
+serving + build-lock + publish/seed (M3) · same-origin hardening: scrub,
+harden, fail-closed assert, Node harness (Sessions 5–6) · fork patches
+0006/0008 (Session 7) · lock-verified artifact serving via SW + constructor
+freeze sweep (Session 8) · sqlite3+seaborn bundles (Session 8; sqlite3
+bundle since deleted — static in 314) · client-side OPFS snapshot boots +
+py edge cache (commit `5abdf63`, never had a NOTES entry; that snapshot
+machinery is now parked) · figures→canvas pipeline + review sweep + output
+WYSIWYG parity (Session 9) · py tooling moved into packages/py-build, uv
+adoption, test scaffolding (Session 10). Durable knowledge from all of this
+lives in the sections above; per-session gate boards and numbers are in git
+history (`git log --oneline` — commits 3ec5374…5abdf63) if archaeology is
+ever needed.
