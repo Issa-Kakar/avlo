@@ -4,6 +4,7 @@
   "files": {
     "includes": [
       "**",
+      "!experiments/**",
       "!**/dist",
       "!**/build",
       "!**/.wrangler",

@@ -1,0 +1,5 @@
+node_modules/
+host-ca.crt
+.wrangler/
+*.log
+.cf-creds/

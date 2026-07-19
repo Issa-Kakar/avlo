@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "avlo-pyexec-raw",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "class_name": "PyExec",
+      "image": "./Dockerfile",
+      "name": "avlo-pyexec-raw",
+      "instance_type": "standard-2",
+      "max_instances": 5
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "PyExec", "name": "PYEXEC" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PyExec"] }]
+}
