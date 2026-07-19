@@ -27,6 +27,7 @@ import {
 } from './py-protocol';
 import { HEARTBEAT, MEM_KIB, mapPySab, PyExecState, type PySabViews, RUN_ID, STATE } from './py-sab';
 import { packTree } from './py-snapshot';
+import { installWasmTimers, setTraceSink, traceBegin, traceEmit, traceReset, traceSpan, traceSpanAsync } from './py-trace';
 
 let pyodide: Pyodide = null;
 let sab: PySabViews | null = null;
@@ -78,6 +79,8 @@ del _avlo_reset`;
 /** Captured before any user code can run — result/relay delivery stays
  * intact even if a run reassigns `self.postMessage`. */
 const rawPost = (self as unknown as Worker).postMessage.bind(self as unknown as Worker);
+
+setTraceSink((line) => rawPost({ t: 'exec-trace', line }));
 
 /** Combined stdout+stderr for the CURRENT run. Decoders are recreated per
  * run — a multi-byte character split across the last chunk of a run would
@@ -167,16 +170,18 @@ function captureSetSnapshot(m: ExecBootMsg): void {
   const bundles = m.bundles ?? [];
   if (bundles.length === 0 || !m.captureKey) return;
   try {
-    for (const b of bundles) {
-      const imports = BUNDLE_IMPORTS[b.name];
-      if (imports) pyodide.runPython(imports);
-    }
-    pyodide.runPython('import gc; gc.collect(); gc.collect()');
+    traceSpan('capture-imports', () => {
+      for (const b of bundles) {
+        const imports = BUNDLE_IMPORTS[b.name];
+        if (imports) pyodide.runPython(imports);
+      }
+      pyodide.runPython('import gc; gc.collect(); gc.collect()');
+    });
     const t0 = performance.now();
-    const container = (pyodide.makeMemorySnapshot() as Uint8Array).slice().buffer;
+    const container = traceSpan('capture-snapshot', () => (pyodide.makeMemorySnapshot() as Uint8Array).slice().buffer);
     // Walk AFTER the imports — import-generated __pycache__ pycs are
     // heap-referenced; an earlier walk bakes an inconsistent tree (G7).
-    const tree = packTree(pyodide.FS, bundles[0].prefix);
+    const tree = traceSpan('pack-tree', () => packTree(pyodide.FS, bundles[0].prefix));
     post({ t: 'exec-snapshot', captureKey: m.captureKey, container, tree }, [container, tree.blob]);
     console.warn(
       `py: captured ${m.captureKey} snapshot (${(container.byteLength / 1e6).toFixed(1)} MB, ${(performance.now() - t0).toFixed(0)} ms)`,
@@ -194,45 +199,71 @@ async function boot(m: ExecBootMsg): Promise<void> {
     return;
   }
   sab = mapPySab(m.sab);
+  traceReset();
   const t0 = performance.now();
+  const wasmTimers = installWasmTimers();
+  let wasm: Record<string, unknown> = {};
   try {
     // Restore (when m.snapshot rides) happens INSIDE bootPyodide, before the
     // realm is stripped — so even a poisoned image lands authority-less.
-    pyodide = await bootPyodide({ artifactBase: m.artifactBase, snapshot: m.snapshot, tree: m.tree, makeSnapshot: m.capture });
-    for (const b of m.bundles ?? []) await mountBundle(b); // cold + generation; stacked boots carry none
-    await verifyStdlibZip(m.stdlibSha256); // ALWAYS before any capture — never snapshot an unverified stdlib
+    pyodide = await traceSpanAsync('boot-pyodide', () =>
+      bootPyodide({ artifactBase: m.artifactBase, snapshot: m.snapshot, tree: m.tree, makeSnapshot: m.capture }),
+    );
+    for (const b of m.bundles ?? []) {
+      // cold + generation; stacked boots carry none
+      const endMount = traceBegin('mount');
+      await mountBundle(b);
+      endMount({ bundle: b.name });
+    }
+    wasm = wasmTimers.collect();
+    wasmTimers.uninstall(); // all compiles are behind us; the realm scrub below must not see wrappers
+    await traceSpanAsync('stdlib-verify', () => verifyStdlibZip(m.stdlibSha256)); // ALWAYS before any capture — never snapshot an unverified stdlib
     // Reseed entropy consumers + drop caches that alias pre-snapshot state;
     // ends with the tz bridge (superset of the old ensure_tzpath call —
     // idempotent and import-light on cold boots).
-    pyodide.runPython('import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime');
+    traceSpan('post-restore', () => pyodide.runPython('import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime'));
     if (m.capture) captureSetSnapshot(m);
     // Last network/compile touch is behind us — strip the realm's ambient
     // authority, then freeze the intrinsics the run protocol flows through.
     // MUST precede the harness install: the Python-side guard is the
     // defense-in-depth layer, this is the authoritative one.
-    scrubWorkerScope();
-    hardenRealm();
-    // Fail closed: if the scrub silently no-op'd on any authority, abort the
-    // boot here (⇒ exec-fatal) rather than install the harness and run code in
-    // an unconfined realm. Same-origin ⇒ this scrub IS the boundary.
-    assertRealmHardened();
+    traceSpan('harden', () => {
+      scrubWorkerScope();
+      hardenRealm();
+      // Fail closed: if the scrub silently no-op'd on any authority, abort the
+      // boot here (⇒ exec-fatal) rather than install the harness and run code in
+      // an unconfined realm. Same-origin ⇒ this scrub IS the boundary.
+      assertRealmHardened();
+    });
     pyodide.setInterruptBuffer(sab.u8);
     pyodide.setStdout({ write: makeWriteHook('out'), isatty: false });
     pyodide.setStderr({ write: makeWriteHook('err'), isatty: false });
-    pyodide.runPython(HARNESS_INSTALL);
+    traceSpan('harness', () => pyodide.runPython(HARNESS_INSTALL));
     try {
+      const endImage = traceBegin('reset-image');
       resetImage = (pyodide._module.HEAP8 as Uint8Array).slice();
       tableLenAtReady = pyodide._module.wasmTable.length as number;
+      endImage({ mb: Math.round(resetImage.length / 1e6) });
     } catch (err) {
       console.warn('py: no blit image (per-run respawn instead) —', err);
       resetImage = null;
     }
   } catch (err) {
+    traceEmit('exec', 'boot-fatal', { error: String((err as Error)?.message ?? err).split('\n')[0], wasm });
     post({ t: 'exec-fatal', error: String((err as Error)?.stack ?? err) });
     return;
   }
   Atomics.store(sab.i32, STATE, PyExecState.Idle);
-  post({ t: 'exec-ready', bootMs: performance.now() - t0 });
+  const bootMs = performance.now() - t0;
+  traceEmit('exec', 'boot', {
+    bootMs: Math.round(bootMs),
+    snapshot: !!m.snapshot,
+    stacked: !!m.tree,
+    bundles: (m.bundles ?? []).length,
+    capture: !!m.capture,
+    wasm,
+  });
+  post({ t: 'exec-ready', bootMs });
 }
 
 function exec(m: ExecRunMsg): void {
@@ -249,26 +280,32 @@ function exec(m: ExecRunMsg): void {
   stderrDecoder = new TextDecoder();
   Atomics.store(sab.i32, RUN_ID, m.runId);
   Atomics.store(sab.i32, STATE, PyExecState.Running);
+  traceReset();
   const t0 = performance.now();
   let ok = false;
   let interrupted = false;
   let figures: PyFigure[] = [];
   try {
     pyodide.globals.set('_avlo_code', m.code); // string → by value, no proxy
-    const res = JSON.parse(pyodide.runPython(RUN_INVOKE) as string) as {
+    const res = JSON.parse(traceSpan('run-python', () => pyodide.runPython(RUN_INVOKE) as string)) as {
       ok: boolean;
       interrupted: boolean;
       figures: [string, number, number][];
     };
     ok = res.ok;
     interrupted = res.interrupted;
-    figures = res.figures.map(([path, w, h]) => {
-      // FS.readFile can return a subarray VIEW over MEMFS — .slice() mints the
-      // fresh exact-size buffer that transfer requires.
-      const bytes = pyodide.FS.readFile(path) as Uint8Array;
-      pyodide.FS.unlink(path);
-      return { png: bytes.slice().buffer, width: w, height: h };
-    });
+    figures =
+      res.figures.length === 0
+        ? []
+        : traceSpan('figures', () =>
+            res.figures.map(([path, w, h]) => {
+              // FS.readFile can return a subarray VIEW over MEMFS — .slice() mints the
+              // fresh exact-size buffer that transfer requires.
+              const bytes = pyodide.FS.readFile(path) as Uint8Array;
+              pyodide.FS.unlink(path);
+              return { png: bytes.slice().buffer, width: w, height: h };
+            }),
+          );
   } catch (err) {
     // Harness-level failure (or KeyboardInterrupt landing outside user code —
     // e.g. during compile): surface as the run's error output.
@@ -292,12 +329,14 @@ function exec(m: ExecRunMsg): void {
   let blitOk = false;
   if (img && pyodide._module.wasmTable.length === tableLenAtReady) {
     try {
+      const endBlit = traceBegin('blit');
       (pyodide._module.HEAP8 as Uint8Array).set(img);
       // Heap growth during the run: prefix restored, tail zeroed — wasted
       // address space, not corruption (respawn reclaims it via needsRespawn).
       if (heapLen > img.length) (pyodide._module.HEAP8 as Uint8Array).fill(0, img.length);
+      endBlit({ mb: Math.round(img.length / 1e6) });
       pyodide.setInterruptBuffer(sab.u8); // C-side flag is in the image; re-arm is free paranoia
-      pyodide.runPython(POST_RUN_RESET);
+      traceSpan('post-run-reset', () => pyodide.runPython(POST_RUN_RESET));
       blitOk = true;
     } catch (err) {
       console.warn('py: blit reset failed —', err);
@@ -310,6 +349,7 @@ function exec(m: ExecRunMsg): void {
   Atomics.store(sab.i32, RUN_ID, 0);
   Atomics.store(sab.i32, STATE, PyExecState.Idle);
   Atomics.add(sab.i32, HEARTBEAT, 1);
+  const durationMs = performance.now() - t0;
   post(
     {
       t: 'exec-done',
@@ -317,12 +357,20 @@ function exec(m: ExecRunMsg): void {
       ok,
       interrupted,
       output: outBuf,
-      durationMs: performance.now() - t0,
+      durationMs,
       figures,
       needsRespawn,
     },
     figures.map((f) => f.png),
   );
+  traceEmit('exec', 'run', {
+    runId: m.runId,
+    ok,
+    interrupted,
+    execMs: Math.round(durationMs),
+    needsRespawn,
+    heapMB: Math.round(heapLen / 1e6),
+  });
   currentRunId = 0;
 }
 

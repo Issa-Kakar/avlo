@@ -8,6 +8,7 @@
  */
 
 import type { AvloSnapshotMeta, PackedTree } from './py-snapshot';
+import { traceBegin, traceSpanAsync } from './py-trace';
 
 // biome-ignore lint/suspicious/noExplicitAny: fork loader has no bundled types in-app
 export type Pyodide = any;
@@ -36,6 +37,7 @@ function makePreRestoreHook(tree: PackedTree) {
   return (avlo: AvloSnapshotMeta, Module: any): void => {
     const { API, FS } = Module;
     API.setDsoLoadInfo(avlo.dso);
+    const endTree = traceBegin('tree-write');
     for (const d of tree.dirs) {
       try {
         FS.mkdirTree(d);
@@ -53,28 +55,43 @@ function makePreRestoreHook(tree: PackedTree) {
       byPath.set(f.path, bytes);
       byBase.set(f.path.split('/').pop() ?? f.path, bytes);
     }
+    endTree({ dirs: tree.dirs.length, files: tree.files.length, mb: Math.round(blob.length / 1e6) });
+    const endReplay = traceBegin('dso-replay');
+    let maxMs = 0;
+    let maxDso = '';
     for (const name of avlo.dso.loadOrder) {
       const bytes = byPath.get(name) ?? byBase.get(name.split('/').pop() ?? name);
       if (!bytes) throw new Error(`snapshot replay: no bytes for DSO ${name}`);
+      const start = performance.now();
       API.loadDynlibReplay(name, bytes);
+      const ms = performance.now() - start;
+      if (ms > maxMs) {
+        maxMs = ms;
+        maxDso = name.split('/').pop() ?? name;
+      }
     }
     API.restoreDsoHandles(avlo.dsoHandles);
     API.dsoReplayDone();
+    endReplay({ count: avlo.dso.loadOrder.length, maxMs: Math.round(maxMs * 10) / 10, maxDso });
   };
 }
 
 export async function bootPyodide(opts: PyBootOptions): Promise<Pyodide> {
   // Non-literal specifier: opaque to the typechecker AND to Vite's bundler —
   // resolved at runtime against the served artifact dir.
+  const endImport = traceBegin('glue-import');
   const mod = await import(/* @vite-ignore */ `${opts.artifactBase}pyodide.mjs`);
-  return mod.loadPyodide({
-    indexURL: opts.artifactBase,
-    packages: [],
-    // Hash determinism parity with make-baseline (heap-behavior consistency;
-    // also keeps fresh-boot fallback runs deterministic modulo entropy).
-    env: { PYTHONHASHSEED: '0', HOME: '/home/pyodide' },
-    ...(opts.snapshot ? { _loadSnapshot: opts.snapshot } : {}),
-    ...(opts.tree ? { _preRestoreHook: makePreRestoreHook(opts.tree) } : {}),
-    ...(opts.makeSnapshot ? { _makeSnapshot: true } : {}),
-  });
+  endImport();
+  return traceSpanAsync('load-pyodide', () =>
+    mod.loadPyodide({
+      indexURL: opts.artifactBase,
+      packages: [],
+      // Hash determinism parity with make-baseline (heap-behavior consistency;
+      // also keeps fresh-boot fallback runs deterministic modulo entropy).
+      env: { PYTHONHASHSEED: '0', HOME: '/home/pyodide' },
+      ...(opts.snapshot ? { _loadSnapshot: opts.snapshot } : {}),
+      ...(opts.tree ? { _preRestoreHook: makePreRestoreHook(opts.tree) } : {}),
+      ...(opts.makeSnapshot ? { _makeSnapshot: true } : {}),
+    }),
+  );
 }

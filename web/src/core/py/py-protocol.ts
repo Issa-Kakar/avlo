@@ -77,7 +77,13 @@ export interface SupFatalMsg {
   t: 'sup-fatal';
   error: string;
 }
-export type SupToMain = SupReadyMsg | PhaseMsg | StdoutMsg | ResultMsg | SupFatalMsg;
+/** Relayed py-trace JSON line (Phase 0) — the main thread owns the single
+ * visible `console.info('py:trace', …)` + the e2e-readable ring buffer. */
+export interface TraceMsg {
+  t: 'trace';
+  line: string;
+}
+export type SupToMain = SupReadyMsg | PhaseMsg | StdoutMsg | ResultMsg | SupFatalMsg | TraceMsg;
 
 // ---------------------------------------------------------------- sup → exec
 
@@ -163,7 +169,12 @@ export interface ExecFatalMsg {
   t: 'exec-fatal';
   error: string;
 }
-export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecSnapshotMsg | ExecFatalMsg;
+/** Executor py-trace line — supervisor relays it to main as TraceMsg. */
+export interface ExecTraceMsg {
+  t: 'exec-trace';
+  line: string;
+}
+export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecSnapshotMsg | ExecFatalMsg | ExecTraceMsg;
 
 // ------------------------------------------------------------------- limits
 

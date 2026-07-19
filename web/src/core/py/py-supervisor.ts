@@ -56,6 +56,7 @@ import {
 import { allocPySab, clearInterrupt, EPOCH, PyCancelKind, type PySabViews, writeInterrupt } from './py-sab';
 import { deleteSetSnapshot, type PackedTree, readSetSnapshot, writeSetSnapshot } from './py-snapshot';
 import { SET_BUNDLES } from './py-stdlib-modules.gen';
+import { setTraceSink, traceAdd, traceEmit, traceReset, traceSpanAsync } from './py-trace';
 
 // Immutable content-hashed artifact origin — the committed lock pins the hash,
 // the worker 404s anything else (stale lock fails visible, never wrong).
@@ -68,6 +69,8 @@ interface ActiveRun {
   runId: number;
   code: string;
   dispatched: boolean;
+  /** When the run REQUEST arrived (click→ready/result trace anchor). */
+  reqAt: number;
   startedAt: number;
   softTimer: ReturnType<typeof setTimeout> | null;
   hardTimer: ReturnType<typeof setTimeout> | null;
@@ -99,10 +102,15 @@ let snapshotRetried = false;
 /** Human label for the CURRENT generation's boot path — logged with bootMs on
  * exec-ready (the snapshot-used / cold-boot signal). Set in spawnExecutor. */
 let bootDescription = '';
+/** When the boot message was posted — exec-ready closes the 'boot-wait' span
+ * (executor worker spin-up + boot; the delta vs bootMs is spin-up cost). */
+let bootPostedAt = 0;
 
 function post(msg: unknown, transfer?: Transferable[]): void {
   (self as unknown as Worker).postMessage(msg, transfer ?? []);
 }
+
+setTraceSink((line) => post({ t: 'trace', line }));
 
 const bundlesOf = (setKey: PySetKey): readonly string[] => (setKey === 'stdlib' ? [] : (SET_BUNDLES[setKey] ?? []));
 
@@ -337,6 +345,8 @@ async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }):
   bootedSetKey = null;
   bootSnapshotKind = null;
   bootSnapshotSetKey = null;
+  traceReset();
+  const spawnStart = performance.now();
   const useSnapshot = !opts?.noSnapshot;
   let payloads: PyBundlePayload[] = [];
   let snapshot: ArrayBuffer | undefined;
@@ -347,10 +357,16 @@ async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }):
     // them on the cold first spawn (ensureGlueVerified memoizes on success).
     if (setKey === 'stdlib') {
       // The baseline IS the stdlib set's snapshot — no OPFS entry, no bundles.
-      const [, baseline] = await Promise.all([ensureGlueVerified(), useSnapshot ? ensureBaseline() : null]);
+      const [, baseline] = await Promise.all([
+        traceSpanAsync('glue-preflight', ensureGlueVerified),
+        useSnapshot ? traceSpanAsync('baseline', ensureBaseline) : null,
+      ]);
       snapshot = baseline ?? undefined;
     } else {
-      const [, held] = await Promise.all([ensureGlueVerified(), useSnapshot ? readSetSnapshot(BUILD_LOCK.buildHash, setKey) : null]);
+      const [, held] = await Promise.all([
+        traceSpanAsync('glue-preflight', ensureGlueVerified),
+        useSnapshot ? traceSpanAsync('snapshot-read', () => readSetSnapshot(BUILD_LOCK.buildHash, setKey)) : null,
+      ]);
       if (held) {
         // OPFS hit — the wrapper carries site-packages (DSO bytes + mtimes),
         // so the boot needs ZERO bundle fetches: the offline win.
@@ -359,7 +375,10 @@ async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }):
       } else {
         // Generation: baseline restore + mounts + capture riding the boot.
         // Baseline null (offline/unshipped) still generates — cold + capture.
-        const [baseline, fetched] = await Promise.all([useSnapshot ? ensureBaseline() : null, ensureBundles(setKey)]);
+        const [baseline, fetched] = await Promise.all([
+          useSnapshot ? traceSpanAsync('baseline', ensureBaseline) : null,
+          traceSpanAsync('bundles', () => ensureBundles(setKey)),
+        ]);
         payloads = fetched;
         snapshot = baseline ?? undefined;
         capture = useSnapshot;
@@ -418,12 +437,18 @@ async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }):
       : snapshot
         ? 'restored baseline snapshot'
         : 'cold boot (no snapshot)';
+  // 'spawn' = the pre-spawn critical path (everything before the executor
+  // even exists); 'boot-wait' (closed on exec-ready) − executor bootMs =
+  // worker spin-up + message latency.
+  bootPostedAt = performance.now();
+  traceAdd('spawn', spawnStart, bootPostedAt, { setKey, snapshot: !!snapshot, stacked: !!tree, capture });
 }
 
 function dispatch(run: ActiveRun): void {
   if (!executor || !sab) return;
   run.dispatched = true;
   run.startedAt = performance.now();
+  traceAdd('req-to-dispatch', run.reqAt, run.startedAt);
   clearInterrupt(sab);
   executor.postMessage({ t: 'exec', runId: run.runId, code: run.code });
   post({ t: 'phase', runId: run.runId, phase: 'running' });
@@ -477,6 +502,7 @@ function failActiveRun(message: string, status: PyRunStatus, respawn = true): vo
     figures: [],
   };
   post(result);
+  traceEmit('sup', 'run', { runId: run.runId, status, synthesized: true });
   // Eager respawn reuses the last set's CACHED bundles — next click lands on
   // a warm worker with the same mounts.
   if (respawn) void spawnExecutor(desiredSetKey);
@@ -485,9 +511,22 @@ function failActiveRun(message: string, status: PyRunStatus, respawn = true): vo
 
 function onExecutorMessage(m: ExecToSup): void {
   switch (m.t) {
+    case 'exec-trace': {
+      post({ t: 'trace', line: m.line });
+      break;
+    }
     case 'exec-ready': {
       executorReady = true;
       snapshotRetried = false;
+      const now = performance.now();
+      if (bootPostedAt > 0) traceAdd('boot-wait', bootPostedAt, now, { bootMs: Math.round(m.bootMs) });
+      bootPostedAt = 0;
+      traceEmit('sup', 'boot', {
+        setKey: bootedSetKey,
+        path: bootDescription,
+        bootMs: Math.round(m.bootMs),
+        ...(active ? { reqToReadyMs: Math.round(now - active.reqAt) } : {}),
+      });
       console.warn(`py: ${bootedSetKey} executor ready — ${bootDescription}, boot ${m.bootMs.toFixed(0)} ms`);
       if (active && !active.dispatched) dispatch(active);
       else armIdleTeardown();
@@ -538,6 +577,14 @@ function onExecutorMessage(m: ExecToSup): void {
         } satisfies ResultMsg,
         m.figures.map((f) => f.png),
       );
+      const now = performance.now();
+      traceAdd('run', run.startedAt, now);
+      traceEmit('sup', 'run', {
+        runId: m.runId,
+        status,
+        execMs: Math.round(m.durationMs),
+        reqToResultMs: Math.round(now - run.reqAt),
+      });
       if (m.needsRespawn) {
         // Blit failed/skipped or the heap outgrew the reset image — the NEXT
         // run needs a fresh generation for isolation, and an eager respawn
@@ -550,6 +597,7 @@ function onExecutorMessage(m: ExecToSup): void {
       break;
     }
     case 'exec-fatal': {
+      traceEmit('sup', 'fatal', { ready: executorReady, error: m.error.split('\n')[0] });
       if (!executorReady && bootSnapshotKind !== null && !snapshotRetried) {
         // A snapshot-fed boot died pre-ready (BUILD_ID gate, DSO table drift,
         // hook replay error, stdlib drift over a poisoned image…). Drop the
@@ -633,11 +681,13 @@ function onRun(m: RunMsg): void {
     clearTimeout(idleTimer);
     idleTimer = null;
   }
+  const reqAt = performance.now();
   active = {
     runId: m.runId,
     code: m.code,
     dispatched: false,
-    startedAt: performance.now(),
+    reqAt,
+    startedAt: reqAt,
     softTimer: null,
     hardTimer: null,
     interruptRepeat: null,

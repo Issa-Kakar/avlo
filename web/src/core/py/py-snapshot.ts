@@ -25,10 +25,13 @@
  * realm (scrub/harden/assert run AFTER restore, fail-closed).
  *
  * Dependency-free by design: the executor imports `packTree` and must carry
- * neither the build-lock nor any DOM lib assumptions; `navigator.storage` is
- * touched only inside the store functions (supervisor-only — the executor's
- * realm scrub deletes `navigator`).
+ * neither the build-lock nor any DOM lib assumptions (py-trace is the one
+ * allowed import — itself dependency-free); `navigator.storage` is touched
+ * only inside the store functions (supervisor-only — the executor's realm
+ * scrub deletes `navigator`).
  */
+
+import { traceBegin, traceSpan } from './py-trace';
 
 // ---------------------------------------------------------------- container
 
@@ -225,11 +228,14 @@ async function decodeWrapper(bytes: Uint8Array, buildHash: string, setKey: strin
   const body = 8 + metaLen + meta.headLen + meta.treeLen + pagesBytes;
   if (body + SHA_LEN !== bytes.length) throw new Error('wrapper: segment arithmetic mismatch');
   const want = bytes.subarray(body);
+  const endSha = traceBegin('snap-verify-sha');
   const got = await sha256(bytes.subarray(0, body));
+  endSha({ mb: Math.round(body / 1e6) });
   for (let i = 0; i < SHA_LEN; i++) {
     if (got[i] !== want[i]) throw new Error('wrapper: sha-256 trailer mismatch');
   }
   // Reconstruct the dense container: head verbatim, listed pages, zeros elide.
+  const endRec = traceBegin('snap-reconstruct');
   const container = new Uint8Array(meta.headLen + meta.heapLen);
   let off = 8 + metaLen;
   container.set(bytes.subarray(off, off + meta.headLen), 0);
@@ -241,6 +247,7 @@ async function decodeWrapper(bytes: Uint8Array, buildHash: string, setKey: strin
     container.set(bytes.subarray(off, off + len), meta.headLen + p * PAGE);
     off += len;
   }
+  endRec({ pages: meta.pages.length, heapMB: Math.round(meta.heapLen / 1e6) });
   return {
     container: container.buffer,
     tree: { root: meta.tree.root, dirs: meta.tree.dirs, files: meta.tree.files, blob: treeBlob.buffer },
@@ -288,7 +295,10 @@ export async function readSetSnapshot(buildHash: string, setKey: string): Promis
   const name = `${setKey}.snap`;
   try {
     const file = await (await dir.getFileHandle(name)).getFile();
-    return await decodeWrapper(new Uint8Array(await file.arrayBuffer()), buildHash, setKey);
+    const endRead = traceBegin('opfs-read');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    endRead({ mb: Math.round(bytes.length / 1e6) });
+    return await decodeWrapper(bytes, buildHash, setKey);
   } catch (err) {
     if (!(err instanceof DOMException && err.name === 'NotFoundError')) {
       console.warn(`py: dropping snapshot ${name} —`, err);
@@ -301,12 +311,15 @@ export async function readSetSnapshot(buildHash: string, setKey: string): Promis
 export async function writeSetSnapshot(buildHash: string, setKey: string, container: ArrayBuffer, tree: PackedTree): Promise<void> {
   try {
     const t0 = performance.now();
-    const out = encodeWrapper(buildHash, setKey, new Uint8Array(container), tree);
+    const out = traceSpan('snap-encode', () => encodeWrapper(buildHash, setKey, new Uint8Array(container), tree));
+    const endSeal = traceBegin('snap-seal-sha');
     out.set(await sha256(out.subarray(0, out.length - SHA_LEN)), out.length - SHA_LEN);
+    endSeal({ mb: Math.round(out.length / 1e6) });
     const dir = await snapDir(buildHash);
     const handle = (await dir.getFileHandle(`${setKey}.snap`, { create: true })) as SyncFileHandle;
     // No temp+rename: a crash mid-write is a sha-trailer fail on the next read.
     const sync = await handle.createSyncAccessHandle();
+    const endWrite = traceBegin('opfs-write');
     try {
       sync.truncate(0);
       sync.write(out, { at: 0 });
@@ -314,6 +327,7 @@ export async function writeSetSnapshot(buildHash: string, setKey: string, contai
     } finally {
       sync.close();
     }
+    endWrite({ mb: Math.round(out.length / 1e6) });
     console.warn(`py: persisted ${setKey}.snap (${(out.length / 1e6).toFixed(1)} MB, ${(performance.now() - t0).toFixed(0)} ms)`);
     await evictLru(dir);
   } catch (err) {

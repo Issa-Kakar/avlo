@@ -32,6 +32,13 @@ const queue: QueuedRun[] = [];
 let inFlight: QueuedRun | null = null;
 let ticker: ReturnType<typeof setInterval> | null = null;
 
+/** Last 100 relayed py-trace JSON lines (Phase 0 boot/run spans) — the
+ * e2e/automation read surface; DevTools gets the same lines via console. */
+export const pyTraceLines: string[] = [];
+if (import.meta.env.DEV) {
+  (globalThis as Record<string, unknown>).__avloPyTraces = pyTraceLines;
+}
+
 function invalidateBlock(blockId: string): void {
   // Ticker + supervisor-message paths outlive the room (getBbox throws bare).
   if (!hasActiveRoom()) return;
@@ -100,6 +107,13 @@ function finishRun(run: QueuedRun, status: PyRunStatus, output: string): void {
 
 function onSupervisorMessage(m: SupToMain): void {
   switch (m.t) {
+    case 'trace': {
+      // biome-ignore lint/suspicious/noConsole: THE visible py:trace line — always-on by design (redesign P0)
+      console.info('py:trace', m.line);
+      pyTraceLines.push(m.line);
+      if (pyTraceLines.length > 100) pyTraceLines.shift();
+      break;
+    }
     case 'phase': {
       if (inFlight?.runId !== m.runId) break;
       patchRun(inFlight.blockId, {

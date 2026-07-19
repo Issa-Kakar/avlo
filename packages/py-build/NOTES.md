@@ -1,6 +1,80 @@
 # py-build working notes (in-flight state)
 
-Master plan: /home/issak/.claude/plans/prompt-md-i-copied-my-synthetic-octopus.md
+Redesign plan (P0–P5, authoritative):
+/home/issak/.claude/plans/docs-local-py-runtime-redesign-condense-parsed-piglet.md
+Master plan (pre-redesign): /home/issak/.claude/plans/prompt-md-i-copied-my-synthetic-octopus.md
+
+## Session 11 — Redesign Phase 0 DONE: boot trace + baseline ledger
+
+- **Landed**: `web/src/core/py/py-trace.ts` (always-on span buffer →
+  `performance.measure` + ONE `console.info('py:trace', json)` per boot/run
+  per thread; dependency-free) with marks threaded through py-supervisor
+  (spawn/glue-preflight/snapshot-read/baseline/bundles/boot-wait/req-to-
+  dispatch/run), py-executor (boot-pyodide/mount/stdlib-verify/post-restore/
+  capture-* /harden/harness/reset-image; run-python/figures/blit/post-run-
+  reset), py-loader (glue-import/load-pyodide/tree-write/dso-replay with
+  per-DSO max), py-snapshot (opfs-read/snap-verify-sha/snap-reconstruct/
+  snap-encode/snap-seal-sha/opfs-write). `installWasmTimers()` shims the
+  WebAssembly compile surface for the boot window only (uninstalled BEFORE
+  scrub/harden — `Instance` isn't on harden's delete list and must not stay
+  wrapped) → splits side-module compile/instantiate out of replay without
+  touching the glue.
+- **Trace relay** (pulled forward from the P2 e2e plumbing): worker console
+  is invisible to automation, so `traceEmit` routes through a sink —
+  executor→`exec-trace`→supervisor→`trace`→main; py-manager owns the single
+  visible console line + a 100-line ring buffer exported as `pyTraceLines`
+  (`window.__avloPyTraces` in DEV). Protocol grew `ExecTraceMsg`/`TraceMsg`.
+- **BASELINE LEDGER** (dev board: Chrome via local miniflare workers, no SW,
+  WSL2; buildHash `01ba07e1133d0342`, fork 0.29.4. The redesign targets
+  table compares against THESE numbers per phase gate):
+  - **stdlib, baseline restore (Cache API hit), cold page** (n=1):
+    click→ready **419 ms** = sup spawn 88 (baseline read+verify 68 ∥ glue
+    preflight 87) + spin-up ~51 + exec boot **279** (glue-import 4 ·
+    load-pyodide 186 [main instantiateStreaming 36 · 8 side Modules 0.7] ·
+    stdlib-verify 11 · post-restore 54 · harden 0.8 · harness 16 ·
+    reset-image 5 @21 MB). Warm run 13 ms (python 4.6 · blit 2.4 ·
+    post-run-reset 5.1).
+  - **all, OPFS stacked hit, cold page** (n=2, + 1 warm-sup sample):
+    click→ready **1224–1252 ms**, click→result 1257 = sup spawn **360–382**
+    (opfs-read 191–196 @107 MB · snap-verify-sha 106–135 · snap-reconstruct
+    25–29 @1011 pages→75 MB; glue preflight 77–82 overlapped) + spin-up
+    ~35 + exec boot **803–877** (tree-write 104–108 @154 dirs/1553 files/
+    40 MB · dso-replay **428–464** @67 DSOs [side compile: Module n=75
+    82–86 + Instance n=74 26–29; max single replay _multiarray_umath
+    18–22] · main instantiateStreaming 40–43 · stdlib-verify 12 ·
+    post-restore 8 · harness 23 · reset-image 20–24 @75 MB). Run 29 ms
+    (python 12 · blit 8.6 · post-run-reset 6.9).
+  - **all, generation (OPFS miss, Cache-API-warm tars), cold page** (n=1):
+    click→ready **4588 ms**, click→result 4609 = sup spawn 683 (bundles
+    fetch+re-verify 611 · baseline 67 · preflight 71 · OPFS miss probe 10)
+    + exec boot **3735** (baseline restore 239 · mounts Σ≈1518: pandas 519,
+    pytz 334, numpy 315, matplotlib 142, sqlite3 91, mpl-deps 66, dateutil
+    30, seaborn 21 [async instantiate n=68 = 120 ms] · **capture-imports
+    1777** · capture-snapshot 39 · pack-tree 86 · reset-image 23); sup
+    post: snap-encode 48 + snap-seal-sha 124 @107 MB (opfs-write completed
+    off-trace). Self-heal verified live: deleted `all.snap` → generation →
+    reload → clean stacked restore.
+- **Prediction 1 CONFIRMED (structure)**: pre-spawn = OPFS read + SHA +
+  reconstruct (322–355 of the 360–382 ms spawn) + glue hashing overlapped.
+  Magnitude on THIS box is ~360–380 ms, not the plan-context ~670 — the
+  trace is the arbiter; deltas measure against this ledger.
+- **Prediction 2 CONFIRMED (first order)**: of dso-replay 428–464 ms, real
+  wasm work is only 108–115 ms (compile+instantiate) → **~320–350 ms is
+  glue-side bookkeeping** (mergeLibSymbols + reportUndefinedSymbols + LDSO
+  registration) ≈ 40% of the whole boot, ~75% of the replay span.
+  Per-function attribution needs a worker CPU profile (automation can't
+  reach nested workers); Loop-B's incremental-GOT patch proves causality by
+  delta instead.
+- **Surprises worth keeping**: `all` tree is 1553 files/40 MB (the "~380
+  writes" in the plan context was the numpy set) · pytz mount is 334 ms —
+  wildly disproportionate to its size (many-small-files extractall) — dies
+  with P2/P3 anyway · the baseline stdlib restore replays 8 side Modules
+  (baseline's own dso list, 0.7 ms) · executor worker spin-up costs
+  35–51 ms per generation (boot-wait − bootMs) · no-SW dev numbers can't
+  see the SW re-buffer cost the P4 overhaul removes — re-baseline via
+  `vite preview` at P4 if the prod path needs its own before/after.
+- **Gate**: `pnpm typecheck` 12/12 · trace JSON captured for stdlib +
+  all-set boots (hit, generation, warm-run, blit) · ledger committed.
 Pickup plan (session 3): /home/issak/.claude/plans/original-prompt-was-here-graceful-cocke.md
 Slice plan (session 4): /home/issak/.claude/plans/packages-py-build-notes-md-view-the-two-zazzy-pascal.md
 Session-4 tasks: #1-3 Commit 1 (P1 hardening), #4-13 Commit 2 (M2 Steps 0-9).
