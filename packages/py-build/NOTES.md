@@ -14,7 +14,21 @@ alternatives — do not re-litigate those without new data).
 
 ---
 
-## Current state — Phase 1 COMPLETE (committed), next up: Phase 2
+## Current state — Phase 1 COMPLETE (committed), Phase 1.5 (DSO grouping 67→4) IN PROGRESS
+
+- **Phase 1.5 Step 0 landed** (baseline + measurement; see
+  `dso-grouping-analysis.md` + the master plan's Phase 1.5): harness re-run
+  GREEN on the Loop-B build (base 41 · seaborn 22 · verify 8 — closes the
+  "last recorded green at Gate A" caveat below), `dsos:check` green.
+  **Stub audit** (settles the trampoline question with data): **387
+  permanent lazy-stub closures today** — self env-func imports ∉ mainExports
+  under RTLD_LOCAL (libdylink.js 784-796) — kiwisolver `_cext` 341, numpy
+  `_multiarray_umath` 33, contourpy `_contourpy` 13, matplotlib/pandas 0;
+  +1 glue-bound (`exit`). The self provider class (1,023) splits env 394 /
+  GOT.mem 552 / GOT.func 77. `config/dso-groups/groups.json` minted from the
+  census (67 extensions: pandas 45, numpy 13, matplotlib 7, mpl-deps 2);
+  executor `mount` span split into `mount-extract`/`mount-dlopen`
+  (browser ledger re-record with the split deferred — needs `pnpm dev` ack).
 
 - **Toolchain:** Pyodide **314.0.2** / CPython **3.14.2** / emsdk **5.0.3** /
   ABI `2026_0`, **MAIN_MODULE=2** closed world (see next section). Image

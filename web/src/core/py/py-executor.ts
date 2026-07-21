@@ -149,15 +149,19 @@ async function verifyStdlibZip(expectedSha256: string): Promise<void> {
  * out), delete the tar, then loadDynlib every DSO in the meta's canonical
  * order (the supervisor sends bundles in deps-first set order). */
 async function mountBundle(b: PyBundlePayload): Promise<void> {
+  const endExtract = traceBegin('mount-extract');
   pyodide.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(b.bytes));
   pyodide.runPython(`import os, tarfile
 with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
     _t.extractall(${JSON.stringify(b.prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
 os.remove('/tmp/_avlo_bundle.tar')
 del _t`);
+  endExtract({ bundle: b.name });
+  const endDlopen = traceBegin('mount-dlopen');
   for (const so of b.loadOrder) {
     await pyodide._api.loadDynlib(`${b.prefix}/${so}`);
   }
+  endDlopen({ bundle: b.name, n: b.loadOrder.length });
 }
 
 /** Generation capture — bake the set's imports into the heap, snapshot, ship

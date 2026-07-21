@@ -16,6 +16,19 @@
 //                                           #      (a support lib entering the
 //                                           #      closure — changes the grouping
 //                                           #      story, must be deliberate)
+//   node scripts/analyze-dsos.mjs --mint-groups
+//                                           # write config/dso-groups/groups.json
+//                                           # from the census: per bundle the
+//                                           # ordered {pkg, dottedName, pyinit,
+//                                           # wheelSoPath} extension list + the
+//                                           # DSO-bearing member wheels' sha256
+//                                           # pins (the pack-time stale-group
+//                                           # gate keys on these). Mint runs
+//                                           # against PRE-grouping tars (per-
+//                                           # extension .so files) — after a
+//                                           # wheel re-pin, regroup via the
+//                                           # recipes loop and re-mint from a
+//                                           # pre-group restage.
 //
 // Per DSO: imports (env/GOT.mem/GOT.func; invoke_* trampolines + dylink
 // plumbing excluded, matching fetch-wheels' link-sos scan), exports, dylink.0
@@ -36,7 +49,9 @@ const mainWasmPath = [join(pkgRoot, '../../web/public/py-dev/fork/pyodide.asm.wa
   existsSync,
 );
 const outPath = join(pkgRoot, '.cache/dso-report.json');
+const groupsPath = join(pkgRoot, 'config/dso-groups/groups.json');
 const checkMode = process.argv.includes('--check');
+const mintMode = process.argv.includes('--mint-groups');
 
 if (!existsSync(bundlesDir)) throw new Error(`no staged bundles at ${bundlesDir} — run bundles + stage first`);
 if (!mainWasmPath) throw new Error('no pyodide.asm.wasm found (staged public or dist/raw)');
@@ -198,13 +213,30 @@ dsos.forEach((d, i) => {
 });
 for (const d of dsos) d.pyinit = d.exports.filter((x) => x.startsWith('PyInit'));
 
-// import-provider classification, SELF FIRST
+// import-provider classification, SELF FIRST. The self class splits by
+// import kind: a self ENV-FUNC import is the permanent-lazy-stub class under
+// RTLD_LOCAL (libdylink.js 784-796 — RTLD_LOCAL exports never merge into
+// wasmImports, so instantiate binds a closure that resolves at first call
+// and stays a wasm→JS→wasm hop forever), while self GOT imports resolve via
+// updateGOT(own exports) before reportUndefinedSymbols and cost nothing at
+// call time. The stub audit measures the former per DSO: env-func imports
+// ∉ mainExports, split self-provided (real stubs) vs glue-bound (satisfied
+// by the JS library in wasmImports at instantiate — e.g. `exit`).
 const providers = { self: 0, main: 0, 'sibling-same-bundle': 0, 'other-bundle': 0, 'js-glue': 0 };
+const selfByKind = { env: 0, 'GOT.mem': 0, 'GOT.func': 0 };
 const jsGlue = new Set();
 dsos.forEach((d, i) => {
-  for (const { field } of d.imports) {
-    if (d.exportSet.has(field)) providers.self++;
-    else if (mainExports.has(field)) providers.main++;
+  d.stubSelf = 0; // env-func, self-exported: permanent JS stub trampoline today
+  d.stubGlue = 0; // env-func, glue-provided: binds directly at instantiate
+  for (const { mod, field, kind } of d.imports) {
+    if (mod === 'env' && kind === 'func' && !mainExports.has(field)) {
+      if (d.exportSet.has(field)) d.stubSelf++;
+      else d.stubGlue++;
+    }
+    if (d.exportSet.has(field)) {
+      providers.self++;
+      selfByKind[mod]++;
+    } else if (mainExports.has(field)) providers.main++;
     else if ((defs.get(field) ?? []).some((j) => j !== i && dsos[j].bundle === d.bundle)) providers['sibling-same-bundle']++;
     else if ((defs.get(field) ?? []).some((j) => j !== i)) providers['other-bundle']++;
     else {
@@ -302,6 +334,27 @@ for (const b of bundles) {
 }
 console.log('\n=== import providers (all env/GOT entries, self-inclusive) ===');
 console.log(providers, '· js-glue names:', [...jsGlue].join(', ') || '(none)');
+console.log('self split by import kind:', selfByKind);
+
+const stubTotals = { stubSelf: 0, stubGlue: 0 };
+for (const d of dsos) {
+  stubTotals.stubSelf += d.stubSelf;
+  stubTotals.stubGlue += d.stubGlue;
+}
+console.log('\n=== lazy-stub audit (env-func ∉ mainExports; self-provided = permanent JS stub closures under RTLD_LOCAL) ===');
+console.log('bundle       stubSelf  glueBound');
+for (const b of bundles) {
+  const members = dsos.filter((d) => d.bundle === b);
+  console.log(
+    `${b.padEnd(12)} ${String(members.reduce((a, d) => a + d.stubSelf, 0)).padStart(8)}  ${String(members.reduce((a, d) => a + d.stubGlue, 0)).padStart(9)}`,
+  );
+}
+console.log(`total: ${stubTotals.stubSelf} self-stub / ${stubTotals.stubGlue} glue-bound`);
+const topStubs = [...dsos]
+  .sort((a, b) => b.stubSelf - a.stubSelf)
+  .slice(0, 5)
+  .filter((d) => d.stubSelf > 0);
+if (topStubs.length) console.log('top DSOs:', topStubs.map((d) => `${d.bundle}/${d.soName}:${d.stubSelf}`).join('  '));
 console.log('\n=== group simulation (per-bundle grouped link) ===');
 console.log('bundle       env uniq→resid   GOT uniq→resid');
 for (const b of bundles) {
@@ -344,9 +397,44 @@ console.log(totals);
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(
   outPath,
-  `${JSON.stringify({ totals, providers, jsGlue: [...jsGlue], groups, dsos: dsos.map(({ exportSet, exports, imports, weakExports, ...rest }) => ({ ...rest, nExports: exports.length, nImports: imports.length })) }, null, 1)}\n`,
+  `${JSON.stringify({ totals, providers, selfByKind, stubTotals, jsGlue: [...jsGlue], groups, dsos: dsos.map(({ exportSet, exports, imports, weakExports, ...rest }) => ({ ...rest, nExports: exports.length, nImports: imports.length })) }, null, 1)}\n`,
 );
 console.log(`\nfull report -> ${outPath}`);
+
+// ---------- --mint-groups: commit the census as config/dso-groups/groups.json ----------
+if (mintMode) {
+  const config = JSON.parse(readFileSync(join(pkgRoot, 'build.config.json'), 'utf8'));
+  const wheelPins = config.recipes.wheels;
+  const bundleMembers = Object.fromEntries(Object.entries(config.bundles).filter(([k]) => !k.startsWith('$')));
+  // dotted name = tar-relative .so path through the trace-imports regex
+  const dottedOf = (p) => (p.match(/^(.*)\.cpython-[^/]*\.so$/) ?? p.match(/^(.*)\.so$/))[1].replaceAll('/', '.');
+  const out = {
+    $comment:
+      'GENERATED by analyze-dsos.mjs --mint-groups from the pre-grouping staged tars — the grouping source of truth. Per DSO-bearing bundle: the ordered extension census (lexicographic wheelSoPath order = the committed group-link input order) + the contributing wheels’ sha256 pins (pack-package’s stale-group gate asserts these == build.config pins; a wheel re-pin ⇒ regroup + re-mint).',
+    schema: 1,
+    bundles: {},
+  };
+  for (const b of bundles) {
+    const members = dsos.filter((d) => d.bundle === b).sort((x, y) => (x.path < y.path ? -1 : 1));
+    const pkgs = {};
+    const extensions = members.map((d) => {
+      const top = d.path.split('/')[0];
+      const pkg = (bundleMembers[b] ?? []).find((m) => m === top || m.replace(/-/g, '_') === top);
+      if (!pkg) throw new Error(`mint: no member wheel of bundle ${b} owns ${d.path}`);
+      if (d.pyinit.length !== 1) throw new Error(`mint: ${b}/${d.soName} has ${d.pyinit.length} PyInit exports`);
+      pkgs[pkg] = wheelPins[pkg].sha256;
+      return { pkg, dottedName: dottedOf(d.path), pyinit: d.pyinit[0], wheelSoPath: d.path };
+    });
+    out.bundles[b] = { packages: pkgs, extensions };
+  }
+  mkdirSync(dirname(groupsPath), { recursive: true });
+  writeFileSync(groupsPath, `${JSON.stringify(out, null, 2)}\n`);
+  console.log(
+    `minted ${groupsPath}: ${Object.entries(out.bundles)
+      .map(([b, g]) => `${b}=${g.extensions.length}`)
+      .join(' ')}`,
+  );
+}
 
 if (failures.length) {
   console.error(`\nAUDIT FAILURES (${failures.length}):`);
