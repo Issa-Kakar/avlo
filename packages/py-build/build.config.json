@@ -175,20 +175,20 @@
         "br": 79706
       },
       "pyodide.asm.wasm": {
-        "raw": 7201057,
-        "br": 2067316
+        "raw": 7200944,
+        "br": 2066913
       },
       "pyodide.mjs": {
         "raw": 17849,
-        "br": 6464
+        "br": 6466
       },
       "python_stdlib.zip": {
-        "raw": 3522409,
-        "br": 3458314
+        "raw": 3523236,
+        "br": 3459106
       },
       "bundles/numpy.tar": {
-        "raw": 9913344,
-        "br": 2096930
+        "raw": 9590784,
+        "br": 2046555
       },
       "bundles/dateutil.tar": {
         "raw": 397824,
@@ -199,16 +199,16 @@
         "br": 143274
       },
       "bundles/mpl-deps.tar": {
-        "raw": 1795584,
-        "br": 456230
+        "raw": 1784832,
+        "br": 455245
       },
       "bundles/pandas.tar": {
-        "raw": 18848256,
-        "br": 3632595
+        "raw": 18170880,
+        "br": 3529083
       },
       "bundles/matplotlib.tar": {
-        "raw": 10612224,
-        "br": 2982851
+        "raw": 10020864,
+        "br": 2909717
       },
       "bundles/seaborn.tar": {
         "raw": 1096704,

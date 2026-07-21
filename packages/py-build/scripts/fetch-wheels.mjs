@@ -128,8 +128,15 @@ console.log(`wheels: ${names.length} pinned, ${fetched} fetched, cache ${cacheDi
 // Loop-B link closure: emit .cache/link-sos/link.rsp — one
 // -Wl,--export-if-defined=<sym> per symbol in the UNION of every shipped
 // DSO's func/global/tag imports. Host-side because /pb mounts read-only in
-// the build container. traceOnly wheels (pillow/fonttools) never ship, so
-// their DSOs stay OUT of the set.
+// the build container.
+//
+// P1.5: the shipped DSOs are the GROUPED side modules (dist/groups/
+// <bundle>.so, one per DSO-bearing bundle from config/dso-groups/
+// groups.json — linked by the recipes loop from the packages' original
+// link inputs). Hard-error when any is missing: no silent fallback to the
+// per-extension wheel scan — the groups are the DSO source of truth now,
+// and grouped imports ⊆ the old per-extension union (intra-group
+// references internalize), so link.rsp only ever shrinks.
 //
 // Why export-if-defined of the import union, and NOT the .so files on the
 // link line: putting a dylib on the wasm-ld command line makes its STRONG
@@ -140,63 +147,30 @@ console.log(`wheels: ${names.length} pinned, ${fetched} fetched, cache ${cacheDi
 // at boot (bundles mount lazily per set — nothing auto-loads). The import
 // union reproduces the ONLY effect we want from emcc's process_dynamic_libs:
 // every symbol the main module defines that some DSO needs survives metadce
-// as an export (Gate A proved main's normal link already defines everything
-// the 67 DSOs need from it); cross-DSO symbols stay lazy exactly as under
-// MAIN_MODULE=1. A -u sweep is wrong here: it promotes weak refs to strong,
-// recreating the boot-time failure it tries to fix. invoke_* trampolines are
+// as an export; cross-DSO symbols stay lazy exactly as under MAIN_MODULE=1.
+// A -u sweep is wrong here: it promotes weak refs to strong, recreating the
+// boot-time failure it tries to fix. invoke_* trampolines are
 // runtime-synthesized — excluded like link.py does.
 {
-  const { readdirSync, rmSync } = await import('node:fs');
-  const zipMod = await import('node:zlib');
+  const { rmSync } = await import('node:fs');
   const sosDir = join(pkgRoot, '.cache/link-sos');
   rmSync(sosDir, { recursive: true, force: true });
-  // Only post-prune DSOs count — a pruned DSO (e.g. _tkagg) never loads, so
-  // its imports must not widen the export surface.
-  const prunedSos = new Set();
-  const pruneDir = join(pkgRoot, 'config/pkg-prune');
-  for (const f of readdirSync(pruneDir)) {
-    if (!f.endsWith('.txt')) continue;
-    for (const line of readFileSync(join(pruneDir, f), 'utf8').split('\n')) {
-      const t = line.trim();
-      if (t && !t.startsWith('#') && t.endsWith('.so')) prunedSos.add(t);
-    }
-  }
+  const groups = JSON.parse(readFileSync(join(pkgRoot, 'config/dso-groups/groups.json'), 'utf8'));
   const need = new Set();
   let soCount = 0;
-  for (const name of names) {
-    const w = wheels[name];
-    if (w.traceOnly || !w.file.endsWith('wasm32.whl')) continue;
-    const buf = readFileSync(join(cacheDir, w.file));
-    // Minimal ZIP central-directory walk (EOCD at tail) — no dep, wheels are
-    // small. Deflate entries inflate via zlib.
-    let eocd = buf.length - 22;
-    while (buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
-    let off = buf.readUInt32LE(eocd + 16);
-    const count = buf.readUInt16LE(eocd + 10);
-    for (let i = 0; i < count; i++) {
-      if (buf.readUInt32LE(off) !== 0x02014b50) throw new Error(`${w.file}: bad central directory`);
-      const method = buf.readUInt16LE(off + 10);
-      const csize = buf.readUInt32LE(off + 20);
-      const nameLen = buf.readUInt16LE(off + 28);
-      const extraLen = buf.readUInt16LE(off + 30);
-      const cmtLen = buf.readUInt16LE(off + 32);
-      const lho = buf.readUInt32LE(off + 42);
-      const entry = buf.toString('utf8', off + 46, off + 46 + nameLen);
-      if (entry.endsWith('.so') && !prunedSos.has(entry)) {
-        const lhNameLen = buf.readUInt16LE(lho + 26);
-        const lhExtraLen = buf.readUInt16LE(lho + 28);
-        const dataOff = lho + 30 + lhNameLen + lhExtraLen;
-        const raw = buf.subarray(dataOff, dataOff + csize);
-        const bytes = method === 8 ? zipMod.inflateRawSync(raw) : raw;
-        soCount++;
-        const mod = new WebAssembly.Module(bytes);
-        for (const imp of WebAssembly.Module.imports(mod)) {
-          if ((imp.kind === 'function' || imp.kind === 'global' || imp.kind === 'tag') && !imp.name.startsWith('invoke_')) {
-            need.add(imp.name);
-          }
-        }
+  for (const bundle of Object.keys(groups.bundles).sort()) {
+    const soPath = join(pkgRoot, 'dist/groups', `${bundle}.so`);
+    if (!existsSync(soPath)) {
+      throw new Error(
+        `link-sos: dist/groups/${bundle}.so missing — run the recipes loop (pnpm --filter @avlo/py-build recipes:build) first`,
+      );
+    }
+    soCount++;
+    const mod = new WebAssembly.Module(readFileSync(soPath));
+    for (const imp of WebAssembly.Module.imports(mod)) {
+      if ((imp.kind === 'function' || imp.kind === 'global' || imp.kind === 'tag') && !imp.name.startsWith('invoke_')) {
+        need.add(imp.name);
       }
-      off += 46 + nameLen + extraLen + cmtLen;
     }
   }
   mkdirSync(sosDir, { recursive: true });
@@ -207,5 +181,5 @@ console.log(`wheels: ${names.length} pinned, ${fetched} fetched, cache ${cacheDi
       .map((s) => `-Wl,--export-if-defined=${s}`)
       .join('\n')}\n`,
   );
-  console.log(`link-sos: ${soCount} DSOs, ${need.size} imported symbols -> link.rsp (export-if-defined)`);
+  console.log(`link-sos: ${soCount} grouped DSOs, ${need.size} imported symbols -> link.rsp (export-if-defined)`);
 }

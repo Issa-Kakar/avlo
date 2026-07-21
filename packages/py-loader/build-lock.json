@@ -1,28 +1,28 @@
 {
   "schema": 1,
-  "buildHash": "58ae9021763d19f0",
+  "buildHash": "bc46093ffa4fb5e8",
   "artifacts": {
     "pyodide.asm.mjs": {
       "sha256": "724153ec5017a03fe1950641471ca227606448605f060b3bfcbc7988fd0b250c",
       "size": 343521
     },
     "pyodide.asm.wasm": {
-      "sha256": "873b808aa1cf909029b55b0f5b8168dc24115158135abf574792bfa41a73558a",
-      "size": 6858149
+      "sha256": "1502406dba314e51173e9d99451559b2fa9e9eca23d4e942258f5fc103c6d220",
+      "size": 6858041
     },
     "pyodide.mjs": {
-      "sha256": "51e871bc0b935ffae9dd094dfe412f9084051292e093047d3a6cd9c5bf91c264",
+      "sha256": "7f399e76871b079fe3df3310bca3b36c08578158268e4428b7ad169799d18d51",
       "size": 16999
     },
     "python_stdlib.zip": {
-      "sha256": "a0d5747ce42fcfc7596bf4828bc72b95ccaf25db6e13ea7d88745d302fe8762c",
-      "size": 3354675
+      "sha256": "6bcbadcefffc099fbef36e77f2d47c4419e7eba308a47ca1643d09b10e143b3d",
+      "size": 3355462
     }
   },
   "bundles": {
     "numpy": {
-      "sha256": "7dd77d49e37e6ad214416e9bfccf9d8b296fa2e39ed2c2b313be02e8c28983db",
-      "size": 9441280
+      "sha256": "022a2702052362135d090894212bcd75d5caad269460885b36628a6ecba35e69",
+      "size": 9134080
     },
     "dateutil": {
       "sha256": "a644441edccbee8e141ecbaab08430d2c7e123dd6cffe25bbc0067ebe2394413",
@@ -33,16 +33,16 @@
       "size": 1474560
     },
     "mpl-deps": {
-      "sha256": "648cca773f8cb5426e3efc04a2305f1ca4fe6148aabff7073a58073801d9aa6d",
-      "size": 1710080
+      "sha256": "beaec3ec0f3eb2608e2636c5b638b9a2c6f6036a93e60ce597509802e0d9a080",
+      "size": 1699840
     },
     "pandas": {
-      "sha256": "afdec1c6de8d7c19817803e2eb3d0fcee004446a651f4d2eaf3e6fee9c8df460",
-      "size": 17950720
+      "sha256": "a3446ae9db16e8f17c17ae4c51dfbc291e111eee5f1dec76b0bad365372f98c3",
+      "size": 17305600
     },
     "matplotlib": {
-      "sha256": "99bacbc23873847ce7afe0ba5dca394425e28149eda9b2a4edcec09b605d8d7a",
-      "size": 10106880
+      "sha256": "3200d1478f9d113a55a8f0e33c4ba9c53b64ef530447a4e6245dc7d710b95b15",
+      "size": 9543680
     },
     "seaborn": {
       "sha256": "84dc2f98c70b7c3ba351240f46171ca810e18c5ed2a79423c5de8004b2e422c2",

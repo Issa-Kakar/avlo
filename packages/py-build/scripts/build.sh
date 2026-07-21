@@ -56,6 +56,15 @@ if [ -e "${EMSDK_PATCHES[0]:-}" ]; then
 fi
 shopt -u nullglob
 
+# link.rsp is @-consumed by the main link via MAIN_MODULE_LDFLAGS (patch 0001)
+# but is NOT a make prerequisite — on incremental builds a regenerated rsp
+# would silently no-op. Force the relink whenever it is fresher than the
+# built glue (incremental main relink is ~19 s).
+if [ -f /pb/.cache/link-sos/link.rsp ] && [ -f dist/pyodide.asm.mjs ] && [ /pb/.cache/link-sos/link.rsp -nt dist/pyodide.asm.mjs ]; then
+  echo "=== link.rsp newer than built glue — forcing main relink"
+  rm -f dist/pyodide.asm.*
+fi
+
 echo "=== make ${TARGETS}"
 # shellcheck disable=SC2086
 make ${TARGETS}
