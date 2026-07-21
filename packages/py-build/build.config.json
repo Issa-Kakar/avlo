@@ -15,6 +15,10 @@
   },
   "recipes": {
     "release": "314-20260629",
+    "$commentRepo": "Source pins for the recipe-rebuild loop (P1.5 DSO grouping): `commit` = the 314-20260629 tag, `pyodideBuildCommit` = its vendored pyodide-build submodule. run-recipes.mjs clones at these and hard-fails on drift.",
+    "repo": "https://github.com/pyodide/pyodide-recipes",
+    "commit": "732e33c363c22adc15500d6a064ba9db424f6332",
+    "pyodideBuildCommit": "93f4df986849bb6798a9b9f619a4cd4b25e49fa4",
     "base": "https://github.com/pyodide/pyodide-recipes/releases/download/314-20260629",
     "$commentMirror": "The recipes release ships one packages.tar.gz, not per-wheel assets; the pyodide CDN serves the same wheels individually. sha256 pins make the mirror provenance-equivalent (and the only source actually exercised when the release tag lags).",
     "mirror": "https://cdn.jsdelivr.net/pyodide/v314.0.2/full",
@@ -95,6 +99,12 @@
         "traceOnly": true
       }
     }
+  },
+  "xbuildenv": {
+    "$comment": "Cross-build environment for the recipe-rebuild loop. The pyodide-build CLI does NOT sha-verify its download — recipes-build.sh pre-downloads, byte-verifies against this pin, pre-extracts, and lets `pyodide xbuildenv install <version>` skip its own fetch. emsdk 5.0.3 auto-installs inside it (with the xbuildenv's own emsdk patches) on first build.",
+    "version": "314.0.2",
+    "url": "https://github.com/pyodide/pyodide/releases/download/314.0.2/xbuildenv-314.0.2.tar.bz2",
+    "sha256": "01ab1b229bf2031603bf20ad4ceb9c1059ba680b26df7bda2db4748906dfd78a"
   },
   "hostTools": {
     "$comment": "Host pip pins for pack-time tooling (NOT shipped). fontTools drives the DejaVu subset; version-pinned so subsetting is reproducible. 4.62.1 matches the 314 stock lock's fonttools.",

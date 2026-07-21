@@ -1,0 +1,10 @@
+# Allowlist for verify-pytree.py — `pkg:wheel-relative-path` lines, each
+# under a `# reason:` comment. ONLY build-generated divergence belongs here
+# (meson/version stamps); a real source diff is a pin bug — stop and fix it,
+# never allowlist it. Rebuilt-only test files are tolerated by the unvendor
+# rules and never need entries.
+#
+# reason: meson-generated build stamp — records the build env (pywasmcross wrapper paths, ephemeral build-env python path, resolved cython version), not source; verified 4-hunk diff 2026-07-21
+numpy:numpy/__config__.py
+# reason: meson-python build-config stamp — env paths, resolved meson version, and the build-dir=build patch's directory footprint; verified 5-hunk diff 2026-07-21
+contourpy:contourpy/util/_build_config.py

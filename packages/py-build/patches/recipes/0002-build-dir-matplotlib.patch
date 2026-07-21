@@ -1,0 +1,16 @@
+AVLO: persist matplotlib's meson-python build tree (backend-flags build-dir=build,
+numpy's existing idiom) so the P1.5 group-link harvest can collect the
+recorded .o/.a link inputs after the build. Upstreamable one-liner.
+
+diff --git a/packages/matplotlib/meta.yaml b/packages/matplotlib/meta.yaml
+index c9890a8..a9b369e 100644
+--- a/packages/matplotlib/meta.yaml
++++ b/packages/matplotlib/meta.yaml
+@@ -21,6 +21,7 @@ build:
+   backend-flags: |
+     setup-args=-DrcParams-backend=webagg
+     setup-args=-Dsystem-freetype=true
++    build-dir=build
+   cflags: |
+     -fwasm-exceptions
+     -fno-lto

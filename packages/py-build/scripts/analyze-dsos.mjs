@@ -42,6 +42,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { censusImports, parseWasm } from './lib/wasm-parse.mjs';
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const bundlesDir = join(pkgRoot, 'dist/stage/bundles');
@@ -75,111 +76,20 @@ function cstr(b, o, n) {
   return b.toString('utf8', o, end);
 }
 
-// ---------- wasm parse (sections 0/2/7 + dylink.0 subsections) ----------
-function leb(buf, s) {
-  let r = 0,
-    sh = 0;
-  for (;;) {
-    const b = buf[s.p++];
-    r |= (b & 0x7f) << sh;
-    if (!(b & 0x80)) break;
-    sh += 7;
-  }
-  return r >>> 0;
-}
-function str(buf, s) {
-  const n = leb(buf, s);
-  const v = buf.toString('utf8', s.p, s.p + n);
-  s.p += n;
-  return v;
-}
-function limits(buf, s) {
-  const f = buf[s.p++];
-  leb(buf, s);
-  if (f & 1) leb(buf, s);
-}
-function parseWasm(buf, wantDylink = true) {
-  const s = { p: 8 };
-  const out = { imports: [], exports: [], dylink: null };
-  while (s.p < buf.length) {
-    const id = buf[s.p++];
-    const size = leb(buf, s);
-    const end = s.p + size;
-    if (id === 0) {
-      const name = str(buf, s);
-      if (wantDylink && name === 'dylink.0') {
-        const d = { memSize: 0, tableSize: 0, needed: [], exportInfo: {}, importInfo: {} };
-        while (s.p < end) {
-          const sub = buf[s.p++];
-          const subEnd = s.p + leb(buf, s);
-          if (sub === 1) {
-            d.memSize = leb(buf, s);
-            leb(buf, s);
-            d.tableSize = leb(buf, s);
-            leb(buf, s);
-          } else if (sub === 2) {
-            for (let n = leb(buf, s); n--; ) d.needed.push(str(buf, s));
-          } else if (sub === 3) {
-            for (let n = leb(buf, s); n--; ) {
-              const nm = str(buf, s);
-              d.exportInfo[nm] = leb(buf, s);
-            }
-          } else if (sub === 4) {
-            for (let n = leb(buf, s); n--; ) {
-              const m = str(buf, s);
-              const f = str(buf, s);
-              d.importInfo[`${m}.${f}`] = leb(buf, s);
-            }
-          }
-          s.p = subEnd;
-        }
-        out.dylink = d;
-      }
-    } else if (id === 2) {
-      for (let n = leb(buf, s); n--; ) {
-        const mod = str(buf, s);
-        const field = str(buf, s);
-        const kind = buf[s.p++];
-        if (kind === 0) {
-          leb(buf, s);
-          out.imports.push({ mod, field, kind: 'func' });
-        } else if (kind === 1) {
-          s.p++;
-          limits(buf, s);
-        } else if (kind === 2) {
-          limits(buf, s);
-        } else if (kind === 3) {
-          s.p += 2;
-          out.imports.push({ mod, field, kind: 'global' });
-        } else if (kind === 4) {
-          s.p++;
-          leb(buf, s);
-          out.imports.push({ mod, field, kind: 'tag' });
-        } else throw new Error(`bad import kind ${kind}`);
-      }
-    } else if (id === 7) {
-      for (let n = leb(buf, s); n--; ) {
-        const name = str(buf, s);
-        s.p++;
-        leb(buf, s);
-        out.exports.push(name);
-      }
-    }
-    s.p = end;
-  }
-  return out;
-}
-
-// ---------- collect ----------
-const PLUMBING = new Set(['__memory_base', '__table_base', '__stack_pointer', '__indirect_function_table', 'memory', '__heap_base']);
+// ---------- collect (wasm parse shared with verify-groups: lib/wasm-parse.mjs) ----------
 const SYNTHETIC = new Set(['__wasm_call_ctors', '__wasm_apply_data_relocs']);
 const dsos = [];
+const metas = new Map(); // bundle -> parsed meta.json (loadOrder shape checks)
 for (const tarName of readdirSync(bundlesDir)
   .filter((f) => f.endsWith('.tar'))
   .sort()) {
   const bundle = basename(tarName, '.tar');
   const buf = readFileSync(join(bundlesDir, tarName));
   for (const e of tarEntries(buf)) {
+    if (e.name === 'meta.json' && e.typeflag === '0') {
+      metas.set(bundle, JSON.parse(Buffer.from(e.data).toString('utf8')));
+      continue;
+    }
     if (!e.name.endsWith('.so') || e.typeflag !== '0') continue;
     const bytes = Buffer.from(e.data);
     const w = parseWasm(bytes);
@@ -190,6 +100,7 @@ for (const tarName of readdirSync(bundlesDir)
       size: e.size,
       toolchain:
         bytes.includes('__pyx_capi__') || bytes.includes('__Pyx_') ? 'cython' : bytes.includes('pybind11') ? 'pybind11/c++' : 'c/c++',
+      hasDylink: !!w.dylink,
       memSize: w.dylink?.memSize ?? 0,
       tableSize: w.dylink?.tableSize ?? 0,
       needed: w.dylink?.needed ?? [],
@@ -198,9 +109,7 @@ for (const tarName of readdirSync(bundlesDir)
         .map(([n]) => n),
       exports: w.exports,
       exportSet: new Set(w.exports),
-      imports: w.imports
-        .filter((i) => i.mod === 'env' || i.mod === 'GOT.mem' || i.mod === 'GOT.func')
-        .filter((i) => !i.field.startsWith('invoke_') && !PLUMBING.has(i.field)),
+      imports: censusImports(w),
     });
   }
 }
@@ -312,6 +221,62 @@ for (const b of bundles) {
     shortnameCollisions: collisions,
     dupes,
   };
+}
+
+// ---------- grouped-world gate (dsos:check v2, post-P1.5) ----------
+// Once the tars ship grouped side modules (.avlo/<bundle>.so) the gate
+// hardens: exact PyInit equality vs the committed groups.json census,
+// finder-derivable init names (PyInit_<last dotted component>), loadOrder
+// shape, closed-world at N=4 vs the staged main module, dylink sanity.
+// Pre-grouping tars keep the legacy checks only; a mix is a broken restage.
+const groupedDsos = dsos.filter((d) => d.path.startsWith('.avlo/'));
+if (groupedDsos.length && groupedDsos.length !== dsos.length) {
+  failures.push(`mixed grouped (${groupedDsos.length}) + per-extension (${dsos.length - groupedDsos.length}) DSOs across the staged tars`);
+}
+const groupedWorld = dsos.length > 0 && groupedDsos.length === dsos.length;
+if (groupedWorld) {
+  const groupsJson = JSON.parse(readFileSync(groupsPath, 'utf8'));
+  const JS_GLUE_ALLOW = new Set(['exit']);
+  const byBundle = new Map(dsos.map((d) => [d.bundle, d]));
+  const censusBundles = Object.keys(groupsJson.bundles).sort();
+  const tarBundles = [...byBundle.keys()].sort();
+  if (censusBundles.join() !== tarBundles.join()) {
+    failures.push(`DSO-bearing bundle set mismatch: census [${censusBundles}] vs tars [${tarBundles}]`);
+  }
+  for (const b of censusBundles) {
+    const d = byBundle.get(b);
+    if (!d) continue;
+    if (d.path !== `.avlo/${b}.so`) failures.push(`${b}: group DSO at ${d.path}, want .avlo/${b}.so`);
+    const want = new Set(groupsJson.bundles[b].extensions.map((e) => e.pyinit));
+    const got = new Set(d.pyinit);
+    for (const p of want) if (!got.has(p)) failures.push(`${b}: census PyInit missing from group exports: ${p}`);
+    for (const p of got) if (!want.has(p)) failures.push(`${b}: stray PyInit export not in census: ${p}`);
+    for (const e of groupsJson.bundles[b].extensions) {
+      const short = e.dottedName.split('.').pop();
+      if (e.pyinit !== `PyInit_${short}`)
+        failures.push(
+          `${b}: ${e.dottedName} pyinit ${e.pyinit} != PyInit_${short} (create_dynamic derives from the LAST dotted component)`,
+        );
+    }
+    if (!d.hasDylink) failures.push(`${b}: group DSO has no dylink.0 section`);
+    if (d.needed.length) failures.push(`${b}: group NEEDED not empty: ${d.needed.join(', ')}`);
+    const unresolved = [
+      ...new Set(
+        d.imports
+          .filter(({ field }) => !mainExports.has(field) && !d.exportSet.has(field) && !JS_GLUE_ALLOW.has(field))
+          .map((i) => i.field),
+      ),
+    ];
+    if (unresolved.length)
+      failures.push(
+        `${b}: ${unresolved.length} imports outside main ∪ self ∪ glue: ${unresolved.slice(0, 6).join(', ')}${unresolved.length > 6 ? ' …' : ''}`,
+      );
+  }
+  for (const [bundle, meta] of metas) {
+    const lo = meta.loadOrder ?? [];
+    if (lo.length > 1) failures.push(`${bundle}: loadOrder has ${lo.length} entries (grouped world allows ≤1)`);
+    for (const p of lo) if (!p.startsWith('.avlo/')) failures.push(`${bundle}: loadOrder entry ${p} not under .avlo/`);
+  }
 }
 
 // ---------- report ----------

@@ -1,0 +1,77 @@
+AVLO pywasmcross link-record hook (P1.5 DSO grouping harvest): on every
+successful .so link with AVLO_LINK_RECORD_DIR set, write one JSON record
+{pkg, cwd, output, driver, final argv, original-line objects, exports-
+tmpfile content} — atomic, concurrency-safe, byte-for-byte upstream when
+the env var is absent. Anchored at pyodide-build 93f4df98 (the recipes
+314-20260629 submodule pin).
+
+diff --git a/pyodide_build/pywasmcross.py b/pyodide_build/pywasmcross.py
+index 80a6c24..c6bcc4b 100755
+--- a/pyodide_build/pywasmcross.py
++++ b/pyodide_build/pywasmcross.py
+@@ -621,6 +621,55 @@ def handle_command_generate_args(  # noqa: C901
+     return new_args
+ 
+ 
++def _avlo_record_link(
++    record_dir: str,
++    line: list[str],
++    new_args: list[str],
++    build_args: CrossCompileArgs,
++) -> None:
++    """AVLO: record one JSON per successful .so link, for the side-module
++    grouping harvest (avlo packages/py-build/scripts/harvest-links.py).
++
++    Captures the FINAL transformed argv, the original line's object/archive
++    inputs, and — critically — the content of the -sEXPORTED_FUNCTIONS
++    response tmpfile NOW (get_export_flags writes it delete=False into the
++    container tmpdir; it does not survive the build). Atomic tmp+os.replace
++    with a name derived from (cwd, output) — unique per link, so concurrent
++    links never collide and relinks deterministically overwrite.
++
++    Absent AVLO_LINK_RECORD_DIR, behavior is byte-for-byte upstream.
++    """
++    import hashlib
++    import tempfile
++
++    output = ""
++    exports_content = None
++    for i, arg in enumerate(new_args):
++        if arg == "-o" and i + 1 < len(new_args):
++            output = new_args[i + 1]
++        elif arg.startswith("-sEXPORTED_FUNCTIONS=@"):
++            try:
++                with open(arg.split("=@", 1)[1]) as f:
++                    exports_content = f.read()
++            except OSError:
++                pass
++    record = {
++        "pkg": build_args.pkgname,
++        "cwd": os.getcwd(),
++        "output": output,
++        "driver": new_args[0],
++        "argv": new_args,
++        "objects": filter_objects(line),
++        "exportsFileContent": exports_content,
++    }
++    os.makedirs(record_dir, exist_ok=True)
++    name = hashlib.sha256(f"{os.getcwd()}\n{output}".encode()).hexdigest()[:24]
++    fd, tmp = tempfile.mkstemp(dir=record_dir, suffix=".tmp")
++    with os.fdopen(fd, "w") as f:
++        json.dump(record, f, indent=1)
++    os.replace(tmp, os.path.join(record_dir, name + ".json"))
++
++
+ def handle_command(
+     line: list[str],
+     build_args: CrossCompileArgs,
+@@ -655,6 +704,9 @@ def handle_command(
+         scipy_fixes(new_args)
+ 
+     result = sp_run(new_args, check=False)
++    record_dir = os.environ.get("AVLO_LINK_RECORD_DIR")
++    if record_dir and result.returncode == 0 and is_link_cmd(line):
++        _avlo_record_link(record_dir, line, new_args, build_args)
+     return result.returncode
+ 
+ 

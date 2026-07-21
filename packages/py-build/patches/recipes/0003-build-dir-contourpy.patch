@@ -1,0 +1,19 @@
+AVLO: persist contourpy's meson-python build tree (backend-flags build-dir=build,
+numpy's existing idiom) so the P1.5 group-link harvest can collect the
+recorded .o/.a link inputs after the build. Upstreamable one-liner.
+
+diff --git a/packages/contourpy/meta.yaml b/packages/contourpy/meta.yaml
+index b3317ca..1a769e8 100644
+--- a/packages/contourpy/meta.yaml
++++ b/packages/contourpy/meta.yaml
+@@ -8,6 +8,10 @@ source:
+   url: https://files.pythonhosted.org/packages/source/c/contourpy/contourpy-1.3.3.tar.gz
+   sha256: 083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880
+ 
++build:
++  backend-flags: |
++    build-dir=build
++
+ requirements:
+   run:
+     - numpy
