@@ -5,6 +5,13 @@
 > machinery is **PARKED until P2** (`SNAPSHOTS_ENABLED = false` in py-supervisor —
 > every boot is a cold mount boot; sqlite3 is static/stdlib, no bundle). Snapshot
 > prose below describes the pre-P1 world; full rewrite lands P5.
+>
+> **P1.5 LANDED (Session 14 — DSO grouping 67→4):** each DSO-bearing bundle tar
+> ships ONE grouped side module (`meta.loadOrder == ['.avlo/<bundle>.so']`) —
+> `mountBundle` dlopens it once (`mount-extract`/`mount-dlopen` trace sub-spans);
+> later imports resolve via sitecustomize's `_AvloGroupFinder` → the same absolute
+> path → emscripten LDSO registry hit (refcount++, no re-instantiation). 4 wasm
+> Modules total instead of 67; per-extension-DSO prose below predates this.
 
 In-browser Python execution for code blocks — forked Pyodide 0.29.4 (built by
 `packages/py-build/`; artifacts + bundle tars served from the **py worker

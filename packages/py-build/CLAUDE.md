@@ -8,6 +8,13 @@
 > **PARKED in `patches/parked/`** until P2; `builtin-modules.json` comes from
 > `dump-builtins.mjs`. Glue is `pyodide.asm.mjs`. Prose below predates the
 > jump where it conflicts; full rewrite lands P5.
+>
+> **P1.5 LANDED (Session 14 — DSO grouping 67→4):** each DSO-bearing bundle
+> tar ships ONE grouped side module `.avlo/<bundle>.so`, linked from the
+> packages' original `.o`/`.a` by the recipe-rebuild loop (`recipes:build`)
+> and consumed by pack-package's grouped staging + sitecustomize's
+> `_AvloGroupFinder`. link-sos scans `dist/groups/*.so` (not wheels). Prose
+> mentioning per-extension DSOs predates this.
 
 Forked-Pyodide build + artifact packing for the in-browser Python runtime
 (`web/src/core/py/`). Everything is pinned in `build.config.json`
@@ -31,7 +38,11 @@ hash order).
 | `make-baseline.mjs` | `dist/baseline.snap` (det-env kit, `--repro` = G0 byte-identity — baked into the `baseline` script, restore-verify) + `builtin-modules.json`. HARD-ERRORS on missing staged zip (restage ⇒ recapture). The snapshot is a LOCK ARTIFACT: staged + published + budget-gated like the glue trio |
 | `verify-stacking.mjs` | G-P3.0 (`pnpm verify:stacking`): capture-after-restore probe — boot `_loadSnapshot(baseline)`+`_makeSnapshot` → mount sqlite3+numpy → set imports → stacked capture → restore via the production `_preRestoreHook` port in-process → numpy/sqlite3/lazy-submodule asserts + blit probe. The one fork path the browser spike never ran; green = per-set generation may stack on a restored baseline |
 | `run-corpus.mjs` | Corpus runner: child process per group (RAM-bounded), mounts the REAL bundle tars (512-byte meta parse → tarfile extract → loadDynlib per loadOrder), mpl groups add the font gates (no findfont, no fontManager rebuild) + PNG decode (`lib/png.mjs`) of `/tmp/corpus-out/*.png` |
-| `analyze-dsos.mjs` | DSO census + grouping audit over staged bundle tars + main wasm (imports/exports/GOT/dylink.0, import-provider table, per-bundle group-link simulation) — evidence engine behind `dso-grouping-analysis.md`. `--check` (`dsos:check`) gates PyInit-shortname uniqueness per bundle + no PyInit-less DSO |
+| `analyze-dsos.mjs` | DSO census + grouping audit over staged bundle tars + main wasm (imports/exports/GOT/dylink.0, import-provider table, lazy-stub audit) — wasm parse shared via `lib/wasm-parse.mjs`. `--check` (`dsos:check`): grouped-world v2 gates activate when tars ship `.avlo/` DSOs (PyInit census equality, closed world at N=4, loadOrder shape, mixed-world hard fail); legacy checks otherwise |
+| `run-recipes.mjs` + `recipes-build.sh` | Docker recipe-rebuild loop (P1.5): pinned pyodide-recipes checkout + patch queues (incl. numpy legacy-rename 0004) + patched pyodide-build (link-record hook) + byte-verified xbuildenv + per-package frozen constraints (`recipes-constraints.d/`, AVLO-PKG pip-log markers, `--freeze-constraints`) → serial no-deps builds → harvest → group links → `dist/groups/` |
+| `harvest-links.py` | Link records → per-bundle manifests (`config/dso-groups/<bundle>.json`): (pkg, PyInit) matching, thin-archive repack, reviewed flag-tail reconciliation, content-addressed stash (build-env path normalization), per-bundle duplicate-strong-def collision gate (hard fail) |
+| `link-groups.py` | One `-sSIDE_MODULE=2` link per bundle from its manifest; `--repro` double-link byte-compare; spike outputs named `spike-*.so` |
+| `verify-groups.mjs` + `verify-pytree.py` | `groups:verify` — PyInit census equality + `needed==[]` + closed world vs the CURRENT main per group .so; rebuilt-vs-upstream `.py` byte equality per package (allowlist `config/pkg-equality-allow.txt` with reasons, unvendor-test tolerance) |
 | `compress.mjs` | Brotli q11 `.br` siblings for every servable artifact |
 | `check-budgets.mjs` | G1: per-artifact + composite `.br` ceilings from `build.config.json`; `--update` stamps measured +5% |
 | `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + `manifest.json`, prunes strays) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts` + `packages/py-loader/build-lock.json` (buildHash = 16-hex sha256 of the canonical sha tables). `--check` = drift gate (any artifact/codegen/lock divergence fails) |

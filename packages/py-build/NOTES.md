@@ -14,30 +14,42 @@ alternatives — do not re-litigate those without new data).
 
 ---
 
-## Current state — Phase 1 COMPLETE (committed), Phase 1.5 (DSO grouping 67→4) IN PROGRESS
+## Current state — Phase 1.5 COMPLETE (committed): 4 grouped side modules, 67→4
 
-- **Phase 1.5 Step 0 landed** (baseline + measurement; see
-  `dso-grouping-analysis.md` + the master plan's Phase 1.5): harness re-run
-  GREEN on the Loop-B build (base 41 · seaborn 22 · verify 8 — closes the
-  "last recorded green at Gate A" caveat below), `dsos:check` green.
-  **Stub audit** (settles the trampoline question with data): **387
-  permanent lazy-stub closures today** — self env-func imports ∉ mainExports
-  under RTLD_LOCAL (libdylink.js 784-796) — kiwisolver `_cext` 341, numpy
-  `_multiarray_umath` 33, contourpy `_contourpy` 13, matplotlib/pandas 0;
-  +1 glue-bound (`exit`). The self provider class (1,023) splits env 394 /
-  GOT.mem 552 / GOT.func 77. `config/dso-groups/groups.json` minted from the
-  census (67 extensions: pandas 45, numpy 13, matplotlib 7, mpl-deps 2);
-  executor `mount` span split into `mount-extract`/`mount-dlopen`
-  (browser ledger re-record with the split deferred — needs `pnpm dev` ack).
+- **Phase 1.5 landed** (Session 14; commits `cb53dd4` Step 0, `44fd725`
+  Step 1, `ae5806b` Step 2): every DSO-bearing bundle tar ships **ONE
+  grouped side module** `.avlo/<bundle>.so` (numpy 4.85 MB / pandas 7.99 /
+  matplotlib 1.44 / mpl-deps 0.37) linked by the recipe-rebuild loop
+  (`run-recipes.mjs` — pinned pyodide-recipes checkout, link-record hook,
+  harvest into committed `config/dso-groups/<bundle>.json` manifests,
+  `--repro` group links, **byte-stable across independent pinned rebuilds**).
+  Runtime: mount dlopens the group once; imports resolve via sitecustomize's
+  `_AvloGroupFinder` (meta_path `[…, PathFinder, group, tombstone]`) →
+  emscripten LDSO registry hit. Full board green vs the OLD main first
+  (grouped imports ⊆ old union de-risking) then the relinked main.
+  **Remaining (owner-gated, needs `pnpm dev` ack): browser dev board +
+  cold-boot ledger re-record** with the `mount-extract`/`mount-dlopen` split.
+- **Step 0 measurement** (Session 14 baseline): stub audit — **387 permanent
+  lazy-stub closures** in the 67-DSO world — self env-func imports ∉
+  mainExports under RTLD_LOCAL (libdylink.js 784-796) — kiwisolver `_cext`
+  341, numpy `_multiarray_umath` 33, contourpy 13, matplotlib/pandas 0; +1
+  glue-bound (`exit`). Self provider class (1,023) split env 394 / GOT.mem
+  552 / GOT.func 77. Grouped world: same totals folded to 4 modules
+  (mpl-deps 354 = kiwisolver 341 + contourpy 13; self 918 — self-GOT imports
+  SURVIVE the group relink, emscripten#23107, exactly as the plan's
+  Corrected Expectation #3 anticipated ⇒ link.rsp went 1,764 → **1,761**,
+  not the estimated ~1,370; the incremental-GOT P2 item stays
+  parked-contingent).
 
 - **Toolchain:** Pyodide **314.0.2** / CPython **3.14.2** / emsdk **5.0.3** /
   ABI `2026_0`, **MAIN_MODULE=2** closed world (see next section). Image
   `pyodide/pyodide-env:20260211-chrome145-firefox146-py314` (digest pinned in
   `build.config.json`). Glue is **`pyodide.asm.mjs`** (ESM; renamed from
   `.asm.js` in 314).
-- **buildHash `58ae9021763d19f0`** (committed in `packages/py-loader/build-lock.json`),
+- **buildHash `bc46093ffa4fb5e8`** (committed in `packages/py-loader/build-lock.json`),
   seeded to local R2 (23 keys). Commits: `c6db3ea` (P0 trace+ledger),
-  `479b0f0` (P1 Loop A rebase), `8653e84` (P1 Loop B flip + lock + seed).
+  `479b0f0` (P1 Loop A rebase), `8653e84` (P1 Loop B flip + lock + seed),
+  `cb53dd4`/`44fd725`/`ae5806b` (P1.5 Steps 0–2).
 - **Sets:** `{stdlib, numpy, numpy+pandas, numpy+matplotlib, all}` — stdlib is
   the implicit no-bundle set; the other four are `build.config.json` `sets`.
   sqlite3 is **static in the main module** (314 upstream) — its old wheel,
@@ -99,10 +111,12 @@ The design that survived Loop B's two boot failures. Anyone touching the link
 line, exports, or DSO handling must understand this:
 
 - **DSOs are deliberately NOT on the main link line.** `fetch-wheels.mjs`'s
-  link-sos block scans every post-prune DSO's dylink imports **in-memory from
-  the wheels** (67 DSOs, 1,764 func/global/tag symbols, `invoke_*` excluded)
+  link-sos block scans the **grouped side modules** (`dist/groups/<bundle>.so`,
+  4 DSOs since P1.5 — hard-error if any is missing, no wheel fallback;
+  1,761 func/global/tag symbols, `invoke_*` excluded)
   and emits `.cache/link-sos/link.rsp` = one `-Wl,--export-if-defined=<sym>`
-  per symbol. That reproduces the only effect we need from emcc's
+  per symbol. `build.sh` force-relinks when link.rsp is newer than the built
+  glue (it is @-consumed but not a make prerequisite). That reproduces the only effect we need from emcc's
   `process_dynamic_libs` (main-defined DSO-needed symbols survive metadce as
   exports) while cross-DSO symbols keep resolving lazily at dlopen.
 - **Why not the obvious ".so files on the link line":** wasm-ld applies the
@@ -247,6 +261,25 @@ click→ready = sup reqToReadyMs, exec boot in parens):
   needs a det-env variant sharing one source with the Node kit.
 
 **Toolchain / build:**
+- **llvm-objcopy has NO wasm symbol support** ("only flags for section
+  dumping, removal, and addition") — wasm symbol renames must happen at
+  COMPILE time (recipe source patch), never post-hoc on objects.
+- **wasm-ld archive members are lazy; immediate object defs shadow them.**
+  Same-signature shadowing is SILENT wrong-code (only signature mismatches
+  error). harvest-links' per-bundle collision gate exists for exactly this —
+  never link two distinct-content strong defs of one symbol into a group.
+- **pip constraints are env-global** — per-package constraint files are the
+  only way to freeze legitimately-conflicting backend deps; a prerelease
+  UPPER bound (`<4.0.0a0`) silently enables prerelease candidates for that
+  requirement (how pandas lands Cython 3.3.0a1 while numpy gets 3.2.8).
+- **Cython embeds the resolved .pxd path in its file table** — for packages
+  cimporting numpy that is pip's EPHEMERAL isolated-env dir
+  (`/tmp/build-env-<rand>`), churning ~31 pandas objects per rebuild; the
+  harvest stash normalizes the token length-preservingly. numpy/matplotlib/
+  kiwisolver/contourpy proved rebuild-stable without it.
+- RandomState streams are CONTRACTUALLY frozen across numpy versions —
+  corpus value pins against host numpy are legitimate and catch legacy-path
+  binding regressions (n02).
 - **emsdk patches are inert on incremental builds** — the top-level make rule
   has no emsdk prereqs, so a staged patch ships an unpatched glue.
   `build.sh` direct-applies missing patches, force-relinks when one fires,
@@ -323,14 +356,17 @@ All from `packages/py-build/` via `pnpm --filter @avlo/py-build <script>`
   buildHash) · `pnpm typecheck` · vitest (workers/py routes, py-loader
   verify) · `pnpm py:seed` (publish --local; preflight re-hashes every byte,
   manifest LAST).
-- **Last-green (P1):** Gate B on the =2 build — corpus 7/7 groups (basic 6 ·
-  sqlite 3 stdlib-static · numpy 4 · pandas 5 · mpl 4 · all 2 · seaborn 6
-  w/ 4 PNGs pixel-decoded) · budgets restamped (composites: numpy-path
-  7,702,265 br / pandas-mpl 15,361,657 br ceilings; measured 7.34/14.63 MB) ·
-  typecheck 12/12 · vitest 3/3 + 2/2 · seed 23 keys. Harness last recorded
-  green at Gate A (Loop-A build: base 41 · seaborn 22 · verify 8) — it was
-  not re-recorded on the Loop-B build, so run it before trusting it green
-  there.
+- **Last-green (P1.5, buildHash `bc46093ffa4fb5e8`):** stdlib repack ×2
+  byte-identical · 7 tars `--repro` · corpus 7/7 vs the OLD main AND again
+  vs the relinked main (n02 now pins RandomState(42) integer streams —
+  randint/multinomial/binomial vs host numpy — proving mtrand's renamed
+  legacy family bit-exact) · trace ∩ prune = ∅ · `dsos:check` v2 (census
+  equality, closed world at N=4, loadOrder shape) · `groups:verify`
+  (verify-groups 4/4 + verify-pytree 5 pkgs, 2 allowlisted meson stamps) ·
+  budgets restamped (composites SHRANK: numpy-path 7.29 MB br / pandas-mpl
+  14.41 vs 7.34/14.63 at 67 DSOs) · stage `--check` clean · harness ALL
+  sections on the staged grouped world · typecheck 12/12 · vitest 3/3 + 2/2
+  · seed 23 keys.
 - **Browser dev board (Gate-B matrix, all green on the current build):**
   stdlib print/echo + sqlite3 `:memory:` CRUD · `import ctypes` +
   `import compression.zstd` → precise tombstones · numpy 4.0 · pandas
@@ -341,6 +377,12 @@ All from `packages/py-build/` via `pnpm --filter @avlo/py-build <script>`
 
 ## Open items / backlog
 
+- **P1.5 owner-gated tail:** browser dev board on the grouped build (all 5
+  sets cold boot, sqlite CRUD, numpy/pandas/mpl/seaborn spot-checks, figure
+  placement, `import requests` refusal, cancel/timeout, lazy
+  `matplotlib._tri`-class import post-harden, tombstones) + cold-boot
+  ledger re-record with the `mount-extract`/`mount-dlopen` split — needs
+  `pnpm dev` (ask first, repo rule).
 - **P2 SW change required:** `.snap` currently falls through to `cacheFirst`
   — per-set snapshots (~100 MB) would double-store in CacheStorage next to
   OPFS. Add the explicit passthrough branch when snapshots return.
@@ -364,6 +406,40 @@ All from `packages/py-build/` via `pnpm --filter @avlo/py-build <script>`
 ---
 
 ## Phase log (compact; newest first — append here each session)
+
+### Phase 1.5 — DSO grouping 67→4 (Session 14, committed)
+
+Steps 0–2 (`cb53dd4`, `44fd725`, `ae5806b`): recipe-rebuild loop → link
+records → harvest → one `-sSIDE_MODULE=2` link per DSO-bearing bundle;
+packaging/runtime swap (`.avlo/<bundle>.so` + `_avlo_groups_*` registry +
+`_AvloGroupFinder`); full gate board green; buildHash → `bc46093ffa4fb5e8`.
+THE blocker: numpy's group link died on `random_multinomial` signature
+mismatch — mtrand compiles its own `distributions.c` with
+`-DNP_RANDOM_LEGACY` (`RAND_INT_TYPE` = long/i32) while `_generator` et al
+expect libnpyrandom.a's int64/i64 copies; in one link mtrand's immediate
+object defs shadow the LAZY archive members (same-signature cases would
+mis-bind SILENTLY — wasm-ld only errors on signature mismatch).
+llvm-objcopy refuses ALL symbol ops on wasm objects, so the planned
+harvest-time rename was impossible — fixed at COMPILE time instead:
+recipes patch 0004 adds 66 `#define x __avlo_legacy_x` lines under the
+existing `NP_RANDOM_LEGACY` guard in distributions.h (all three mtrand TUs
+include it; rename set == the legacy TU's full strong-def list, verified
+closed by nm enumeration). harvest-links now carries a permanent
+per-bundle duplicate-strong-def collision gate (any symbol with strong
+defs in >1 distinct-content input hard-fails). Corpus n02 pins
+RandomState(42) integer streams bit-exact. Constraints frozen PER PACKAGE
+(`recipes-constraints.d/`, AVLO-PKG pip-log markers) after the single-file
+design proved unsatisfiable (numpy Cython 3.2.8 vs pandas 3.3.0a1 — its
+`<4.0.0a0` bound enables prereleases; matplotlib meson-python 0.16 vs
+0.20). Cross-rebuild byte-determinism achieved after normalizing the
+ephemeral pip build-env path Cython embeds in its file table (pandas-only;
+length-preserving `build-env-XXXXXXXX` rewrite at stash time). Predicted
+link.rsp shrink to ~1,370 did NOT materialize (1,764→1,761): self-GOT
+imports survive grouping (emscripten#23107) per Corrected Expectation #3 —
+incremental-GOT stays parked-contingent for P2. Prior session's handoff
+bug found in review: `_AvloGroupFinder` was authored but never appended to
+`sys.meta_path` (caught before any staging ran). Browser board + ledger
+re-record remain owner-gated (`pnpm dev`).
 
 ### Phase 1 — toolchain jump + link-model flip (Sessions 12–13, committed)
 
