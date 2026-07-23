@@ -1,0 +1,349 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: owned-restore seam — delete upstream container, add _avloRestore
+
+P2 owned snapshots: the host (web/src/core/py + the py-build harness)
+owns the container format (AVS2), capture I/O, and the restore order
+end-to-end. The fork keeps only thin hooks.
+- pyodide.ts: DELETE prepareSnapshot and config _loadSnapshot/
+  _makeSnapshot/_snapshotDeserializer. ADD _avloRestore.preBlit — when
+  present, boot with noInitialRun (runtime init + preRun + main-module
+  ctors still run; main()/CPython init is skipped) and run
+  preBlit(Module, API) in bootstrapPyodide BEFORE finalizeBootstrap:
+  the host validates, pre-grows via Module.growMemory (0001 export —
+  upstream's INITIAL_MEMORY resize was a no-op against this glue since
+  memory is wasm-exported), replays DSOs at recorded bases (0005 +
+  emsdk dsoBaseHook), blits the heap, and returns the SnapshotConfig
+  finalizeBootstrap resumes from (upstream syncUpSnapshotLoad1/2).
+- snapshot.ts: DELETE makeSnapshot/restoreSnapshot + the binary
+  container helpers. KEEP serializeHiwireState, getExpectedKeys,
+  syncUpSnapshotLoad1/2, makeGlobalsProxy.
+- api.ts: DELETE the makeMemorySnapshot static and the _makeSnapshot
+  jsglobals proxy wrap (capture is host-driven via
+  API.serializeHiwireState; with the js-module registration gone (0008)
+  no hiwire entry needs the access-path proxy).
+- types.ts/emscripten-settings.ts accordingly (INITIAL_MEMORY seam
+  dead).
+
+diff --git a/src/js/api.ts b/src/js/api.ts
+index 8f73e57..33ee23b 100644
+--- a/src/js/api.ts
++++ b/src/js/api.ts
+@@ -16,7 +16,6 @@ import { RUNTIME_ENV } from "./environments";
+ import LiteralMap from "./common/literal-map";
+ import abortSignalAny from "./common/abortSignalAny";
+ import {
+-  makeGlobalsProxy,
+   SnapshotConfig,
+   syncUpSnapshotLoad1,
+   syncUpSnapshotLoad2,
+@@ -628,22 +627,6 @@ export class PyodideAPI_ {
+     API.debug_ffi = debug;
+     return orig;
+   }
+-
+-  /**
+-   * @private
+-   */
+-  static makeMemorySnapshot({
+-    serializer,
+-  }: {
+-    serializer?: (obj: any) => any;
+-  } = {}): Uint8Array {
+-    if (!API.config._makeSnapshot) {
+-      throw new Error(
+-        "Can only use pyodide.makeMemorySnapshot if the _makeSnapshot option is passed to loadPyodide",
+-      );
+-    }
+-    return API.makeSnapshot(serializer);
+-  }
+ }
+ 
+ /**
+@@ -747,9 +730,6 @@ API.finalizeBootstrap = function (
+   // Set up key Javascript modules.
+   let importhook = API._pyodide._importhook;
+   let pyodide = makePublicAPI();
+-  if (API.config._makeSnapshot) {
+-    API.config.jsglobals = makeGlobalsProxy(API.config.jsglobals);
+-  }
+   const jsglobals = API.config.jsglobals;
+   if (snapshotConfig) {
+     syncUpSnapshotLoad2(jsglobals, snapshotConfig, snapshotDeserializer);
+diff --git a/src/js/emscripten-settings.ts b/src/js/emscripten-settings.ts
+index b27fe5e..1a20849 100644
+--- a/src/js/emscripten-settings.ts
++++ b/src/js/emscripten-settings.ts
+@@ -32,7 +32,6 @@ export interface EmscriptenSettings {
+   readonly locateFile: (file: string) => string;
+ 
+   noInitialRun?: boolean;
+-  INITIAL_MEMORY?: number;
+   exitCode?: number;
+ }
+ 
+diff --git a/src/js/pyodide.ts b/src/js/pyodide.ts
+index 5407515..d9a9790 100644
+--- a/src/js/pyodide.ts
++++ b/src/js/pyodide.ts
+@@ -172,17 +172,26 @@ export interface PyodideConfig {
+    */
+   _sysExecutable?: string;
+ 
+-  /** @ignore */
+-  _makeSnapshot?: boolean;
+-
+-  /** @ignore */
+-  _loadSnapshot?:
+-    | Uint8Array
+-    | ArrayBuffer
+-    | PromiseLike<Uint8Array | ArrayBuffer>;
+-
+-  /** @ignore */
+-  _snapshotDeserializer?: (obj: any) => any;
++  /**
++   * AVLO owned restore (P2 — replaces upstream's _loadSnapshot/_makeSnapshot;
++   * capture is host-driven via API.serializeHiwireState + the dynload replay
++   * surface, so no loader config is needed for it). When present the runtime
++   * boots with noInitialRun (runtime init + preRun + main-module ctors still
++   * run; main() — CPython init — is skipped) and `preBlit(Module, API)` runs
++   * in bootstrapPyodide BEFORE finalizeBootstrap: the host validates its
++   * container, pre-grows memory (Module.growMemory — exported by the AVLO
++   * link flags; the upstream INITIAL_MEMORY resize was a no-op against this
++   * glue because memory is wasm-exported), replays recorded DSOs at their
++   * captured bases, blits the heap image, and returns the SnapshotConfig
++   * (hiwire state) that finalizeBootstrap resumes from.
++   * @ignore
++   */
++  _avloRestore?: {
++    preBlit: (
++      module: any,
++      api: any,
++    ) => SnapshotConfig | Promise<SnapshotConfig>;
++  };
+ 
+   /**
+    * @experimental
+@@ -273,28 +282,6 @@ async function loadWasmScript(
+   return (await loadScript(scriptSrc)).default;
+ }
+ 
+-/**
+- * @private
+- */
+-async function prepareSnapshot(
+-  config: PyodideConfigWithDefaults,
+-  emscriptenSettings: EmscriptenSettings,
+-): Promise<Uint8Array | undefined> {
+-  if (!config._loadSnapshot) {
+-    return undefined;
+-  }
+-
+-  const snp = await config._loadSnapshot;
+-  const snapshot = ArrayBuffer.isView(snp)
+-    ? (snp as Uint8Array)
+-    : new Uint8Array(snp);
+-  emscriptenSettings.noInitialRun = true;
+-  // @ts-ignore
+-  emscriptenSettings.INITIAL_MEMORY = snapshot.length;
+-
+-  return snapshot;
+-}
+-
+ /**
+  * @private
+  */
+@@ -349,23 +336,22 @@ If you updated the Pyodide version, make sure you also updated the 'indexURL' pa
+ /**
+  * @private
+  */
+-function bootstrapPyodide(
++async function bootstrapPyodide(
+   pyodideModule: PyodideModule,
+-  snapshot: Uint8Array | undefined,
+   config: PyodideConfigWithDefaults,
+-): PyodideAPI {
++): Promise<PyodideAPI> {
+   const API = pyodideModule.API;
+ 
++  // AVLO owned restore: the host's preBlit replays DSOs at recorded bases and
++  // blits the heap image (workerd restore order: DSOs preload BEFORE the heap
++  // lands), returning the hiwire SnapshotConfig to resume from.
+   let snapshotConfig: SnapshotConfig | undefined = undefined;
+-  if (snapshot) {
+-    snapshotConfig = API.restoreSnapshot(snapshot);
++  if (config._avloRestore) {
++    snapshotConfig = await config._avloRestore.preBlit(pyodideModule, API);
+   }
+ 
+   // runPython works starting after the call to finalizeBootstrap.
+-  const pyodide = API.finalizeBootstrap(
+-    snapshotConfig,
+-    config._snapshotDeserializer,
+-  );
++  const pyodide = API.finalizeBootstrap(snapshotConfig);
+ 
+   return pyodide;
+ }
+@@ -413,8 +399,13 @@ export async function loadPyodide(
+   // Stage 3: Load WASM script
+   const createPyodideModuleFn = await loadWasmScript(config);
+ 
+-  // Stage 4: Prepare snapshot
+-  const snapshot = await prepareSnapshot(config, emscriptenSettings);
++  // Stage 4: AVLO owned restore — skip main() (CPython init); runtime init,
++  // preRun hooks, and main-module ctors still run. No INITIAL_MEMORY: memory
++  // is exported from the wasm, so the host pre-grows via Module.growMemory
++  // inside preBlit instead.
++  if (config._avloRestore) {
++    emscriptenSettings.noInitialRun = true;
++  }
+ 
+   // Stage 5: Create and initialize the Emscripten module
+   const pyodideModule = await instantiatePyodideModule(
+@@ -426,7 +417,7 @@ export async function loadPyodide(
+   configureAPI(pyodideModule, config);
+ 
+   // Stage 7: Bootstrap Python interpreter
+-  const pyodide = bootstrapPyodide(pyodideModule, snapshot, config);
++  const pyodide = await bootstrapPyodide(pyodideModule, config);
+ 
+   // Stage 8: Finalize setup and initialize streams
+   return await finalizeSetup(pyodide, config);
+diff --git a/src/js/snapshot.ts b/src/js/snapshot.ts
+index e259412..07f243a 100644
+--- a/src/js/snapshot.ts
++++ b/src/js/snapshot.ts
+@@ -82,29 +82,11 @@ export type SnapshotConfig = {
+   immortalKeys: string[];
+ };
+ 
+-const SNAPSHOT_MAGIC = 0x706e7300; // "\x00snp"
+-const HEADER_SIZE_IN_BYTES =
+-  4 /* magic */ +
+-  4 /* offset to binary */ +
+-  4 /* json length */ +
+-  4 /* padding */ +
+-  32; /* build id */
+-
+-function encodeBuildId(buildId: string, buffer: Uint32Array): void {
+-  if (buffer.length !== 8) {
+-    throw new Error("Expected 256 bit buffer");
+-  }
+-  for (let i = 0; i < 32; i++) {
+-    buffer[i] = parseInt(buildId.slice(i * 8, (i + 1) * 8), 16);
+-  }
+-}
+-
+-function decodeBuildId(buffer: Uint32Array): string {
+-  if (buffer.length !== 8) {
+-    throw new Error("Expected 256 bit buffer");
+-  }
+-  return Array.from(buffer, (n) => n.toString(16).padStart(8, "0")).join("");
+-}
++// AVLO (P2): the upstream binary container (SNAPSHOT_MAGIC header +
++// makeSnapshot/restoreSnapshot) is deleted — the host owns the container,
++// capture I/O, and the restore order end-to-end (see _avloRestore in
++// pyodide.ts). The fork keeps only the state (de)serialization primitives:
++// serializeHiwireState / getExpectedKeys / syncUpSnapshotLoad1+2.
+ 
+ function checkEntry(index: number, value: any, expected: any): void {
+   if (value === expected) {
+@@ -128,8 +110,8 @@ function checkEntry(index: number, value: any, expected: any): void {
+ }
+ 
+ // The expected number of static js variables.
+-// We double check that this is still right in makeSnapshot (when creating the
+-// snapshot) and in syncUpSnapshotLoad1 (when using it).
++// We double check that this is still right in serializeHiwireState (when
++// creating the snapshot) and in syncUpSnapshotLoad1 (when using it).
+ const NUM_STATIC_JS_REFS = 6;
+ 
+ API.serializeHiwireState = function (
+@@ -227,64 +209,6 @@ API.serializeHiwireState = function (
+   };
+ };
+ 
+-API.makeSnapshot = function (serializer?: (obj: any) => any): Uint8Array {
+-  if (!API.config._makeSnapshot) {
+-    throw new Error(
+-      "makeSnapshot only works if you passed the makeSnapshot option to loadPyodide",
+-    );
+-  }
+-  const snapshotConfig = API.serializeHiwireState(serializer);
+-  const snapshotConfigString = JSON.stringify(snapshotConfig);
+-  let snapshotOffset = HEADER_SIZE_IN_BYTES + 2 * snapshotConfigString.length;
+-  // align to 16 bytes
+-  snapshotOffset = Math.ceil(snapshotOffset / 16) * 16;
+-  const snapshot = new Uint8Array(snapshotOffset + Module.HEAP8.length);
+-  const encoder = new TextEncoder();
+-  const { written: jsonLength } = encoder.encodeInto(
+-    snapshotConfigString,
+-    snapshot.subarray(HEADER_SIZE_IN_BYTES),
+-  );
+-  const uint32View = new Uint32Array(snapshot.buffer);
+-  uint32View[0] = SNAPSHOT_MAGIC;
+-  uint32View[1] = snapshotOffset;
+-  uint32View[2] = jsonLength!;
+-  uint32View[3] = 0; // padding
+-  encodeBuildId(API.config.BUILD_ID, uint32View.subarray(4, 4 + 8));
+-  snapshot.subarray(snapshotOffset).set(Module.HEAP8);
+-  return snapshot;
+-};
+-
+-API.restoreSnapshot = function (snapshot: Uint8Array): SnapshotConfig {
+-  const uint32View = new Uint32Array(
+-    snapshot.buffer,
+-    snapshot.byteOffset,
+-    snapshot.byteLength / 4,
+-  );
+-  if (uint32View[0] !== SNAPSHOT_MAGIC) {
+-    throw new Error("Snapshot has invalid magic number");
+-  }
+-  const snapshotOffset = uint32View[1];
+-  const jsonLength = uint32View[2];
+-  const buildId = decodeBuildId(uint32View.subarray(4, 4 + 8));
+-  if (buildId !== API.config.BUILD_ID) {
+-    throw new Error(
+-      "Snapshot build id mismatch\n" +
+-        `expected: ${API.config.BUILD_ID}\n` +
+-        `got     : ${buildId}\n`,
+-    );
+-  }
+-  const jsonBuf = snapshot.subarray(
+-    HEADER_SIZE_IN_BYTES,
+-    HEADER_SIZE_IN_BYTES + jsonLength,
+-  );
+-  snapshot = snapshot.subarray(snapshotOffset);
+-  const jsonStr = new TextDecoder().decode(jsonBuf);
+-  const snapshotConfig: SnapshotConfig = JSON.parse(jsonStr);
+-  // @ts-ignore
+-  Module.HEAP8.set(snapshot);
+-  return snapshotConfig;
+-};
+-
+ /**
+  * Set up some of the JavaScript state that is normally set up by C
+  * initialization code. TODO: adjust C code to simplify.
+@@ -349,7 +273,7 @@ export function syncUpSnapshotLoad2(
+     } else {
+       if (!deserializer) {
+         throw new Error(
+-          "You must pass an appropriate deserializer as _snapshotDeserializer",
++          "Snapshot contains a serialized entry but no deserializer was passed to finalizeBootstrap",
+         );
+       }
+       x = deserializer(e.serialized);
+diff --git a/src/js/types.ts b/src/js/types.ts
+index 1cc8a0e..0bfcc16 100644
+--- a/src/js/types.ts
++++ b/src/js/types.ts
+@@ -566,9 +566,7 @@ export interface API {
+   sys: PyProxy;
+   os: PyProxy;
+ 
+-  restoreSnapshot(snapshot: Uint8Array): SnapshotConfig;
+   serializeHiwireState(serializer?: (obj: any) => any): SnapshotConfig;
+-  makeSnapshot(serializer?: (obj: any) => any): Uint8Array;
+   saveSnapshot(): Uint8Array;
+   getExpectedKeys(): any[];
+   finalizeBootstrap: (

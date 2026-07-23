@@ -55,6 +55,16 @@ for (const [name, rel] of Object.entries(ARTIFACTS)) {
   }
   files.set(name, readFileSync(p));
 }
+// Prestage liveness gate: the built glue must carry the emsdk dsoBaseHook
+// (P2 snapshot replay — a silently-unpatched dylink layer fails only at
+// runtime, hours downstream) and the dynload surface 0006's side-effect
+// import anchors (esbuild would tree-shake API.loadDynlib without it).
+for (const marker of ['snapshot DSO table drift', 'loadDynlib']) {
+  if (!files.get('pyodide.asm.mjs').includes(marker)) {
+    console.error(`built glue is missing "${marker}" — rebuild with the full patch queue (run-build.mjs)`);
+    process.exit(1);
+  }
+}
 function parseTarMeta(buf) {
   const name = buf.toString('ascii', 0, 100).replace(/\0.*$/s, '');
   if (name !== 'meta.json') throw new Error(`first tar entry is ${JSON.stringify(name)}, want meta.json`);

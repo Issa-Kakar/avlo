@@ -1,0 +1,45 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: 0008 snapshot half — getExpectedKeys 5-entry table
+
+getExpectedKeys() hardcodes the first hiwire regular-table entries in
+boot allocation order, and the "js" registration (deleted by 0008)
+was what interned jsglobals (slot 1) plus a trailing {} (slot 6).
+Post-0008 the table is [null, public_api, API, scheduleCallback, API]
+— verified empirically against a live 314.0.2 boot by the py-build
+harness snapshot section, which walks Module.__hiwire_get and dumps
+the real table on any mismatch (re-derive there after any
+boot-sequence change). Without this rewrite serializeHiwireState dies
+stringifying public_api (circular Module.FS root) against the stale
+jsglobals expectation. Capture and restore share the list; the
+client's buildId gate rejects snapshots captured under any other
+layout.
+
+diff --git a/src/js/snapshot.ts b/src/js/snapshot.ts
+index 07f243a..b513533 100644
+--- a/src/js/snapshot.ts
++++ b/src/js/snapshot.ts
+@@ -4,15 +4,15 @@ declare var Module: any;
+ 
+ /** @private */
+ API.getExpectedKeys = function () {
+-  return [
+-    null,
+-    API.config.jsglobals,
+-    API.public_api,
+-    API,
+-    scheduleCallback,
+-    API,
+-    {},
+-  ];
++  // AVLO (0008b): with register_js_module("js", jsglobals) gone (0008),
++  // jsglobals is never interned and the trailing {} entry that registration
++  // produced is gone too — the post-boot table is exactly these five entries.
++  // Empirically re-derived against a live 314.0.2 boot (the py-build harness
++  // snapshot section walks Module.__hiwire_get and dumps the real table on
++  // any mismatch — re-derive there after any boot-sequence change).
++  // syncUpSnapshotLoad2 re-interns this same list on restore; the client's
++  // buildId gate rejects snapshots captured under any other layout.
++  return [null, API.public_api, API, scheduleCallback, API];
+ };
+ 
+ // Symbol used in our serializer to get the access list

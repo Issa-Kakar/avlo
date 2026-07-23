@@ -2,13 +2,23 @@ From: avlo-py-build <py-build@avlo.local>
 Subject: [PATCH] AVLO: deterministic DSO snapshot support in dynload
 
 DsoSnapshotSupport: record/replay store behind Module.dsoBaseHook (see
-emsdk patch 0005-avlo), JS-side replay loader for restore-before-heap-
+emsdk patch 0006-avlo), JS-side replay loader for restore-before-heap-
 overwrite, dlopen handle capture/restore. Adapted from Cloudflare
-workerd src/pyodide/internal/snapshot.ts (Apache-2.0).
+workerd src/pyodide/internal/snapshot.ts (Apache-2.0). Context-rebased
+0.29.4 -> 314.0.2 verbatim (P2): newDSO(path, undefined, "loading")
+matches upstream's own placeholder pattern and dso.exports is
+overwritten with the real exports right after; replay registers BOTH
+the full normalized path (newDSO's loadedLibsByName[name]) AND the
+basename alias — required because loadDynamicLibrary short-circuits on
+the NORMALIZED ABSOLUTE path and _AvloGroupFinder dlopens exactly the
+mount-time absolute string. Callers pass loadDynlibReplay the RECORDED
+loadOrder string verbatim, never a tar-relative member name.
 
---- a/src/js/dynload.ts	2026-07-04 22:33:26.022665875 -0700
-+++ b/src/js/dynload.ts	2026-07-04 22:34:33.118658243 -0700
-@@ -109,9 +109,135 @@
+diff --git a/src/js/dynload.ts b/src/js/dynload.ts
+index 9f5a4d4..91f71a8 100644
+--- a/src/js/dynload.ts
++++ b/src/js/dynload.ts
+@@ -109,9 +109,136 @@ export class DynlibLoader {
    }
  }
  
@@ -17,7 +27,7 @@ workerd src/pyodide/internal/snapshot.ts (Apache-2.0).
 + * workerd's src/pyodide/internal/snapshot.ts, Apache-2.0).
 + *
 + * RECORD: every fresh DSO base allocation in loadWebAssemblyModule notifies
-+ * Module.dsoBaseHook.record (see emsdk patch 0005-avlo). The accumulated
++ * Module.dsoBaseHook.record (see emsdk patch 0006-avlo). The accumulated
 + * loadOrder/soMemoryBases/soTableBases travel in the snapshot metadata.
 + *
 + * REPLAY: while restoring a snapshot, DSOs are re-instantiated JS-side (no C
@@ -75,8 +85,7 @@ workerd src/pyodide/internal/snapshot.ts (Apache-2.0).
 +    this.#replaying = true;
 +  }
 +
-+  /** Exit replay mode; subsequent dlopens record on top of the seeded info
-+   * (per-set snapshot generation stacks on a restored baseline). */
++  /** Exit replay mode; subsequent dlopens record on top of the seeded info. */
 +  public dsoReplayDone(): void {
 +    this.#replaying = false;
 +  }
@@ -86,7 +95,10 @@ workerd src/pyodide/internal/snapshot.ts (Apache-2.0).
 +   * during snapshot restore, before the heap overwrite. Mirrors workerd's
 +   * loadDynlib: refcount pinned (arena allocations are unreclaimable anyway),
 +   * non-global, empty local scope (post-RTLD_GLOBAL emscripten needs a scope
-+   * object for dependent-symbol lookup).
++   * object for dependent-symbol lookup). `path` must be the RECORDED
++   * loadOrder string verbatim (normalized absolute) — newDSO registers it in
++   * loadedLibsByName under exactly that key, which is what makes post-restore
++   * C dlopens of the same absolute path short-circuit to a registry hit.
 +   */
 +  public loadDynlibReplay(path: string, bytes: Uint8Array): void {
 +    const M = this.#module;
@@ -127,7 +139,6 @@ workerd src/pyodide/internal/snapshot.ts (Apache-2.0).
 +    }
 +    return out;
 +  }
-+
 +}
 +
  if (typeof API !== "undefined" && typeof Module !== "undefined") {
@@ -144,9 +155,11 @@ workerd src/pyodide/internal/snapshot.ts (Apache-2.0).
 +  API.restoreDsoHandles = dsoSnapshotSupport.restoreDsoHandles.bind(dsoSnapshotSupport);
 +  API.recordDsoHandles = dsoSnapshotSupport.recordDsoHandles.bind(dsoSnapshotSupport);
  }
---- a/src/js/types.ts	2026-07-04 22:53:40.874341801 -0700
-+++ b/src/js/types.ts	2026-07-04 22:53:40.986341720 -0700
-@@ -522,6 +522,23 @@
+diff --git a/src/js/types.ts b/src/js/types.ts
+index 6bb6425..aa294de 100644
+--- a/src/js/types.ts
++++ b/src/js/types.ts
+@@ -542,6 +542,23 @@ export interface API {
      searchDirs?: string[] | undefined,
      readFileFunc?: (path: string) => Uint8Array,
    ) => Promise<void>;

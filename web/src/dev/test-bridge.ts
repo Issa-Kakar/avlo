@@ -19,6 +19,7 @@
 import { generateZAtTop } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
+import { isRunnableCodeBlock, toggleRunCodeBlock } from '@/core/py/py-manager';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import {
@@ -293,6 +294,11 @@ const bridge = {
   select: (ids: string[]) => useSelectionStore.getState().setSelection(ids),
   clearSelection: () => useSelectionStore.getState().clearSelection(),
   selectedIds: () => useSelectionStore.getState().selectedIds,
+  // python — a DEV-only toggleRunCodeBlock call site (the never-auto-run
+  // invariant counts local gestures; a Playwright `page.evaluate` driving this
+  // is one — this module never ships, DEV-gated import in main.tsx).
+  runCode: (id: string) => toggleRunCodeBlock(id),
+  isRunnable: (id: string) => isRunnableCodeBlock(id),
   // tool
   setTool: (tool: string) => setActiveTool(tool as Parameters<typeof setActiveTool>[0]),
   // camera

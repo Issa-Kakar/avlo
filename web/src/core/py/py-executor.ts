@@ -15,7 +15,7 @@
 import { sha256Hex } from '@avlo/py-loader/verify';
 import { assertRealmHardened, hardenRealm, scrubWorkerScope } from './py-harden';
 import { HARNESS_INSTALL, RUN_INVOKE } from './py-harness';
-import { bootPyodide, type Pyodide } from './py-loader';
+import { bootPyodide, collectSoBytes, PreBlitError, type Pyodide, type PyRestore } from './py-loader';
 import {
   type ExecBootMsg,
   type ExecRunMsg,
@@ -26,12 +26,16 @@ import {
   type SupToExec,
 } from './py-protocol';
 import { HEARTBEAT, MEM_KIB, mapPySab, PyExecState, type PySabViews, RUN_ID, STATE } from './py-sab';
-import { packTree } from './py-snapshot';
+import { type AvsCaptureMeta, openSetSnapshot, parseAvsHeader } from './py-snapshot';
 import { installWasmTimers, setTraceSink, traceBegin, traceEmit, traceReset, traceSpan, traceSpanAsync } from './py-trace';
 
 let pyodide: Pyodide = null;
 let sab: PySabViews | null = null;
 let currentRunId = 0;
+/** True once this generation booted from an OPFS snapshot restore (the blit
+ * landed). Rides exec-ready + every exec-fatal — the supervisor's poison
+ * routing keys on it. */
+let restored = false;
 
 /** Ready-point heap copy — the blit-reset image. Taken at the END of boot on
  * EVERY path (cold included), so it already contains the harness, the armed
@@ -147,8 +151,12 @@ async function verifyStdlibZip(expectedSha256: string): Promise<void> {
 
 /** Mount one bundle: write the tar into MEMFS, extract it (meta.json stays
  * out), delete the tar, then loadDynlib every DSO in the meta's canonical
- * order (the supervisor sends bundles in deps-first set order). */
-async function mountBundle(b: PyBundlePayload): Promise<void> {
+ * order (the supervisor sends bundles in deps-first set order). Restore boots
+ * pass `extractOnly` — the replayed groups are already registered in LDSO at
+ * their recorded bases, but the `.avlo/*.so` FILES must still land: post-
+ * restore lazy C dlopens (`_AvloGroupFinder` → load_library_start) stat/read
+ * them from MEMFS. */
+async function mountBundle(b: PyBundlePayload, extractOnly: boolean): Promise<void> {
   const endExtract = traceBegin('mount-extract');
   pyodide.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(b.bytes));
   pyodide.runPython(`import os, tarfile
@@ -157,22 +165,29 @@ with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
 os.remove('/tmp/_avlo_bundle.tar')
 del _t`);
   endExtract({ bundle: b.name });
+  if (extractOnly) return;
   const endDlopen = traceBegin('mount-dlopen');
   for (const so of b.loadOrder) {
     await pyodide._api.loadDynlib(`${b.prefix}/${so}`);
   }
-  endDlopen({ bundle: b.name, n: b.loadOrder.length });
+  // `dsos`, not `n` — a meta key named `n` clobbers the span-name field in
+  // py-trace's `{ n, at, ms, ...meta }` spread (browser-ledger finding).
+  endDlopen({ bundle: b.name, dsos: b.loadOrder.length });
 }
 
-/** Generation capture — bake the set's imports into the heap, snapshot, ship
- * to the supervisor for OPFS persistence. Runs BEFORE scrub/harden (capture
- * needs nothing hardened away; keeping session state out of the image) and
- * before ANY user code (the supervisor drops exec-snapshot once ready).
- * Best-effort: a capture failure warns and the boot continues snapshotless. */
+/** Owned capture — bake the set's imports into the heap (so restored AND
+ * capture generations stop re-importing on warm runs), then ship meta + a
+ * dense heap copy to the supervisor for AVS2 assembly + OPFS persistence.
+ * Runs at the pre-harden slot (after stdlib-verify + post_restore, before
+ * harden/harness — capturing at ready would bake installed-harness state and
+ * force an untested double-install on restore) and before ANY user code (the
+ * supervisor drops exec-snapshot once ready). stdlib captures too (no bundles
+ * → no bake; the gc still runs). Best-effort: a capture failure warns and the
+ * boot continues snapshotless. */
 function captureSetSnapshot(m: ExecBootMsg): void {
-  const bundles = m.bundles ?? [];
-  if (bundles.length === 0 || !m.captureKey) return;
+  if (!m.captureKey) return;
   try {
+    const bundles = m.bundles ?? [];
     traceSpan('capture-imports', () => {
       for (const b of bundles) {
         const imports = BUNDLE_IMPORTS[b.name];
@@ -181,13 +196,19 @@ function captureSetSnapshot(m: ExecBootMsg): void {
       pyodide.runPython('import gc; gc.collect(); gc.collect()');
     });
     const t0 = performance.now();
-    const container = traceSpan('capture-snapshot', () => (pyodide.makeMemorySnapshot() as Uint8Array).slice().buffer);
-    // Walk AFTER the imports — import-generated __pycache__ pycs are
-    // heap-referenced; an earlier walk bakes an inconsistent tree (G7).
-    const tree = traceSpan('pack-tree', () => packTree(pyodide.FS, bundles[0].prefix));
-    post({ t: 'exec-snapshot', captureKey: m.captureKey, container, tree }, [container, tree.blob]);
+    const api = pyodide._api;
+    // Meta reads BEFORE the heap slice — a serializeHiwireState throw (live
+    // PyProxy in the table) skips the ~80 MB copy entirely.
+    const dso = api.getDsoLoadInfo();
+    const dsoHandles = api.recordDsoHandles();
+    const hiwire = api.serializeHiwireState();
+    const buildId = api.config.BUILD_ID as string;
+    const tableLenAtCapture = pyodide._module.wasmTable.length as number;
+    const heap = traceSpan('capture-snapshot', () => (pyodide._module.HEAP8 as Uint8Array).slice().buffer as ArrayBuffer);
+    const meta: AvsCaptureMeta = { dso, dsoHandles, hiwire, buildId, tableLenAtCapture, heapLen: heap.byteLength };
+    post({ t: 'exec-snapshot', captureKey: m.captureKey, meta, heap }, [heap]);
     console.warn(
-      `py: captured ${m.captureKey} snapshot (${(container.byteLength / 1e6).toFixed(1)} MB, ${(performance.now() - t0).toFixed(0)} ms)`,
+      `py: captured ${m.captureKey} snapshot (${(heap.byteLength / 1e6).toFixed(1)} MB, ${(performance.now() - t0).toFixed(0)} ms)`,
     );
   } catch (err) {
     console.warn('py: snapshot capture failed (continuing snapshotless) —', err);
@@ -198,7 +219,7 @@ async function boot(m: ExecBootMsg): Promise<void> {
   if (pyodide || sab) {
     // One boot per generation — a second would re-run mounts over live state
     // and re-point the interrupt buffer mid-flight. Refuse loudly.
-    post({ t: 'exec-fatal', error: 'boot after boot' });
+    post({ t: 'exec-fatal', error: 'boot after boot', restored });
     return;
   }
   sab = mapPySab(m.sab);
@@ -207,15 +228,58 @@ async function boot(m: ExecBootMsg): Promise<void> {
   const wasmTimers = installWasmTimers();
   let wasm: Record<string, unknown> = {};
   try {
-    // Restore (when m.snapshot rides) happens INSIDE bootPyodide, before the
-    // realm is stripped — so even a poisoned image lands authority-less.
-    pyodide = await traceSpanAsync('boot-pyodide', () =>
-      bootPyodide({ artifactBase: m.artifactBase, snapshot: m.snapshot, tree: m.tree, makeSnapshot: m.capture }),
-    );
+    // Snap-probe: open + header-validate the set's OPFS snapshot BEFORE
+    // loadPyodide (strictly pre-scrub). Any failure here or inside preBlit
+    // falls back COLD in this same boot; the sync handle never survives
+    // toward harden (preBlit closes it in a finally, probe failures close it
+    // here — a live handle is write authority across the scrub boundary).
+    let restore: PyRestore | null = null;
+    if (m.trySnapshot && m.captureKey) {
+      const endProbe = traceBegin('snap-probe');
+      const handle = await openSetSnapshot(m.buildHash, m.captureKey);
+      if (handle) {
+        try {
+          const header = parseAvsHeader(handle, { buildHash: m.buildHash, setKey: m.captureKey });
+          restore = { header, handle, soBytes: collectSoBytes(m.bundles ?? []) };
+        } catch (err) {
+          handle.close();
+          post({ t: 'exec-snap-invalid', reason: String((err as Error)?.message ?? err).split('\n')[0] });
+        }
+      }
+      endProbe({ hit: restore !== null });
+    }
+    // Restore happens INSIDE bootPyodide (the fork's _avloRestore.preBlit
+    // seam), before the realm is stripped — even a poisoned image lands
+    // authority-less.
+    pyodide = await traceSpanAsync('boot-pyodide', async () => {
+      if (restore) {
+        try {
+          const py = await bootPyodide({ artifactBase: m.artifactBase, restore });
+          restored = true;
+          return py;
+        } catch (err) {
+          restore.handle.close(); // idempotent — preBlit's finally usually beat us
+          if (!(err instanceof PreBlitError)) {
+            // Thrown outside preBlit — overwhelmingly post-blit (the image
+            // already landed): flag restored so the supervisor's poison
+            // routing deletes the snapshot and retries cold once.
+            restored = true;
+            throw err;
+          }
+          // Pre-blit failure (validation/replay/asserts/read): continue COLD
+          // in the SAME worker — the glue import is cached and the aborted
+          // Module is inert (noInitialRun: main() never ran). The supervisor
+          // deletes the file and does NOT respawn (U4).
+          post({ t: 'exec-snap-invalid', reason: String(err.message).split('\n')[0] });
+          restore = null;
+        }
+      }
+      return bootPyodide({ artifactBase: m.artifactBase });
+    });
     for (const b of m.bundles ?? []) {
-      // cold + generation; stacked boots carry none
+      // Cold boots mount fully; restore boots extract-only (DSOs replayed).
       const endMount = traceBegin('mount');
-      await mountBundle(b);
+      await mountBundle(b, restored);
       endMount({ bundle: b.name });
     }
     wasm = wasmTimers.collect();
@@ -225,7 +289,7 @@ async function boot(m: ExecBootMsg): Promise<void> {
     // ends with the tz bridge (superset of the old ensure_tzpath call —
     // idempotent and import-light on cold boots).
     traceSpan('post-restore', () => pyodide.runPython('import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime'));
-    if (m.capture) captureSetSnapshot(m);
+    if (!restored) captureSetSnapshot(m);
     // Last network/compile touch is behind us — strip the realm's ambient
     // authority, then freeze the intrinsics the run protocol flows through.
     // MUST precede the harness install: the Python-side guard is the
@@ -252,26 +316,26 @@ async function boot(m: ExecBootMsg): Promise<void> {
       resetImage = null;
     }
   } catch (err) {
-    traceEmit('exec', 'boot-fatal', { error: String((err as Error)?.message ?? err).split('\n')[0], wasm });
-    post({ t: 'exec-fatal', error: String((err as Error)?.stack ?? err) });
+    traceEmit('exec', 'boot-fatal', { restored, error: String((err as Error)?.message ?? err).split('\n')[0], wasm });
+    post({ t: 'exec-fatal', error: String((err as Error)?.stack ?? err), restored });
     return;
   }
   Atomics.store(sab.i32, STATE, PyExecState.Idle);
   const bootMs = performance.now() - t0;
   traceEmit('exec', 'boot', {
     bootMs: Math.round(bootMs),
-    snapshot: !!m.snapshot,
-    stacked: !!m.tree,
+    restored,
+    triedSnapshot: !!(m.trySnapshot && m.captureKey),
     bundles: (m.bundles ?? []).length,
-    capture: !!m.capture,
+    capture: !!m.captureKey && !restored,
     wasm,
   });
-  post({ t: 'exec-ready', bootMs });
+  post({ t: 'exec-ready', bootMs, restored });
 }
 
 function exec(m: ExecRunMsg): void {
   if (!pyodide || !sab) {
-    post({ t: 'exec-fatal', error: 'exec before boot' });
+    post({ t: 'exec-fatal', error: 'exec before boot', restored });
     return;
   }
   currentRunId = m.runId;

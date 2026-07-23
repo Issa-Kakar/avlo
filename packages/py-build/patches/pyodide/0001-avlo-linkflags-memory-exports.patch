@@ -45,8 +45,15 @@ link model is the closed world.
   EMSCRIPTEN_KEEPALIVE, but these two live in musl/dynlink.c and only
   dynload.ts calls them. The full JS-visible surface was enumerated by
   grepping every (Module|#module).prop access in src/js against the
-  built wasm's exports. The six DSO-replay exports stay PARKED with 0005
-  until P2.
+  built wasm's exports. P2: EXPORTED_RUNTIME_METHODS also carries growMemory +
+  LDSO,newDSO,loadWebAssemblyModule (JS-library symbols — libcore.js /
+  libdylink.js): the owned-restore preBlit pre-grows memory with the
+  first (upstream's INITIAL_MEMORY resize was a no-op against this glue
+  because memory is wasm-exported, 0007) and 0005's DsoSnapshotSupport
+  reads the dylink trio off Module for replay/handle capture (they were
+  Module-visible under 0.29's EXPORT_ALL; the closed world must export
+  them explicitly). Boot-time only — hardenRealm deletes the compile
+  surface replay depends on, so the run realm can't reuse them.
 
 diff --git a/Makefile b/Makefile
 index e6ca08c..53b95ed 100644
@@ -61,7 +68,7 @@ index e6ca08c..53b95ed 100644
  
  	if [[ -n $${PYODIDE_SOURCEMAP+x} ]] || [[ -n $${PYODIDE_SYMBOLS+x} ]] || [[ -n $${PYODIDE_DEBUG_JS+x} ]]; then \
 diff --git a/Makefile.envs b/Makefile.envs
-index 0ba8b4b..61f9241 100644
+index 0ba8b4b..0649c34 100644
 --- a/Makefile.envs
 +++ b/Makefile.envs
 @@ -155,20 +155,18 @@ export CXXFLAGS_BASE=
@@ -75,7 +82,7 @@ index 0ba8b4b..61f9241 100644
  	-s EXPORT_NAME="'_createPyodideModule'" \
  	-s EXPORT_EXCEPTION_HANDLING_HELPERS \
 -	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES' \
-+	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES,FS,ENV,UTF8ToString,getPromise,promiseMap,stringToNewUTF8,stringToUTF8OnStack,addFunction,stackSave,stackRestore,runtimeKeepalivePush,SOCKFS,HEAP8,HEAPU8,HEAP16,HEAPU16,HEAP32,HEAPU32,HEAP64,HEAPU64,HEAPF32,HEAPF64' \
++	-sEXPORTED_RUNTIME_METHODS='wasmTable,ERRNO_CODES,FS,ENV,UTF8ToString,getPromise,promiseMap,stringToNewUTF8,stringToUTF8OnStack,addFunction,growMemory,LDSO,newDSO,loadWebAssemblyModule,stackSave,stackRestore,runtimeKeepalivePush,SOCKFS,HEAP8,HEAPU8,HEAP16,HEAPU16,HEAP32,HEAPU32,HEAP64,HEAPU64,HEAPF32,HEAPF64' \
  	-s USE_ZLIB \
 -	-s USE_BZIP2 \
  	-s FORCE_FILESYSTEM=1 \

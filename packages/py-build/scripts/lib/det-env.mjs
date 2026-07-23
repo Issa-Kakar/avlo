@@ -1,5 +1,6 @@
-// Deterministic-environment kit for capture/prebake boots (shared by
-// make-baseline.mjs and prebake-fontcache.mjs). Three nondeterminism sources
+// Deterministic-environment kit for reproducible fork boots (consumer:
+// prebake-fontcache.mjs; born under make-baseline.mjs, retired at P2 — client
+// captures need no determinism, they hash what they wrote). Three sources
 // reach the heap during a capture boot (found by byte-diffing two builds):
 // (1) entropy — in Node, Emscripten's initRandomFill prefers
 //     require('crypto').randomFillSync over webcrypto, so BOTH get seeded

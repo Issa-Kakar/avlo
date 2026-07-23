@@ -1,18 +1,18 @@
 {
   "schema": 1,
-  "buildHash": "bc46093ffa4fb5e8",
+  "buildHash": "267194ca75197030",
   "artifacts": {
     "pyodide.asm.mjs": {
-      "sha256": "724153ec5017a03fe1950641471ca227606448605f060b3bfcbc7988fd0b250c",
-      "size": 343521
+      "sha256": "ab56c87c3a7a88207fe6ab3e84924b9bfcda69d41f19d5fdf6bdacd492cd7e93",
+      "size": 343676
     },
     "pyodide.asm.wasm": {
-      "sha256": "1502406dba314e51173e9d99451559b2fa9e9eca23d4e942258f5fc103c6d220",
+      "sha256": "f286e5b04b2be4f95d03cc09a7e90f81227780b73ba317c76a8a491d9f7b4b5c",
       "size": 6858041
     },
     "pyodide.mjs": {
-      "sha256": "7f399e76871b079fe3df3310bca3b36c08578158268e4428b7ad169799d18d51",
-      "size": 16999
+      "sha256": "09ddc6597a623a047e33d32a86d9ca40845a3add18886ba1df6e553a92557772",
+      "size": 16834
     },
     "python_stdlib.zip": {
       "sha256": "6bcbadcefffc099fbef36e77f2d47c4419e7eba308a47ca1643d09b10e143b3d",

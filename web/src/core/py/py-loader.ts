@@ -1,78 +1,99 @@
 /**
  * Fork boot wrapper — the one place that touches the pyodide loader API.
  * Cold-boots glue+wasm+stdlib from `artifactBase` = `PY_ORIGIN/<buildHash>/`
- * (dev: the `/api/py` Vite proxy), restores snapshots via `_loadSnapshot`
- * (+ `_preRestoreHook` DSO/MEMFS replay for stacked images), and arms
- * `_makeSnapshot` on generation boots (the fork gates `makeMemorySnapshot()`
- * on it).
+ * (dev: the `/api/py` Vite proxy). P2 owned restore: `restore` drives the
+ * fork's `_avloRestore.preBlit` seam — the fork boots with noInitialRun
+ * (runtime init + preRun + main-module ctors run; main()/CPython init is
+ * skipped) and this driver replays DSOs at recorded bases, then blits the
+ * heap straight from OPFS into wasm memory before finalizeBootstrap resumes
+ * the interpreter.
  */
 
-import type { AvloSnapshotMeta, PackedTree } from './py-snapshot';
+import { type AvsHeader, readHeapInto, type SnapReadHandle } from './py-snapshot';
 import { traceBegin, traceSpanAsync } from './py-trace';
 
 // biome-ignore lint/suspicious/noExplicitAny: fork loader has no bundled types in-app
 export type Pyodide = any;
 
-export interface PyBootOptions {
-  artifactBase: string;
-  /** Restore payload (fork container bytes). */
-  snapshot?: ArrayBuffer;
-  /** Stacked restore: site-packages tree replayed by the `_preRestoreHook`. */
-  tree?: PackedTree;
-  /** Generation boot — permits `makeMemorySnapshot()` after restore. */
-  makeSnapshot?: boolean;
+/** Everything preBlit needs, assembled by the executor's snap-probe. */
+export interface PyRestore {
+  header: AvsHeader;
+  handle: SnapReadHandle;
+  /** Recorded ABSOLUTE dlopen path → wasm bytes (sliced from the boot tars). */
+  soBytes: Map<string, Uint8Array>;
 }
 
-/** Runs INSIDE the fork's `restoreSnapshot`, after the memory pre-grow and
- * BEFORE the heap overwrite (patch 0007 contract; sync; `Module` is the only
- * handle — the loadPyodide promise hasn't resolved). MEMFS file bytes live in
- * JS objects OUTSIDE the wasm heap, so the tree written here survives the
- * overwrite; the heap carries importlib/zipimport's belief about it, which is
- * why bytes AND mtimes must match capture exactly (pyc validation). DSOs are
- * re-instantiated in recorded order so wasm-table entries line up — drift
- * throws "snapshot DSO table drift" (emsdk hook) and fails the boot.
+export interface PyBootOptions {
+  artifactBase: string;
+  /** Owned snapshot restore — absent = cold boot. */
+  restore?: PyRestore;
+}
+
+/** Tags every failure raised inside preBlit. The executor's cue to post
+ * `exec-snap-invalid` and continue COLD in the same boot — anything thrown
+ * AFTER preBlit returned (finalizeBootstrap onward) is a post-blit failure
+ * and takes the exec-fatal → supervisor poison path instead. */
+export class PreBlitError extends Error {}
+
+/**
+ * The owned restore order (workerd-derived: DSOs preload at recorded bases
+ * BEFORE the heap lands — table state, not heap state, is the fragile part):
+ *   1. buildId assert (BEFORE growMemory — validation failures precede
+ *      memory growth so the aborted Module stays small for the in-worker
+ *      cold retry, U9)
+ *   2. Module.growMemory(heapLen) — the 0001-v2 runtime export; memory is
+ *      wasm-exported so upstream's INITIAL_MEMORY path never worked here
+ *   3. DSO replay per recorded loadOrder (verbatim ABSOLUTE paths — U7),
+ *      then handle re-association; the emsdk dsoBaseHook FORCES memBase and
+ *      ASSERTS tableBase per DSO ("snapshot DSO table drift")
+ *   4. HARD post-replay assert: wasmTable.length === tableLenAtCapture (F5)
+ *   5. chunked OPFS→HEAPU8 reads folding the fast hash (readHeapInto
+ *      re-acquires the view per chunk — growth detaches ArrayBuffers)
+ *   6. handle.close() in finally — a live sync handle must NEVER survive
+ *      toward harden (write authority across the scrub boundary)
+ * Returns the captured hiwire SnapshotConfig for finalizeBootstrap.
  */
-function makePreRestoreHook(tree: PackedTree) {
-  // biome-ignore lint/suspicious/noExplicitAny: live emscripten Module — no types in-app
-  return (avlo: AvloSnapshotMeta, Module: any): void => {
-    const { API, FS } = Module;
-    API.setDsoLoadInfo(avlo.dso);
-    const endTree = traceBegin('tree-write');
-    for (const d of tree.dirs) {
-      try {
-        FS.mkdirTree(d);
-      } catch {
-        /* exists */
+function makePreBlit({ header, handle, soBytes }: PyRestore) {
+  // biome-ignore lint/suspicious/noExplicitAny: live emscripten Module + fork API — no types in-app
+  return (Module: any, API: any): unknown => {
+    try {
+      if (header.buildId !== API.config.BUILD_ID) {
+        throw new Error(`snapshot buildId ${header.buildId} ≠ glue ${API.config.BUILD_ID}`);
       }
-    }
-    const blob = new Uint8Array(tree.blob);
-    const byPath = new Map<string, Uint8Array>();
-    const byBase = new Map<string, Uint8Array>();
-    for (const f of tree.files) {
-      const bytes = blob.subarray(f.off, f.off + f.len);
-      FS.writeFile(f.path, bytes);
-      FS.utime(f.path, f.mtimeMs, f.mtimeMs);
-      byPath.set(f.path, bytes);
-      byBase.set(f.path.split('/').pop() ?? f.path, bytes);
-    }
-    endTree({ dirs: tree.dirs.length, files: tree.files.length, mb: Math.round(blob.length / 1e6) });
-    const endReplay = traceBegin('dso-replay');
-    let maxMs = 0;
-    let maxDso = '';
-    for (const name of avlo.dso.loadOrder) {
-      const bytes = byPath.get(name) ?? byBase.get(name.split('/').pop() ?? name);
-      if (!bytes) throw new Error(`snapshot replay: no bytes for DSO ${name}`);
-      const start = performance.now();
-      API.loadDynlibReplay(name, bytes);
-      const ms = performance.now() - start;
-      if (ms > maxMs) {
-        maxMs = ms;
-        maxDso = name.split('/').pop() ?? name;
+      if ((Module.HEAPU8 as Uint8Array).length < header.heapLen) Module.growMemory(header.heapLen);
+      if ((Module.HEAPU8 as Uint8Array).length !== header.heapLen) {
+        throw new Error(`pre-grow failed: heap ${(Module.HEAPU8 as Uint8Array).length} ≠ ${header.heapLen}`);
       }
+      API.setDsoLoadInfo(header.dso);
+      const endReplay = traceBegin('dso-replay');
+      let maxMs = 0;
+      let maxDso = '';
+      for (const path of header.dso.loadOrder) {
+        const bytes = soBytes.get(path);
+        if (!bytes) throw new Error(`snapshot replay: no bytes for DSO ${path}`);
+        const start = performance.now();
+        API.loadDynlibReplay(path, bytes);
+        const ms = performance.now() - start;
+        if (ms > maxMs) {
+          maxMs = ms;
+          maxDso = path.split('/').pop() ?? path;
+        }
+      }
+      API.restoreDsoHandles(header.dsoHandles);
+      API.dsoReplayDone();
+      endReplay({ count: header.dso.loadOrder.length, maxMs: Math.round(maxMs * 10) / 10, maxDso });
+      if ((Module.wasmTable.length as number) !== header.tableLenAtCapture) {
+        throw new Error(`snapshot table drift: ${Module.wasmTable.length} ≠ ${header.tableLenAtCapture}`);
+      }
+      const endRead = traceBegin('heap-read');
+      readHeapInto(handle, header, () => Module.HEAPU8 as Uint8Array);
+      endRead({ mb: Math.round(header.heapLen / 1e6) });
+      return header.hiwire;
+    } catch (err) {
+      throw err instanceof PreBlitError ? err : new PreBlitError(String((err as Error)?.message ?? err));
+    } finally {
+      handle.close();
     }
-    API.restoreDsoHandles(avlo.dsoHandles);
-    API.dsoReplayDone();
-    endReplay({ count: avlo.dso.loadOrder.length, maxMs: Math.round(maxMs * 10) / 10, maxDso });
   };
 }
 
@@ -86,12 +107,37 @@ export async function bootPyodide(opts: PyBootOptions): Promise<Pyodide> {
     mod.loadPyodide({
       indexURL: opts.artifactBase,
       packages: [],
-      // Hash determinism parity with make-baseline (heap-behavior consistency;
-      // also keeps fresh-boot fallback runs deterministic modulo entropy).
+      // Hash determinism parity with capture boots (heap-behavior
+      // consistency; also keeps cold-boot runs deterministic modulo entropy).
       env: { PYTHONHASHSEED: '0', HOME: '/home/pyodide' },
-      ...(opts.snapshot ? { _loadSnapshot: opts.snapshot } : {}),
-      ...(opts.tree ? { _preRestoreHook: makePreRestoreHook(opts.tree) } : {}),
-      ...(opts.makeSnapshot ? { _makeSnapshot: true } : {}),
+      ...(opts.restore ? { _avloRestore: { preBlit: makePreBlit(opts.restore) } } : {}),
     }),
   );
+}
+
+/** Map every `.so` member of the boot tars to its recorded ABSOLUTE dlopen
+ * path (`bundle.prefix + '/' + member` — the exact string mountBundle dlopens
+ * and the emsdk hook records, U7). DSO replay slices bytes straight out of
+ * the transferred tar buffers — no FS involvement pre-blit. Plain ustar walk:
+ * 512-byte headers, octal sizes, data padded to 512 (meta.json is the first
+ * entry by construction; grouped tars carry one `.avlo/<bundle>.so` each). */
+export function collectSoBytes(bundles: ReadonlyArray<{ prefix: string; bytes: ArrayBuffer }>): Map<string, Uint8Array> {
+  const out = new Map<string, Uint8Array>();
+  for (const b of bundles) {
+    const tar = new Uint8Array(b.bytes);
+    const ascii = (from: number, to: number): string => {
+      let s = '';
+      for (let i = from; i < to && tar[i] !== 0; i++) s += String.fromCharCode(tar[i]);
+      return s;
+    };
+    let off = 0;
+    while (off + 512 <= tar.length) {
+      const name = ascii(off, off + 100);
+      if (!name) break; // zero block — end of archive
+      const size = Number.parseInt(ascii(off + 124, off + 136), 8) || 0;
+      if (name.endsWith('.so')) out.set(`${b.prefix}/${name}`, tar.subarray(off + 512, off + 512 + size));
+      off += 512 + Math.ceil(size / 512) * 512;
+    }
+  }
+  return out;
 }

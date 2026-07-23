@@ -10,10 +10,12 @@
 // Turbo/CI: needs staged artifacts (`pnpm run stage`) and Node ≥ 23.6
 // (native type-stripping imports the shipped TS directly).
 //
-//   pnpm harness            all sections (base / seaborn / verify children)
-//   node scripts/run-harness.mjs --section base|seaborn|verify
+//   pnpm harness            all sections (base / seaborn / snapshot / verify children)
+//   node scripts/run-harness.mjs --section base|seaborn|snapshot|verify
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, rmSync, writeSync } from 'node:fs';
+import { registerHooks } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -22,6 +24,20 @@ if (maj < 23 || (maj === 23 && min < 6)) {
   console.error(`run-harness needs Node ≥ 23.6 (type-stripping); this is ${process.versions.node}`);
   process.exit(1);
 }
+
+// The shipped py-snapshot.ts/py-loader.ts use extensionless relative imports
+// (`./py-trace`), which Node's type-stripping resolver rejects — retry with
+// `.ts` appended so the harness can import the EXACT shipped modules.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    try {
+      return nextResolve(specifier, context);
+    } catch (err) {
+      if (specifier.startsWith('.') && !specifier.endsWith('.ts')) return nextResolve(`${specifier}.ts`, context);
+      throw err;
+    }
+  },
+});
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(pkgRoot, '../..');
@@ -37,7 +53,7 @@ const section = (() => {
 // ---------------------------------------------------------------- parent
 if (!section) {
   let failed = 0;
-  for (const s of ['base', 'seaborn', 'verify']) {
+  for (const s of ['base', 'seaborn', 'snapshot', 'verify']) {
     console.log(`\n=== section ${s} ===`);
     const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--section', s], { stdio: 'inherit' });
     if (r.status !== 0) failed++;
@@ -409,6 +425,271 @@ _mpl_logger.setLevel(logging.INFO)`);
     !logs.some((l) => /findfont|generated new fontManager/.test(l)),
     logs.filter((l) => /findfont|generated/.test(l)).join(' | '),
   );
+  finish();
+}
+
+// ---------------------------------------------------------------- snapshot
+// P2 owned snapshots, the Phase A exit gate: cold boot + mounts + bake →
+// owned capture via the fork APIs (getDsoLoadInfo / recordDsoHandles /
+// serializeHiwireState / HEAP8 slice) → AVS2 assemble → owned restore in the
+// SAME process → extract-only remount → post_restore → functional probes.
+// The codec AND the restore driver are the SHIPPED web/src/core/py modules
+// (py-snapshot.ts encode/parse/hash, py-loader.ts bootPyodide → makePreBlit:
+// buildId → growMemory → DSO replay at recorded bases → table assert →
+// chunked heap read folding the fast hash) — the harness only supplies an
+// fd-backed SnapReadHandle where the executor supplies an OPFS one.
+if (section === 'snapshot') {
+  const SET_KEY = 'all';
+  const { loadPyodide } = await import(pathToFileURL(join(forkDir, 'pyodide.mjs')).href);
+  const { Xxh32, planAvsHeapOff, encodeAvsHeaderBlock, parseAvsHeader } = await import(
+    pathToFileURL(join(repo, 'web/src/core/py/py-snapshot.ts')).href
+  );
+  const { bootPyodide } = await import(pathToFileURL(join(repo, 'web/src/core/py/py-loader.ts')).href);
+  const BOOT_ENV = { PYTHONHASHSEED: '0', HOME: '/home/pyodide' };
+  const POST_RESTORE = 'import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime';
+  // Mirrors py-executor's BUNDLE_IMPORTS for the `all` set (numpy MUST bake
+  // numpy.random — G8R; mpl-deps has no top-level import).
+  const BAKE = `import numpy, numpy.random
+_ = numpy.random.get_state()
+del _
+import dateutil
+import pytz
+import pandas
+import matplotlib, matplotlib.pyplot
+import seaborn
+import gc
+gc.collect()
+gc.collect()`;
+
+  // Shipped-impl sanity: known XXH32 vectors (seed 0) — pins the codec the
+  // executor/supervisor will actually run.
+  {
+    const t1 = new Xxh32();
+    const t2 = new Xxh32();
+    t2.update(Buffer.from('Nobody inspects the spammish repetition'));
+    check('xxh32 known-answer vectors', t1.hex() === '02cc5d05' && t2.hex() === 'e2293b2f', `${t1.hex()} ${t2.hex()}`);
+  }
+  const alignUp = (n, a) => Math.ceil(n / a) * a;
+  const CHUNK = 8 << 20;
+  /** fd-backed SnapReadHandle — the harness's stand-in for the executor's
+   * OPFS sync-access handle (same contract: positioned read, idempotent
+   * close). The shipped parseAvsHeader/readHeapInto consume it verbatim. */
+  const mkSnapHandle = (fd, size) => {
+    let closed = false;
+    return {
+      size,
+      read: (view, at) => readSync(fd, view, 0, view.length, at),
+      close: () => {
+        if (closed) return;
+        closed = true;
+        closeSync(fd);
+      },
+    };
+  };
+  /** Fold the fast hash over the file's heap segment (no wasm involvement) —
+   * probe scaffolding for the positive/corrupt-byte checks below. */
+  const foldFileHash = (fd, header, corruptAt = -1) => {
+    const x = new Xxh32();
+    const buf = Buffer.alloc(CHUNK);
+    for (let off = 0; off < header.heapLen; off += CHUNK) {
+      const n = Math.min(CHUNK, header.heapLen - off);
+      if (readSync(fd, buf, 0, n, header.heapOff + off) !== n) throw new Error('avs2: short heap read');
+      if (corruptAt >= off && corruptAt < off + n) buf[corruptAt - off] ^= 0xff;
+      x.update(buf.subarray(0, n));
+    }
+    return x.hex();
+  };
+
+  const walkTarSos = (tar, prefix, out) => {
+    let off = 0;
+    while (off + 512 <= tar.length) {
+      const name = tar.toString('ascii', off, off + 100).replace(/\0.*$/s, '');
+      if (!name) break;
+      const size = Number.parseInt(tar.toString('ascii', off + 124, off + 136).replace(/\0.*$/s, ''), 8) || 0;
+      if (name.endsWith('.so')) out.set(`${prefix}/${name}`, new Uint8Array(tar.subarray(off + 512, off + 512 + size)));
+      off += 512 + alignUp(size, 512);
+    }
+  };
+  const extractTar = (py, tar, prefix) => {
+    py.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(tar));
+    py.runPython(`import os, tarfile
+with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
+    _t.extractall(${JSON.stringify(prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
+os.remove('/tmp/_avlo_bundle.tar')
+del _t`);
+  };
+
+  // ---- boot 1: cold + mounts (extract + dlopen) + bake + owned capture
+  let py1 = await loadPyodide({ indexURL: forkDir, packages: [], env: BOOT_ENV });
+  const soBytes = new Map();
+  for (const bundle of LOCK.sets[SET_KEY]) {
+    const tar = readFileSync(join(forkDir, `bundles/${bundle}.tar`));
+    const meta = parseTarMeta(tar);
+    extractTar(py1, tar, meta.prefix);
+    for (const so of meta.loadOrder) await py1._api.loadDynlib(`${meta.prefix}/${so}`);
+    walkTarSos(tar, meta.prefix, soBytes);
+  }
+  py1.runPython(POST_RESTORE);
+  py1.runPython(BAKE);
+  const pin1 = py1.runPython('import json, numpy\njson.dumps([int(x) for x in numpy.random.RandomState(42).randint(0, 1000, 6)])');
+
+  // Expected-keys: walk the LIVE hiwire table; on any mismatch dump it so a
+  // future boot-sequence change re-derives 0008b in one command.
+  const expected = py1._api.getExpectedKeys();
+  const live = [];
+  for (let i = 0; ; i++) {
+    try {
+      live.push(py1._module.__hiwire_get(i));
+    } catch {
+      break;
+    }
+  }
+  const label = (v) =>
+    v === null
+      ? 'null'
+      : v === py1._api.public_api
+        ? 'public_api'
+        : v === py1._api
+          ? 'API'
+          : typeof v === 'function'
+            ? `function ${v.name || '<anon>'}`
+            : Object.prototype.toString.call(v);
+  const keysMatch = live.length === expected.length && live.every((v, i) => v === expected[i]);
+  if (!keysMatch) {
+    console.error(`live hiwire table (${live.length} entries) vs getExpectedKeys (${expected.length}):`);
+    for (let i = 0; i < Math.max(live.length, expected.length); i++) {
+      console.error(`  [${i}] live=${label(live[i])}  expected=${label(expected[i])}`);
+    }
+  }
+  check('0008b: live hiwire table == getExpectedKeys (identity + count)', keysMatch);
+
+  const capMeta = {
+    dso: JSON.parse(JSON.stringify(py1._api.getDsoLoadInfo())),
+    dsoHandles: py1._api.recordDsoHandles(),
+    hiwire: py1._api.serializeHiwireState(),
+    buildId: py1._api.config.BUILD_ID,
+    tableLenAtCapture: py1._module.wasmTable.length,
+    heapLen: py1._module.HEAP8.length,
+  };
+  check('capture: 4 grouped DSOs recorded', capMeta.dso.loadOrder.length === 4, JSON.stringify(capMeta.dso.loadOrder));
+  check(
+    'capture: hiwireKeys empty at the pre-harden point',
+    capMeta.hiwire.hiwireKeys.length === 0,
+    `${capMeta.hiwire.hiwireKeys.length} keys`,
+  );
+  check(
+    'capture: every loadOrder path has tar bytes',
+    capMeta.dso.loadOrder.every((p) => soBytes.has(p)),
+    [...soBytes.keys()].join(', '),
+  );
+
+  // ---- AVS2 assemble → temp file via the SHIPPED codec (hash folded over
+  // the LIVE heap, chunked — heap first at heapOff, header block last, the
+  // same torn-write posture as writeSetSnapshot; the supervisor writes the
+  // transferred slice instead of a live view, codec mechanics identical)
+  const hx = new Xxh32();
+  const heapU8 = new Uint8Array(py1._module.HEAP8.buffer, py1._module.HEAP8.byteOffset, capMeta.heapLen);
+  for (let off = 0; off < capMeta.heapLen; off += CHUNK) hx.update(heapU8.subarray(off, Math.min(off + CHUNK, capMeta.heapLen)));
+  const sized = {
+    v: 2,
+    buildHash: LOCK.buildHash,
+    setKey: SET_KEY,
+    heapHash: { algo: 'xxh32', value: hx.hex() },
+    ...capMeta,
+  };
+  const heapOff1 = planAvsHeapOff(sized);
+  const header1 = encodeAvsHeaderBlock(sized, heapOff1);
+  const snapPath = join(tmpdir(), `avlo-harness-${process.pid}.snap`);
+  {
+    const wfd = openSync(snapPath, 'w');
+    for (let off = 0; off < capMeta.heapLen; off += CHUNK) {
+      const n = Math.min(CHUNK, capMeta.heapLen - off);
+      writeSync(wfd, heapU8.subarray(off, off + n), 0, n, heapOff1 + off);
+    }
+    writeSync(wfd, header1, 0, header1.length, 0);
+    closeSync(wfd);
+  }
+  const fileSize = heapOff1 + capMeta.heapLen;
+  py1 = null; // release boot-1 heap before boot 2 (two ~200 MB images otherwise)
+
+  // ---- decode/validate + negatives (shipped parseAvsHeader over an fd handle)
+  const fd = openSync(snapPath, 'r');
+  const snapHandle = mkSnapHandle(fd, fileSize);
+  let header = null;
+  try {
+    header = parseAvsHeader(snapHandle, { buildHash: LOCK.buildHash, setKey: SET_KEY });
+  } catch (e) {
+    check('avs2 header parses + cross-checks', false, e.message);
+    finish();
+  }
+  check('avs2 header parses + cross-checks', header !== null);
+  check('avs2: positive hash fold matches', foldFileHash(fd, header) === header.heapHash.value);
+  check('avs2: corrupt heap byte fails the fast hash', foldFileHash(fd, header, 4096) !== header.heapHash.value);
+  {
+    const bad = Buffer.from(header1);
+    bad[20] ^= 0xff; // inside the header JSON
+    let msg = null;
+    const badPath = `${snapPath}.bad`;
+    const bfd = openSync(badPath, 'w');
+    writeSync(bfd, bad, 0, bad.length, 0);
+    closeSync(bfd);
+    const rfd = openSync(badPath, 'r');
+    try {
+      parseAvsHeader(mkSnapHandle(rfd, fileSize), { buildHash: LOCK.buildHash, setKey: SET_KEY });
+    } catch (e) {
+      msg = e.message;
+    }
+    closeSync(rfd);
+    rmSync(badPath);
+    check('avs2: corrupt header byte fails the crc', msg?.includes('crc'), msg ?? 'did not throw');
+  }
+
+  // ---- boot 2: owned restore through the SHIPPED driver (py-loader's
+  // bootPyodide → makePreBlit — the exact executor restore path; a PreBlit
+  // failure here would reject, failing the section). The per-DSO tableBase
+  // assert lives in the emsdk dsoBaseHook (drift throws inside the replay),
+  // so a successful boot IS the post-instantiate probe.
+  const py2 = await bootPyodide({ artifactBase: `${forkDir}/`, restore: { header, handle: snapHandle, soBytes } });
+  check('restore: post-replay table length == tableLenAtCapture', py2._module.wasmTable.length === header.tableLenAtCapture);
+
+  // Extract-only remount (files for lazy imports + post-restore C dlopens;
+  // dlopen SKIPPED — the replay already registered the groups in LDSO).
+  for (const bundle of LOCK.sets[SET_KEY]) {
+    const tar = readFileSync(join(forkDir, `bundles/${bundle}.tar`));
+    extractTar(py2, tar, parseTarMeta(tar).prefix);
+  }
+  py2.runPython(POST_RESTORE);
+
+  let out = py2.runPython('import json, numpy\njson.dumps(float(numpy.ones(4).sum()))');
+  check('restore: numpy usable', out === '4.0', out);
+  const pin2 = py2.runPython('import json, numpy\njson.dumps([int(x) for x in numpy.random.RandomState(42).randint(0, 1000, 6)])');
+  check('restore: corpus-class RandomState(42) stream matches capture boot', pin1 === pin2, `${pin1} vs ${pin2}`);
+  out = py2.runPython(
+    "import json, pandas as pd\njson.dumps(float(pd.DataFrame({'g': ['a', 'a', 'b'], 'x': [1.0, 2.0, 3.5]}).groupby('g')['x'].sum().sum()))",
+  );
+  check('restore: pandas usable', out === '6.5', out);
+  {
+    const tblBefore = py2._module.wasmTable.length;
+    out = py2.runPython('import json, matplotlib._tri\njson.dumps(type(matplotlib._tri).__name__)');
+    check('restore: lazy matplotlib._tri import works', out === '"module"', out);
+    check('restore: lazy import is an LDSO registry hit (no table growth)', py2._module.wasmTable.length === tblBefore);
+  }
+  out = py2.runPython(
+    "import json\ntry:\n    import ctypes\n    _r = 'imported'\nexcept BaseException as _e:\n    _r = f'{type(_e).__name__}: {_e}'\njson.dumps(_r)",
+  );
+  check('restore: ctypes tombstone precise', /ModuleNotFoundError/.test(out) && /ctypes/.test(out), out.slice(0, 200));
+
+  // Blit-reset probe on the restored generation (the executor's per-run reset).
+  {
+    const img = py2._module.HEAP8.slice();
+    py2.runPython('leak_probe = 12345');
+    py2._module.HEAP8.set(img);
+    out = py2.runPython("import json\njson.dumps('leak_probe' in globals())");
+    check('restore: blit reset clears run globals', out === 'false', out);
+    out = py2.runPython('import json, numpy\njson.dumps(float(numpy.ones(3).sum()))');
+    check('restore: numpy alive after blit reset', out === '3.0', out);
+  }
+  rmSync(snapPath, { force: true });
   finish();
 }
 

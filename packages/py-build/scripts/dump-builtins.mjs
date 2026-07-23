@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Emit dist/stage/builtin-modules.json — the fork's true compiled-in
 // sys.builtin_module_names, merged by stage.mjs into the import-gate
-// allowlist. Replaces make-baseline.mjs as the producer while snapshot
-// capture is PARKED (redesign P1; P2 moves capture to the build harness).
+// allowlist (the standing producer since P1; the retired make-baseline.mjs
+// once doubled as it).
 // Boots on the RAW stdlib zip so it runs straight off a fork build, before
 // pack:stdlib — builtins live in the wasm, not the zip.
 //

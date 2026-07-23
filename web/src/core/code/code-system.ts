@@ -1072,8 +1072,6 @@ function runStatusText(run: PyRunEntry): string {
       return 'Starting Python…';
     case 'downloading':
       return run.total ? `Downloading… ${((run.received ?? 0) / 1e6).toFixed(0)}/${(run.total / 1e6).toFixed(0)} MB` : 'Downloading…';
-    case 'restoring':
-      return 'Restoring…';
     case 'running':
       return `Running… ${((performance.now() - run.startedAt) / 1000).toFixed(1)} s`;
     case 'cancelling':

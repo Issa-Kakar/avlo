@@ -7,6 +7,6 @@ import { defineConfig } from 'vitest/config';
 // it drops a vitest.config.ts — nothing to register here.
 export default defineConfig({
   test: {
-    projects: ['packages/*/vitest.config.ts', 'workers/*/vitest.config.ts'],
+    projects: ['packages/*/vitest.config.ts', 'workers/*/vitest.config.ts', 'web/vitest.config.ts'],
   },
 });

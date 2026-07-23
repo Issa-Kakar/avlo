@@ -3,7 +3,7 @@
 // pack-package.py between staging and tar-ing the matplotlib bundle (also
 // usable standalone between --stage-only and --tar-only).
 //
-// Boots the fork (deterministic-env kit — same discipline as make-baseline)
+// Boots the fork under the deterministic-env kit (lib/det-env.mjs)
 // on the staged stdlib, mounts the STAGED trees of matplotlib's whole
 // dependency set from .cache/stage/, imports matplotlib.font_manager (which
 // finds no fontlist.json, builds a fresh FontManager over the subset faces,

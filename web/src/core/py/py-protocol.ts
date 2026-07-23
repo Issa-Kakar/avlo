@@ -10,7 +10,7 @@
  *     executor's event loop is blocked in synchronous Python.
  */
 
-import type { PackedTree } from './py-snapshot';
+import type { AvsCaptureMeta } from './py-snapshot';
 
 /** Mirrors the code block's Y `outputStatus` field — renderer drives tint. */
 export type PyRunStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
@@ -24,8 +24,10 @@ import type { PySetKey } from './py-stdlib-modules.gen';
 
 export type { PySetKey };
 
-/** Live phase for the run store / play-button UI (never written to Y). */
-export type PyRunPhase = 'queued' | 'booting' | 'downloading' | 'restoring' | 'running' | 'cancelling';
+/** Live phase for the run store / play-button UI (never written to Y).
+ * Restore boots surface as plain 'booting' — the OPFS probe/restore happens
+ * inside the executor and is fast enough to not warrant its own phase. */
+export type PyRunPhase = 'queued' | 'booting' | 'downloading' | 'running' | 'cancelling';
 
 export interface PyFigure {
   /** PNG bytes — transferred, then ingested through the image pipeline. */
@@ -112,18 +114,20 @@ export interface ExecBootMsg {
   /** Manifest hash of python_stdlib.zip — the executor hashes the zip AS
    * MOUNTED in MEMFS and refuses the boot on drift (restage ⇒ recapture). */
   stdlibSha256: string;
-  /** Package bundles to mount before the harness installs (M2). */
+  /** Committed build-lock hash — keys `opfs:/py/<buildHash>/` for the
+   * executor's snap-probe. Rides the boot msg so the executor stays lock-free
+   * (never imports the `@avlo/py-loader` index). */
+  buildHash: string;
+  /** Package bundles to mount before the harness installs (M2). Needed on
+   * restore boots too — DSO replay slices `.so` bytes from these buffers and
+   * site-packages re-extracts from them. */
   bundles?: PyBundlePayload[];
-  /** Snapshot restore payload (fork container bytes); absent = cold boot. */
-  snapshot?: ArrayBuffer;
-  /** Packed site-packages tree for STACKED restores — the `_preRestoreHook`
-   * rebuilds MEMFS + replays DSOs from it before the heap overwrite. */
-  tree?: PackedTree;
-  /** Generation boot: bake the set's imports, capture, post `exec-snapshot`.
-   * Arms `_makeSnapshot` in the loader — required for capture (fork gate). */
-  capture?: boolean;
-  /** Set the capture is for — echoed back on `exec-snapshot` (bootedSetKey
-   * can move under a late message). */
+  /** Probe OPFS for `<buildHash>/<captureKey>.snap` and restore on a valid
+   * hit; any probe/pre-blit failure falls back cold IN the same boot. */
+  trySnapshot?: boolean;
+  /** The set this generation boots for — the snap-probe's setKey AND the
+   * capture key when no restore happened (echoed back on `exec-snapshot`;
+   * bootedSetKey can move under a late message). Present iff `trySnapshot`. */
   captureKey?: PySetKey;
 }
 export interface ExecRunMsg {
@@ -138,6 +142,10 @@ export type SupToExec = ExecBootMsg | ExecRunMsg;
 export interface ExecReadyMsg {
   t: 'exec-ready';
   bootMs: number;
+  /** True when this generation booted from an OPFS snapshot restore — the
+   * supervisor's poison-routing + trace attribution (it no longer knows the
+   * path; the executor's snap-probe decides). */
+  restored: boolean;
 }
 export interface ExecStdoutMsg {
   t: 'exec-stdout';
@@ -160,25 +168,38 @@ export interface ExecDoneMsg {
    * instead of arming idle teardown (isolation + memory reclaim). */
   needsRespawn: boolean;
 }
-/** Generation capture riding the boot (before exec-ready, before ANY user
- * code — the supervisor drops it once `executorReady`). Transfer list:
- * `[container, tree.blob]`. */
+/** Owned capture riding the boot (before exec-ready, before ANY user code —
+ * the supervisor drops it once `executorReady`). The supervisor assembles the
+ * AVS2 container and persists to OPFS off the executor's critical path.
+ * Transfer list: `[heap]`. */
 export interface ExecSnapshotMsg {
   t: 'exec-snapshot';
   captureKey: PySetKey;
-  container: ArrayBuffer;
-  tree: PackedTree;
+  meta: AvsCaptureMeta;
+  /** Dense post-bake heap copy (HEAP8.slice) — transferred. */
+  heap: ArrayBuffer;
+}
+/** The snap-probe or preBlit rejected the OPFS file and the boot continued
+ * COLD in the same worker. Informational: the supervisor deletes the file and
+ * does NOT respawn (U4). */
+export interface ExecSnapInvalidMsg {
+  t: 'exec-snap-invalid';
+  reason: string;
 }
 export interface ExecFatalMsg {
   t: 'exec-fatal';
   error: string;
+  /** Poison routing: a restored generation's pre-ready fatal deletes the
+   * snapshot and retries cold once (post-blit failures land here; pre-blit
+   * failures fall back cold in-boot via exec-snap-invalid instead). */
+  restored: boolean;
 }
 /** Executor py-trace line — supervisor relays it to main as TraceMsg. */
 export interface ExecTraceMsg {
   t: 'exec-trace';
   line: string;
 }
-export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecSnapshotMsg | ExecFatalMsg | ExecTraceMsg;
+export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecSnapshotMsg | ExecSnapInvalidMsg | ExecFatalMsg | ExecTraceMsg;
 
 // ------------------------------------------------------------------- limits
 
@@ -199,10 +220,10 @@ export const PY_LIMITS = Object.freeze({
   /** stdout relay batching. */
   stdoutFlushMs: 100,
   stdoutFlushBytes: 8_192,
-  /** Idle executor teardown — THE memory-reclaim product knob: snapshots put
-   * respawn at ~0.5 s (OPFS restore), so torn-down is the default state.
-   * Field-tune downward (60 s → 30 s candidate) once restore timings hold. */
-  idleTeardownMs: 60_000,
+  /** Idle executor teardown — THE memory-reclaim product knob: owned OPFS
+   * restores make respawn cheap, so torn-down is the default state (owner
+   * decision, P2: 15 s — the idle window at ~2× heap is the RAM cost). */
+  idleTeardownMs: 15_000,
   maxFigures: 4,
   maxFigurePx: 2_048,
   /** Final-output char cap — mirrors MAX_OUTPUT_CHARS in code-tokens.ts. */

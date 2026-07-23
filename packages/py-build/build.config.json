@@ -171,16 +171,16 @@
     "$comment": "Byte ceilings. `artifacts` (name -> {raw, br}) is stamped by check-budgets.mjs --update (+5% headroom over measurement, human-committed); plain runs hard-fail over any ceiling. `composites` are wire-download sums of .br sizes. Restamped at P1 Gate B (314.0.2 / MAIN_MODULE=2).",
     "artifacts": {
       "pyodide.asm.mjs": {
-        "raw": 360698,
-        "br": 79706
+        "raw": 360860,
+        "br": 79650
       },
       "pyodide.asm.wasm": {
         "raw": 7200944,
-        "br": 2066913
+        "br": 2066813
       },
       "pyodide.mjs": {
-        "raw": 17849,
-        "br": 6466
+        "raw": 17676,
+        "br": 6408
       },
       "python_stdlib.zip": {
         "raw": 3523236,

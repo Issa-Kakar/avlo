@@ -1,0 +1,90 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: DSO base record/replay hook for linear-memory snapshots
+
+Adds Module.dsoBaseHook to loadWebAssemblyModule so a host runtime can
+record DSO memory/table base allocations (snapshot creation) and replay
+them (snapshot restore). Adapted from Cloudflare workerd (Apache-2.0):
+https://github.com/cloudflare/workerd/blob/main/src/pyodide/internal/snapshot.ts
+Rebased onto the INSTALLED emscripten 5.0.3 tree (which carries
+pyodide's own emsdk patches 0001-0005, incl. 0003's dylink path
+normalization — record therefore fires with the NORMALIZED absolute
+path); numbered 0006 so it sorts after them in both apply mechanisms
+(make -C emsdk cat|patch and build.sh's direct-apply). The AVLO marker
+below is the build.sh liveness grep key (installed source AND built
+glue).
+
+v2: under replay, postInstantiation additionally SKIPS the DSO's
+__wasm_apply_data_relocs + __wasm_call_ctors. runtimeInitialized is true
+during a pre-blit restore (noInitialRun skips only main()), so upstream
+runs both immediately against the fresh heap — grouped-module init reads
+captured-heap state and faults (first observed: .avlo/numpy.so OOB in
+__wasm_apply_data_relocs/ctors calling into the main module). The heap
+blit supplies their capture-time effects; they must not be deferred
+either (runtime init is past, the deferral queues never drain — and they
+must never run post-blit against already-initialized captured state).
+Everything else in postInstantiation (updateTableMap / relocateExports /
+updateGOT / reportUndefinedSymbols) still runs — that is exactly the
+JS/table state the blit cannot supply.
+
+--- a/src/lib/libdylink.js	2026-07-22 19:32:28.659671344 -0700
++++ b/src/lib/libdylink.js	2026-07-22 19:32:45.954969170 -0700
+@@ -689,8 +689,28 @@
+         // alignments are powers of 2
+         var memAlign = Math.pow(2, metadata.memoryAlign);
+         // prepare memory
+-        var memoryBase = metadata.memorySize ? alignMemory(getMemory(metadata.memorySize + memAlign), memAlign) : 0; // TODO: add to cleanups
+-        var tableBase = metadata.tableSize ? {{{ from64Expr('wasmTable.length') }}} : 0;
++        // AVLO snapshot support (adapted from Cloudflare workerd's Python
++        // runtime, Apache-2.0): Module.dsoBaseHook records fresh DSO base
++        // allocations, and replays recorded bases when restoring a
++        // linear-memory snapshot so function pointers baked into the restored
++        // heap stay valid. Replay skips getMemory() entirely — the restored
++        // heap's allocator state already owns the region. Table drift throws:
++        // crashing early beats a delayed segfault.
++        var dsoReplay = Module['dsoBaseHook'] && Module['dsoBaseHook'].replay(libName);
++        var memoryBase, tableBase;
++        if (dsoReplay) {
++          memoryBase = dsoReplay[0];
++          tableBase = dsoReplay[1];
++          if (metadata.tableSize && {{{ from64Expr('wasmTable.length') }}} != tableBase) {
++            throw new Error(`snapshot DSO table drift for ${libName}: expected table base ${tableBase}, got ${wasmTable.length}`);
++          }
++        } else {
++          memoryBase = metadata.memorySize ? alignMemory(getMemory(metadata.memorySize + memAlign), memAlign) : 0; // TODO: add to cleanups
++          tableBase = metadata.tableSize ? {{{ from64Expr('wasmTable.length') }}} : 0;
++          if (Module['dsoBaseHook']) {
++            Module['dsoBaseHook'].record(libName, memoryBase, tableBase);
++          }
++        }
+         if (handle) {
+           {{{ makeSetValue('handle', C_STRUCTS.dso.mem_allocated, '1', 'i8') }}};
+           {{{ makeSetValue('handle', C_STRUCTS.dso.mem_addr, 'memoryBase', '*') }}};
+@@ -915,7 +935,15 @@
+ #endif
+           var applyRelocs = moduleExports['__wasm_apply_data_relocs'];
+           if (applyRelocs) {
+-            if (runtimeInitialized) {
++            // AVLO snapshot replay: skip — the captured heap already contains
++            // the effects of this DSO's data relocs; running them now, against
++            // the fresh pre-blit heap, is redundant (the blit overwrites every
++            // byte they'd write) and can fault (grouped-module init reads
++            // captured-heap state). Not deferred either: runtime init is past,
++            // so __RELOC_FUNCS__ never drains — and it must not run post-blit
++            // against the already-relocated captured state.
++            if (dsoReplay) {
++            } else if (runtimeInitialized) {
+ #if DYLINK_DEBUG
+               dbg('running __wasm_apply_data_relocs');
+ #endif
+@@ -929,7 +957,10 @@
+           }
+           var init = moduleExports['__wasm_call_ctors'];
+           if (init) {
+-            if (runtimeInitialized) {
++            // AVLO snapshot replay: skip ctors for the same reason as the data
++            // relocs above — the blit supplies their capture-time effects.
++            if (dsoReplay) {
++            } else if (runtimeInitialized) {
+ #if DYLINK_DEBUG
+               dbg('running __wasm_call_ctors');
+ #endif

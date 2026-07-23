@@ -12,10 +12,12 @@
  *   fetched tar is verified against it before use. A stale mix of artifacts
  *   is refused, same rule as the stdlib-zip hash guard in the spike.
  * - Verified tar bytes persist in the Cache API (`avlo-py-<buildHash>`,
- *   shared with the SW's cache-first route — this is the offline path); each
- *   boot gets the fetched/matched buffers TRANSFERRED outright (no resident
- *   copy — the old ~38 MB in-memory 'all' cache is gone). Cache hits are
- *   re-verified against the lock: the SW route writes this cache unverified.
+ *   shared with the SW's verify-at-fill route — this is the offline path);
+ *   each boot gets the fetched/matched buffers TRANSFERRED outright (no
+ *   resident copy — the old ~38 MB in-memory 'all' cache is gone). Hits the
+ *   SW marked `x-avlo-verified` skip the re-hash (the SW lock-verified them
+ *   before writing); unmarked hits (this supervisor's own puts, legacy
+ *   entries) are re-verified against the lock.
  * - A run whose required bundles aren't mounted in the current generation
  *   forces a respawn with the right set (supersets satisfy subsets).
  *
@@ -27,15 +29,20 @@
  * - Repeat SIGINT writes every PY_LIMITS.interruptRepeatMs until the run
  *   resolves — converts any one-shot swallow into bounded extra latency.
  *
- * Snapshot discipline (P3):
- * - stdlib boots restore the prebuilt `baseline.snap` (lock-verified, Cache
- *   API — tar posture); package-set boots restore the set's OPFS snapshot
- *   (generated client-side on first use, sha-sealed + buildHash-bound wrapper,
- *   zero bundle fetches on hit) or generate one (baseline restore + mounts +
- *   capture riding the boot). Snapshots ACCELERATE, never gate: any
- *   fetch/verify/restore failure lands on the cold path, and a snapshot-fed
- *   boot that dies pre-ready deletes its artifact and retries cold ONCE with
- *   the run still pending.
+ * Snapshot discipline (P2 — owned dense snapshots):
+ * - EVERY set (stdlib included) may restore `opfs:/py/<buildHash>/<set>.snap`.
+ *   The EXECUTOR owns the probe + restore (it reads OPFS directly into wasm
+ *   memory pre-scrub); this supervisor only ships `trySnapshot`/`captureKey`
+ *   on the boot msg, persists exec-snapshot captures (AVS2 assembly + chunked
+ *   OPFS write, off the executor's critical path), and deletes poisoned
+ *   files. Bundles are fetched on EVERY spawn — restore boots still extract
+ *   site-packages from the tars and slice DSO bytes out of them.
+ * - Snapshots ACCELERATE, never gate: probe/pre-blit failures fall back cold
+ *   INSIDE the boot (exec-snap-invalid → delete only, no respawn); a restored
+ *   boot that dies post-blit pre-ready (exec-fatal restored:true) deletes its
+ *   file and retries cold ONCE with the run still pending; a restored
+ *   generation whose FIRST run hard-fails deletes its file before the eager
+ *   respawn (U6 — a structurally-valid-but-bad image must not loop).
  *
  * Single-flight: main's manager serializes runs; at most one run is active or
  * pending here at any time.
@@ -54,7 +61,7 @@ import {
   type RunMsg,
 } from './py-protocol';
 import { allocPySab, clearInterrupt, EPOCH, PyCancelKind, type PySabViews, writeInterrupt } from './py-sab';
-import { deleteSetSnapshot, type PackedTree, readSetSnapshot, writeSetSnapshot } from './py-snapshot';
+import { deleteSetSnapshot, writeSetSnapshot } from './py-snapshot';
 import { SET_BUNDLES } from './py-stdlib-modules.gen';
 import { setTraceSink, traceAdd, traceEmit, traceReset, traceSpanAsync } from './py-trace';
 
@@ -91,16 +98,17 @@ let bootedSetKey: PySetKey | null = null;
 let desiredSetKey: PySetKey = 'stdlib';
 /** Guards overlapping async spawns; only the latest token may proceed. */
 let spawnToken = 0;
-/** What the CURRENT generation booted from — routes the poison path when a
- * snapshot-fed boot dies pre-ready ('stacked' → drop the OPFS wrapper,
- * 'baseline' → drop its Cache API entry). */
-let bootSnapshotKind: 'stacked' | 'baseline' | null = null;
-/** The set whose snapshot fed the current boot (poison-delete target). */
-let bootSnapshotSetKey: PySetKey | null = null;
+/** Whether the CURRENT generation's boot msg carried trySnapshot — with
+ * exec-ready's `restored` this resolves the boot path for logging. */
+let bootTriedSnapshot = false;
+/** True from a restored generation's exec-ready until its first run resolves
+ * — the U6 window: a hard failure inside it poison-deletes the snapshot. */
+let firstRunAfterRestore = false;
 /** One cold retry per failure — a second pre-ready fatal surfaces normally. */
 let snapshotRetried = false;
 /** Human label for the CURRENT generation's boot path — logged with bootMs on
- * exec-ready (the snapshot-used / cold-boot signal). Set in spawnExecutor. */
+ * exec-ready (the snapshot-used / cold-boot signal). Resolved AT exec-ready
+ * (only the executor knows whether the probe hit). */
 let bootDescription = '';
 /** When the boot message was posted — exec-ready closes the 'boot-wait' span
  * (executor worker spin-up + boot; the delta vs bootMs is spin-up cost). */
@@ -153,11 +161,13 @@ function parseTarMeta(bytes: Uint8Array): { prefix: string; loadOrder: readonly 
  * persistence is the Cache API, not supervisor memory).
  *
  * Cache API over memory: works in a dedicated worker without a SW (THE offline
- * path for tars) and shares URL keys with the SW's cache-first route. Hits are
- * RE-VERIFIED against the lock — the SW route caches whatever the network
- * returned, and a poisoned/stale entry must not reach a mount. `res.body`
- * yields DECODED bytes, so counts + shas run over identity bytes even when the
- * worker served `.br`. */
+ * path for tars) and shares URL keys with the SW's verify-at-fill route. Hits
+ * carrying the SW's `x-avlo-verified` marker were lock-verified BEFORE the
+ * write and skip the re-hash (~40 MB/boot saved on the warm path); unmarked
+ * hits (this supervisor's own miss-path puts, legacy entries) are re-verified
+ * — a poisoned/stale entry must not reach a mount. `res.body` yields DECODED
+ * bytes, so counts + shas run over identity bytes even when the worker served
+ * `.br`. */
 async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
   const names = bundlesOf(setKey);
   if (names.length === 0) return [];
@@ -173,8 +183,9 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
       continue;
     }
     const bytes = new Uint8Array(await hit.arrayBuffer());
-    if (!(await matchesLockEntry(bytes.buffer, expected))) {
-      // Unverified SW put (or a stale generation) — drop and refetch below.
+    if (hit.headers.get('x-avlo-verified') !== '1' && !(await matchesLockEntry(bytes.buffer, expected))) {
+      // Unmarked AND failing the lock (stale generation, torn write) — drop
+      // and refetch below.
       await cache.delete(`${ARTIFACT_BASE}bundles/${name}.tar`);
       misses.push(name);
       continue;
@@ -227,8 +238,10 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
       }
       const meta = parseTarMeta(bytes);
       // Fresh Response copies the buffer per spec — safe to transfer `bytes.buffer`
-      // to the executor afterwards.
-      await cache.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/x-tar' } }));
+      // to the executor afterwards. Marked verified: the sha check above IS the
+      // at-fill verification, so whichever put wins the benign SW-vs-supervisor
+      // race, later boots take the marker fast-path.
+      await cache.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/x-tar', 'x-avlo-verified': '1' } }));
       byName.set(name, { name, prefix: meta.prefix, loadOrder: meta.loadOrder, bytes: bytes.buffer });
     }),
   );
@@ -263,38 +276,6 @@ function ensureGlueVerified(): Promise<void> {
   return gluePreflight;
 }
 
-/** Fetch + lock-verify the prebuilt baseline snapshot. Cache API persistent
- * (tar posture: the SW streams `.snap` cacheFirst UNVERIFIED — this check is
- * the integrity leg; hits are re-verified for the same reason). Returns null
- * when the lock carries no baseline entry, on any fetch/verify failure, or
- * offline-uncached: snapshots accelerate boots, they never brick them. */
-async function ensureBaseline(): Promise<ArrayBuffer | null> {
-  const expected = BUILD_LOCK.artifacts['baseline.snap'];
-  if (!expected) return null;
-  const url = `${ARTIFACT_BASE}baseline.snap`;
-  try {
-    const cache = await caches.open(PY_CACHE);
-    const hit = await cache.match(url);
-    if (hit) {
-      const bytes = await hit.arrayBuffer();
-      if (await matchesLockEntry(bytes, expected)) return bytes;
-      await cache.delete(url);
-    }
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`baseline.snap: HTTP ${res.status}`);
-    const bytes = await res.arrayBuffer();
-    if (!(await matchesLockEntry(bytes, expected))) {
-      throw new Error('baseline.snap drifted from the committed build-lock');
-    }
-    // Fresh Response copies the buffer per spec — safe to transfer afterwards.
-    await cache.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream' } }));
-    return bytes;
-  } catch (err) {
-    console.warn('py: baseline snapshot unavailable (cold boot) —', err);
-    return null;
-  }
-}
-
 /** First-load-offline is a user situation, not an integrity failure — say so.
  * X MB = everything a cold cache would need for this set (glue + wasm +
  * stdlib + the set's tars). */
@@ -325,24 +306,23 @@ function teardownExecutor(): void {
   executorReady = false;
   sab = null;
   bootedSetKey = null;
-  bootSnapshotKind = null;
-  bootSnapshotSetKey = null;
+  bootTriedSnapshot = false;
+  firstRunAfterRestore = false;
 }
 
 function armIdleTeardown(): void {
   if (idleTimer !== null) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     idleTimer = null;
-    if (active === null) teardownExecutor(); // respawn restores from OPFS/baseline in ~0.5 s
+    if (active === null) teardownExecutor(); // respawn restores from the OPFS snapshot
   }, PY_LIMITS.idleTeardownMs);
 }
 
-/** Redesign P1: snapshot machinery is PARKED until P2's build-side owned
- * snapshots land — every boot is a cold mount boot. The fork's snapshot
- * patches (0005/0007/0008b + emsdk dsoBaseHook) are parked too, so flipping
- * this back on would run the 0.29-era capture path against a fork that no
- * longer records DSO bases: don't. P2 replaces this whole branch. */
-const SNAPSHOTS_ENABLED = false;
+/** Kill-switch for the owned snapshot path (P2). false ⇒ every boot is a
+ * plain cold mount boot: no OPFS probe, no capture — the safe fallback if a
+ * fleet-wide snapshot bug ever ships. Existing OPFS files go stale-but-inert
+ * (buildHash-dir GC reaps them on the next capture-side touch). */
+const SNAPSHOTS_ENABLED = true;
 
 async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }): Promise<void> {
   const token = ++spawnToken;
@@ -350,47 +330,22 @@ async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }):
   executor = null;
   executorReady = false;
   bootedSetKey = null;
-  bootSnapshotKind = null;
-  bootSnapshotSetKey = null;
+  bootTriedSnapshot = false;
+  firstRunAfterRestore = false;
   traceReset();
   const spawnStart = performance.now();
   const useSnapshot = SNAPSHOTS_ENABLED && !opts?.noSnapshot;
   let payloads: PyBundlePayload[] = [];
-  let snapshot: ArrayBuffer | undefined;
-  let tree: PackedTree | undefined;
-  let capture = false;
   try {
-    // Independent I/O chains (glue trio hash vs snapshot/tar reads) — overlap
-    // them on the cold first spawn (ensureGlueVerified memoizes on success).
-    if (setKey === 'stdlib') {
-      // The baseline IS the stdlib set's snapshot — no OPFS entry, no bundles.
-      const [, baseline] = await Promise.all([
-        traceSpanAsync('glue-preflight', ensureGlueVerified),
-        useSnapshot ? traceSpanAsync('baseline', ensureBaseline) : null,
-      ]);
-      snapshot = baseline ?? undefined;
-    } else {
-      const [, held] = await Promise.all([
-        traceSpanAsync('glue-preflight', ensureGlueVerified),
-        useSnapshot ? traceSpanAsync('snapshot-read', () => readSetSnapshot(BUILD_LOCK.buildHash, setKey)) : null,
-      ]);
-      if (held) {
-        // OPFS hit — the wrapper carries site-packages (DSO bytes + mtimes),
-        // so the boot needs ZERO bundle fetches: the offline win.
-        snapshot = held.container;
-        tree = held.tree;
-      } else {
-        // Generation: baseline restore + mounts + capture riding the boot.
-        // Baseline null (offline/unshipped) still generates — cold + capture.
-        const [baseline, fetched] = await Promise.all([
-          useSnapshot ? traceSpanAsync('baseline', ensureBaseline) : null,
-          traceSpanAsync('bundles', () => ensureBundles(setKey)),
-        ]);
-        payloads = fetched;
-        snapshot = baseline ?? undefined;
-        capture = useSnapshot;
-      }
-    }
+    // ONE uniform pre-spawn path for every set: bundles are needed on restore
+    // boots too (site-packages re-extracts from the tars; DSO replay slices
+    // .so bytes out of them), and stdlib's ensureBundles is a no-op. The OPFS
+    // probe itself lives in the EXECUTOR (it reads the snapshot directly into
+    // wasm memory — the supervisor never holds snapshot bytes).
+    [, payloads] = await Promise.all([
+      traceSpanAsync('glue-preflight', ensureGlueVerified),
+      traceSpanAsync('bundles', () => ensureBundles(setKey)),
+    ]);
   } catch (err) {
     if (token !== spawnToken) return;
     // Download/verify failure: surface as the pending run's result (or stay
@@ -410,45 +365,29 @@ async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }):
     if (active) failActiveRun(`executor error: ${e.message}`, /out of memory|OOM/i.test(e.message) ? 'oom' : 'error');
     else teardownExecutor(); // dormant executor broke — never leave it assigned
   };
-  if (snapshot && active && !active.dispatched) {
-    post({ t: 'phase', runId: active.runId, phase: 'restoring' });
-  }
   // Boot message carries the LOCK's stdlib zip hash — the executor verifies its
   // MEMFS mount against it (restage ⇒ recapture, the spike's standing guard).
   // Buffers transfer outright: persistence is the Cache API / OPFS, not this heap.
-  const transfer: Transferable[] = payloads.map((p) => p.bytes);
-  if (snapshot) transfer.push(snapshot);
-  if (tree) transfer.push(tree.blob);
   executor.postMessage(
     {
       t: 'boot',
       artifactBase: ARTIFACT_BASE,
       sab: sab.sab,
       stdlibSha256: BUILD_LOCK.artifacts['python_stdlib.zip'].sha256,
+      buildHash: BUILD_LOCK.buildHash,
       bundles: payloads,
-      snapshot,
-      tree,
-      ...(capture ? { capture: true, captureKey: setKey } : {}),
+      trySnapshot: useSnapshot,
+      ...(useSnapshot ? { captureKey: setKey } : {}),
     },
-    transfer,
+    payloads.map((p) => p.bytes),
   );
   bootedSetKey = setKey;
-  bootSnapshotKind = tree ? 'stacked' : snapshot ? 'baseline' : null;
-  bootSnapshotSetKey = snapshot ? setKey : null;
-  bootDescription = tree
-    ? 'restored OPFS set snapshot (stacked, zero bundle fetches)'
-    : capture
-      ? snapshot
-        ? 'generating set snapshot on a baseline restore'
-        : 'generating set snapshot cold (no baseline)'
-      : snapshot
-        ? 'restored baseline snapshot'
-        : 'cold boot (no snapshot)';
+  bootTriedSnapshot = useSnapshot;
   // 'spawn' = the pre-spawn critical path (everything before the executor
   // even exists); 'boot-wait' (closed on exec-ready) − executor bootMs =
   // worker spin-up + message latency.
   bootPostedAt = performance.now();
-  traceAdd('spawn', spawnStart, bootPostedAt, { setKey, snapshot: !!snapshot, stacked: !!tree, capture });
+  traceAdd('spawn', spawnStart, bootPostedAt, { setKey, trySnapshot: useSnapshot });
 }
 
 function dispatch(run: ActiveRun): void {
@@ -525,6 +464,12 @@ function onExecutorMessage(m: ExecToSup): void {
     case 'exec-ready': {
       executorReady = true;
       snapshotRetried = false;
+      firstRunAfterRestore = m.restored;
+      bootDescription = m.restored
+        ? 'restored OPFS snapshot'
+        : bootTriedSnapshot
+          ? 'cold boot + capture (no valid snapshot)'
+          : 'cold boot (snapshots off)';
       const now = performance.now();
       if (bootPostedAt > 0) traceAdd('boot-wait', bootPostedAt, now, { bootMs: Math.round(m.bootMs) });
       bootPostedAt = 0;
@@ -547,7 +492,16 @@ function onExecutorMessage(m: ExecToSup): void {
       // Only a BOOT-time capture is legitimate — once ready, user code has
       // run, and a forged capture must never reach persistent storage.
       // Persistence overlaps the pending run (fire-and-forget; best-effort).
-      if (!executorReady) void writeSetSnapshot(BUILD_LOCK.buildHash, m.captureKey, m.container, m.tree);
+      if (!executorReady) void writeSetSnapshot(BUILD_LOCK.buildHash, m.captureKey, m.meta, m.heap);
+      break;
+    }
+    case 'exec-snap-invalid': {
+      // The executor rejected the OPFS file (probe or pre-blit) and already
+      // continued cold IN the same boot — delete the artifact, nothing else
+      // (U4: no respawn; the cold boot's capture re-persists a fresh one).
+      console.warn(`py: ${bootedSetKey} snapshot invalid — deleted, boot continued cold:`, m.reason);
+      traceEmit('sup', 'snap-invalid', { setKey: bootedSetKey, reason: m.reason });
+      if (bootedSetKey) void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
       break;
     }
     case 'exec-done': {
@@ -593,32 +547,44 @@ function onExecutorMessage(m: ExecToSup): void {
         reqToResultMs: Math.round(now - run.reqAt),
       });
       if (m.needsRespawn) {
+        // U6: the FIRST run of a restored generation hard-failing (trap-class
+        // — not ok, not an interrupt) implicates the image itself. Delete the
+        // snapshot BEFORE the eager respawn, or a structurally-valid-but-bad
+        // image loops restore → crash → respawn → restore forever.
+        if (firstRunAfterRestore && !m.ok && !m.interrupted && bootedSetKey) {
+          console.warn(`py: ${bootedSetKey} restored generation's first run hard-failed — poisoning snapshot`);
+          void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
+        }
         // Blit failed/skipped or the heap outgrew the reset image — the NEXT
         // run needs a fresh generation for isolation, and an eager respawn
         // (cached bundles / OPFS snapshot) also reclaims the grown memory now.
         teardownExecutor();
         void spawnExecutor(desiredSetKey);
       } else {
+        firstRunAfterRestore = false;
         armIdleTeardown();
       }
       break;
     }
     case 'exec-fatal': {
-      traceEmit('sup', 'fatal', { ready: executorReady, error: m.error.split('\n')[0] });
-      if (!executorReady && bootSnapshotKind !== null && !snapshotRetried) {
-        // A snapshot-fed boot died pre-ready (BUILD_ID gate, DSO table drift,
-        // hook replay error, stdlib drift over a poisoned image…). Drop the
-        // artifact, retry ONCE cold with the run still pending — a snapshot
-        // failure must be invisible to the user.
-        console.warn(`py: ${bootSnapshotKind} snapshot boot failed — retrying cold:`, m.error.split('\n')[0]);
-        if (bootSnapshotKind === 'stacked' && bootSnapshotSetKey) {
-          void deleteSetSnapshot(BUILD_LOCK.buildHash, bootSnapshotSetKey);
-        } else {
-          void caches.open(PY_CACHE).then((c) => c.delete(`${ARTIFACT_BASE}baseline.snap`));
-        }
+      traceEmit('sup', 'fatal', { ready: executorReady, restored: m.restored, error: m.error.split('\n')[0] });
+      if (!executorReady && m.restored && !snapshotRetried) {
+        // A restored boot died POST-blit pre-ready (stdlib drift over a
+        // poisoned image, finalizeBootstrap failure, mount/harden death…).
+        // Drop the artifact, retry ONCE cold with the run still pending — a
+        // snapshot failure must be invisible to the user. (Pre-blit failures
+        // never land here; they fall back cold in-boot via exec-snap-invalid.)
+        console.warn('py: restored boot failed post-blit — poisoning snapshot, retrying cold:', m.error.split('\n')[0]);
+        if (bootedSetKey) void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
         snapshotRetried = true;
         void spawnExecutor(desiredSetKey, { noSnapshot: true });
         break;
+      }
+      if (firstRunAfterRestore) {
+        // Post-ready fatal inside the restored generation's first-run window
+        // — same U6 poison rationale as the exec-done leg.
+        firstRunAfterRestore = false;
+        if (bootedSetKey) void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
       }
       if (active) {
         // Boot failure (executor never became ready) → an eager respawn

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig } from 'vite';
 
 const __dirname_local = dirname(fileURLToPath(import.meta.url));
 const devPorts = JSON.parse(readFileSync(resolve(__dirname_local, '../scripts/dev-ports.json'), 'utf8'));
@@ -71,51 +71,6 @@ const isolationHeaders = {
   'Cross-Origin-Embedder-Policy': 'credentialless',
 };
 
-// Dev-only: serve Python runtime artifacts (web/public/py-dev/, gitignored) RAW.
-// The executor worker ESM-imports pyodide's loader/glue at runtime; Vite's module
-// pipeline refuses source imports of public-dir files and transforming multi-MB
-// emscripten glue would be pointless anyway. configureServer middlewares run
-// before Vite's internals, so both fetch() and import() requests short-circuit
-// here. Prod serves these from the py worker (M3 replaces this with a proxy).
-const PY_DEV_MIME: Record<string, string> = {
-  '.mjs': 'text/javascript',
-  '.js': 'text/javascript',
-  '.wasm': 'application/wasm',
-  '.zip': 'application/zip',
-  '.json': 'application/json',
-  '.tar': 'application/x-tar',
-  '.snap': 'application/octet-stream',
-  '.whl': 'application/octet-stream',
-};
-const pyDevStatic = (): Plugin => ({
-  name: 'avlo:py-dev-static',
-  apply: 'serve',
-  configureServer(server) {
-    server.middlewares.use((req, res, next) => {
-      const url = (req.url ?? '').split('?')[0];
-      if (!url.startsWith('/py-dev/')) return next();
-      // Resolve BEFORE the containment check — an encoded `..` passes the raw
-      // prefix test above but must not escape the served directory.
-      const root = path.join(server.config.root, 'public', 'py-dev');
-      const file = path.resolve(server.config.root, 'public', `.${decodeURIComponent(url)}`);
-      if (!file.startsWith(root + path.sep)) {
-        res.statusCode = 404;
-        return res.end('not found');
-      }
-      let bytes: Buffer;
-      try {
-        bytes = readFileSync(file);
-      } catch {
-        res.statusCode = 404;
-        return res.end('not found');
-      }
-      res.setHeader('Content-Type', PY_DEV_MIME[path.extname(file)] ?? 'application/octet-stream');
-      for (const [k, v] of Object.entries(isolationHeaders)) res.setHeader(k, v);
-      return res.end(bytes);
-    });
-  },
-});
-
 export default defineConfig({
   plugins: [
     tanstackRouter({
@@ -127,7 +82,6 @@ export default defineConfig({
     }) as any,
     react(),
     tailwindcss(),
-    pyDevStatic(),
   ],
   resolve: {
     alias: {
