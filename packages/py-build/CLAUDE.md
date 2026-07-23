@@ -1,20 +1,19 @@
 # py-build — AVLO Python toolchain
 
-> **P1 INTERIM STATE (redesign, Session 12-13 — NOTES.md):** fork is **Pyodide
-> 314.0.2** / CPython 3.14 / emsdk 5.0.3 / **MAIN_MODULE=2** (closed world =
-> `-Wl,--export-if-defined` union in `.cache/link-sos/link.rsp`, emitted by
-> fetch-wheels; DSOs deliberately NOT on the link line). Snapshot capture
-> (make-baseline/verify-stacking + patches 0005/0007/0008b/dsoBaseHook) is
-> **PARKED in `patches/parked/`** until P2; `builtin-modules.json` comes from
-> `dump-builtins.mjs`. Glue is `pyodide.asm.mjs`. Prose below predates the
-> jump where it conflicts; full rewrite lands P5.
->
-> **P1.5 LANDED (Session 14 — DSO grouping 67→4):** each DSO-bearing bundle
-> tar ships ONE grouped side module `.avlo/<bundle>.so`, linked from the
-> packages' original `.o`/`.a` by the recipe-rebuild loop (`recipes:build`)
-> and consumed by pack-package's grouped staging + sitecustomize's
-> `_AvloGroupFinder`. link-sos scans `dist/groups/*.so` (not wheels). Prose
-> mentioning per-extension DSOs predates this.
+> **P2 LANDED (Session 15 — owned dense snapshots; NOTES.md is
+> authoritative):** fork is **Pyodide 314.0.2** / CPython 3.14 / emsdk 5.0.3
+> / **MAIN_MODULE=2** (closed world = `-Wl,--export-if-defined` union in
+> `.cache/link-sos/link.rsp`; DSOs NOT on the link line), grouped side
+> modules 67→4 (P1.5). Snapshot patches are LIVE (pyodide 0005 replay API,
+> 0007 `_avloRestore.preBlit` owned seam, 0008b expected-keys, emsdk 0006
+> dsoBaseHook + replay ctor/reloc skip); `patches/parked/` is gone;
+> `make-baseline.mjs`/`verify-stacking.mjs`/`baseline-imports.txt` and the
+> `baseline`/`verify:stacking` scripts are DELETED (`builtin-modules.json`
+> comes from `dump-builtins.mjs`; snapshots are client-captured — see
+> `web/src/core/py/`). `run-harness.mjs` gained `--section snapshot`
+> (capture → AVS2 → restore board over the SHIPPED web codec + driver, via a
+> registerHooks `.ts` import shim). Glue is `pyodide.asm.mjs`. Prose below
+> predates P1/P1.5/P2 where it conflicts; full rewrite lands P5.
 
 Forked-Pyodide build + artifact packing for the in-browser Python runtime
 (`web/src/core/py/`). Everything is pinned in `build.config.json`
@@ -35,8 +34,6 @@ hash order).
 | `pack-package.py` | Bundle tars (D2-D6): wheel patches (`patches/wheels/<pkg>/`) → global excludes → prune (`config/pkg-prune/`) → [mpl: font subset via pinned host fontTools (`uvx --from fonttools==<hostTools pin>`) + fontlist prebake] → pyc `-o 1` → `_avlo_pruned_<bundle>` → meta.json-first deterministic ustar → `dist/stage/bundles/`. `--unpruned` materializes tracer trees; `--stage-only`/`--tar-only` split at the prebake seam |
 | `prebake-fontcache.mjs` | Bakes `matplotlib/fontlist.json` over the SUBSET faces (fork boot on staged trees, det-env kit, canonical JSON). The wheel ships a stale 39-face list — deleted before the rebuild |
 | `trace-imports.mjs` + `.py` | Import tracer (G3): runs package corpus groups over UNPRUNED trees (raw stdlib; pillow/fonttools mounted for mpl groups) recording attempts + loads. `--check`: trace ∩ prune = ∅ AND no PIL/fontTools attempt. `--propose <pkg>`: unreached-subtree prune candidates. Samples marked `# trace: skip` (deliberate tombstone probes, packed-artifact assertions) are excluded |
-| `make-baseline.mjs` | `dist/baseline.snap` (det-env kit, `--repro` = G0 byte-identity — baked into the `baseline` script, restore-verify) + `builtin-modules.json`. HARD-ERRORS on missing staged zip (restage ⇒ recapture). The snapshot is a LOCK ARTIFACT: staged + published + budget-gated like the glue trio |
-| `verify-stacking.mjs` | G-P3.0 (`pnpm verify:stacking`): capture-after-restore probe — boot `_loadSnapshot(baseline)`+`_makeSnapshot` → mount sqlite3+numpy → set imports → stacked capture → restore via the production `_preRestoreHook` port in-process → numpy/sqlite3/lazy-submodule asserts + blit probe. The one fork path the browser spike never ran; green = per-set generation may stack on a restored baseline |
 | `run-corpus.mjs` | Corpus runner: child process per group (RAM-bounded), mounts the REAL bundle tars (512-byte meta parse → tarfile extract → loadDynlib per loadOrder), mpl groups add the font gates (no findfont, no fontManager rebuild) + PNG decode (`lib/png.mjs`) of `/tmp/corpus-out/*.png` |
 | `analyze-dsos.mjs` | DSO census + grouping audit over staged bundle tars + main wasm (imports/exports/GOT/dylink.0, import-provider table, lazy-stub audit) — wasm parse shared via `lib/wasm-parse.mjs`. `--check` (`dsos:check`): grouped-world v2 gates activate when tars ship `.avlo/` DSOs (PyInit census equality, closed world at N=4, loadOrder shape, mixed-world hard fail); legacy checks otherwise |
 | `run-recipes.mjs` + `recipes-build.sh` | Docker recipe-rebuild loop (P1.5): pinned pyodide-recipes checkout + patch queues (incl. numpy legacy-rename 0004) + patched pyodide-build (link-record hook) + byte-verified xbuildenv + per-package frozen constraints (`recipes-constraints.d/`, AVLO-PKG pip-log markers, `--freeze-constraints`) → serial no-deps builds → harvest → group links → `dist/groups/` |
