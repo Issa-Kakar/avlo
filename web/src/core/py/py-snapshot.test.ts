@@ -13,10 +13,12 @@ import {
   encodeAvsHeaderBlock,
   parseAvsHeader,
   planAvsHeapOff,
-  readHeapInto,
+  readSnapshotToBuffer,
   type SnapReadHandle,
   Xxh32,
 } from './py-snapshot';
+
+const LIVE = { live: () => true, abandoned: () => false };
 
 const memHandle = (bytes: Uint8Array): SnapReadHandle => ({
   size: bytes.length,
@@ -156,29 +158,34 @@ describe('AVS2 header', () => {
   });
 });
 
-describe('readHeapInto', () => {
-  it('lands the exact heap bytes across chunk boundaries and verifies the hash', () => {
+describe('readSnapshotToBuffer', () => {
+  it('lands the exact heap bytes across chunk boundaries and verifies the hash', async () => {
     const { file, heap } = makeSnapshot(); // > one 8 MB chunk — exercises the loop
     const header = parseAvsHeader(memHandle(file), EXPECT);
-    const target = new Uint8Array(header.heapLen);
-    readHeapInto(memHandle(file), header, () => target);
+    const buf = await readSnapshotToBuffer(memHandle(file), header, LIVE);
+    expect(buf).not.toBeNull();
     // memcmp, not toEqual — vitest's deep-equal diff on multi-MB typed arrays
     // allocates per element and OOMs the worker.
-    expect(Buffer.compare(Buffer.from(target), Buffer.from(heap))).toBe(0);
+    expect(Buffer.compare(Buffer.from(buf as ArrayBuffer), Buffer.from(heap))).toBe(0);
   });
 
-  it('throws on a corrupt heap byte (fast-hash mismatch)', () => {
+  it('throws on a corrupt heap byte (fast-hash mismatch)', async () => {
     const { file } = makeSnapshot(1000);
     const header = parseAvsHeader(memHandle(file), EXPECT);
     file[header.heapOff + 500] ^= 0xff;
-    expect(() => readHeapInto(memHandle(file), header, () => new Uint8Array(header.heapLen))).toThrow(/hash mismatch/);
+    await expect(readSnapshotToBuffer(memHandle(file), header, LIVE)).rejects.toThrow(/hash mismatch/);
   });
 
-  it('throws on a short read (handle EOF before heapLen)', () => {
+  it('throws on a short read (handle EOF before heapLen)', async () => {
     const { file } = makeSnapshot(1000);
     const header = parseAvsHeader(memHandle(file), EXPECT);
-    expect(() => readHeapInto(memHandle(file.subarray(0, file.length - 10)), header, () => new Uint8Array(header.heapLen))).toThrow(
-      /short heap read/,
-    );
+    await expect(readSnapshotToBuffer(memHandle(file.subarray(0, file.length - 10)), header, LIVE)).rejects.toThrow(/short heap read/);
+  });
+
+  it('resolves null without reading further when the generation is superseded or abandoned', async () => {
+    const { file } = makeSnapshot(1000);
+    const header = parseAvsHeader(memHandle(file), EXPECT);
+    expect(await readSnapshotToBuffer(memHandle(file), header, { live: () => false, abandoned: () => false })).toBeNull();
+    expect(await readSnapshotToBuffer(memHandle(file), header, { live: () => true, abandoned: () => true })).toBeNull();
   });
 });

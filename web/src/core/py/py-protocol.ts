@@ -10,7 +10,7 @@
  *     executor's event loop is blocked in synchronous Python.
  */
 
-import type { AvsCaptureMeta } from './py-snapshot';
+import type { AvsCaptureMeta, AvsHeader } from './py-snapshot';
 
 /** Mirrors the code block's Y `outputStatus` field — renderer drives tint. */
 export type PyRunStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
@@ -106,36 +106,68 @@ export interface PyBundlePayload {
   bytes: ArrayBuffer;
 }
 
-export interface ExecBootMsg {
-  t: 'boot';
+/**
+ * L2 topology (cold-restore attack): the supervisor spawns the executor FIRST
+ * and streams boot inputs as four messages so bundle prep + the OPFS snapshot
+ * open/read/hash run in the shadow of worker spin-up + glue import + main
+ * instantiate. The executor parks everything in module-scope deferreds and
+ * starts boot logic at `boot-prep` — `boot-data` MAY outrun `boot-prep` (warm
+ * cache vs first-load glue preflight), the only ordering relied on is
+ * snap-header < snap-heap (same task, same channel). Per generation:
+ * boot-prep and boot-data arrive exactly once (or the worker is terminated —
+ * teardown IS the abort signal, there is no boot-abort message); snap-header
+ * arrives exactly once iff `trySnapshot`; snap-heap exactly once iff the
+ * header was non-null, EXCEPT after a live-generation `exec-snap-invalid` or
+ * supersession (the executor provably never awaits it on those paths).
+ */
+export interface BootPrepMsg {
+  t: 'boot-prep';
   /** Base URL for glue/wasm/stdlib artifacts (`PY_ORIGIN/<buildHash>/`). */
   artifactBase: string;
   sab: SharedArrayBuffer;
   /** Manifest hash of python_stdlib.zip — the executor hashes the zip AS
    * MOUNTED in MEMFS and refuses the boot on drift (restage ⇒ recapture). */
   stdlibSha256: string;
-  /** Committed build-lock hash — keys `opfs:/py/<buildHash>/` for the
-   * executor's snap-probe. Rides the boot msg so the executor stays lock-free
-   * (never imports the `@avlo/py-loader` index). */
+  /** Committed build-lock hash — rides the boot msg so the executor stays
+   * lock-free (never imports the `@avlo/py-loader` index). */
   buildHash: string;
-  /** Package bundles to mount before the harness installs (M2). Needed on
-   * restore boots too — DSO replay slices `.so` bytes from these buffers and
-   * site-packages re-extracts from them. */
-  bundles?: PyBundlePayload[];
-  /** Probe OPFS for `<buildHash>/<captureKey>.snap` and restore on a valid
-   * hit; any probe/pre-blit failure falls back cold IN the same boot. */
-  trySnapshot?: boolean;
-  /** The set this generation boots for — the snap-probe's setKey AND the
-   * capture key when no restore happened (echoed back on `exec-snapshot`;
-   * bootedSetKey can move under a late message). Present iff `trySnapshot`. */
+  /** true ⇒ UNIFORM boot: the loader always passes `_avloRestore`
+   * (noInitialRun) and the preBlit driver decides restore-vs-cold on the
+   * snap-header feed — pre-mutation snapshot failures fall back cold on the
+   * SAME Module with zero re-instantiate (deferred `Module.callMain()`). */
+  trySnapshot: boolean;
+  /** The set this generation boots for — the capture key when no restore
+   * happened (echoed back on `exec-snapshot`; bootedSetKey can move under a
+   * late message). Present iff `trySnapshot`. */
   captureKey?: PySetKey;
+}
+/** Bundle payloads (transferred). Needed on restore boots too — DSO
+ * precompile slices `.so` bytes from these buffers and site-packages mounts
+ * from them. Always sent (empty array for stdlib). */
+export interface BootDataMsg {
+  t: 'boot-data';
+  bundles: PyBundlePayload[];
+}
+/** Supervisor-side snapshot probe verdict: the parsed+validated header, or
+ * null (absent / open failed / parse failed — boot cold). */
+export interface SnapHeaderMsg {
+  t: 'snap-header';
+  header: AvsHeader | null;
+}
+/** The verified heap image (hash checked DURING the supervisor-side read,
+ * pre-transfer), or null (read/hash failure — `reason` says why; the driver
+ * is post-replay by then, so null ⇒ DirtyRestoreError ⇒ fresh cold boot). */
+export interface SnapHeapMsg {
+  t: 'snap-heap';
+  heap: ArrayBuffer | null;
+  reason?: string;
 }
 export interface ExecRunMsg {
   t: 'exec';
   runId: number;
   code: string;
 }
-export type SupToExec = ExecBootMsg | ExecRunMsg;
+export type SupToExec = BootPrepMsg | BootDataMsg | SnapHeaderMsg | SnapHeapMsg | ExecRunMsg;
 
 // ---------------------------------------------------------------- exec → sup
 

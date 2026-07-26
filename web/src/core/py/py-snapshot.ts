@@ -17,11 +17,13 @@
  * LAST (heap first at heapOff), so a torn write is a magic/crc/length fail on
  * the next read — no temp+rename needed.
  *
- * Restore reads OPFS DIRECTLY into wasm memory: `readHeapInto` does chunked
- * sync reads into `HEAPU8` subarray views (re-acquired per chunk — growth
- * detaches ArrayBuffers), so there are ZERO full-size intermediate buffers on
- * the restore path (the async `getFile()` fallback for lock contention is the
- * one deliberate exception).
+ * Restore reads are SUPERVISOR-side (L2 topology): `readSnapshotToBuffer`
+ * does chunked positioned reads into ONE exact-size buffer, folding the fast
+ * hash, yielding to the event loop between chunks (the supervisor owns every
+ * wall clock — a sync ~79 MB loop would block cancel/exec messages) and
+ * checking live/abandoned signals per iteration. The verified buffer is then
+ * TRANSFERRED to the executor, whose preBlit driver blits it into wasm
+ * memory — hash verdicts happen before the bytes ever cross the boundary.
  *
  * Deliberately absent vs the parked AVS1 design: tree segment (site-packages
  * re-extracts from the boot tars — the in-wasm `tarfile.extractall` already IS
@@ -40,12 +42,12 @@
  * tableLenAtCapture assert fail LOUD → snap-invalid → cold + re-capture.
  *
  * Dependency-free by design (py-trace is the one allowed import — itself
- * dependency-free): used by BOTH workers — the SUPERVISOR writes/deletes/GCs
- * (`navigator.storage` only inside those functions), the EXECUTOR opens/
- * parses/reads strictly PRE-scrub, and every executor-side handle closes in a
- * `finally` before `harden` (a live sync handle is write authority across the
- * scrub boundary — hard invariant). The py-build Node harness imports the
- * codec half (pure functions, no OPFS) against a real fork boot.
+ * dependency-free): the SUPERVISOR owns ALL OPFS I/O (open/read/write/delete/
+ * GC — `navigator.storage` only inside those functions); the executor never
+ * touches OPFS (L2 killed the executor-side probe, so no sync handle can even
+ * exist near the scrub boundary). The py-build Node harness imports the codec
+ * half (pure functions + readSnapshotToBuffer over an fd-backed handle)
+ * against a real fork boot.
  */
 
 import { traceBegin } from './py-trace';
@@ -82,9 +84,9 @@ export interface AvsHeader extends AvsCaptureMeta {
 }
 
 /** Chunked positioned reader over the snapshot file. Implemented over an OPFS
- * sync access handle (read-only → exclusive), a buffered File (contention
- * fallback), or a Node fd shim in the py-build harness. `close()` is
- * idempotent — failure paths may close twice. */
+ * read-only sync access handle, a buffered File (contention fallback), or a
+ * Node fd shim in the py-build harness. `close()` is idempotent — failure
+ * paths may close twice. */
 export interface SnapReadHandle {
   readonly size: number;
   /** Read up to view.length bytes at absolute offset `at`; returns count. */
@@ -313,20 +315,56 @@ export function parseAvsHeader(handle: SnapReadHandle, expect: { buildHash: stri
   return h;
 }
 
-/** Chunked positioned reads straight into wasm memory, folding the fast hash
- * per chunk. `getHeapU8` is re-invoked per chunk — memory growth detaches
- * ArrayBuffers, and a stale view would write into a dead buffer (belt; the
- * caller pre-grew and nothing grows during preBlit). Hash mismatch throws. */
-export function readHeapInto(handle: SnapReadHandle, header: AvsHeader, getHeapU8: () => Uint8Array): void {
+// Macrotask yield for the supervisor's chunked read loop. MessageChannel, NOT
+// setTimeout(0): the 4 ms nesting clamp kicks in past 5 levels and would eat
+// the overlap win; MessageChannel is unclamped and shares the message task
+// source, so worker onmessage handlers (cancel, exec relays) interleave
+// fairly between chunks. Under Node (harness/vitest) use setImmediate
+// instead: it is unclamped AND ref'd-while-pending, whereas a module-scope
+// MessageChannel either pins the event loop open forever (ref'd) or lets the
+// process exit mid-await (unref'd).
+// biome-ignore lint/suspicious/noExplicitAny: Node-only global probe
+const nodeSetImmediate: ((cb: () => void) => void) | undefined = (globalThis as any).setImmediate;
+let yieldChannel: MessageChannel | null = null;
+let yieldWake: (() => void) | null = null;
+function yieldToEvents(): Promise<void> {
+  if (nodeSetImmediate) return new Promise((resolve) => nodeSetImmediate(resolve));
+  if (!yieldChannel) {
+    yieldChannel = new MessageChannel();
+    yieldChannel.port1.onmessage = () => yieldWake?.();
+  }
+  return new Promise((resolve) => {
+    yieldWake = resolve;
+    (yieldChannel as MessageChannel).port2.postMessage(0);
+  });
+}
+
+/** SUPERVISOR-side (L2): chunked positioned reads of the heap segment into
+ * ONE exact-size buffer, folding the fast hash, awaiting a macrotask yield
+ * between chunks and checking the generation signals per iteration — a
+ * superseded or abandoned read stops paying I/O and resolves null (the caller
+ * posts nothing). Short read / hash mismatch THROW — the caller deletes (on a
+ * lock-holding rung) and posts a null heap. The u32 hash fast path holds:
+ * heapOff is 4096-aligned and chunks are 8 MiB. */
+export async function readSnapshotToBuffer(
+  handle: SnapReadHandle,
+  header: AvsHeader,
+  signals: { live(): boolean; abandoned(): boolean },
+): Promise<ArrayBuffer | null> {
+  const buf = new ArrayBuffer(header.heapLen);
+  const u8 = new Uint8Array(buf);
   const x = new Xxh32();
   for (let off = 0; off < header.heapLen; off += CHUNK) {
+    if (!signals.live() || signals.abandoned()) return null;
     const n = Math.min(CHUNK, header.heapLen - off);
-    const view = getHeapU8().subarray(off, off + n);
+    const view = u8.subarray(off, off + n);
     if (handle.read(view, header.heapOff + off) !== n) throw new Error('avs2: short heap read');
     x.update(view);
+    await yieldToEvents();
   }
   const got = x.hex();
   if (got !== header.heapHash.value) throw new Error(`avs2: heap hash mismatch (${got} ≠ ${header.heapHash.value})`);
+  return buf;
 }
 
 // -------------------------------------------------------------- OPFS store
@@ -383,11 +421,22 @@ const wrapSync = (sync: SyncAccessHandle): SnapReadHandle => {
   };
 };
 
-/** EXECUTOR-side probe (strictly pre-scrub). Open order: read-only sync
- * handle (concurrent readers across tabs) → exclusive sync handle → async
- * `getFile()` buffer (lock contention — the one full-size intermediate,
- * deliberate) → null (absent / OPFS unavailable) = cold. Never creates. */
-export async function openSetSnapshot(buildHash: string, setKey: string): Promise<SnapReadHandle | null> {
+export interface SnapOpen {
+  handle: SnapReadHandle;
+  /** True iff this rung HOLDS a lock on stable bytes — the only rungs whose
+   * parse/hash failures may poison-delete the file. The buffered `getFile`
+   * contention rung yields UNSTABLE bytes (another tab may be mid-write), so
+   * its failures are a MISS, never a delete (F9). */
+  deletable: boolean;
+}
+
+/** SUPERVISOR-side probe (L2). Open order: read-only sync handle (concurrent
+ * readers across tabs; engines without `mode` degrade to the exclusive
+ * default — still lock-holding, still deletable) → async `getFile()` buffer
+ * (lock contention — non-deletable) → null (absent / OPFS unavailable) =
+ * cold. Never creates. The capture-writer's exclusive handle remains the
+ * multi-tab write arbiter. */
+export async function openSetSnapshotSup(buildHash: string, setKey: string): Promise<SnapOpen | null> {
   let file: FileSystemFileHandle;
   try {
     const py = await (await navigator.storage.getDirectory()).getDirectoryHandle('py');
@@ -397,25 +446,23 @@ export async function openSetSnapshot(buildHash: string, setKey: string): Promis
     return null;
   }
   try {
-    return wrapSync(await (file as SyncFileHandle).createSyncAccessHandle({ mode: 'read-only' }));
+    return { handle: wrapSync(await (file as SyncFileHandle).createSyncAccessHandle({ mode: 'read-only' })), deletable: true };
   } catch {
-    /* contention (a writer holds the lock) — try the remaining ladders */
-  }
-  try {
-    return wrapSync(await (file as SyncFileHandle).createSyncAccessHandle());
-  } catch {
-    /* still contended */
+    /* contention (a writer holds the lock) — buffered fallback */
   }
   try {
     const buf = new Uint8Array(await (await file.getFile()).arrayBuffer());
     return {
-      size: buf.length,
-      read: (view, at) => {
-        const n = Math.min(view.length, Math.max(0, buf.length - at));
-        view.set(buf.subarray(at, at + n));
-        return n;
+      handle: {
+        size: buf.length,
+        read: (view, at) => {
+          const n = Math.min(view.length, Math.max(0, buf.length - at));
+          view.set(buf.subarray(at, at + n));
+          return n;
+        },
+        close: () => {},
       },
-      close: () => {},
+      deletable: false,
     };
   } catch {
     return null;

@@ -405,23 +405,41 @@ _mpl_logger.setLevel(logging.INFO)`);
 }
 
 // ---------------------------------------------------------------- snapshot
-// P2 owned snapshots, the Phase A exit gate: cold boot + mounts + bake →
-// owned capture via the fork APIs (getDsoLoadInfo / recordDsoHandles /
-// serializeHiwireState / HEAP8 slice) → AVS2 assemble → owned restore in the
-// SAME process → extract-only remount → post_restore → functional probes.
-// The codec AND the restore driver are the SHIPPED web/src/core/py modules
-// (py-snapshot.ts encode/parse/hash, py-loader.ts bootPyodide → makePreBlit:
-// buildId → growMemory → DSO replay at recorded bases → table assert →
-// chunked heap read folding the fast hash) — the harness only supplies an
-// fd-backed SnapReadHandle where the executor supplies an OPFS one.
+// P2 owned snapshots over the L2 uniform boot, the standing exit gate:
+// UNIFORM cold boot (shipped driver, headerP:null → deferred Module.callMain
+// — THE cold-path equivalence probe) + mounts + bake → owned capture via the
+// fork APIs → AVS2 assemble → sup-style verified read (readSnapshotToBuffer)
+// → dirty-restore negative (heapP:null ⇒ DirtyRestoreError) → owned restore
+// through the SHIPPED feeds driver (precompiled WebAssembly.Modules, exactly
+// the executor's path) → extract-only remount → functional probes. The codec
+// AND the driver are the SHIPPED web/src/core/py modules — the harness only
+// supplies an fd-backed SnapReadHandle where the supervisor supplies OPFS.
 if (section === 'snapshot') {
   const SET_KEY = 'all';
-  const { loadPyodide } = await import(pathToFileURL(join(forkDir, 'pyodide.mjs')).href);
-  const { Xxh32, planAvsHeapOff, encodeAvsHeaderBlock, parseAvsHeader } = await import(
+  const { Xxh32, planAvsHeapOff, encodeAvsHeaderBlock, parseAvsHeader, readSnapshotToBuffer } = await import(
     pathToFileURL(join(repo, 'web/src/core/py/py-snapshot.ts')).href
   );
-  const { bootPyodide } = await import(pathToFileURL(join(repo, 'web/src/core/py/py-loader.ts')).href);
-  const BOOT_ENV = { PYTHONHASHSEED: '0', HOME: '/home/pyodide' };
+  const { bootPyodide, DirtyRestoreError, freeDsoFileData } = await import(pathToFileURL(join(repo, 'web/src/core/py/py-loader.ts')).href);
+  const LIVE = { live: () => true, abandoned: () => false };
+  /** Uniform-boot feed bundles for the shipped driver (executor-shaped). */
+  const mkFeeds = ({ header = null, heap = null, modules = null, onInvalid = null } = {}) => {
+    const outcome = { restored: false };
+    const invalids = [];
+    return {
+      feeds: {
+        headerP: Promise.resolve(header),
+        heapP: Promise.resolve(heap),
+        modulesP: modules ?? Promise.resolve(null),
+        onSnapInvalid: (reason) => {
+          invalids.push(reason);
+          onInvalid?.(reason);
+        },
+        outcome,
+      },
+      outcome,
+      invalids,
+    };
+  };
   const POST_RESTORE = 'import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime';
   // Mirrors py-executor's BUNDLE_IMPORTS for the `all` set (numpy MUST bake
   // numpy.random — G8R; mpl-deps has no top-level import).
@@ -446,9 +464,10 @@ gc.collect()`;
     check('xxh32 known-answer vectors', t1.hex() === '02cc5d05' && t2.hex() === 'e2293b2f', `${t1.hex()} ${t2.hex()}`);
   }
   const CHUNK = 8 << 20;
-  /** fd-backed SnapReadHandle — the harness's stand-in for the executor's
+  /** fd-backed SnapReadHandle — the harness's stand-in for the supervisor's
    * OPFS sync-access handle (same contract: positioned read, idempotent
-   * close). The shipped parseAvsHeader/readHeapInto consume it verbatim. */
+   * close). The shipped parseAvsHeader/readSnapshotToBuffer consume it
+   * verbatim. */
   const mkSnapHandle = (fd, size) => {
     let closed = false;
     return {
@@ -461,19 +480,6 @@ gc.collect()`;
       },
     };
   };
-  /** Fold the fast hash over the file's heap segment (no wasm involvement) —
-   * probe scaffolding for the positive/corrupt-byte checks below. */
-  const foldFileHash = (fd, header, corruptAt = -1) => {
-    const x = new Xxh32();
-    const buf = Buffer.alloc(CHUNK);
-    for (let off = 0; off < header.heapLen; off += CHUNK) {
-      const n = Math.min(CHUNK, header.heapLen - off);
-      if (readSync(fd, buf, 0, n, header.heapOff + off) !== n) throw new Error('avs2: short heap read');
-      if (corruptAt >= off && corruptAt < off + n) buf[corruptAt - off] ^= 0xff;
-      x.update(buf.subarray(0, n));
-    }
-    return x.hex();
-  };
 
   // Tars read once (de-pooled — walker nodes + soBytes alias these buffers,
   // exactly like the executor's transferred boot payloads).
@@ -482,16 +488,33 @@ gc.collect()`;
     return { tar, meta: parseTarMeta(tar) };
   });
   // Shipped collectSoBytes — the same subarray-view mapping the executor's
-  // snap-probe hands to DSO replay.
+  // precompile task consumes.
   const soBytes = collectSoBytes(bootTars.map(({ tar, meta }) => ({ prefix: meta.prefix, bytes: tar.buffer })));
 
-  // ---- boot 1: cold + mounts (walker + dlopen) + bake + owned capture
-  let py1 = await loadPyodide({ indexURL: forkDir, packages: [], env: BOOT_ENV });
+  // ---- boot 1: UNIFORM cold boot (headerP:null → deferred Module.callMain,
+  // the executor's exact cold+capture path — the full board below over this
+  // interpreter IS the deferred-main equivalence probe) + mounts + bake +
+  // owned capture.
+  const cold = mkFeeds();
+  let py1 = await bootPyodide({ artifactBase: `${forkDir}/`, snapshot: cold.feeds });
+  check('uniform cold boot: cold outcome, zero snap-invalids', cold.outcome.restored === false && cold.invalids.length === 0);
   for (const { tar, meta } of bootTars) {
     mountBundleTree(py1.FS, meta.prefix, tar);
     for (const so of meta.loadOrder) await py1._api.loadDynlib(`${meta.prefix}/${so}`);
   }
   py1.runPython(POST_RESTORE);
+  // Cold-boot file_data knife (executor order: after all dlopens, before the
+  // bake — freed pages get reused by bake allocations, the capture shrinks).
+  {
+    const before = py1._module.HEAP8.length;
+    const { freedBytes, aborted } = freeDsoFileData(py1);
+    check(
+      'dso-free: freed the group ELF copies (>8 MB, no abort)',
+      freedBytes > 8 << 20 && !aborted,
+      `freed ${freedBytes} aborted ${aborted}`,
+    );
+    console.log(`  dso-free: freed ${(freedBytes / 1e6).toFixed(1)} MB of file_data (heap ${(before / 1e6).toFixed(1)} MB)`);
+  }
   py1.runPython(BAKE);
   const pin1 = py1.runPython('import json, numpy\njson.dumps([int(x) for x in numpy.random.RandomState(42).randint(0, 1000, 6)])');
 
@@ -534,6 +557,7 @@ gc.collect()`;
     heapLen: py1._module.HEAP8.length,
   };
   check('capture: 4 grouped DSOs recorded', capMeta.dso.loadOrder.length === 4, JSON.stringify(capMeta.dso.loadOrder));
+  console.log(`  capture heapLen ${capMeta.heapLen.toLocaleString('en-US')} B (${(capMeta.heapLen / 1e6).toFixed(1)} MB)`);
   check(
     'capture: hiwireKeys empty at the pre-harden point',
     capMeta.hiwire.hiwireKeys.length === 0,
@@ -574,7 +598,8 @@ gc.collect()`;
   const fileSize = heapOff1 + capMeta.heapLen;
   py1 = null; // release boot-1 heap before boot 2 (two ~200 MB images otherwise)
 
-  // ---- decode/validate + negatives (shipped parseAvsHeader over an fd handle)
+  // ---- decode/validate + negatives (shipped parseAvsHeader + the shipped
+  // SUP-side reader over fd handles — hash verdicts are pre-transfer now)
   const fd = openSync(snapPath, 'r');
   const snapHandle = mkSnapHandle(fd, fileSize);
   let header = null;
@@ -585,8 +610,48 @@ gc.collect()`;
     finish();
   }
   check('avs2 header parses + cross-checks', header !== null);
-  check('avs2: positive hash fold matches', foldFileHash(fd, header) === header.heapHash.value);
-  check('avs2: corrupt heap byte fails the fast hash', foldFileHash(fd, header, 4096) !== header.heapHash.value);
+
+  // Positive sup-style read — the verified buffer FEEDS the restore below,
+  // exactly as the supervisor transfers it to the executor.
+  const heapBuffer = await readSnapshotToBuffer(snapHandle, header, LIVE);
+  snapHandle.close();
+  check(
+    'sup read: verified heap buffer lands (fused hash, exact length)',
+    heapBuffer !== null && heapBuffer.byteLength === header.heapLen,
+    String(heapBuffer?.byteLength),
+  );
+  {
+    // Corrupt-byte negative at the READ layer: a decorated handle flips one
+    // byte inside the heap segment — the fused hash must refuse.
+    const cfd = openSync(snapPath, 'r');
+    const inner = mkSnapHandle(cfd, fileSize);
+    const corruptAt = header.heapOff + 4096;
+    const corrupting = {
+      size: inner.size,
+      read: (view, at) => {
+        const n = inner.read(view, at);
+        if (corruptAt >= at && corruptAt < at + n) view[corruptAt - at] ^= 0xff;
+        return n;
+      },
+      close: inner.close,
+    };
+    let msg = null;
+    try {
+      await readSnapshotToBuffer(corrupting, header, LIVE);
+    } catch (e) {
+      msg = e.message;
+    }
+    corrupting.close();
+    check('sup read: corrupt heap byte fails the fused hash', msg?.includes('hash mismatch'), msg ?? 'did not throw');
+  }
+  {
+    // Abandoned-generation abort: resolves null, no throw (F16/F17 contract).
+    const afd = openSync(snapPath, 'r');
+    const h = mkSnapHandle(afd, fileSize);
+    const aborted = await readSnapshotToBuffer(h, header, { live: () => true, abandoned: () => true });
+    h.close();
+    check('sup read: abandoned generation aborts to null', aborted === null);
+  }
   {
     const bad = Buffer.from(header1);
     bad[20] ^= 0xff; // inside the header JSON
@@ -606,12 +671,44 @@ gc.collect()`;
     check('avs2: corrupt header byte fails the crc', msg?.includes('crc'), msg ?? 'did not throw');
   }
 
-  // ---- boot 2: owned restore through the SHIPPED driver (py-loader's
-  // bootPyodide → makePreBlit — the exact executor restore path; a PreBlit
-  // failure here would reject, failing the section). The per-DSO tableBase
-  // assert lives in the emsdk dsoBaseHook (drift throws inside the replay),
-  // so a successful boot IS the post-instantiate probe.
-  const py2 = await bootPyodide({ artifactBase: `${forkDir}/`, restore: { header, handle: snapHandle, soBytes } });
+  // ---- DSO precompile (executor-shaped): the 4 group Modules compile once
+  // and serve BOTH the dirty-restore negative and the real restore — proving
+  // precompiled-Module replay end-to-end (the 0005 union widening).
+  const modulesP = (async () => {
+    const pairs = await Promise.all(header.dso.loadOrder.map(async (p) => [p, await WebAssembly.compile(soBytes.get(p))]));
+    return new Map(pairs);
+  })();
+
+  // ---- dirty-restore negative: heapP resolves null AFTER a successful
+  // replay → the mutation zone must throw DirtyRestoreError (same-Module
+  // cold is forbidden — the executor re-instantiates fresh on this class),
+  // and onSnapInvalid must NOT fire (that channel is pre-mutation only).
+  {
+    const dirty = mkFeeds({ header, heap: null, modules: modulesP });
+    let err = null;
+    try {
+      await bootPyodide({ artifactBase: `${forkDir}/`, snapshot: dirty.feeds });
+    } catch (e) {
+      err = e;
+    }
+    check('dirty negative: heapP:null → DirtyRestoreError', err instanceof DirtyRestoreError, String(err).slice(0, 200));
+    check(
+      'dirty negative: outcome stays cold, no pre-mutation snap-invalid',
+      dirty.outcome.restored === false && dirty.invalids.length === 0,
+    );
+  }
+
+  // ---- boot 2: owned restore through the SHIPPED feeds driver (py-loader's
+  // bootPyodide → makePreBlit — the exact executor restore path: precompiled
+  // Modules, verified transferred buffer, pre-touch loop). The per-DSO
+  // tableBase assert lives in the emsdk dsoBaseHook (drift throws inside the
+  // replay), so a successful boot IS the post-instantiate probe.
+  const restoreRun = mkFeeds({ header, heap: heapBuffer, modules: modulesP });
+  const py2 = await bootPyodide({ artifactBase: `${forkDir}/`, snapshot: restoreRun.feeds });
+  check(
+    'restore: outcome.restored true (blit landed), zero snap-invalids',
+    restoreRun.outcome.restored === true && restoreRun.invalids.length === 0,
+  );
   check('restore: post-replay table length == tableLenAtCapture', py2._module.wasmTable.length === header.tableLenAtCapture);
 
   // Extract-only remount (files for lazy imports + post-restore C dlopens;

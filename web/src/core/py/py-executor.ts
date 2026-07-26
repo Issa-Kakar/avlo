@@ -15,19 +15,20 @@
 import { sha256Hex } from '@avlo/py-loader/verify';
 import { assertRealmHardened, hardenRealm, scrubWorkerScope } from './py-harden';
 import { HARNESS_INSTALL, RUN_INVOKE } from './py-harness';
-import { bootPyodide, PreBlitError, type Pyodide, type PyRestore } from './py-loader';
+import { bootPyodide, DirtyRestoreError, freeDsoFileData, type Pyodide, type PySnapshotFeeds } from './py-loader';
 import { collectSoBytes, mountBundleTree } from './py-mount';
 import {
-  type ExecBootMsg,
+  type BootPrepMsg,
   type ExecRunMsg,
   OUTPUT_TRUNCATION_MARKER,
   PY_LIMITS,
   type PyBundlePayload,
   type PyFigure,
+  type PySetKey,
   type SupToExec,
 } from './py-protocol';
 import { HEARTBEAT, MEM_KIB, mapPySab, PyExecState, type PySabViews, RUN_ID, STATE } from './py-sab';
-import { type AvsCaptureMeta, openSetSnapshot, parseAvsHeader } from './py-snapshot';
+import type { AvsCaptureMeta, AvsHeader } from './py-snapshot';
 import { installWasmTimers, setTraceSink, traceBegin, traceEmit, traceReset, traceSpan, traceSpanAsync } from './py-trace';
 
 let pyodide: Pyodide = null;
@@ -37,6 +38,29 @@ let currentRunId = 0;
  * landed). Rides exec-ready + every exec-fatal — the supervisor's poison
  * routing keys on it. */
 let restored = false;
+
+/** L2 boot-input deferreds — the supervisor streams boot-data / snap-header /
+ * snap-heap in ANY order relative to boot-prep (a warm cache lets boot-data
+ * outrun boot-prep); every message parks here and boot logic starts at
+ * boot-prep. Deferreds RESOLVE only, never reject — absence of a message is
+ * covered by the supervisor's completeness contract (a value or null always
+ * arrives, or this worker is terminated). */
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (v: T) => void;
+}
+function deferred<T>(): Deferred<T> {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+const D = {
+  tars: deferred<PyBundlePayload[]>(),
+  header: deferred<AvsHeader | null>(),
+  heap: deferred<ArrayBuffer | null>(),
+};
 
 /** Ready-point heap copy — the blit-reset image. Taken at the END of boot on
  * EVERY path (cold included), so it already contains the harness, the armed
@@ -183,10 +207,9 @@ async function mountBundle(b: PyBundlePayload, extractOnly: boolean): Promise<vo
  * supervisor drops exec-snapshot once ready). stdlib captures too (no bundles
  * → no bake; the gc still runs). Best-effort: a capture failure warns and the
  * boot continues snapshotless. */
-function captureSetSnapshot(m: ExecBootMsg): void {
-  if (!m.captureKey) return;
+function captureSetSnapshot(captureKey: PySetKey | undefined, bundles: PyBundlePayload[]): void {
+  if (!captureKey) return;
   try {
-    const bundles = m.bundles ?? [];
     traceSpan('capture-imports', () => {
       for (const b of bundles) {
         const imports = BUNDLE_IMPORTS[b.name];
@@ -205,16 +228,16 @@ function captureSetSnapshot(m: ExecBootMsg): void {
     const tableLenAtCapture = pyodide._module.wasmTable.length as number;
     const heap = traceSpan('capture-snapshot', () => (pyodide._module.HEAP8 as Uint8Array).slice().buffer as ArrayBuffer);
     const meta: AvsCaptureMeta = { dso, dsoHandles, hiwire, buildId, tableLenAtCapture, heapLen: heap.byteLength };
-    post({ t: 'exec-snapshot', captureKey: m.captureKey, meta, heap }, [heap]);
+    post({ t: 'exec-snapshot', captureKey, meta, heap }, [heap]);
     console.warn(
-      `py: captured ${m.captureKey} snapshot (${(heap.byteLength / 1e6).toFixed(1)} MB, ${(performance.now() - t0).toFixed(0)} ms)`,
+      `py: captured ${captureKey} snapshot (${(heap.byteLength / 1e6).toFixed(1)} MB, ${(performance.now() - t0).toFixed(0)} ms)`,
     );
   } catch (err) {
     console.warn('py: snapshot capture failed (continuing snapshotless) —', err);
   }
 }
 
-async function boot(m: ExecBootMsg): Promise<void> {
+async function boot(m: BootPrepMsg): Promise<void> {
   if (pyodide || sab) {
     // One boot per generation — a second would re-run mounts over live state
     // and re-point the interrupt buffer mid-flight. Refuse loudly.
@@ -226,56 +249,71 @@ async function boot(m: ExecBootMsg): Promise<void> {
   const t0 = performance.now();
   const wasmTimers = installWasmTimers();
   let wasm: Record<string, unknown> = {};
+  let bundleCount = 0;
+  const outcome = { restored: false };
   try {
-    // Snap-probe: open + header-validate the set's OPFS snapshot BEFORE
-    // loadPyodide (strictly pre-scrub). Any failure here or inside preBlit
-    // falls back COLD in this same boot; the sync handle never survives
-    // toward harden (preBlit closes it in a finally, probe failures close it
-    // here — a live handle is write authority across the scrub boundary).
-    let restore: PyRestore | null = null;
-    if (m.trySnapshot && m.captureKey) {
-      const endProbe = traceBegin('snap-probe');
-      const handle = await openSetSnapshot(m.buildHash, m.captureKey);
-      if (handle) {
-        try {
-          const header = parseAvsHeader(handle, { buildHash: m.buildHash, setKey: m.captureKey });
-          restore = { header, handle, soBytes: collectSoBytes(m.bundles ?? []) };
-        } catch (err) {
-          handle.close();
-          post({ t: 'exec-snap-invalid', reason: String((err as Error)?.message ?? err).split('\n')[0] });
-        }
-      }
-      endProbe({ hit: restore !== null });
+    let snapshot: PySnapshotFeeds | undefined;
+    if (m.trySnapshot) {
+      // DSO precompile — kicks off the moment tars + a non-null header are
+      // both in, overlapped with glue import + main instantiate (V8 compiles
+      // on process background threads). WebAssembly.compile COPIES its input,
+      // so the adopted tar subarrays stay safe. Wrapped by wasmTimers (so
+      // compile time shows in the boot aggregates) and consumed inside
+      // preBlit, which precedes harden's compile-surface delete (F12 — same
+      // window as today's replay).
+      const modulesP = (async (): Promise<Map<string, WebAssembly.Module> | null> => {
+        const [tars, header] = await Promise.all([D.tars.promise, D.header.promise]);
+        if (!header) return null;
+        const so = collectSoBytes(tars);
+        const pairs = await Promise.all(
+          header.dso.loadOrder.map(async (p): Promise<[string, WebAssembly.Module]> => {
+            const bytes = so.get(p);
+            if (!bytes) throw new Error(`snapshot precompile: no bytes for DSO ${p}`);
+            // Tar payloads are plain transferred ArrayBuffers — the narrow cast is true.
+            return [p, await WebAssembly.compile(bytes as Uint8Array<ArrayBuffer>)];
+          }),
+        );
+        return new Map(pairs);
+      })();
+      modulesP.catch(() => {}); // rejection consumed only inside preBlit — never unhandled
+      snapshot = {
+        headerP: D.header.promise,
+        heapP: D.heap.promise,
+        modulesP,
+        onSnapInvalid: (reason) => post({ t: 'exec-snap-invalid', reason }),
+        outcome,
+      };
     }
-    // Restore happens INSIDE bootPyodide (the fork's _avloRestore.preBlit
-    // seam), before the realm is stripped — even a poisoned image lands
-    // authority-less.
+    // Uniform boot: with feeds present the fork ALWAYS boots noInitialRun and
+    // the preBlit driver decides restore-vs-cold in flight — a restore lands
+    // in the realm before it is stripped, so even a poisoned image boots
+    // authority-less. Without feeds (snapshots off, in-boot cold retry) the
+    // classic auto-main path runs.
     pyodide = await traceSpanAsync('boot-pyodide', async () => {
-      if (restore) {
+      if (snapshot) {
         try {
-          const py = await bootPyodide({ artifactBase: m.artifactBase, restore });
-          restored = true;
-          return py;
+          return await bootPyodide({ artifactBase: m.artifactBase, snapshot });
         } catch (err) {
-          restore.handle.close(); // idempotent — preBlit's finally usually beat us
-          if (!(err instanceof PreBlitError)) {
-            // Thrown outside preBlit — overwhelmingly post-blit (the image
-            // already landed): flag restored so the supervisor's poison
-            // routing deletes the snapshot and retries cold once.
-            restored = true;
-            throw err;
+          if (err instanceof DirtyRestoreError) {
+            // Mutation-zone failure (replay/table/heap/blit): the Module is
+            // DIRTY — LDSO/table/GOT hold replay state a later cold dlopen
+            // would registry-hit — so re-instantiate FRESH in this same
+            // worker. The supervisor deletes the file, no respawn (U4).
+            post({ t: 'exec-snap-invalid', reason: String(err.message).split('\n')[0] });
+            return bootPyodide({ artifactBase: m.artifactBase });
           }
-          // Pre-blit failure (validation/replay/asserts/read): continue COLD
-          // in the SAME worker — the glue import is cached and the aborted
-          // Module is inert (noInitialRun: main() never ran). The supervisor
-          // deletes the file and does NOT respawn (U4).
-          post({ t: 'exec-snap-invalid', reason: String(err.message).split('\n')[0] });
-          restore = null;
+          // Cold-main failures and post-preBlit throws propagate raw —
+          // retrying the same failing cold boot would loop (F5); the catch
+          // below routes them to exec-fatal with outcome.restored intact.
+          throw err;
         }
       }
       return bootPyodide({ artifactBase: m.artifactBase });
     });
-    for (const b of m.bundles ?? []) {
+    restored = outcome.restored;
+    const bundles = await D.tars.promise;
+    bundleCount = bundles.length;
+    for (const b of bundles) {
       // Cold boots mount fully; restore boots extract-only (DSOs replayed).
       const endMount = traceBegin('mount');
       await mountBundle(b, restored);
@@ -288,7 +326,16 @@ async function boot(m: ExecBootMsg): Promise<void> {
     // ends with the tz bridge (superset of the old ensure_tzpath call —
     // idempotent and import-light on cold boots).
     traceSpan('post-restore', () => pyodide.runPython('import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime'));
-    if (!restored) captureSetSnapshot(m);
+    if (!restored) {
+      // Cold-boot file_data knife (Step 4): all dlopens are behind us, the
+      // bake ahead reuses the freed region, and the capture image shrinks by
+      // the same ~14.6 MB (all-set). Runs on non-capture cold boots too —
+      // pure RAM win there.
+      const endFree = traceBegin('dso-free');
+      const { freedBytes, aborted } = freeDsoFileData(pyodide);
+      endFree({ mb: Math.round(freedBytes / 1e6), ...(aborted ? { aborted: true } : {}) });
+      captureSetSnapshot(m.captureKey, bundles);
+    }
     // Last network/compile touch is behind us — strip the realm's ambient
     // authority, then freeze the intrinsics the run protocol flows through.
     // MUST precede the harness install: the Python-side guard is the
@@ -315,6 +362,10 @@ async function boot(m: ExecBootMsg): Promise<void> {
       resetImage = null;
     }
   } catch (err) {
+    // outcome.restored is the truth for poison routing: true ⇒ the blit
+    // landed and this is a post-blit death (supervisor deletes + ONE cold
+    // respawn); false ⇒ cold-boot failure (no snapshot to blame).
+    restored = outcome.restored;
     traceEmit('exec', 'boot-fatal', { restored, error: String((err as Error)?.message ?? err).split('\n')[0], wasm });
     post({ t: 'exec-fatal', error: String((err as Error)?.stack ?? err), restored });
     return;
@@ -324,8 +375,8 @@ async function boot(m: ExecBootMsg): Promise<void> {
   traceEmit('exec', 'boot', {
     bootMs: Math.round(bootMs),
     restored,
-    triedSnapshot: !!(m.trySnapshot && m.captureKey),
-    bundles: (m.bundles ?? []).length,
+    triedSnapshot: m.trySnapshot,
+    bundles: bundleCount,
     capture: !!m.captureKey && !restored,
     wasm,
   });
@@ -440,11 +491,21 @@ function exec(m: ExecRunMsg): void {
   currentRunId = 0;
 }
 
-self.onmessage = async (e: MessageEvent<SupToExec>) => {
+self.onmessage = (e: MessageEvent<SupToExec>) => {
   const m = e.data;
   switch (m.t) {
-    case 'boot':
-      await boot(m);
+    case 'boot-prep':
+      void boot(m);
+      break;
+    case 'boot-data':
+      D.tars.resolve(m.bundles);
+      break;
+    case 'snap-header':
+      D.header.resolve(m.header);
+      break;
+    case 'snap-heap':
+      if (m.reason) console.warn('py: snapshot read failed supervisor-side —', m.reason);
+      D.heap.resolve(m.heap);
       break;
     case 'exec':
       exec(m);

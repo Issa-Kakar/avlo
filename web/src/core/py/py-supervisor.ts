@@ -29,20 +29,39 @@
  * - Repeat SIGINT writes every PY_LIMITS.interruptRepeatMs until the run
  *   resolves — converts any one-shot swallow into bounded extra latency.
  *
- * Snapshot discipline (P2 — owned dense snapshots):
+ * Snapshot discipline (P2 owned dense snapshots + L2 topology flip):
  * - EVERY set (stdlib included) may restore `opfs:/py/<buildHash>/<set>.snap`.
- *   The EXECUTOR owns the probe + restore (it reads OPFS directly into wasm
- *   memory pre-scrub); this supervisor only ships `trySnapshot`/`captureKey`
- *   on the boot msg, persists exec-snapshot captures (AVS2 assembly + chunked
- *   OPFS write, off the executor's critical path), and deletes poisoned
- *   files. Bundles are fetched on EVERY spawn — restore boots still extract
- *   site-packages from the tars and slice DSO bytes out of them.
- * - Snapshots ACCELERATE, never gate: probe/pre-blit failures fall back cold
- *   INSIDE the boot (exec-snap-invalid → delete only, no respawn); a restored
- *   boot that dies post-blit pre-ready (exec-fatal restored:true) deletes its
- *   file and retries cold ONCE with the run still pending; a restored
- *   generation whose FIRST run hard-fails deletes its file before the eager
- *   respawn (U6 — a structurally-valid-but-bad image must not loop).
+ *   THIS supervisor owns ALL OPFS I/O: it opens/parses/reads+hashes the
+ *   snapshot (T3, in the shadow of executor spawn + glue + instantiate) and
+ *   TRANSFERS the verified heap buffer; the executor's preBlit driver only
+ *   blits. It also persists exec-snapshot captures (AVS2 assembly + chunked
+ *   OPFS write, off the executor's critical path) and deletes poisoned files.
+ *   Bundles are fetched on EVERY spawn — restore boots still mount
+ *   site-packages from the tars and precompile DSOs out of them.
+ * - Spawn topology (L2): the worker is constructed FIRST, then three detached
+ *   tasks feed it — T1 glue-preflight → boot-prep, T2 bundles → boot-data
+ *   (transfer), T3 snapshot open/parse → snap-header, read+hash →
+ *   snap-heap (transfer). Every task captures its worker + token and posts
+ *   only behind a synchronous live() check (F1); teardown/supersession bumps
+ *   the token (F2) and MUTES the dying worker's onmessage before terminate
+ *   (F3) so stale-generation messages can never interleave. Every
+ *   executor-side await has a guaranteed sup-side completion signal —
+ *   boot-data or teardown; snap-header value|null; snap-heap value|null or
+ *   provably-unawaited after exec-snap-invalid/supersession (F6/F16). There
+ *   is NO boot watchdog: a task failure calls abortSpawn, which tears the
+ *   (otherwise-hung) worker down unconditionally.
+ * - Snapshots ACCELERATE, never gate: uniform boots fall back cold on the
+ *   SAME Module for pre-mutation failures (snap-header:null / compile fail)
+ *   and re-instantiate in the SAME worker on mutation-zone failures
+ *   (exec-snap-invalid → delete only, no respawn); a restored boot that dies
+ *   post-blit pre-ready (exec-fatal restored:true) deletes its file and
+ *   retries cold ONCE with the run still pending; a restored generation whose
+ *   FIRST run hard-fails deletes its file before the eager respawn (U6).
+ * - All snapshot-file mutations ride the per-set snapOps promise chain and
+ *   T3 reads await its head (F10) — a poison delete and the eager respawn's
+ *   probe can never race. Hash/parse failures may delete ONLY off a
+ *   lock-holding open rung (F9 — the buffered getFile rung sees unstable
+ *   bytes that may be another tab's mid-write).
  *
  * Single-flight: main's manager serializes runs; at most one run is active or
  * pending here at any time.
@@ -52,6 +71,8 @@ import { PY_ORIGIN } from '@avlo/api-client';
 import { BUILD_LOCK, matchesLockEntry } from '@avlo/py-loader';
 import { parseTarMeta } from './py-mount';
 import {
+  type BootDataMsg,
+  type BootPrepMsg,
   type ExecToSup,
   type MainToSup,
   PY_LIMITS,
@@ -60,11 +81,21 @@ import {
   type PySetKey,
   type ResultMsg,
   type RunMsg,
+  type SnapHeaderMsg,
+  type SnapHeapMsg,
 } from './py-protocol';
 import { allocPySab, clearInterrupt, EPOCH, PyCancelKind, type PySabViews, writeInterrupt } from './py-sab';
-import { deleteSetSnapshot, writeSetSnapshot } from './py-snapshot';
+import {
+  type AvsHeader,
+  deleteSetSnapshot,
+  openSetSnapshotSup,
+  parseAvsHeader,
+  readSnapshotToBuffer,
+  type SnapOpen,
+  writeSetSnapshot,
+} from './py-snapshot';
 import { SET_BUNDLES } from './py-stdlib-modules.gen';
-import { setTraceSink, traceAdd, traceEmit, traceReset, traceSpanAsync } from './py-trace';
+import { setTraceSink, traceAdd, traceBegin, traceEmit, traceReset } from './py-trace';
 
 // Immutable content-hashed artifact origin — the committed lock pins the hash,
 // the worker 404s anything else (stale lock fails visible, never wrong).
@@ -97,8 +128,17 @@ let idleTimer: ReturnType<typeof setTimeout> | null = null;
 let bootedSetKey: PySetKey | null = null;
 /** Last requested set — eager respawns reuse it (cache makes them free). */
 let desiredSetKey: PySetKey = 'stdlib';
-/** Guards overlapping async spawns; only the latest token may proceed. */
+/** Guards overlapping async spawns; only the latest token may proceed.
+ * teardownExecutor bumps it too (F2) — detached spawn tasks of a torn-down
+ * generation must go inert, not feed a corpse or the next worker. */
 let spawnToken = 0;
+/** Per-generation snapshot flags. Replaced wholesale in spawnExecutor; the
+ * generation's T3 task captures ITS object, while onExecutorMessage always
+ * mutates the current one (stale workers are muted, so they can never write
+ * here). `snapAbandoned` (F16): a live-generation exec-snap-invalid means the
+ * executor provably never awaits snap-heap — the in-flight read stops and
+ * posts nothing. */
+let gen = { snapAbandoned: false };
 /** Whether the CURRENT generation's boot msg carried trySnapshot — with
  * exec-ready's `restored` this resolves the boot path for logging. */
 let bootTriedSnapshot = false;
@@ -123,6 +163,24 @@ setTraceSink((line) => post({ t: 'trace', line }));
 
 const bundlesOf = (setKey: PySetKey): readonly string[] => (setKey === 'stdlib' ? [] : SET_BUNDLES[setKey]);
 
+/** Per-set snapshot-file operation chain (F10) — MODULE scope, surviving
+ * teardown: every write/delete APPENDS, every T3 read awaits the head before
+ * opening. Serializes the U6 poison-delete against the eager respawn's probe
+ * (the pre-existing race this fixes) and capture-write against the next
+ * spawn's read. Ops are best-effort (they swallow their own errors), the
+ * catch is belt so one rejection can never wedge a set's chain. */
+const snapOps = new Map<PySetKey, Promise<void>>();
+const snapOpsHead = (setKey: PySetKey): Promise<void> => snapOps.get(setKey) ?? Promise.resolve();
+function chainSnapOp(setKey: PySetKey, op: () => Promise<void>): void {
+  snapOps.set(
+    setKey,
+    snapOpsHead(setKey)
+      .then(op)
+      .catch(() => {}),
+  );
+}
+const chainDelete = (setKey: PySetKey): void => chainSnapOp(setKey, () => deleteSetSnapshot(BUILD_LOCK.buildHash, setKey));
+
 /** Does the booted generation's bundle set cover the run's needs? */
 function setSatisfies(booted: PySetKey | null, need: PySetKey): boolean {
   if (booted === null) return false;
@@ -143,7 +201,7 @@ function setSatisfies(booted: PySetKey | null, need: PySetKey): boolean {
  * — a poisoned/stale entry must not reach a mount. `res.body` yields DECODED
  * bytes, so counts + shas run over identity bytes even when the worker served
  * `.br`. */
-async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
+async function ensureBundles(setKey: PySetKey, live: () => boolean): Promise<PyBundlePayload[]> {
   const names = bundlesOf(setKey);
   if (names.length === 0) return [];
   const cache = await caches.open(PY_CACHE);
@@ -171,7 +229,9 @@ async function ensureBundles(setKey: PySetKey): Promise<PyBundlePayload[]> {
   const total = misses.reduce((n, b) => n + BUILD_LOCK.bundles[b].size, 0);
   let received = 0;
   const progress = () => {
-    if (active && !active.dispatched) {
+    // live-guarded (F13): a superseded spawn's still-streaming download must
+    // not stamp stale progress over the new generation's phase.
+    if (live() && active && !active.dispatched) {
       post({ t: 'phase', runId: active.runId, phase: 'downloading', received, total });
     }
   };
@@ -274,9 +334,17 @@ function clearRunTimers(run: ActiveRun): void {
 /** Terminate + null the executor generation (heap + RAM freed; verified tars
  * persist in the Cache API — respawns re-match without a network trip). Safe
  * when already dormant. Used for idle teardown AND broken-executor paths — a
- * dead worker left assigned would wedge the next run. */
+ * dead worker left assigned would wedge the next run. Bumps the spawn token
+ * (F2) so detached spawn tasks of this generation go inert, and MUTES the
+ * worker before terminate (F3) — terminate() closes ports asynchronously
+ * enough that an already-queued message from the dying worker could otherwise
+ * still fire onExecutorMessage and corrupt the next generation's state. */
 function teardownExecutor(): void {
-  executor?.terminate();
+  spawnToken++;
+  if (executor) {
+    executor.onmessage = null;
+    executor.terminate();
+  }
   executor = null;
   executorReady = false;
   sab = null;
@@ -299,70 +367,179 @@ function armIdleTeardown(): void {
  * (buildHash-dir GC reaps them on the next capture-side touch). */
 const SNAPSHOTS_ENABLED = true;
 
-async function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }): Promise<void> {
+/** Fail the current spawn: tear the (possibly hung) worker down
+ * UNCONDITIONALLY — with the L2 topology the executor already exists and is
+ * awaiting inputs that will now never arrive, and no boot watchdog exists —
+ * then surface the failure as the pending run's result (or stay dormant; the
+ * next click re-attempts). Callers live()-guard: a superseded task must not
+ * tear down its successor. */
+function abortSpawn(message: string, status: PyRunStatus = 'error'): void {
+  teardownExecutor();
+  if (active) failActiveRun(message, status, false);
+}
+
+/** L2 spawn: construct the executor FIRST, then feed it via three detached
+ * tasks so bundle prep + snapshot open/read/hash overlap worker spin-up +
+ * glue import + wasm instantiate. Synchronous through task launch. Discipline
+ * (F1): every task captures `w`/`token`/`gen` — never the module vars — and
+ * every post is a synchronous `if (!live()) return; w.postMessage(...)` pair
+ * (no await between); posting to a terminated captured worker is benign
+ * (message discarded; transferred buffers just detach). Span closers are
+ * live()-guarded too (F14): a stale closer firing after the next spawn's
+ * traceReset would land in the wrong boot's line. */
+function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }): void {
   const token = ++spawnToken;
-  executor?.terminate();
+  if (executor) {
+    executor.onmessage = null; // F3 — mute before terminate
+    executor.terminate();
+  }
   executor = null;
   executorReady = false;
   bootedSetKey = null;
   bootTriedSnapshot = false;
   firstRunAfterRestore = false;
+  gen = { snapAbandoned: false };
   traceReset();
   const spawnStart = performance.now();
   const useSnapshot = SNAPSHOTS_ENABLED && !opts?.noSnapshot;
-  let payloads: PyBundlePayload[] = [];
-  try {
-    // ONE uniform pre-spawn path for every set: bundles are needed on restore
-    // boots too (site-packages re-extracts from the tars; DSO replay slices
-    // .so bytes out of them), and stdlib's ensureBundles is a no-op. The OPFS
-    // probe itself lives in the EXECUTOR (it reads the snapshot directly into
-    // wasm memory — the supervisor never holds snapshot bytes).
-    [, payloads] = await Promise.all([
-      traceSpanAsync('glue-preflight', ensureGlueVerified),
-      traceSpanAsync('bundles', () => ensureBundles(setKey)),
-    ]);
-  } catch (err) {
-    if (token !== spawnToken) return;
-    // Download/verify failure: surface as the pending run's result (or stay
-    // dormant); the next click re-attempts.
-    if (active) failActiveRun(downloadFailureMessage(err, setKey), 'error', false);
-    return;
-  }
-  if (token !== spawnToken) return; // superseded by a newer spawn
   sab = allocPySab(); // never reuse across generations
   epoch += 1;
   Atomics.store(sab.i32, EPOCH, epoch);
-  executor = new Worker(new URL('./py-executor.ts', import.meta.url), {
+  const w = new Worker(new URL('./py-executor.ts', import.meta.url), {
     type: 'module',
   });
-  executor.onmessage = (e: MessageEvent<ExecToSup>) => onExecutorMessage(e.data);
-  executor.onerror = (e: ErrorEvent) => {
+  w.onmessage = (e: MessageEvent<ExecToSup>) => onExecutorMessage(e.data);
+  w.onerror = (e: ErrorEvent) => {
     if (active) failActiveRun(`executor error: ${e.message}`, /out of memory|OOM/i.test(e.message) ? 'oom' : 'error');
     else teardownExecutor(); // dormant executor broke — never leave it assigned
   };
-  // Boot message carries the LOCK's stdlib zip hash — the executor verifies its
-  // MEMFS mount against it (restage ⇒ recapture, the spike's standing guard).
-  // Buffers transfer outright: persistence is the Cache API / OPFS, not this heap.
-  executor.postMessage(
-    {
-      t: 'boot',
-      artifactBase: ARTIFACT_BASE,
-      sab: sab.sab,
-      stdlibSha256: BUILD_LOCK.artifacts['python_stdlib.zip'].sha256,
-      buildHash: BUILD_LOCK.buildHash,
-      bundles: payloads,
-      trySnapshot: useSnapshot,
-      ...(useSnapshot ? { captureKey: setKey } : {}),
-    },
-    payloads.map((p) => p.bytes),
-  );
+  executor = w;
   bootedSetKey = setKey;
   bootTriedSnapshot = useSnapshot;
-  // 'spawn' = the pre-spawn critical path (everything before the executor
-  // even exists); 'boot-wait' (closed on exec-ready) − executor bootMs =
-  // worker spin-up + message latency.
-  bootPostedAt = performance.now();
-  traceAdd('spawn', spawnStart, bootPostedAt, { setKey, trySnapshot: useSnapshot });
+  const live = () => token === spawnToken;
+  const myGen = gen;
+  const sabRef = sab.sab;
+
+  // T1 — glue preflight (memoized after the first success) → boot-prep. The
+  // prep msg carries the LOCK's stdlib zip hash — the executor verifies its
+  // MEMFS mount against it (restage ⇒ recapture, the spike's standing guard).
+  void (async () => {
+    const endGlue = traceBegin('glue-preflight');
+    try {
+      await ensureGlueVerified();
+    } catch (err) {
+      if (!live()) return;
+      abortSpawn(downloadFailureMessage(err, setKey));
+      return;
+    }
+    if (!live()) return;
+    endGlue();
+    w.postMessage({
+      t: 'boot-prep',
+      artifactBase: ARTIFACT_BASE,
+      sab: sabRef,
+      stdlibSha256: BUILD_LOCK.artifacts['python_stdlib.zip'].sha256,
+      buildHash: BUILD_LOCK.buildHash,
+      trySnapshot: useSnapshot,
+      ...(useSnapshot ? { captureKey: setKey } : {}),
+    } satisfies BootPrepMsg);
+    // 'spawn' = construction → boot-prep posted (NOTE: no longer contains the
+    // bundle wait — that overlaps the boot now); 'boot-wait' (closed on
+    // exec-ready) − executor bootMs = spin-up + message latency.
+    bootPostedAt = performance.now();
+    traceAdd('spawn', spawnStart, bootPostedAt, { setKey, trySnapshot: useSnapshot });
+  })();
+
+  // T2 — bundle fetch/verify → boot-data (buffers transfer outright:
+  // persistence is the Cache API, not this heap). Needed on restore boots too
+  // (site-packages mounts from the tars; DSO precompile slices .so bytes out
+  // of them); stdlib resolves []. May outrun T1 on a first-load glue fetch —
+  // the executor parks either order (F7).
+  void (async () => {
+    let payloads: PyBundlePayload[] | null = null;
+    const endBundles = traceBegin('bundles');
+    try {
+      payloads = await ensureBundles(setKey, live);
+    } catch (err) {
+      if (!live()) return;
+      abortSpawn(downloadFailureMessage(err, setKey));
+      return;
+    }
+    if (!live()) {
+      payloads = null;
+      return;
+    }
+    endBundles({ count: payloads.length });
+    try {
+      w.postMessage(
+        { t: 'boot-data', bundles: payloads } satisfies BootDataMsg,
+        payloads.map((p) => p.bytes),
+      );
+    } finally {
+      payloads = null; // F15 — transferred (or discarded); never retained here
+    }
+  })();
+
+  // T3 — snapshot open/parse → snap-header, read+hash → snap-heap. ONE task,
+  // catch-all: after a non-null header the executor's driver AWAITS snap-heap
+  // (unless it posted exec-snap-invalid first), so a value|null must always
+  // follow (F6). Reads await the snapOps chain head (F10).
+  if (useSnapshot) {
+    void (async () => {
+      await snapOpsHead(setKey);
+      if (!live()) return;
+      const endOpen = traceBegin('snap-open');
+      let opened: SnapOpen | null = null;
+      let header: AvsHeader | null = null;
+      try {
+        opened = await openSetSnapshotSup(BUILD_LOCK.buildHash, setKey);
+        if (opened) header = parseAvsHeader(opened.handle, { buildHash: BUILD_LOCK.buildHash, setKey });
+      } catch (err) {
+        // Parse failure: poison-delete ONLY off a lock-holding rung (F9 — the
+        // buffered getFile rung may be reading another tab's mid-write).
+        if (opened?.deletable) chainDelete(setKey);
+        console.warn(`py: ${setKey} snapshot open/parse failed — booting cold:`, String((err as Error)?.message ?? err).split('\n')[0]);
+        header = null;
+      }
+      if (!live()) {
+        opened?.handle.close();
+        return;
+      }
+      endOpen({ hit: header !== null });
+      w.postMessage({ t: 'snap-header', header } satisfies SnapHeaderMsg);
+      if (!header || !opened) {
+        opened?.handle.close();
+        return;
+      }
+      let heap: ArrayBuffer | null = null;
+      let reason: string | undefined;
+      const endRead = traceBegin('snap-read');
+      try {
+        heap = await readSnapshotToBuffer(opened.handle, header, { live, abandoned: () => myGen.snapAbandoned });
+      } catch (err) {
+        reason = String((err as Error)?.message ?? err).split('\n')[0];
+        if (opened.deletable) chainDelete(setKey); // F9 again — hash misses land here
+      } finally {
+        opened.handle.close();
+      }
+      if (!live()) {
+        heap = null;
+        return;
+      }
+      endRead({ mb: Math.round(header.heapLen / 1e6), ...(heap === null && !reason ? { aborted: true } : {}) });
+      if (myGen.snapAbandoned) {
+        // F16 — the executor posted exec-snap-invalid and provably never
+        // awaits snap-heap (its driver went cold / re-instantiated fresh).
+        heap = null;
+        return;
+      }
+      try {
+        w.postMessage({ t: 'snap-heap', heap, ...(reason ? { reason } : {}) } satisfies SnapHeapMsg, heap ? [heap] : []);
+      } finally {
+        heap = null; // F15
+      }
+    })();
+  }
 }
 
 function dispatch(run: ActiveRun): void {
@@ -426,7 +603,7 @@ function failActiveRun(message: string, status: PyRunStatus, respawn = true): vo
   traceEmit('sup', 'run', { runId: run.runId, status, synthesized: true });
   // Eager respawn reuses the last set's CACHED bundles — next click lands on
   // a warm worker with the same mounts.
-  if (respawn) void spawnExecutor(desiredSetKey);
+  if (respawn) spawnExecutor(desiredSetKey);
   armIdleTeardown();
 }
 
@@ -465,18 +642,24 @@ function onExecutorMessage(m: ExecToSup): void {
     }
     case 'exec-snapshot': {
       // Only a BOOT-time capture is legitimate — once ready, user code has
-      // run, and a forged capture must never reach persistent storage.
-      // Persistence overlaps the pending run (fire-and-forget; best-effort).
-      if (!executorReady) void writeSetSnapshot(BUILD_LOCK.buildHash, m.captureKey, m.meta, m.heap);
+      // run, and a forged capture must never reach persistent storage (the
+      // F3 onmessage-mute is what actually closes the stale-generation
+      // window; this guard covers the live one). Persistence rides the
+      // snapOps chain and overlaps the pending run (best-effort).
+      if (!executorReady) chainSnapOp(m.captureKey, () => writeSetSnapshot(BUILD_LOCK.buildHash, m.captureKey, m.meta, m.heap));
       break;
     }
     case 'exec-snap-invalid': {
-      // The executor rejected the OPFS file (probe or pre-blit) and already
-      // continued cold IN the same boot — delete the artifact, nothing else
-      // (U4: no respawn; the cold boot's capture re-persists a fresh one).
+      // The executor rejected the snapshot (pre-mutation fallback on the same
+      // Module, or a dirty-restore re-instantiate) and already continued cold
+      // IN the same worker — delete the artifact, mark the generation
+      // abandoned (F16: an in-flight T3 read stops and posts nothing — the
+      // executor provably never awaits snap-heap now), nothing else (U4: no
+      // respawn; the cold boot's capture re-persists a fresh one).
       console.warn(`py: ${bootedSetKey} snapshot invalid — deleted, boot continued cold:`, m.reason);
       traceEmit('sup', 'snap-invalid', { setKey: bootedSetKey, reason: m.reason });
-      if (bootedSetKey) void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
+      gen.snapAbandoned = true;
+      if (bootedSetKey) chainDelete(bootedSetKey);
       break;
     }
     case 'exec-done': {
@@ -524,17 +707,18 @@ function onExecutorMessage(m: ExecToSup): void {
       if (m.needsRespawn) {
         // U6: the FIRST run of a restored generation hard-failing (trap-class
         // — not ok, not an interrupt) implicates the image itself. Delete the
-        // snapshot BEFORE the eager respawn, or a structurally-valid-but-bad
-        // image loops restore → crash → respawn → restore forever.
+        // snapshot BEFORE the eager respawn — CHAINED (F10), so the respawn's
+        // T3 probe awaits the delete instead of racing it (a structurally-
+        // valid-but-bad image must not loop restore → crash → restore).
         if (firstRunAfterRestore && !m.ok && !m.interrupted && bootedSetKey) {
           console.warn(`py: ${bootedSetKey} restored generation's first run hard-failed — poisoning snapshot`);
-          void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
+          chainDelete(bootedSetKey);
         }
         // Blit failed/skipped or the heap outgrew the reset image — the NEXT
         // run needs a fresh generation for isolation, and an eager respawn
         // (cached bundles / OPFS snapshot) also reclaims the grown memory now.
         teardownExecutor();
-        void spawnExecutor(desiredSetKey);
+        spawnExecutor(desiredSetKey);
       } else {
         firstRunAfterRestore = false;
         armIdleTeardown();
@@ -546,20 +730,21 @@ function onExecutorMessage(m: ExecToSup): void {
       if (!executorReady && m.restored && !snapshotRetried) {
         // A restored boot died POST-blit pre-ready (stdlib drift over a
         // poisoned image, finalizeBootstrap failure, mount/harden death…).
-        // Drop the artifact, retry ONCE cold with the run still pending — a
-        // snapshot failure must be invisible to the user. (Pre-blit failures
-        // never land here; they fall back cold in-boot via exec-snap-invalid.)
+        // Drop the artifact (chained — the retry's probe awaits it, F10),
+        // retry ONCE cold with the run still pending — a snapshot failure
+        // must be invisible to the user. (Pre-blit failures never land here;
+        // they fall back cold in-worker via exec-snap-invalid.)
         console.warn('py: restored boot failed post-blit — poisoning snapshot, retrying cold:', m.error.split('\n')[0]);
-        if (bootedSetKey) void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
+        if (bootedSetKey) chainDelete(bootedSetKey);
         snapshotRetried = true;
-        void spawnExecutor(desiredSetKey, { noSnapshot: true });
+        spawnExecutor(desiredSetKey, { noSnapshot: true });
         break;
       }
       if (firstRunAfterRestore) {
         // Post-ready fatal inside the restored generation's first-run window
         // — same U6 poison rationale as the exec-done leg.
         firstRunAfterRestore = false;
-        if (bootedSetKey) void deleteSetSnapshot(BUILD_LOCK.buildHash, bootedSetKey);
+        if (bootedSetKey) chainDelete(bootedSetKey);
       }
       if (active) {
         // Boot failure (executor never became ready) → an eager respawn
@@ -650,7 +835,7 @@ function onRun(m: RunMsg): void {
   }
   // Wrong (or no) generation for this set — respawn with the right bundles.
   post({ t: 'phase', runId: m.runId, phase: 'booting' });
-  void spawnExecutor(m.setKey);
+  spawnExecutor(m.setKey);
 }
 
 post({ t: 'sup-ready' });
