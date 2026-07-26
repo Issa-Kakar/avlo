@@ -1,19 +1,29 @@
 # py-build — AVLO Python toolchain
 
-> **P2 LANDED (Session 15 — owned dense snapshots; NOTES.md is
-> authoritative):** fork is **Pyodide 314.0.2** / CPython 3.14 / emsdk 5.0.3
-> / **MAIN_MODULE=2** (closed world = `-Wl,--export-if-defined` union in
+> **COLD-RESTORE ATTACK LANDED (Session 16; NOTES.md is authoritative):**
+> fork is **Pyodide 314.0.2** / CPython 3.14 / emsdk 5.0.3 /
+> **MAIN_MODULE=2** (closed world = `-Wl,--export-if-defined` union in
 > `.cache/link-sos/link.rsp`; DSOs NOT on the link line), grouped side
-> modules 67→4 (P1.5). Snapshot patches are LIVE (pyodide 0005 replay API,
-> 0007 `_avloRestore.preBlit` owned seam, 0008b expected-keys, emsdk 0006
-> dsoBaseHook + replay ctor/reloc skip); `patches/parked/` is gone;
+> modules 67→4 (P1.5), buildHash `f440369a4275be9a`. Snapshot patches are
+> LIVE (pyodide 0005 replay API — `loadDynlibReplay` now takes
+> `Uint8Array | WebAssembly.Module`; 0007 `_avloRestore.preBlit` owned seam +
+> stdlib `{canOwn:true}`; 0001 exports `callMain` for the uniform
+> noInitialRun boot; 0008b expected-keys; emsdk 0006 dsoBaseHook + replay
+> ctor/reloc skip). `zoneinfo/_zoneinfo.py` is pruned (static-builtin
+> shadow). `patches/parked/` is gone;
 > `make-baseline.mjs`/`verify-stacking.mjs`/`baseline-imports.txt` and the
 > `baseline`/`verify:stacking` scripts are DELETED (`builtin-modules.json`
 > comes from `dump-builtins.mjs`; snapshots are client-captured — see
-> `web/src/core/py/`). `run-harness.mjs` gained `--section snapshot`
-> (capture → AVS2 → restore board over the SHIPPED web codec + driver, via a
-> registerHooks `.ts` import shim). Glue is `pyodide.asm.mjs`. Prose below
-> predates P1/P1.5/P2 where it conflicts; full rewrite lands P5.
+> `web/src/core/py/`). `run-harness.mjs` sections: base / seaborn /
+> **snapshot** (uniform-boot capture → AVS2 → sup-style verified read →
+> dirty negative → precompiled-Module restore, all over the SHIPPED web
+> codec + driver) / **parity** (L1 walker vs tarfile zero-diff full-tree
+> gate) / verify — the `.ts` import shim lives in `scripts/lib/ts-resolve.mjs`
+> (shared with run-corpus, owns the Node ≥23.6 guard). Bundle mounts
+> everywhere (executor/harness/corpus) ride the shipped
+> `web/src/core/py/py-mount.ts` walker. Glue is `pyodide.asm.mjs`. Prose
+> below predates P1/P1.5/P2/Session-16 where it conflicts; full rewrite
+> lands P5.
 
 Forked-Pyodide build + artifact packing for the in-browser Python runtime
 (`web/src/core/py/`). Everything is pinned in `build.config.json`
