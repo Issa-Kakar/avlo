@@ -19,8 +19,22 @@ web/src/core/spatial/
 ├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers (~250 LOC)
 ├── object-query.ts          — Picker facade: 4 exports, no options  (~230 LOC)
 ├── handle-hit.ts            — Resize handles + endpoint dots        (~140 LOC)
-└── index.ts                 — Barrel; re-exports `ObjectSpatialIndex` only
+├── index.ts                 — Barrel; re-exports `ObjectSpatialIndex` only
+├── flat-rtree.ts            — FlatRTree: mutable SoA R-tree — UNWIRED (~1340 LOC)
+└── flat-rtree.selftest.ts   — Its standalone test+bench runner       (~840 LOC)
 ```
+
+**`flat-rtree.ts` is a standalone, not-yet-wired rbush replacement candidate**
+— a mutable Structure-of-Arrays R-tree (typed-array node pool with
+parent-embedded entry boxes, id→leaf reverse map keyed by dense u32 ids =
+`handle.slot`, in-place `update()`, exact-MBR invariant, OMT bulk load).
+Nothing imports it; the live index is still the rbush wrapper above. Premise,
+design rationale, proof (17.8k-check differential suite incl. rbush parity),
+and A/B numbers (2–8× across ops) live in its introducing commit
+(`feat(spatial): FlatRTree …`) and the two file headers. Pending: an
+independent correctness/perf/memory review pass, then a separately planned
+integration. The selftest runs via esbuild+node (command in its header), not
+in the app bundle.
 
 `hit-dispatch.ts` exposes three switch dispatchers (`hitPointFor` /
 `hitRectFor` / `hitCircleFor`) over eight named, monomorphic per-kind
