@@ -15,7 +15,8 @@
 import { sha256Hex } from '@avlo/py-loader/verify';
 import { assertRealmHardened, hardenRealm, scrubWorkerScope } from './py-harden';
 import { HARNESS_INSTALL, RUN_INVOKE } from './py-harness';
-import { bootPyodide, collectSoBytes, PreBlitError, type Pyodide, type PyRestore } from './py-loader';
+import { bootPyodide, PreBlitError, type Pyodide, type PyRestore } from './py-loader';
+import { collectSoBytes, mountBundleTree } from './py-mount';
 import {
   type ExecBootMsg,
   type ExecRunMsg,
@@ -149,22 +150,20 @@ async function verifyStdlibZip(expectedSha256: string): Promise<void> {
   }
 }
 
-/** Mount one bundle: write the tar into MEMFS, extract it (meta.json stays
- * out), delete the tar, then loadDynlib every DSO in the meta's canonical
- * order (the supervisor sends bundles in deps-first set order). Restore boots
- * pass `extractOnly` — the replayed groups are already registered in LDSO at
- * their recorded bases, but the `.avlo/*.so` FILES must still land: post-
- * restore lazy C dlopens (`_AvloGroupFinder` → load_library_start) stat/read
- * them from MEMFS. */
+/** Mount one bundle: graft the tar's tree DIRECTLY into MEMFS (walker —
+ * node contents adopt tar subarray views, no in-wasm tarfile, no copies),
+ * then loadDynlib every DSO in the meta's canonical order (the supervisor
+ * sends bundles in deps-first set order). Restore boots pass `extractOnly` —
+ * the replayed groups are already registered in LDSO at their recorded bases,
+ * but the `.avlo/*.so` FILES must still land: CPython's ExtensionFileLoader
+ * fopens + fstats the path BEFORE dlopen (dynload_shlib.c), and only then
+ * does the C dlopen short-circuit on the LDSO registry hit (find_existing —
+ * heap state the blit restores), so lazy post-restore imports need the file
+ * present even though its bytes are never re-read by dlopen. */
 async function mountBundle(b: PyBundlePayload, extractOnly: boolean): Promise<void> {
-  const endExtract = traceBegin('mount-extract');
-  pyodide.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(b.bytes));
-  pyodide.runPython(`import os, tarfile
-with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
-    _t.extractall(${JSON.stringify(b.prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
-os.remove('/tmp/_avlo_bundle.tar')
-del _t`);
-  endExtract({ bundle: b.name });
+  const endWalk = traceBegin('mount-walk');
+  mountBundleTree(pyodide.FS, b.prefix, new Uint8Array(b.bytes));
+  endWalk({ bundle: b.name });
   if (extractOnly) return;
   const endDlopen = traceBegin('mount-dlopen');
   for (const so of b.loadOrder) {

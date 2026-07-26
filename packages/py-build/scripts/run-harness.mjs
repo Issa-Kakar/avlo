@@ -10,34 +10,14 @@
 // Turbo/CI: needs staged artifacts (`pnpm run stage`) and Node ≥ 23.6
 // (native type-stripping imports the shipped TS directly).
 //
-//   pnpm harness            all sections (base / seaborn / snapshot / verify children)
-//   node scripts/run-harness.mjs --section base|seaborn|snapshot|verify
+//   pnpm harness            all sections (base / seaborn / snapshot / parity / verify children)
+//   node scripts/run-harness.mjs --section base|seaborn|snapshot|parity|verify
+import './lib/ts-resolve.mjs'; // FIRST: Node ≥23.6 guard + `.ts` resolve shim for shipped-module imports
 import { spawnSync } from 'node:child_process';
 import { closeSync, openSync, readFileSync, readSync, rmSync, writeSync } from 'node:fs';
-import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const [maj, min] = process.versions.node.split('.').map(Number);
-if (maj < 23 || (maj === 23 && min < 6)) {
-  console.error(`run-harness needs Node ≥ 23.6 (type-stripping); this is ${process.versions.node}`);
-  process.exit(1);
-}
-
-// The shipped py-snapshot.ts/py-loader.ts use extensionless relative imports
-// (`./py-trace`), which Node's type-stripping resolver rejects — retry with
-// `.ts` appended so the harness can import the EXACT shipped modules.
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    try {
-      return nextResolve(specifier, context);
-    } catch (err) {
-      if (specifier.startsWith('.') && !specifier.endsWith('.ts')) return nextResolve(`${specifier}.ts`, context);
-      throw err;
-    }
-  },
-});
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(pkgRoot, '../..');
@@ -53,7 +33,7 @@ const section = (() => {
 // ---------------------------------------------------------------- parent
 if (!section) {
   let failed = 0;
-  for (const s of ['base', 'seaborn', 'snapshot', 'verify']) {
+  for (const s of ['base', 'seaborn', 'snapshot', 'parity', 'verify']) {
     console.log(`\n=== section ${s} ===`);
     const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--section', s], { stdio: 'inherit' });
     if (r.status !== 0) failed++;
@@ -81,16 +61,17 @@ const finish = () => {
 
 const harden = await import(pathToFileURL(join(repo, 'web/src/core/py/py-harden.ts')).href);
 const { matchesLockEntry } = await import(pathToFileURL(join(repo, 'packages/py-loader/src/verify.ts')).href);
+// The SHIPPED tar walker + direct-node mounter — the exact module the
+// executor/supervisor run (single home; the old per-script copies are gone).
+const { mountBundleTree, parseTarMeta, collectSoBytes } = await import(pathToFileURL(join(repo, 'web/src/core/py/py-mount.ts')).href);
 
 /** readFileSync Buffers ride a pooled ArrayBuffer — copy to a tight one. */
 const asArrayBuffer = (buf) => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 
-function parseTarMeta(buf) {
-  const name = buf.toString('ascii', 0, 100).replace(/\0.*$/s, '');
-  if (name !== 'meta.json') throw new Error('first tar entry is not meta.json');
-  const size = Number.parseInt(buf.toString('ascii', 124, 136).replace(/\0.*$/s, ''), 8);
-  return JSON.parse(buf.subarray(512, 512 + size).toString('utf8'));
-}
+/** De-pooled tar bytes — adoption-safe (walker nodes alias the buffer; a
+ * pooled Buffer would pin the whole ~8 MB pool) and exact-size like the
+ * executor's transferred buffers. */
+const readTar = (bundle) => new Uint8Array(asArrayBuffer(readFileSync(join(forkDir, `bundles/${bundle}.tar`))));
 
 /** Executor-shaped boot: fork + the set's tars (lock order) + stdlib verify +
  * tz bridge + scrub/harden/assert + harness install. Returns { pyodide, run }. */
@@ -100,15 +81,10 @@ async function bootHardened(setKey) {
   const pyodide = await loadPyodide({ indexURL: forkDir, packages: [], env: { PYTHONHASHSEED: '0', HOME: '/home/pyodide' } });
 
   for (const bundle of LOCK.sets[setKey]) {
-    const tar = readFileSync(join(forkDir, `bundles/${bundle}.tar`));
-    check(`${bundle}.tar matches the committed lock`, await matchesLockEntry(asArrayBuffer(tar), LOCK.bundles[bundle]));
+    const tar = readTar(bundle);
+    check(`${bundle}.tar matches the committed lock`, await matchesLockEntry(tar.buffer, LOCK.bundles[bundle]));
     const meta = parseTarMeta(tar);
-    pyodide.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(tar));
-    pyodide.runPython(`import os, tarfile
-with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
-    _t.extractall(${JSON.stringify(meta.prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
-os.remove('/tmp/_avlo_bundle.tar')
-del _t`);
+    mountBundleTree(pyodide.FS, meta.prefix, tar);
     for (const so of meta.loadOrder) await pyodide._api.loadDynlib(`${meta.prefix}/${so}`);
   }
 
@@ -469,7 +445,6 @@ gc.collect()`;
     t2.update(Buffer.from('Nobody inspects the spammish repetition'));
     check('xxh32 known-answer vectors', t1.hex() === '02cc5d05' && t2.hex() === 'e2293b2f', `${t1.hex()} ${t2.hex()}`);
   }
-  const alignUp = (n, a) => Math.ceil(n / a) * a;
   const CHUNK = 8 << 20;
   /** fd-backed SnapReadHandle — the harness's stand-in for the executor's
    * OPFS sync-access handle (same contract: positioned read, idempotent
@@ -500,34 +475,21 @@ gc.collect()`;
     return x.hex();
   };
 
-  const walkTarSos = (tar, prefix, out) => {
-    let off = 0;
-    while (off + 512 <= tar.length) {
-      const name = tar.toString('ascii', off, off + 100).replace(/\0.*$/s, '');
-      if (!name) break;
-      const size = Number.parseInt(tar.toString('ascii', off + 124, off + 136).replace(/\0.*$/s, ''), 8) || 0;
-      if (name.endsWith('.so')) out.set(`${prefix}/${name}`, new Uint8Array(tar.subarray(off + 512, off + 512 + size)));
-      off += 512 + alignUp(size, 512);
-    }
-  };
-  const extractTar = (py, tar, prefix) => {
-    py.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(tar));
-    py.runPython(`import os, tarfile
-with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
-    _t.extractall(${JSON.stringify(prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
-os.remove('/tmp/_avlo_bundle.tar')
-del _t`);
-  };
+  // Tars read once (de-pooled — walker nodes + soBytes alias these buffers,
+  // exactly like the executor's transferred boot payloads).
+  const bootTars = LOCK.sets[SET_KEY].map((bundle) => {
+    const tar = readTar(bundle);
+    return { tar, meta: parseTarMeta(tar) };
+  });
+  // Shipped collectSoBytes — the same subarray-view mapping the executor's
+  // snap-probe hands to DSO replay.
+  const soBytes = collectSoBytes(bootTars.map(({ tar, meta }) => ({ prefix: meta.prefix, bytes: tar.buffer })));
 
-  // ---- boot 1: cold + mounts (extract + dlopen) + bake + owned capture
+  // ---- boot 1: cold + mounts (walker + dlopen) + bake + owned capture
   let py1 = await loadPyodide({ indexURL: forkDir, packages: [], env: BOOT_ENV });
-  const soBytes = new Map();
-  for (const bundle of LOCK.sets[SET_KEY]) {
-    const tar = readFileSync(join(forkDir, `bundles/${bundle}.tar`));
-    const meta = parseTarMeta(tar);
-    extractTar(py1, tar, meta.prefix);
+  for (const { tar, meta } of bootTars) {
+    mountBundleTree(py1.FS, meta.prefix, tar);
     for (const so of meta.loadOrder) await py1._api.loadDynlib(`${meta.prefix}/${so}`);
-    walkTarSos(tar, meta.prefix, soBytes);
   }
   py1.runPython(POST_RESTORE);
   py1.runPython(BAKE);
@@ -654,10 +616,7 @@ del _t`);
 
   // Extract-only remount (files for lazy imports + post-restore C dlopens;
   // dlopen SKIPPED — the replay already registered the groups in LDSO).
-  for (const bundle of LOCK.sets[SET_KEY]) {
-    const tar = readFileSync(join(forkDir, `bundles/${bundle}.tar`));
-    extractTar(py2, tar, parseTarMeta(tar).prefix);
-  }
+  for (const { tar, meta } of bootTars) mountBundleTree(py2.FS, meta.prefix, tar);
   py2.runPython(POST_RESTORE);
 
   let out = py2.runPython('import json, numpy\njson.dumps(float(numpy.ones(4).sum()))');
@@ -690,6 +649,126 @@ del _t`);
     check('restore: numpy alive after blit reset', out === '3.0', out);
   }
   rmSync(snapPath, { force: true });
+  finish();
+}
+
+// ---------------------------------------------------------------- parity
+// L1 walker equivalence, the STANDING gate: boot 1 mounts all bundles via the
+// in-wasm `tarfile.extractall(filter='data')` REFERENCE (the pre-walker mount
+// path, re-enacted here and only here), dumps the full live MEMFS tree; boot 2
+// mounts via the SHIPPED walker (py-mount.mountBundleTree) and must dump a
+// ZERO-DIFF tree — every path, type, mode, mtime-sec, size, and content xxh32
+// (dir mtimes out of scope: both paths leave them wall-clock). Sequential
+// boots with an explicit release between (9 GB WSL2 host — never two live
+// `all` images at once).
+if (section === 'parity') {
+  const { Xxh32 } = await import(pathToFileURL(join(repo, 'web/src/core/py/py-snapshot.ts')).href);
+  const { loadPyodide } = await import(pathToFileURL(join(forkDir, 'pyodide.mjs')).href);
+  const BOOT_ENV = { PYTHONHASHSEED: '0', HOME: '/home/pyodide' };
+  const S_IFDIR = 0o040000;
+  const hashOf = (u8) => {
+    const x = new Xxh32();
+    x.update(u8);
+    return x.hex();
+  };
+  /** Full live-tree manifest — walks the node graph directly; byte views are
+   * rebuilt via (buffer, byteOffset, usedBytes) so copies AND adopted
+   * subarrays read identically. Files: {t,mode,mt,size,h}; dirs: {t,mode}. */
+  const dumpTree = (py, prefixes) => {
+    const out = {};
+    const walk = (node, path) => {
+      for (const [name, child] of Object.entries(node.contents)) {
+        const p = `${path}/${name}`;
+        if ((child.mode & 0o170000) === S_IFDIR) {
+          out[p] = { t: 'd', mode: child.mode & 0o7777 };
+          walk(child, p);
+        } else {
+          const bytes = child.contents
+            ? new Uint8Array(child.contents.buffer, child.contents.byteOffset, child.usedBytes)
+            : new Uint8Array(0);
+          out[p] = { t: 'f', mode: child.mode & 0o7777, mt: Math.floor(child.mtime / 1000), size: child.usedBytes, h: hashOf(bytes) };
+        }
+      }
+    };
+    for (const prefix of prefixes) {
+      if (!(prefix in out)) {
+        const rootNode = py.FS.lookupPath(prefix).node;
+        out[prefix] = { t: 'd', mode: rootNode.mode & 0o7777 };
+        walk(rootNode, prefix);
+      }
+    }
+    return out;
+  };
+
+  const parityTars = LOCK.sets.all.map((bundle) => {
+    const tar = readTar(bundle);
+    return { tar, meta: parseTarMeta(tar) };
+  });
+  const prefixes = [...new Set(parityTars.map(({ meta }) => meta.prefix))];
+
+  // ---- boot 1: the tarfile reference re-enactment
+  let py = await loadPyodide({ indexURL: forkDir, packages: [], env: BOOT_ENV });
+  for (const { tar, meta } of parityTars) {
+    py.FS.writeFile('/tmp/_avlo_bundle.tar', tar);
+    py.runPython(`import os, tarfile
+with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
+    _t.extractall(${JSON.stringify(meta.prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
+os.remove('/tmp/_avlo_bundle.tar')
+del _t`);
+  }
+  const ref = dumpTree(py, prefixes);
+  py = null; // release boot-1 heap before boot 2
+
+  // ---- boot 2: the shipped walker
+  py = await loadPyodide({ indexURL: forkDir, packages: [], env: BOOT_ENV });
+  for (const { tar, meta } of parityTars) mountBundleTree(py.FS, meta.prefix, tar);
+  const got = dumpTree(py, prefixes);
+
+  const refKeys = Object.keys(ref);
+  const missing = refKeys.filter((k) => !(k in got));
+  const extra = Object.keys(got).filter((k) => !(k in ref));
+  const diffs = [];
+  for (const k of refKeys) {
+    if (!(k in got)) continue;
+    for (const f of ['t', 'mode', 'mt', 'size', 'h']) {
+      if (ref[k][f] !== got[k][f]) diffs.push(`${k}: ${f} ${ref[k][f]} → ${got[k][f]}`);
+    }
+  }
+  check(
+    `walker parity: zero-diff tree over all ${parityTars.length} bundles (${refKeys.length} entries)`,
+    missing.length === 0 && extra.length === 0 && diffs.length === 0,
+    [
+      missing.length ? `${missing.length} missing e.g. ${missing.slice(0, 4).join(', ')}` : '',
+      extra.length ? `${extra.length} extra e.g. ${extra.slice(0, 4).join(', ')}` : '',
+      diffs.length ? `${diffs.length} field diffs: ${diffs.slice(0, 8).join('; ')}` : '',
+    ]
+      .filter(Boolean)
+      .join(' | '),
+  );
+  check('walker parity tree is non-trivial', refKeys.length > 1000, `${refKeys.length} entries`);
+
+  // Functional probes on the walker-mounted boot: nameTable lookups, stat,
+  // open/read of a .pyc, listdir, real imports through the mounted tree.
+  const probe = JSON.parse(
+    py.runPython(`
+import os, json
+p = ${JSON.stringify(prefixes[0])}
+tz = open(p + '/pytz/__init__.pyc', 'rb').read()
+st = os.stat(p + '/pytz/zoneinfo/UTC')
+json.dumps({
+  'listdir': len(os.listdir(p)),
+  'pytzInitLen': len(tz),
+  'utcSize': st.st_size,
+  'importOk': __import__('dateutil') is not None and __import__('pytz') is not None,
+  'tzProbe': __import__('pytz').timezone('Europe/Paris').zone,
+})
+`),
+  );
+  check(
+    'walker probes: listdir/open/stat/import/tz all live',
+    probe.listdir > 0 && probe.pytzInitLen > 0 && probe.utcSize > 0 && probe.importOk === true && probe.tzProbe === 'Europe/Paris',
+    JSON.stringify(probe),
+  );
   finish();
 }
 

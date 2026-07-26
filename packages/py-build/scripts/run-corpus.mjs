@@ -8,6 +8,7 @@
 // namespace. Samples are self-asserting; any exception fails.
 //
 //   node scripts/run-corpus.mjs [--index dist/raw] [--stdlib dist/stage/python_stdlib.zip] [--group numpy]
+import './lib/ts-resolve.mjs'; // FIRST: Node ≥23.6 guard + `.ts` resolve shim (shipped py-mount import below)
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -15,6 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodePng } from './lib/png.mjs';
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const repo = resolve(pkgRoot, '../..');
 const args = process.argv.slice(2);
 const opt = (name, dflt) => {
   const i = args.indexOf(name);
@@ -76,6 +78,9 @@ for (const b of bundles) {
 }
 
 const { loadPyodide } = await import(pathToFileURL(join(indexDir, 'pyodide.mjs')).href);
+// The SHIPPED walker/meta-parser (web/src/core/py/py-mount.ts) — the exact
+// mount path the product executor runs; the old local tarfile copy is gone.
+const { mountBundleTree, parseTarMeta, walkTar } = await import(pathToFileURL(join(repo, 'web/src/core/py/py-mount.ts')).href);
 const py = await loadPyodide({
   indexURL: indexDir,
   stdLibURL: pathToFileURL(stdlibZip).href,
@@ -83,35 +88,22 @@ const py = await loadPyodide({
   env: { PYTHONHASHSEED: '0', HOME: '/home/pyodide' },
 });
 
-// meta.json is the FIRST ustar entry by construction (D2): name at byte 0,
-// size as octal at 124, payload at 512 — one header parse, no tar library.
-function parseTarMeta(buf) {
-  const name = buf.toString('ascii', 0, 100).replace(/\0.*$/s, '');
-  if (name !== 'meta.json') throw new Error(`first tar entry is ${JSON.stringify(name)}, want meta.json`);
-  const size = Number.parseInt(buf.toString('ascii', 124, 136).replace(/\0.*$/s, ''), 8);
-  return JSON.parse(buf.subarray(512, 512 + size).toString('utf8'));
-}
-
 // pyodide's sysconfig joins base '/' -> '//lib/…'; normpath keeps the
 // POSIX-special leading double slash, so collapse it by hand.
 const derivedPrefix = py.runPython('import sysconfig; "/" + sysconfig.get_paths()["purelib"].lstrip("/")');
 for (const b of bundles) {
   const buf = readFileSync(join(bundleDir, `${b}.tar`));
-  const meta = parseTarMeta(buf);
+  // De-pool: walker nodes adopt subarray views of this buffer.
+  const tar = new Uint8Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const meta = parseTarMeta(tar);
   if (meta.prefix !== derivedPrefix) {
     throw new Error(`${b}: meta.prefix ${meta.prefix} != interpreter site-packages ${derivedPrefix}`);
   }
-  py.FS.writeFile('/tmp/_avlo_bundle.tar', new Uint8Array(buf));
-  py.runPython(
-    `import tarfile, os
-with tarfile.open('/tmp/_avlo_bundle.tar') as _t:
-    _t.extractall(${JSON.stringify(meta.prefix)}, members=[m for m in _t.getmembers() if m.name != 'meta.json'], filter='data')
-os.remove('/tmp/_avlo_bundle.tar')`,
-  );
+  mountBundleTree(py.FS, meta.prefix, tar);
   for (const so of meta.loadOrder) {
     await py._api.loadDynlib(`${meta.prefix}/${so}`);
   }
-  console.log(`mounted ${b} (${meta.counts.files} files, ${meta.counts.so} DSOs)`);
+  console.log(`mounted ${b} (${walkTar(tar).length} files, ${meta.loadOrder.length} DSOs)`);
 }
 if (bundles.length > 0) {
   // Mirror the executor contract: post_restore (⊃ ensure_tzpath) runs after

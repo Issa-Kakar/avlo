@@ -114,30 +114,3 @@ export async function bootPyodide(opts: PyBootOptions): Promise<Pyodide> {
     }),
   );
 }
-
-/** Map every `.so` member of the boot tars to its recorded ABSOLUTE dlopen
- * path (`bundle.prefix + '/' + member` — the exact string mountBundle dlopens
- * and the emsdk hook records, U7). DSO replay slices bytes straight out of
- * the transferred tar buffers — no FS involvement pre-blit. Plain ustar walk:
- * 512-byte headers, octal sizes, data padded to 512 (meta.json is the first
- * entry by construction; grouped tars carry one `.avlo/<bundle>.so` each). */
-export function collectSoBytes(bundles: ReadonlyArray<{ prefix: string; bytes: ArrayBuffer }>): Map<string, Uint8Array> {
-  const out = new Map<string, Uint8Array>();
-  for (const b of bundles) {
-    const tar = new Uint8Array(b.bytes);
-    const ascii = (from: number, to: number): string => {
-      let s = '';
-      for (let i = from; i < to && tar[i] !== 0; i++) s += String.fromCharCode(tar[i]);
-      return s;
-    };
-    let off = 0;
-    while (off + 512 <= tar.length) {
-      const name = ascii(off, off + 100);
-      if (!name) break; // zero block — end of archive
-      const size = Number.parseInt(ascii(off + 124, off + 136), 8) || 0;
-      if (name.endsWith('.so')) out.set(`${b.prefix}/${name}`, tar.subarray(off + 512, off + 512 + size));
-      off += 512 + Math.ceil(size / 512) * 512;
-    }
-  }
-  return out;
-}

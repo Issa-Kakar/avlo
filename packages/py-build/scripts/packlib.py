@@ -137,6 +137,10 @@ def write_tar(out_path: Path, entries: list[tuple[str, bytes]]) -> bytes:
         for name, data in entries:
             if len(name) > 100:
                 raise ValueError(f"ustar name over 100 chars: {name}")
+            if not name.isascii():
+                # The client-side walker (web/src/core/py/py-mount.ts) parses
+                # names with a charCode loop — ASCII-only by contract.
+                raise ValueError(f"tar name is not ASCII: {name}")
             ti = tarfile.TarInfo(name)
             ti.size = len(data)
             ti.mtime = TAR_MTIME

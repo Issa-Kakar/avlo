@@ -50,6 +50,7 @@
 
 import { PY_ORIGIN } from '@avlo/api-client';
 import { BUILD_LOCK, matchesLockEntry } from '@avlo/py-loader';
+import { parseTarMeta } from './py-mount';
 import {
   type ExecToSup,
   type MainToSup,
@@ -127,32 +128,6 @@ function setSatisfies(booted: PySetKey | null, need: PySetKey): boolean {
   if (booted === null) return false;
   const have = bundlesOf(booted);
   return bundlesOf(need).every((b) => have.includes(b));
-}
-
-/** Every path from a tar meta may only address INTO its mount root. */
-const safePathSegs = (p: string): boolean => p.split('/').every((s) => s !== '' && s !== '.' && s !== '..');
-
-/** meta.json is the FIRST ustar entry by construction (pack-package D2).
- * The tar is sha-pinned by the manifest before this runs; the path checks
- * guard the remaining trust link — a bad meta minted by the BUILD side would
- * otherwise steer MEMFS extraction/dlopen outside the mount root. */
-function parseTarMeta(bytes: Uint8Array): { prefix: string; loadOrder: readonly string[] } {
-  const ascii = (from: number, to: number) => new TextDecoder().decode(bytes.subarray(from, to)).replace(/\0.*$/s, '');
-  if (ascii(0, 100) !== 'meta.json') throw new Error('bundle tar: first entry is not meta.json');
-  const size = Number.parseInt(ascii(124, 136), 8);
-  if (!Number.isInteger(size) || size <= 0 || size > 65_536) throw new Error('bundle tar: implausible meta.json size');
-  const meta = JSON.parse(new TextDecoder().decode(bytes.subarray(512, 512 + size))) as {
-    prefix?: unknown;
-    loadOrder?: unknown;
-  };
-  const { prefix, loadOrder } = meta;
-  if (typeof prefix !== 'string' || !prefix.startsWith('/') || !safePathSegs(prefix.slice(1))) {
-    throw new Error(`bundle tar: unsafe prefix ${JSON.stringify(prefix)}`);
-  }
-  if (!Array.isArray(loadOrder) || !loadOrder.every((s): s is string => typeof s === 'string' && safePathSegs(s))) {
-    throw new Error('bundle tar: unsafe loadOrder');
-  }
-  return { prefix, loadOrder: Object.freeze([...loadOrder]) };
 }
 
 /** Ensure every bundle of the set is present + lock-verified, posting download
