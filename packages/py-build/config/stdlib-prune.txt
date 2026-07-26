@@ -49,3 +49,5 @@ tty.py
 pty.py
 # reason: legacy database formats
 dbm/
+# reason: pure-Python ZoneInfo fallback — the _zoneinfo C extension is a static builtin
+zoneinfo/_zoneinfo.py

@@ -13,12 +13,17 @@ basename alias — required because loadDynamicLibrary short-circuits on
 the NORMALIZED ABSOLUTE path and _AvloGroupFinder dlopens exactly the
 mount-time absolute string. Callers pass loadDynlibReplay the RECORDED
 loadOrder string verbatim, never a tar-relative member name.
+Cold-restore attack: loadDynlibReplay also accepts a precompiled
+WebAssembly.Module — the executor Promise.all-compiles the group DSOs
+at tar-arrival, overlapped with the main instantiate (V8 compiles on
+background threads); loadWebAssemblyModule consumes a Module on its
+fast paths end-to-end, zero re-validation.
 
 diff --git a/src/js/dynload.ts b/src/js/dynload.ts
-index 9f5a4d4..91f71a8 100644
+index 9f5a4d4..3b9c26d 100644
 --- a/src/js/dynload.ts
 +++ b/src/js/dynload.ts
-@@ -109,9 +109,136 @@ export class DynlibLoader {
+@@ -109,9 +109,143 @@ export class DynlibLoader {
    }
  }
  
@@ -91,18 +96,25 @@ index 9f5a4d4..91f71a8 100644
 +  }
 +
 +  /**
-+   * Replay-load one DSO from raw wasm bytes, entirely JS-side. Used ONLY
-+   * during snapshot restore, before the heap overwrite. Mirrors workerd's
-+   * loadDynlib: refcount pinned (arena allocations are unreclaimable anyway),
-+   * non-global, empty local scope (post-RTLD_GLOBAL emscripten needs a scope
-+   * object for dependent-symbol lookup). `path` must be the RECORDED
-+   * loadOrder string verbatim (normalized absolute) — newDSO registers it in
-+   * loadedLibsByName under exactly that key, which is what makes post-restore
-+   * C dlopens of the same absolute path short-circuit to a registry hit.
++   * Replay-load one DSO from raw wasm bytes OR a precompiled
++   * WebAssembly.Module, entirely JS-side. Used ONLY during snapshot restore,
++   * before the heap overwrite. Mirrors workerd's loadDynlib: refcount pinned
++   * (arena allocations are unreclaimable anyway), non-global, empty local
++   * scope (post-RTLD_GLOBAL emscripten needs a scope object for
++   * dependent-symbol lookup). `path` must be the RECORDED loadOrder string
++   * verbatim (normalized absolute) — newDSO registers it in loadedLibsByName
++   * under exactly that key, which is what makes post-restore C dlopens of the
++   * same absolute path short-circuit to a registry hit. A precompiled Module
++   * lets the caller overlap DSO compilation with the main instantiate
++   * (loadWebAssemblyModule consumes a Module on its fast paths end-to-end).
 +   */
-+  public loadDynlibReplay(path: string, bytes: Uint8Array): void {
++  public loadDynlibReplay(
++    path: string,
++    bytes: Uint8Array | WebAssembly.Module,
++  ): void {
 +    const M = this.#module;
-+    const wasmModule = new WebAssembly.Module(bytes);
++    const wasmModule =
++      bytes instanceof WebAssembly.Module ? bytes : new WebAssembly.Module(bytes);
 +    const dso = M.newDSO(path, undefined, "loading");
 +    dso.refcount = Infinity;
 +    dso.global = false;
@@ -156,7 +168,7 @@ index 9f5a4d4..91f71a8 100644
 +  API.recordDsoHandles = dsoSnapshotSupport.recordDsoHandles.bind(dsoSnapshotSupport);
  }
 diff --git a/src/js/types.ts b/src/js/types.ts
-index 6bb6425..aa294de 100644
+index 6bb6425..ae5cc05 100644
 --- a/src/js/types.ts
 +++ b/src/js/types.ts
 @@ -542,6 +542,23 @@ export interface API {
@@ -175,7 +187,7 @@ index 6bb6425..aa294de 100644
 +    soTableBases: Record<string, number>;
 +  }) => void;
 +  dsoReplayDone: () => void;
-+  loadDynlibReplay: (path: string, bytes: Uint8Array) => void;
++  loadDynlibReplay: (path: string, bytes: Uint8Array | WebAssembly.Module) => void;
 +  restoreDsoHandles: (
 +    dsoHandles: Record<string, { handles: number[] }>,
 +  ) => void;

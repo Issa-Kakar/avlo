@@ -23,6 +23,10 @@ end-to-end. The fork keeps only thin hooks.
   no hiwire entry needs the access-path proxy).
 - types.ts/emscripten-settings.ts accordingly (INITIAL_MEMORY seam
   dead).
+- emscripten-settings.ts installStdlib: writeFile(..., {canOwn:true})
+  — adopt the fetched stdlib zip buffer instead of copying ~3.4 MB
+  into MEMFS every boot (fetched bytes are never HEAP-backed, so the
+  MEMFS canOwn guard always permits adoption).
 
 diff --git a/src/js/api.ts b/src/js/api.ts
 index 8f73e57..33ee23b 100644
@@ -70,7 +74,7 @@ index 8f73e57..33ee23b 100644
    if (snapshotConfig) {
      syncUpSnapshotLoad2(jsglobals, snapshotConfig, snapshotDeserializer);
 diff --git a/src/js/emscripten-settings.ts b/src/js/emscripten-settings.ts
-index b27fe5e..1a20849 100644
+index b27fe5e..03b9d77 100644
 --- a/src/js/emscripten-settings.ts
 +++ b/src/js/emscripten-settings.ts
 @@ -32,7 +32,6 @@ export interface EmscriptenSettings {
@@ -81,6 +85,20 @@ index b27fe5e..1a20849 100644
    exitCode?: number;
  }
  
+@@ -158,7 +157,12 @@ function installStdlib(stdlibURL: string): PreRunFunc {
+ 
+     try {
+       const stdlib = await stdlibPromise;
+-      Module.FS.writeFile(`/lib/python${pymajor}${pyminor}.zip`, stdlib);
++      // AVLO: adopt the fetched buffer outright (canOwn) instead of copying
++      // ~3.4 MB into a fresh MEMFS array on every boot — the fetched bytes
++      // are never HEAP-backed, so MEMFS's canOwn guard always permits it.
++      Module.FS.writeFile(`/lib/python${pymajor}${pyminor}.zip`, stdlib, {
++        canOwn: true,
++      });
+     } catch (e) {
+       console.error("Error occurred while installing the standard library:");
+       console.error(e);
 diff --git a/src/js/pyodide.ts b/src/js/pyodide.ts
 index 5407515..d9a9790 100644
 --- a/src/js/pyodide.ts
@@ -334,7 +352,7 @@ index e259412..07f243a 100644
        }
        x = deserializer(e.serialized);
 diff --git a/src/js/types.ts b/src/js/types.ts
-index 1cc8a0e..0bfcc16 100644
+index e46ae4e..d17d454 100644
 --- a/src/js/types.ts
 +++ b/src/js/types.ts
 @@ -566,9 +566,7 @@ export interface API {
