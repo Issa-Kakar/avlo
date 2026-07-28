@@ -20,21 +20,27 @@ web/src/core/spatial/
 ├── object-query.ts          — Picker facade: 4 exports, no options  (~230 LOC)
 ├── handle-hit.ts            — Resize handles + endpoint dots        (~140 LOC)
 ├── index.ts                 — Barrel; re-exports `ObjectSpatialIndex` only
-├── flat-rtree.ts            — FlatRTree: mutable SoA R-tree — UNWIRED (~1340 LOC)
-└── flat-rtree.selftest.ts   — Its standalone test+bench runner       (~840 LOC)
+├── flat-rtree.ts            — FlatRTree: mutable SoA R-tree — UNWIRED (~1420 LOC)
+└── flat-rtree.selftest.ts   — Its standalone test+bench runner      (~1140 LOC)
 ```
 
 **`flat-rtree.ts` is a standalone, not-yet-wired rbush replacement candidate**
 — a mutable Structure-of-Arrays R-tree (typed-array node pool with
 parent-embedded entry boxes, id→leaf reverse map keyed by dense u32 ids =
-`handle.slot`, in-place `update()`, exact-MBR invariant, OMT bulk load).
-Nothing imports it; the live index is still the rbush wrapper above. Premise,
-design rationale, proof (17.8k-check differential suite incl. rbush parity),
-and A/B numbers (2–8× across ops) live in its introducing commit
-(`feat(spatial): FlatRTree …`) and the two file headers. Pending: an
-independent correctness/perf/memory review pass, then a separately planned
-integration. The selftest runs via esbuild+node (command in its header), not
-in the app bundle.
+`handle.slot`, tiered in-place `update()`, exact-MBR invariant licensing O(1)
+update/remove fast tiers, OMT bulk load over a Floyd–Rivest co-swapping
+selector). Nothing imports it; the live index is still the rbush wrapper
+above. Premise and design rationale live in its introducing commit
+(`feat(spatial): FlatRTree …`) and the two file headers; the independent
+second-pass review (its planned follow-up) is DONE — hardened trust boundary
+(id/int32-overflow/batch-duplicate guards), branchless query compaction, and
+the fast tiers all landed evidence-first. Proof: 18.6k-check suite — three
+de-correlated oracles (brute-mirror queries + rbush parity, per-item readBBox
+sweep, structural validate()) across adversarial/degenerate/guard suites,
+maxEntries {4,8,32,64}. A/B vs rbush@4 (p50): 1.4–10× across ops at 10k–100k;
+at 1M — load 7.7×, queries 4–10.7×, ~half the memory. Pending: the separately
+planned integration. The selftest runs via esbuild+node (command in its
+header), not in the app bundle.
 
 `hit-dispatch.ts` exposes three switch dispatchers (`hitPointFor` /
 `hitRectFor` / `hitCircleFor`) over eight named, monomorphic per-kind

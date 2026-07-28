@@ -36,10 +36,13 @@
  * Invariant (checked by validate()): every internal entry box EQUALS the exact
  * union of its child's entry boxes. Inserts keep it by extending ancestors
  * with the inserted box (old-exact ∪ item = new-exact along the descent path);
- * splits write exact group MBRs; remove/update recompute exact MBRs bottom-up
- * with an early exit on the first unchanged level. Exactness keeps the tree
- * tight under heavy churn (rbush only tightens on condense) and makes
- * validate() a strict-equality audit rather than a slack containment check.
+ * splits write exact group MBRs. remove/update first try an O(1) proof — a box
+ * strictly inside its leaf's MBR (4 doubles read off the parent entry) defines
+ * no MBR face, so nothing above can change — and otherwise recompute exact
+ * MBRs bottom-up with an early exit on the first unchanged level. Exactness
+ * keeps the tree tight under heavy churn (rbush only tightens on condense) and
+ * makes validate() a strict-equality audit rather than a slack containment
+ * check — it is also what licenses the O(1) tier.
  *
  * ── Ids ─────────────────────────────────────────────────────────────────────
  * Items are dense unsigned ints < 2^32-1 (avlo: `handle.slot` — same id space
@@ -56,6 +59,11 @@
  */
 
 const NONE = 0xffffffff;
+/** Transient `_leafOf` marker used inside load() to catch intra-batch duplicate
+ *  ids. Never observable after load returns (every mark is overwritten by the
+ *  build); distinct from NONE and from any real node index (the pool guard
+ *  keeps node indices far below it). */
+const PENDING = 0xfffffffe;
 
 export interface FlatRTreeStats {
   size: number;
@@ -175,7 +183,7 @@ export class FlatRTree {
   // ─────────────────────────────────────────────────────────────── mutation ──
 
   insert(id: number, minX: number, minY: number, maxX: number, maxY: number): void {
-    if (id >= NONE) throw new Error(`FlatRTree: id out of range: ${id}`);
+    if (id >>> 0 !== id || id >= NONE) throw new Error(`FlatRTree: invalid id: ${id}`);
     this._ensureId(id);
     if (this._leafOf[id] !== NONE) throw new Error(`FlatRTree: duplicate insert: ${id}`);
     this._size++;
@@ -190,17 +198,32 @@ export class FlatRTree {
     this._leafOf[id] = NONE;
     this._size--;
     const pos = this._findPos(leaf, id);
+    // O(1) tier: if the removed box sat strictly inside the leaf's MBR (read
+    // off the parent entry — exact by invariant), every MBR face is defined by
+    // a sibling, so no ancestor changes: swap-remove and stop. The cnt guard
+    // keeps the cascade decision structural — never resting on float equality.
+    const p = this._parents[leaf];
+    if (p !== NONE && (this._meta[leaf] & 0xff) > 1) {
+      const boxes = this._boxes;
+      const ob = (leaf << this._boxShift) + (pos << 2);
+      const pe = (p << this._boxShift) + (this._findPos(p, leaf) << 2);
+      if (boxes[ob] > boxes[pe] && boxes[ob + 1] > boxes[pe + 1] && boxes[ob + 2] < boxes[pe + 2] && boxes[ob + 3] < boxes[pe + 3]) {
+        this._removeEntryAt(leaf, pos);
+        return true;
+      }
+    }
     this._removeEntryAt(leaf, pos);
     this._afterRemoval(leaf);
     return true;
   }
 
   /**
-   * Upsert with an in-place fast path. If the new box still intersects the
-   * union of its leaf siblings (the overwhelmingly common case for drags),
-   * the entry is overwritten in place and exact MBRs are recomputed bottom-up
-   * with an early exit — no structural change, no allocation. Only when the
-   * item has clearly left its cluster is it relocated (remove + reinsert).
+   * Upsert with tiered in-place fast paths. Tier 1 (O(1)): old box strictly
+   * interior to the leaf's MBR and new box within it ⇒ overwrite, done —
+   * no ancestor can change. Tier 2: new box still intersects the union of the
+   * leaf's OTHER entries (the common drag case) ⇒ overwrite in place, then
+   * recompute exact MBRs bottom-up with an early exit. Only a genuine cluster
+   * exit relocates (remove + reinsert). No allocation on any in-place path.
    */
   update(id: number, minX: number, minY: number, maxX: number, maxY: number): void {
     if (id >= this._leafOf.length || this._leafOf[id] === NONE) {
@@ -209,10 +232,39 @@ export class FlatRTree {
     }
     const leaf = this._leafOf[id];
     const pos = this._findPos(leaf, id);
-    const cnt = this._meta[leaf] & 0xff;
     const boxes = this._boxes;
     const base = leaf << this._boxShift;
+    const ob = base + (pos << 2);
 
+    // O(1) fast tier: if the OLD box sits strictly inside the leaf's MBR (all
+    // four faces defined by siblings — 4 doubles read off the parent entry,
+    // exact by invariant) and the new box stays inside that MBR, the MBR is
+    // provably unchanged and still exact: overwrite the entry and stop. Trades
+    // the M-entry sibling scan for the _findPos(parent) that _recalcUpFrom
+    // would have paid anyway. A sole occupant auto-misses (its box EQUALS the
+    // parent entry), and a tier miss costs 8 compares before the full path.
+    const p = this._parents[leaf];
+    if (p !== NONE) {
+      const pe = (p << this._boxShift) + (this._findPos(p, leaf) << 2);
+      if (
+        boxes[ob] > boxes[pe] &&
+        boxes[ob + 1] > boxes[pe + 1] &&
+        boxes[ob + 2] < boxes[pe + 2] &&
+        boxes[ob + 3] < boxes[pe + 3] &&
+        minX >= boxes[pe] &&
+        minY >= boxes[pe + 1] &&
+        maxX <= boxes[pe + 2] &&
+        maxY <= boxes[pe + 3]
+      ) {
+        boxes[ob] = minX;
+        boxes[ob + 1] = minY;
+        boxes[ob + 2] = maxX;
+        boxes[ob + 3] = maxY;
+        return;
+      }
+    }
+
+    const cnt = this._meta[leaf] & 0xff;
     if (cnt > 1) {
       // MBR of the leaf's OTHER entries (skip pos) — one contiguous scan.
       let oMinX = Infinity;
@@ -239,11 +291,10 @@ export class FlatRTree {
         this._insertBox(minX, minY, maxX, maxY, id, 0);
         return;
       }
-      const b = base + (pos << 2);
-      boxes[b] = minX;
-      boxes[b + 1] = minY;
-      boxes[b + 2] = maxX;
-      boxes[b + 3] = maxY;
+      boxes[ob] = minX;
+      boxes[ob + 1] = minY;
+      boxes[ob + 2] = maxX;
+      boxes[ob + 3] = maxY;
       this._recalcUpFrom(
         leaf,
         oMinX < minX ? oMinX : minX,
@@ -252,8 +303,7 @@ export class FlatRTree {
         oMaxY > maxY ? oMaxY : maxY,
       );
     } else {
-      const b = base + (pos << 2);
-      if (minX > boxes[b + 2] || maxX < boxes[b] || minY > boxes[b + 3] || maxY < boxes[b + 1]) {
+      if (minX > boxes[ob + 2] || maxX < boxes[ob] || minY > boxes[ob + 3] || maxY < boxes[ob + 1]) {
         // Sole occupant teleported clear of its old box — relocate so the old
         // subtree's ancestor MBRs don't stay bloated around a far-away item.
         this._leafOf[id] = NONE;
@@ -262,10 +312,10 @@ export class FlatRTree {
         this._insertBox(minX, minY, maxX, maxY, id, 0);
         return;
       }
-      boxes[b] = minX;
-      boxes[b + 1] = minY;
-      boxes[b + 2] = maxX;
-      boxes[b + 3] = maxY;
+      boxes[ob] = minX;
+      boxes[ob + 1] = minY;
+      boxes[ob + 2] = maxX;
+      boxes[ob + 3] = maxY;
       this._recalcUpFrom(leaf, minX, minY, maxX, maxY);
     }
   }
@@ -308,15 +358,17 @@ export class FlatRTree {
         if (n + cnt > res.length) res = this._growResults(n + cnt);
         for (let e = 0; e < cnt; e++) {
           const b = bBase + (e << 2);
-          // Branchless combine: all four loads land in 1-2 cache lines.
-          if (
+          // Fully branchless compaction: unconditional store, conditional
+          // advance. Partially-covered leaves run ~50% hit rates (covered
+          // leaves bypass via the subtree dump), the worst case for a branch
+          // predictor; four setcc+ands plus a dead store beat a mispredict.
+          // Capacity for cnt stores is pre-ensured above.
+          res[n] = refs[rBase + e];
+          n +=
             ((qMinX <= boxes[b + 2]) as unknown as number) &
             ((qMaxX >= boxes[b]) as unknown as number) &
             ((qMinY <= boxes[b + 3]) as unknown as number) &
-            ((qMaxY >= boxes[b + 1]) as unknown as number)
-          ) {
-            res[n++] = refs[rBase + e];
-          }
+            ((qMaxY >= boxes[b + 1]) as unknown as number);
         }
       } else {
         if (sp + cnt > stack.length) stack = this._growStack(sp + cnt);
@@ -405,6 +457,7 @@ export class FlatRTree {
    */
   load(count: number, ids: ArrayLike<number>, boxes: ArrayLike<number>): void {
     if (count === 0) return;
+    if (ids.length < count || boxes.length < count << 2) throw new Error('FlatRTree: load inputs shorter than count');
     if (count < this._m) {
       for (let i = 0; i < count; i++) {
         const j = i << 2;
@@ -413,17 +466,21 @@ export class FlatRTree {
       return;
     }
 
-    // Owned, co-sorted build scratch.
+    // Owned, co-sorted build scratch. A throw below (bad/duplicate id) is a
+    // corruption tripwire, not a transaction — tree state after it is undefined.
     const bIds = new Uint32Array(count);
     const bBoxes = new Float64Array(count << 2);
     for (let i = 0; i < count; i++) {
       const id = ids[i];
-      if (id >= NONE) throw new Error(`FlatRTree: id out of range: ${id}`);
+      if (id >>> 0 !== id || id >= NONE) throw new Error(`FlatRTree: invalid id: ${id}`);
       this._ensureId(id);
       if (this._leafOf[id] !== NONE) throw new Error(`FlatRTree: duplicate insert: ${id}`);
+      this._leafOf[id] = PENDING; // also trips on a duplicate later in THIS batch
       bIds[i] = id;
     }
-    bBoxes.set(boxes as ArrayLike<number> & { length: number });
+    const need = count << 2;
+    if (boxes instanceof Float64Array) bBoxes.set(boxes.length === need ? boxes : boxes.subarray(0, need));
+    else for (let i = 0; i < need; i++) bBoxes[i] = boxes[i];
 
     const M = this._M;
     let height = Math.ceil(Math.log(count) / Math.log(M));
@@ -534,7 +591,6 @@ export class FlatRTree {
    */
   private _insertBox(iMinX: number, iMinY: number, iMaxX: number, iMaxY: number, ref: number, targetLevel: number): void {
     const M = this._M;
-    const meta = this._meta;
     let node = this._chooseSubtree(iMinX, iMinY, iMaxX, iMaxY, targetLevel);
 
     let eMinX = iMinX;
@@ -544,7 +600,9 @@ export class FlatRTree {
     let eRef = ref;
 
     for (;;) {
-      const md = meta[node];
+      // _meta re-read each level, never hoisted across the loop: _split →
+      // _allocNode may grow the pool and reallocate the SoA arrays.
+      const md = this._meta[node];
       const cnt = md & 0xff;
       if (cnt < M) {
         const b = (node << this._boxShift) + (cnt << 2);
@@ -1072,7 +1130,10 @@ export class FlatRTree {
   }
 
   private _growPool(): void {
-    const cap = this._poolCap << 1;
+    const cap = this._poolCap * 2;
+    // Entry addressing is int32 shift math — refuse growth past the point
+    // where `node << boxShift` would overflow (float compare, no wrap).
+    if (cap * (1 << this._boxShift) > 0x7fffffff) throw new Error('FlatRTree: pool exceeds addressable size');
     const boxes = new Float64Array(cap << this._boxShift);
     boxes.set(this._boxes);
     this._boxes = boxes;
@@ -1088,11 +1149,15 @@ export class FlatRTree {
     this._poolCap = cap;
   }
 
+  // Growth doubles in FLOAT math (`len *= 2`, exact for powers of two): `<<= 1`
+  // wraps negative at 2^30 and then sticks at 0 — an infinite loop for ids ≥
+  // 2^31, which the id guard admits. Absurd sizes now throw in the allocator.
+
   private _ensureId(id: number): void {
     const cur = this._leafOf.length;
     if (id < cur) return;
     let len = cur;
-    while (len <= id) len <<= 1;
+    while (len <= id) len *= 2;
     const next = new Uint32Array(len);
     next.set(this._leafOf);
     next.fill(NONE, cur);
@@ -1101,7 +1166,7 @@ export class FlatRTree {
 
   private _growResults(need: number): Uint32Array {
     let len = this.results.length;
-    while (len < need) len <<= 1;
+    while (len < need) len *= 2;
     const next = new Uint32Array(len);
     next.set(this.results);
     this.results = next;
@@ -1110,7 +1175,7 @@ export class FlatRTree {
 
   private _growStack(need: number): Uint32Array {
     let len = this._stack.length;
-    while (len < need) len <<= 1;
+    while (len < need) len *= 2;
     const next = new Uint32Array(len);
     next.set(this._stack);
     this._stack = next;
@@ -1291,30 +1356,49 @@ function multiSelect(bBoxes: Float64Array, bIds: Uint32Array, lo: number, hi: nu
   }
 }
 
-/** Median-of-three Hoare quickselect co-swapping (4-double box, id) pairs. */
+/**
+ * Floyd–Rivest select (the algorithm behind rbush's `quickselect` dep),
+ * co-swapping (4-double box, id) pairs. For ranges > 600 it first recurses on
+ * a sampled subrange around k so the k-th element itself becomes a
+ * near-optimal pivot, then Hoare-partitions — far fewer elements touched than
+ * median-of-three at bulk-load scale.
+ */
 function quickselectCo(bBoxes: Float64Array, bIds: Uint32Array, k: number, lo: number, hi: number, axisOff: number): void {
   while (hi > lo) {
-    const mid = (lo + hi) >> 1;
-    // median-of-three pivot: order lo, mid, hi in place
-    if (bBoxes[(mid << 2) + axisOff] < bBoxes[(lo << 2) + axisOff]) swapCo(bBoxes, bIds, lo, mid);
-    if (bBoxes[(hi << 2) + axisOff] < bBoxes[(lo << 2) + axisOff]) swapCo(bBoxes, bIds, lo, hi);
-    if (bBoxes[(hi << 2) + axisOff] < bBoxes[(mid << 2) + axisOff]) swapCo(bBoxes, bIds, mid, hi);
-    const pivot = bBoxes[(mid << 2) + axisOff];
+    if (hi - lo > 600) {
+      const n = hi - lo + 1;
+      const m = k - lo + 1;
+      const z = Math.log(n);
+      const s = 0.5 * Math.exp((2 * z) / 3);
+      const sd = 0.5 * Math.sqrt((z * s * (n - s)) / n) * (m - n / 2 < 0 ? -1 : 1);
+      const newLo = Math.max(lo, Math.floor(k - (m * s) / n + sd));
+      const newHi = Math.min(hi, Math.floor(k + ((n - m) * s) / n + sd));
+      quickselectCo(bBoxes, bIds, k, newLo, newHi, axisOff);
+    }
 
+    const t = bBoxes[(k << 2) + axisOff];
     let i = lo;
     let j = hi;
-    while (i <= j) {
-      while (bBoxes[(i << 2) + axisOff] < pivot) i++;
-      while (bBoxes[(j << 2) + axisOff] > pivot) j--;
-      if (i <= j) {
-        if (i !== j) swapCo(bBoxes, bIds, i, j);
-        i++;
-        j--;
-      }
+
+    swapCo(bBoxes, bIds, lo, k);
+    if (bBoxes[(hi << 2) + axisOff] > t) swapCo(bBoxes, bIds, lo, hi);
+
+    while (i < j) {
+      swapCo(bBoxes, bIds, i, j);
+      i++;
+      j--;
+      while (bBoxes[(i << 2) + axisOff] < t) i++;
+      while (bBoxes[(j << 2) + axisOff] > t) j--;
     }
-    if (k <= j) hi = j;
-    else if (k >= i) lo = i;
-    else return;
+
+    if (bBoxes[(lo << 2) + axisOff] === t) swapCo(bBoxes, bIds, lo, j);
+    else {
+      j++;
+      swapCo(bBoxes, bIds, j, hi);
+    }
+
+    if (j <= k) lo = j + 1;
+    if (k <= j) hi = j - 1;
   }
 }
 
