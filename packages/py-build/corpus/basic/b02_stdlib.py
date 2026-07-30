@@ -1,4 +1,4 @@
-# self-asserting: the baseline warmup module set actually works
+# self-asserting: the core stdlib module set actually works
 import datetime
 import json
 import math

@@ -4,17 +4,18 @@
  * and the ONE Y commit per run.
  *
  * SECURITY INVARIANT (never-auto-run): `toggleRunCodeBlock` has exactly four
- * call sites — SelectTool + CodeTool canvas play-button hits, the DOM
- * play-button click, Cmd/Ctrl+Enter in the editor — all local gestures.
- * Nothing observer/sync/hydration-driven may call it; remote output fields
- * render as inert data.
+ * PRODUCTION call sites — SelectTool + CodeTool canvas play-button hits, the
+ * DOM play-button click, Cmd/Ctrl+Enter in the editor — all local gestures
+ * (plus one DEV-only bridge entry, `dev/test-bridge.ts`, tree-shaken from
+ * prod builds). Nothing observer/sync/hydration-driven may call it; remote
+ * output fields render as inert data.
  */
 
 import { getCodeProps } from '@/core/accessors';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getBbox, getHandle, hasActiveRoom, transactPyOutput } from '@/runtime/room-runtime';
 import { placeRunFigures } from './py-figures';
-import { AVAILABLE_PACKAGES, resolveImports, scanPythonImports, unavailableMessage } from './py-imports';
+import { resolveImports, scanPythonImports, unavailableMessage } from './py-imports';
 import { PY_LIMITS, type PyRunStatus, type PySetKey, type SupToMain } from './py-protocol';
 import { appendOutput, clearRun, getRunEntry, patchRun, upsertRun } from './py-run-store';
 
@@ -172,7 +173,7 @@ export function toggleRunCodeBlock(blockId: string): void {
   if (props?.language !== 'python') return;
 
   const code = props.content.toString(); // snapshot at click time
-  const { setKey, missing } = resolveImports(scanPythonImports(code), AVAILABLE_PACKAGES);
+  const { setKey, missing } = resolveImports(scanPythonImports(code));
   if (missing.length > 0) {
     // Pre-run refusal: one commit, zero downloads, zero boots.
     transactPyOutput(() => {

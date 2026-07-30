@@ -1,7 +1,7 @@
 /**
  * AVS2 snapshot codec + OPFS store (P2 — owned dense snapshots).
  *
- * At-rest layout (`opfs:/py/<buildHash>/<setKey>.snap`; never on the wire):
+ * At-rest layout (`opfs:/py/<buildHash>/<setKey>.snap`; client-captured, OPFS-only today):
  *   [u32 magic 'AVS2' LE] [u32 headerLen] [u32 heapLen] [u32 crc32(headerJSON)]
  *   [header JSON, UTF-8, zero-padded so heapOff = 16 + alignUp(headerLen, 4096)]
  *   [dense heap bytes … EOF]
@@ -25,13 +25,12 @@
  * TRANSFERRED to the executor, whose preBlit driver blits it into wasm
  * memory — hash verdicts happen before the bytes ever cross the boundary.
  *
- * Deliberately absent vs the parked AVS1 design: tree segment (site-packages
- * re-extracts from the boot tars — the in-wasm `tarfile.extractall` already IS
- * the bulk path; deterministic ustar mtimes reproduce capture), dso segment
+ * Deliberately absent vs the abandoned AVS1 design: tree segment
+ * (site-packages remounts from the boot tars — the py-mount walker grafts the
+ * whole tree in ~ms; deterministic ustar mtimes reproduce capture), dso segment
  * (`.so` bytes slice out of the transferred tar buffers), sparse pages,
  * SHA-256 trailer, LRU (≤5 sets, bounded by construction), brotli/wire
- * concerns. The header does double duty as the future wire integrity field
- * when build-side capture ships snapshots over HTTP.
+ * concerns.
  *
  * Table-drift posture: replay determinism holds because `updateGOT`
  * addFunctions every non-internal export of every module at instantiation —
@@ -292,8 +291,9 @@ export function encodeAvsHeaderBlock(h: Omit<AvsHeader, 'heapOff'>, heapOff: num
   return block;
 }
 
-/** Read + validate the header. ANY failure throws — the caller treats the
- * file as invalid (executor: exec-snap-invalid → cold; supervisor deletes). */
+/** Read + validate the header. ANY failure throws — the supervisor (the only
+ * caller) posts `snap-header: null` (boot continues cold) and poison-deletes
+ * iff the open rung holds a lock on stable bytes (F9). */
 export function parseAvsHeader(handle: SnapReadHandle, expect: { buildHash: string; setKey: string }): AvsHeader {
   const fixed = new Uint8Array(16);
   if (handle.read(fixed, 0) !== 16) throw new Error('avs2: truncated fixed header');

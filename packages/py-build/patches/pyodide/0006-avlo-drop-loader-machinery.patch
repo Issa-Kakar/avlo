@@ -19,9 +19,10 @@ load-package (via installer), and its module scope attaches
 API.loadDynlib — severing the edges would tree-shake it out of the glue,
 killing bundle mounts. A bare side-effect import in api.ts keeps it in
 the graph (src/js has no sideEffects flag, so esbuild preserves it).
-P1 note: on 0.29 this anchor also protected the 0005 DSO record/replay
-surface; 0005 is parked until P2, the anchor stays for API.loadDynlib
-alone.
+The anchor also protects the LIVE 0005 DSO record/replay surface
+(get/setDsoLoadInfo, loadDynlibReplay, restoreDsoHandles, dsoReplayDone)
+— dropping it tree-shakes BOTH out of the glue. Standing grep gate:
+`loadDynlib` present in the built glue (stage.mjs).
 
 diff --git a/src/js/api.ts b/src/js/api.ts
 index 173dd40..8f73e57 100644

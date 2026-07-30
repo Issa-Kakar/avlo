@@ -10,9 +10,6 @@
 // (3) performance.now — clock_gettime anchors.
 import { createRequire } from 'node:module';
 
-let draws = 0;
-export const entropyDraws = () => draws;
-
 export function installDeterministicEnv() {
   let s = 0x9e3779b9 >>> 0;
   const next = () => {
@@ -23,12 +20,10 @@ export function installDeterministicEnv() {
     return s;
   };
   const fill = (view) => {
-    draws++;
     const u8 = new Uint8Array(view.buffer ?? view, view.byteOffset ?? 0, view.byteLength ?? view.length);
     for (let i = 0; i < u8.length; i++) u8[i] = next() & 0xff;
     return view;
   };
-  draws = 0;
   Object.defineProperty(globalThis.crypto, 'getRandomValues', {
     configurable: true,
     value: fill,

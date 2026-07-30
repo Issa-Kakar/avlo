@@ -77,7 +77,8 @@ test('owned snapshot: cold+capture → OPFS → restore → warm run', async ({ 
   await page.reload();
   await page.waitForFunction(() => window.__avlo?.hasRoom() === true);
 
-  // Run 2 — the executor's snap-probe hits and the boot restores. Clear the
+  // Run 2 — the supervisor's T3 probe hits, the verified heap transfers, and
+  // preBlit restores. Clear the
   // persisted output first so the ok-wait below observes THIS run.
   await page.evaluate((bid) => {
     window.__avlo!.transact(() => {

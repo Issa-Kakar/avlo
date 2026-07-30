@@ -48,7 +48,7 @@ OUT_ZIP = ROOT / "dist/stage/python_stdlib.zip"
 OUT_MODULES = ROOT / "dist/stage/stdlib-modules.json"
 
 CONFIG = json.loads((ROOT / "build.config.json").read_text())
-# "3.13.2" -> "313" — the zip mounts at /lib/python313.zip in MEMFS.
+# "3.14.2" -> "314" — the zip mounts at /lib/python314.zip in MEMFS.
 PYTAG = "".join(CONFIG["toolchain"]["python"].split(".")[:2])
 DFILE_PREFIX = f"/lib/python{PYTAG}.zip/"
 

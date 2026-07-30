@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Pre-compress every servable artifact to a .br sibling (brotli q11 — the
-// bytes R2 will store; the worker negotiates via Accept-Encoding at M3).
+// bytes R2 will store; the py worker negotiates via Accept-Encoding).
 // Skips up-to-date siblings (mtime + size match marker) unless --force.
 //
 //   node scripts/compress.mjs [--force]
@@ -12,7 +12,7 @@ import { brotliCompressSync, constants } from 'node:zlib';
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const force = process.argv.includes('--force');
 
-export function artifactPaths() {
+function artifactPaths() {
   const list = ['dist/raw/pyodide.asm.mjs', 'dist/raw/pyodide.asm.wasm', 'dist/raw/pyodide.mjs', 'dist/stage/python_stdlib.zip'];
   const bundles = join(pkgRoot, 'dist/stage/bundles');
   if (existsSync(bundles)) {

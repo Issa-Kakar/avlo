@@ -13,9 +13,11 @@
 //   node scripts/run-recipes.mjs --link-only      # skip builds; re-harvest + re-link
 //   node scripts/run-recipes.mjs --force          # ignore per-package done stamps
 //   node scripts/run-recipes.mjs --freeze-constraints
-//                                                 # scrape build.logs' "Successfully
-//                                                 # installed" lines into
-//                                                 # config/recipes-constraints.txt
+//                                                 # scrape AVLO-PKG-marked "Successfully
+//                                                 # installed" pip-log lines into
+//                                                 # config/recipes-constraints.d/<pkg>.txt
+//   node scripts/run-recipes.mjs --allow-undigested
+//                                                 # skip the image digest drift gate
 //
 // Layout under .work/recipes-root/ (gitignored; persists => incremental):
 //   recipes/    checkout @ recipes.commit (submodule pyodide-build @ pin)

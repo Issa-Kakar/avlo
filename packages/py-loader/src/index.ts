@@ -27,7 +27,4 @@ const deepFreeze = <T>(v: T): T => {
 export const BUILD_LOCK: BuildLock = deepFreeze(lock) as BuildLock;
 export const PY_BUILD_HASH: string = BUILD_LOCK.buildHash;
 
-/** Artifact URL base for a given py origin: `<origin>/<buildHash>/`. */
-export const pyArtifactBase = (origin: string): string => `${origin}/${PY_BUILD_HASH}/`;
-
 export { matchesLockEntry, sha256Hex } from './verify';

@@ -10,7 +10,7 @@
  * - The COMMITTED build-lock (@avlo/py-loader) is the source of truth for
  *   artifact hashes + set membership — no boot-time manifest fetch; every
  *   fetched tar is verified against it before use. A stale mix of artifacts
- *   is refused, same rule as the stdlib-zip hash guard in the spike.
+ *   is refused, same rule as the executor's stdlib-zip as-mounted guard.
  * - Verified tar bytes persist in the Cache API (`avlo-py-<buildHash>`,
  *   shared with the SW's verify-at-fill route — this is the offline path);
  *   each boot gets the fetched/matched buffers TRANSFERRED outright (no
@@ -148,8 +148,9 @@ let firstRunAfterRestore = false;
 /** One cold retry per failure — a second pre-ready fatal surfaces normally. */
 let snapshotRetried = false;
 /** Human label for the CURRENT generation's boot path — logged with bootMs on
- * exec-ready (the snapshot-used / cold-boot signal). Resolved AT exec-ready
- * (only the executor knows whether the probe hit). */
+ * exec-ready (the snapshot-used / cold-boot signal). Resolved AT exec-ready —
+ * the supervisor knows the header verdict (snap-open {hit}), but only the
+ * executor knows whether the blit actually landed. */
 let bootDescription = '';
 /** When the boot message was posted — exec-ready closes the 'boot-wait' span
  * (executor worker spin-up + boot; the delta vs bootMs is spin-up cost). */
@@ -373,9 +374,9 @@ const SNAPSHOTS_ENABLED = true;
  * then surface the failure as the pending run's result (or stay dormant; the
  * next click re-attempts). Callers live()-guard: a superseded task must not
  * tear down its successor. */
-function abortSpawn(message: string, status: PyRunStatus = 'error'): void {
+function abortSpawn(message: string): void {
   teardownExecutor();
-  if (active) failActiveRun(message, status, false);
+  if (active) failActiveRun(message, 'error', false);
 }
 
 /** L2 spawn: construct the executor FIRST, then feed it via three detached
@@ -422,7 +423,7 @@ function spawnExecutor(setKey: PySetKey, opts?: { noSnapshot?: boolean }): void 
 
   // T1 — glue preflight (memoized after the first success) → boot-prep. The
   // prep msg carries the LOCK's stdlib zip hash — the executor verifies its
-  // MEMFS mount against it (restage ⇒ recapture, the spike's standing guard).
+  // MEMFS mount against it (restage ⇒ recapture).
   void (async () => {
     const endGlue = traceBegin('glue-preflight');
     try {
@@ -621,7 +622,9 @@ function onExecutorMessage(m: ExecToSup): void {
         ? 'restored OPFS snapshot'
         : bootTriedSnapshot
           ? 'cold boot + capture (no valid snapshot)'
-          : 'cold boot (snapshots off)';
+          : SNAPSHOTS_ENABLED
+            ? 'cold retry (snapshot poisoned)' // the only noSnapshot spawn while the kill switch is on
+            : 'cold boot (snapshots off)';
       const now = performance.now();
       if (bootPostedAt > 0) traceAdd('boot-wait', bootPostedAt, now, { bootMs: Math.round(m.bootMs) });
       bootPostedAt = 0;
@@ -837,5 +840,3 @@ function onRun(m: RunMsg): void {
   post({ t: 'phase', runId: m.runId, phase: 'booting' });
   spawnExecutor(m.setKey);
 }
-
-post({ t: 'sup-ready' });

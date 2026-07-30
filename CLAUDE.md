@@ -180,7 +180,7 @@ Seven independently-deployed Cloudflare Workers. Full architecture, hardening in
 ### Routes + UI
 `routes/` (own CLAUDE.md) — `__root.tsx` (queryClient context + `QueryClientProvider`), `index.tsx` (→ `/home` redirect), `home.tsx` (dashboard — `useRoomList`), `room.$roomId.tsx` (`connectRoom` in `beforeLoad`).
 `components/`: top-level `Canvas.tsx` (thin React wrapper), `RoomPage.tsx`, `ZoomControls.tsx`, `UserAvatarCluster.tsx`; subsystem dirs with own CLAUDE.md — `topbar/` (TopBar, RoomTitle, ShareModal, MainMenu, HistoryButtons), `toolbar/`, `dashboard/`, `context-menu/`.
-Service Worker: `sw.ts` (cache-first `/api/assets/*`, app shell).
+Service Worker: `sw.ts` (cache-first images origin + app shell; lock-verified py-artifact routes — `core/py/CLAUDE.md` "Serving & caching").
 
 ---
 
@@ -464,4 +464,4 @@ Beyond `SelectTool` (see Selection System), all tools sit in the Tools file map.
 
 ## Keyboard, Clipboard, Presence, Image, Bookmark
 
-See subsystem CLAUDE.mds: `runtime/input/`, `core/clipboard/`, `runtime/presence/`, `core/image/`, `core/bookmark/`. Service Worker (`sw.ts`) is cache-first for `/api/assets/*` + app shell, network-first for HTML.
+See subsystem CLAUDE.mds: `runtime/input/`, `core/clipboard/`, `runtime/presence/`, `core/image/`, `core/bookmark/`. Service Worker (`sw.ts`) is cache-first for the images origin + app shell (network-first for HTML), plus the lock-verified py-artifact routes (`core/py/CLAUDE.md` "Serving & caching").

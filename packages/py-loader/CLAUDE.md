@@ -2,21 +2,24 @@
 
 The committed **build-lock** for the Python runtime: `build-lock.json` +
 a typed, deep-frozen `BUILD_LOCK` export. This is the atomic app↔artifact
-coupling — the supervisor sha256-verifies every fetched artifact against the
-lock (there is NO boot-time manifest fetch), and the Cache API / SW cache is
-keyed `avlo-py-<PY_BUILD_HASH>`.
+coupling — there is NO boot-time manifest fetch. Consumers verify against
+the lock at every trust boundary: the supervisor (bundle tars + the glue
+trio), the SW's verify-at-fill py routes (everything they cache), and the
+executor (stdlib zip hashed AS MOUNTED vs the lock sha it receives on
+`boot-prep`). The Cache API / SW cache is keyed `avlo-py-<PY_BUILD_HASH>`.
 
 **Name collision note:** `@avlo/py-loader` (this package — the committed lock)
-is UNRELATED to `web/src/core/py/py-loader.ts` (the fork `loadPyodide` boot
+is UNRELATED to `web/src/core/py/py-loader.ts` (the fork `bootPyodide` boot
 wrapper). They just share a name.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `build-lock.json` | GENERATED — only py-build's `stage.mjs` writes it (byte-gated by `stage --check`; excluded from biome so the formatter can't break the compare). `{ schema, buildHash, artifacts: {name:{sha256,size}}, bundles, sets }`. Artifacts table = glue trio + stdlib zip + `baseline.snap` — the snapshot is the ONE artifacts entry the SW serves streaming `cacheFirst` instead of `verifiedPyFirst` (the supervisor's `ensureBaseline` is its verifier; buffering ~21 MB in the SW buys nothing) |
-| `src/index.ts` | `BUILD_LOCK` (typed + deep-frozen at module scope), `PY_BUILD_HASH`, `pyArtifactBase(origin)`; re-exports `verify.ts` |
-| `src/verify.ts` | `sha256Hex` + `matchesLockEntry(bytes, {sha256,size})` — THE verification predicate for every lock-gated consumer (supervisor tar/glue checks, SW core-artifact route, py-build Node harness). Dependency-free and separate from index so the harness can import the exact shipped code without index's JSON import (Node ESM demands import attributes there) |
+| `build-lock.json` | GENERATED — only py-build's `stage.mjs` writes it (byte-gated by `stage --check`; excluded from biome so the formatter can't break the compare). `{ schema, buildHash, artifacts: {name:{sha256,size}}, bundles, sets }`. `artifacts` = the glue trio (`pyodide.mjs`, `pyodide.asm.mjs`, `pyodide.asm.wasm`) + `python_stdlib.zip`; `bundles` = the 7 package tars; `sets` has 4 keys (`stdlib` is the implicit fifth `PySetKey` — it resolves to zero bundles client-side). Snapshots are NOT lock artifacts today — client-captured, OPFS-only (shipping build-time-captured snapshots as lock artifacts is an open direction; see py-build NOTES) |
+| `src/index.ts` | `BUILD_LOCK` (typed + deep-frozen at module scope) + `PY_BUILD_HASH`; re-exports `verify.ts` |
+| `src/verify.ts` | `sha256Hex` + `matchesLockEntry(bytes, {sha256,size})` — THE verification predicate for every lock-gated consumer: supervisor tar/glue checks, SW verify-at-fill routes, py-build Node harness, and the executor (`sha256Hex` for the as-mounted stdlib hash). Dependency-free; importable via the `./verify` subpath so lock-free consumers (the executor must not carry the lock JSON) and the harness get the exact shipped code without index's JSON import (Node ESM demands import attributes there) |
+| `src/verify.test.ts` | vitest — size short-circuit + sha-mismatch cases |
 
 ## Invariants
 
@@ -28,6 +31,8 @@ wrapper). They just share a name.
   the SW bundle (CI isolation grep unaffected) and in dedicated workers.
 - `buildHash` = 16-hex truncated sha256 of the canonical (recursively
   key-sorted) `{artifacts, bundles, sets}` slim tables — deterministic for
-  identical artifact bytes. It doubles as the **snapshot lock binding**: OPFS
-  per-set snapshot wrappers embed it (`py-snapshot.ts` verify chain), so an
-  image generated under one lock can never restore under another.
+  identical artifact bytes. It doubles as the **snapshot lock binding**:
+  per-set OPFS snapshot headers embed it (`py-snapshot.ts` parse chain), so
+  an image captured under one lock can never restore under another — and a
+  rotated hash auto-invalidates every client's held state (OPFS snapshot dir
+  GC + Cache API generation eviction).

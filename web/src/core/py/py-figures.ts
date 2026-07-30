@@ -61,7 +61,7 @@ async function ingestAndPlace(blockId: string, runId: number, figures: PyFigure[
   // Staleness guards — everything past here is synchronous (no interleaving).
   if (!hasActiveRoom() || latestRun.get(blockId) !== runId) return;
   const block = getHandle(blockId);
-  if (!block || block.kind !== 'code') return;
+  if (block?.kind !== 'code') return;
 
   const tracked = (block.y.get('figureIds') as string[] | undefined) ?? [];
   const liveIds = tracked.filter((id) => getHandle(id)?.kind === 'image');

@@ -25,8 +25,9 @@ import type { PySetKey } from './py-stdlib-modules.gen';
 export type { PySetKey };
 
 /** Live phase for the run store / play-button UI (never written to Y).
- * Restore boots surface as plain 'booting' — the OPFS probe/restore happens
- * inside the executor and is fast enough to not warrant its own phase. */
+ * Restore boots surface as plain 'booting' — the supervisor-side OPFS
+ * open/read runs in the spawn shadow and is fast enough to not warrant its
+ * own phase. */
 export type PyRunPhase = 'queued' | 'booting' | 'downloading' | 'running' | 'cancelling';
 
 export interface PyFigure {
@@ -48,14 +49,10 @@ export interface CancelMsg {
   t: 'cancel';
   runId: number;
 }
-/** Idle-teardown veto/ping and future config live here as needed. */
 export type MainToSup = RunMsg | CancelMsg;
 
 // ---------------------------------------------------------------- sup → main
 
-export interface SupReadyMsg {
-  t: 'sup-ready';
-}
 export interface PhaseMsg {
   t: 'phase';
   runId: number;
@@ -89,7 +86,7 @@ export interface TraceMsg {
   t: 'trace';
   line: string;
 }
-export type SupToMain = SupReadyMsg | PhaseMsg | StdoutMsg | ResultMsg | SupFatalMsg | TraceMsg;
+export type SupToMain = PhaseMsg | StdoutMsg | ResultMsg | SupFatalMsg | TraceMsg;
 
 // ---------------------------------------------------------------- sup → exec
 
@@ -175,8 +172,8 @@ export interface ExecReadyMsg {
   t: 'exec-ready';
   bootMs: number;
   /** True when this generation booted from an OPFS snapshot restore — the
-   * supervisor's poison-routing + trace attribution (it no longer knows the
-   * path; the executor's snap-probe decides). */
+   * supervisor's poison-routing + trace attribution (the preBlit driver
+   * decides restore-vs-cold in flight; the supervisor only fed it). */
   restored: boolean;
 }
 export interface ExecStdoutMsg {
@@ -211,9 +208,10 @@ export interface ExecSnapshotMsg {
   /** Dense post-bake heap copy (HEAP8.slice) — transferred. */
   heap: ArrayBuffer;
 }
-/** The snap-probe or preBlit rejected the OPFS file and the boot continued
- * COLD in the same worker. Informational: the supervisor deletes the file and
- * does NOT respawn (U4). */
+/** The preBlit driver rejected the snapshot feeds and the boot continued
+ * COLD in the same worker (same-Module pre-mutation, or one fresh
+ * re-instantiate after DirtyRestoreError). Informational: the supervisor
+ * deletes the file and does NOT respawn. */
 export interface ExecSnapInvalidMsg {
   t: 'exec-snap-invalid';
   reason: string;

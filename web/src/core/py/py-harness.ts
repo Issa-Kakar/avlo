@@ -6,10 +6,10 @@
  * snapshot capture (a live PyProxy aborts serializeHiwireState).
  *
  * Contract (master plan §Execution semantics):
- * - whole block source, FRESH `__main__` namespace per run — and since P3's
- *   blit reset, the WHOLE interpreter (sys.modules, module-level state)
- *   rewinds to the boot ready-point after every run: runs are stateless and
- *   reproducible (the fresh-`__main__` here is now belt-and-braces);
+ * - whole block source, FRESH `__main__` namespace per run — and since the
+ *   blit reset landed, the WHOLE interpreter (sys.modules, module-level
+ *   state) rewinds to the boot ready-point after every run: runs are
+ *   stateless and reproducible (the fresh-`__main__` here is belt-and-braces);
  * - compiled as '<block>' with linecache seeded so user frames keep source;
  * - Jupyter-style last-expression echo (ast split; `df.head()` must print);
  * - tracebacks drop harness frames; user frames show source lines; stdlib
@@ -18,8 +18,8 @@
  *   batched) — the harness never buffers output itself.
  */
 
-export const HARNESS_FILE = '<avlo-harness>';
-export const BLOCK_FILE = '<block>';
+const HARNESS_FILE = '<avlo-harness>';
+const BLOCK_FILE = '<block>';
 
 /** Figure caps — MUST mirror PY_LIMITS.maxFigures/maxFigurePx (py-protocol).
  * Local literals because this file stays IMPORT-FREE (the py-build Node
@@ -30,7 +30,7 @@ const MAX_FIGS = 4;
 const MAX_FIG_PX = 2_048;
 
 /** Boot-time: define the harness module. Executor runs this once. */
-export const HARNESS_SOURCE = `
+const HARNESS_SOURCE = `
 import ast, builtins, linecache, sys, traceback, json
 
 _BLOCK = ${JSON.stringify(BLOCK_FILE)}
@@ -40,9 +40,10 @@ _HARNESS = ${JSON.stringify(HARNESS_FILE)}
 # able to break the run protocol (the JSON result string below).
 _dumps = json.dumps
 
-# Defense-in-depth import guard. The AUTHORITATIVE isolation layer is the
-# executor's worker-scope network scrub (py-executor.ts scrubNetworkScope);
-# the fork-level bridge removal lands with patch 0006 (M3). Here: drop the JS
+# Defense-in-depth import guard. The AUTHORITATIVE isolation layer is
+# py-harden.ts (scrubWorkerScope + hardenRealm + assertRealmHardened), and
+# fork patch 0008 already removes the js bridge at the finder level — this
+# guard is the third net. Here: drop the JS
 # bridge from the import cache (internals hold direct refs — popping only
 # clears the cache) and report the whole pyodide/js surface as absent to any
 # future import. pyodide/_pyodide stay cached (internals may re-import them),

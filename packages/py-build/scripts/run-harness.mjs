@@ -226,7 +226,7 @@ if (section === 'base') {
   r = run("print('still alive')");
   check('protocol survives json.dumps sabotage', r.ok && r.output === 'still alive\n', JSON.stringify(r));
 
-  // sqlite3 — the new DSO, exercised entirely POST-freeze (the additive proof).
+  // sqlite3 — static in the main module (314), exercised entirely POST-freeze.
   r = run(
     "import sqlite3\ncon = sqlite3.connect(':memory:')\ncon.execute('CREATE TABLE t (a INTEGER, b TEXT)')\ncon.executemany('INSERT INTO t VALUES (?, ?)', [(1, 'x'), (2, 'y')])\ncon.commit()\nprint(con.execute('SELECT SUM(a), COUNT(*) FROM t').fetchone())",
   );
@@ -236,7 +236,7 @@ if (section === 'base') {
   );
   check('sqlite3 file DB persists in MEMFS post-freeze', r.ok && r.output === '7\n', JSON.stringify(r).slice(0, 200));
   r = run('import sqlite3\nprint(len(sqlite3.sqlite_version.split(".")))');
-  check('sqlite3 version reads from the DSO', r.ok && r.output === '3\n', JSON.stringify(r));
+  check('sqlite3 version reads from the static builtin', r.ok && r.output === '3\n', JSON.stringify(r));
 
   // 0008 js-bridge closure — guard-stripped probes, then restore.
   r = run(
@@ -299,7 +299,7 @@ if (section === 'base') {
 }
 
 // ---------------------------------------------------------------- seaborn
-// The full `all` set (8 tars) under the hardened realm: seaborn plots decode
+// The full `all` set (7 tars) under the hardened realm: seaborn plots decode
 // to real pixels, the vendored KDE keeps scipy out, tombstone probes are
 // precise, and pandas↔sqlite3 roundtrips — all POST-freeze.
 if (section === 'seaborn') {

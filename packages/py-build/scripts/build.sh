@@ -25,8 +25,9 @@ for p in /pb/patches/pyodide/*.patch; do
 done
 # emsdk patches ride pyodide's own emsdk patch mechanism (applied by make -C
 # emsdk). Every AVLO emsdk patch embeds an `AVLO` marker in its added lines —
-# the liveness grep keys on the marker, not on any one patch's symbol, so the
-# whole block is a no-op while patches/emsdk/ is empty (P1 parks dsoBaseHook).
+# the liveness grep keys on the marker, not on any one patch's symbol. The
+# 0006 dsoBaseHook patch is MANDATORY (snapshot replay): the marker assert
+# below hard-fails if the installed tree ships unpatched dylink glue.
 EMSDK_PATCHES=(/pb/patches/emsdk/*.patch)
 if [ -e "${EMSDK_PATCHES[0]:-}" ]; then
   for p in "${EMSDK_PATCHES[@]}"; do

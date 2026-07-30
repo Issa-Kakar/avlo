@@ -59,7 +59,7 @@ prompt.md
 packages/py-build/.work/
 # Downloaded recipe wheels (sha-pinned in build.config.json)
 packages/py-build/.cache/
-# Local pyodide/py artifacts pulled for dev (P0 spike + py:pull)
+# py-build staging target (stage.mjs writes the fork artifacts here)
 web/public/py-dev/
 
 # Python bytecode (host pack scripts)

@@ -268,6 +268,6 @@ for (const [lang, text] of Object.entries(CORPUS)) {
     );
     i = j;
   }
-  console.log(`== ${lang}: ${mismatches.length === 0 ? 'PERFECT PARITY' : mismatches.length + ' mismatch run(s)'}`);
+  console.log(`== ${lang}: ${mismatches.length === 0 ? 'PERFECT PARITY' : `${mismatches.length} mismatch run(s)`}`);
   for (const m of mismatches) console.log(m);
 }

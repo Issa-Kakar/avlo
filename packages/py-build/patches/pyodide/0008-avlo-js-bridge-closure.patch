@@ -12,11 +12,9 @@ registration stay: webloop does `from pyodide_js._api import
 scheduleCallback` at import time and pyodide/__init__ runs
 _initialize_event_loop() during boot — removing either breaks boot.
 
-P1 note: this patch's former snapshot half (the getExpectedKeys hiwire
-table rewrite in src/js/snapshot.ts) is PARKED in
-patches/parked/pyodide/0008b-avlo-expected-keys.reference.patch until
-P2's owned-capture rewrite — snapshots are dormant for all of Phase 1
-(the client forces cold boots).
+Companion: the getExpectedKeys hiwire-table rewrite lives in the LIVE
+sibling patch 0008b-avlo-expected-keys.patch (gated by the harness
+snapshot section).
 
 diff --git a/src/js/api.ts b/src/js/api.ts
 index 8f73e57..6531895 100644

@@ -39,7 +39,7 @@
  * file would scribble into that file's own region of the shared buffer —
  * bounds-limited to its own bytes, and nothing writes to site-packages files
  * (pycache lands as NEW nodes; the mpl config dir is `/home/pyodide`). Same
- * class as the P3 files-survive-blit residual; WasmFS is the structural fix.
+ * class as the files-survive-blit residual; WasmFS is the structural fix.
  */
 
 // ---------------------------------------------------------------- ustar walk

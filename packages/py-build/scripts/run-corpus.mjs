@@ -3,8 +3,8 @@
 // interpreter per group and bounded RAM (9GB WSL2 host; pandas+mpl in one
 // process would compound). Child: boots the fork on the staged stdlib,
 // mounts the group's bundle set from dist/stage/bundles/*.tar (the REAL
-// artifacts — same 512-byte meta parse + tarfile.extractall + loadDynlib
-// order the product runtime uses), then runs every sample in a fresh
+// artifacts — the SHIPPED py-mount walker + parseTarMeta + the same
+// loadDynlib order the product runtime uses), then runs every sample in a fresh
 // namespace. Samples are self-asserting; any exception fails.
 //
 //   node scripts/run-corpus.mjs [--index dist/raw] [--stdlib dist/stage/python_stdlib.zip] [--group numpy]

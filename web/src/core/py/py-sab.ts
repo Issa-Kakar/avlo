@@ -11,13 +11,18 @@
  *   u8 [0]      INTERRUPT   pyodide setInterruptBuffer cell (2 = SIGINT)
  *   i32[1]      STATE       executor lifecycle (PyExecState)
  *   i32[2]      RUN_ID      currently-executing run (0 = idle)
- *   i32[3]      HEARTBEAT   incremented by the executor between runs
- *   i32[4]      EPOCH       executor generation stamp (supervisor-written)
+ *   i32[3]      HEARTBEAT   incremented by the executor between runs —
+ *                           diagnostic-only today (no reader; DevTools/
+ *                           post-mortem inspection)
+ *   i32[4]      EPOCH       executor generation stamp (supervisor-written) —
+ *                           diagnostic-only today (liveness is spawnToken +
+ *                           onmessage-mute, not the epoch)
  *   i32[5]      FUTEX_SEQ   reserved for a future Futex wait/notify pair
  *   i32[6]      CANCEL_KIND why the interrupt byte was written (PyCancelKind)
  *   i32[7]      MEM_KIB     executor-reported heap size after each run, in
  *                           KiB — raw bytes hit 2^31 at the 2 GiB ceiling and
  *                           would read back negative from an Int32 slot
+ *                           (read by the py-build harness memory checks)
  */
 
 export const PY_SAB_BYTES = 64;

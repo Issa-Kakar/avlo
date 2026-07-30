@@ -156,14 +156,13 @@ function makeWriteHook(stream: 'out' | 'err') {
 }
 
 /**
- * Restage ⇒ recapture, productionized (the spike's standing guard): the
- * interpreter's belief about the stdlib zip (zipimport TOC offsets, mtimes)
- * lives in the wasm heap, and BUILD_ID only pins glue↔wasm — a drifted zip
- * under a matching fork is exactly the corruption class it cannot catch.
- * Hash the zip AS MOUNTED (read back from MEMFS, not re-fetched) against the
- * supervisor-verified manifest and refuse the boot on mismatch. Also the
- * anchor P3 snapshots key on: a heap image is only valid over the byte-
- * identical zip it was captured against.
+ * Restage ⇒ recapture: the interpreter's belief about the stdlib zip
+ * (zipimport TOC offsets, mtimes) lives in the wasm heap, and BUILD_ID only
+ * pins glue↔wasm — a drifted zip under a matching fork is exactly the
+ * corruption class it cannot catch. Hash the zip AS MOUNTED (read back from
+ * MEMFS, not re-fetched) against the supervisor-verified lock sha and refuse
+ * the boot on mismatch. Also the anchor snapshots key on: a heap image is
+ * only valid over the byte-identical zip it was captured against.
  */
 async function verifyStdlibZip(expectedSha256: string): Promise<void> {
   const zipPath = pyodide.runPython("import sys; next(p for p in sys.path if p.endswith('.zip'))") as string;
@@ -177,18 +176,19 @@ async function verifyStdlibZip(expectedSha256: string): Promise<void> {
 /** Mount one bundle: graft the tar's tree DIRECTLY into MEMFS (walker —
  * node contents adopt tar subarray views, no in-wasm tarfile, no copies),
  * then loadDynlib every DSO in the meta's canonical order (the supervisor
- * sends bundles in deps-first set order). Restore boots pass `extractOnly` —
- * the replayed groups are already registered in LDSO at their recorded bases,
- * but the `.avlo/*.so` FILES must still land: CPython's ExtensionFileLoader
- * fopens + fstats the path BEFORE dlopen (dynload_shlib.c), and only then
- * does the C dlopen short-circuit on the LDSO registry hit (find_existing —
- * heap state the blit restores), so lazy post-restore imports need the file
- * present even though its bytes are never re-read by dlopen. */
-async function mountBundle(b: PyBundlePayload, extractOnly: boolean): Promise<void> {
+ * sends bundles in deps-first set order). Restore boots pass `replayed` —
+ * their groups are already registered in LDSO at their recorded bases so the
+ * dlopen loop is skipped, but the `.avlo/*.so` FILES must still land:
+ * CPython's ExtensionFileLoader fopens + fstats the path BEFORE dlopen
+ * (dynload_shlib.c), and only then does the C dlopen short-circuit on the
+ * LDSO registry hit (find_existing — heap state the blit restores), so lazy
+ * post-restore imports need the file present even though its bytes are never
+ * re-read by dlopen. */
+async function mountBundle(b: PyBundlePayload, replayed: boolean): Promise<void> {
   const endWalk = traceBegin('mount-walk');
   mountBundleTree(pyodide.FS, b.prefix, new Uint8Array(b.bytes));
   endWalk({ bundle: b.name });
-  if (extractOnly) return;
+  if (replayed) return;
   const endDlopen = traceBegin('mount-dlopen');
   for (const so of b.loadOrder) {
     await pyodide._api.loadDynlib(`${b.prefix}/${so}`);
@@ -314,10 +314,8 @@ async function boot(m: BootPrepMsg): Promise<void> {
     const bundles = await D.tars.promise;
     bundleCount = bundles.length;
     for (const b of bundles) {
-      // Cold boots mount fully; restore boots extract-only (DSOs replayed).
-      const endMount = traceBegin('mount');
+      // Cold boots mount fully; restore boots walk-only (DSOs replayed).
       await mountBundle(b, restored);
-      endMount({ bundle: b.name });
     }
     wasm = wasmTimers.collect();
     wasmTimers.uninstall(); // all compiles are behind us; the realm scrub below must not see wrappers

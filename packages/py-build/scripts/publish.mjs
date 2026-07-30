@@ -38,12 +38,10 @@ const SOURCES = {
 // literal string "undefined" to `wrangler --content-type`.
 const MIME = {
   '.mjs': 'text/javascript',
-  '.js': 'text/javascript',
   '.wasm': 'application/wasm',
   '.zip': 'application/zip',
   '.json': 'application/json',
   '.tar': 'application/x-tar',
-  '.snap': 'application/octet-stream',
 };
 const contentType = (file) => MIME[file.slice(file.lastIndexOf('.'))];
 

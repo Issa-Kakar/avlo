@@ -1,4 +1,4 @@
-# self-asserting: sqlite3 in-memory CRUD over the unvendored _sqlite3 DSO
+# self-asserting: sqlite3 in-memory CRUD over the static _sqlite3 builtin
 import sqlite3
 
 assert len(sqlite3.sqlite_version.split(".")) == 3, sqlite3.sqlite_version

@@ -159,7 +159,8 @@ def stage_group(bundle: str, stage: Path, dropped: set[str]) -> None:
     if stale:
         sys.exit(
             f"{bundle}: groups.json wheel pins stale for {', '.join(stale)} — "
-            "regroup needed (recipes loop, then analyze-dsos --mint-groups from a pre-group restage)"
+            "regroup needed (recipes loop; refresh groups.json from the harvested "
+            "config/dso-groups/<bundle>.json manifests + build.config wheel pins)"
         )
     want = {e["wheelSoPath"] for e in group["extensions"]}
     if dropped != want:

@@ -15,7 +15,7 @@
 //                                       renamed the asm glue to .mjs)
 //   python_stdlib.zip                  (pruned zip — dist/stage)
 //   bundles/<name>.tar                 (dist/stage/bundles)
-//   (snapshots: PARKED until P2's build-side capture — no baseline.snap)
+//   (no snapshot artifacts: snapshots are client-captured, OPFS-only)
 //   manifest.json                      (generated here; field-compatible with
 //                                       M3's R2 manifest)
 // Checked-in codegen:

@@ -76,11 +76,12 @@ export function scrubWorkerScope(): void {
 
 /**
  * Post-boot wasm + intrinsic hygiene. All wasm compilation is done by the
- * time this runs — bundle DSOs load during mount, snapshot restore (P3)
- * happens inside bootPyodide, blit reset never recompiles, and a different
- * bundle set means a brand-new worker — so the compile surface goes away
- * entirely: user code can never compile or instantiate NEW wasm in this
- * realm, even where CSP allows wasm-unsafe-eval. Memory/Table/Global/Tag/
+ * time this runs — cold boots dlopen during mount, restore boots precompile
+ * the group DSOs off the transferred tars and replay them inside preBlit,
+ * the blit reset never recompiles, and a different bundle set means a
+ * brand-new worker — so the compile surface goes away entirely: user code
+ * can never compile or instantiate NEW wasm in this realm, even where CSP
+ * allows wasm-unsafe-eval. Memory/Table/Global/Tag/
  * Exception and the error types stay: the live instance and Emscripten's
  * wasm-EH paths use them at runtime.
  *
@@ -144,16 +145,18 @@ export function freezeTargets(): readonly (readonly [string, object])[] {
   ];
 }
 
+/** WebAssembly names hardenRealm() removes — shared verbatim with the
+ * assertRealmHardened gate so the two can never drift (same discipline as
+ * freezeTargets). */
+const WASM_COMPILE_SURFACE: readonly string[] = ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming', 'Module'];
+
 export function hardenRealm(): void {
-  for (const name of ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming', 'Module']) {
+  for (const name of WASM_COMPILE_SURFACE) {
     const d = Object.getOwnPropertyDescriptor(WebAssembly, name);
     if (d?.configurable) delete (WebAssembly as unknown as Record<string, unknown>)[name];
   }
   for (const [, o] of freezeTargets()) Object.freeze(o);
 }
-
-/** WebAssembly names hardenRealm() removes — re-checked absent by the gate. */
-const WASM_COMPILE_SURFACE: readonly string[] = ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming', 'Module'];
 
 /**
  * Fail-closed verification of the two functions above. Runs once, after both,

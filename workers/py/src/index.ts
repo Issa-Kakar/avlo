@@ -11,7 +11,6 @@ const MIME: Record<string, string> = {
   '.zip': 'application/zip',
   '.json': 'application/json',
   '.tar': 'application/x-tar',
-  '.snap': 'application/octet-stream',
 };
 const contentTypeFor = (file: string): string => MIME[file.slice(file.lastIndexOf('.'))] ?? 'application/octet-stream';
 

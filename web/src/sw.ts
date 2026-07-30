@@ -91,7 +91,7 @@ function pyRelPath(url: URL): string | null {
 }
 
 /** Lock `artifacts` entry for a core artifact URL (glue/wasm/stdlib). No
- * `.snap` case exists: P2 snapshots are OPFS-only, never fetched. */
+ * `.snap` case exists today: P2 snapshots are OPFS-only, client-captured. */
 function pyCoreEntry(url: URL): { name: string; sha256: string; size: number } | null {
   const name = pyRelPath(url);
   const entry = name ? BUILD_LOCK.artifacts[name] : undefined;
@@ -101,7 +101,7 @@ function pyCoreEntry(url: URL): { name: string; sha256: string; size: number } |
 /** Lock `bundles` entry for a `bundles/<name>.tar` URL. */
 function pyTarEntry(url: URL): { name: string; sha256: string; size: number } | null {
   const rel = pyRelPath(url);
-  if (!rel || !rel.startsWith('bundles/') || !rel.endsWith('.tar')) return null;
+  if (!rel?.startsWith('bundles/') || !rel.endsWith('.tar')) return null;
   const name = rel.slice('bundles/'.length, -'.tar'.length);
   const entry = BUILD_LOCK.bundles[name];
   return entry ? { name: `${name}.tar`, ...entry } : null;
