@@ -10,7 +10,9 @@
  * Correctness runs three deliberately de-correlated oracles after every
  * mutation phase:
  *   1. differential queries vs a brute-force mirror (and vs rbush itself on
- *      replayed op sequences) — catches result-set divergence;
+ *      replayed op sequences) — catches result-set divergence; every
+ *      differential query runs BOTH query() and queryWide(), so the twin
+ *      leaf-compaction bodies can never drift apart;
  *   2. per-item readBBox/has parity vs the mirror — catches stored-box
  *      corruption that random queries can mask, and is independent of
  *      validate(), whose exact-MBR audit flows through the same _recalcInto
@@ -25,6 +27,11 @@
  * Bench: A/B vs rbush on load / insert / search / update / remove / churn at
  * 10k / 100k / clustered 100k / 1M, reported as p50 (min) over warmed rounds;
  * stateful benches rebuild their input per round OUTSIDE the timed window.
+ * Each structure runs its own configuration: FlatRTree(16) vs rbush(9) —
+ * rbush's default and avlo's production ObjectSpatialIndex config (16-vs-16,
+ * the algorithm-isolation framing, was the config of record through e5eb38a;
+ * measured rbush(9)-vs-(16) differences are ±5-11%, row-dependent, an order
+ * of magnitude below the flat-vs-rbush gap).
  */
 import RBush from 'rbush';
 import { FlatRTree } from './flat-rtree';
@@ -146,6 +153,8 @@ function diffQueries(
     const got = sortedIds(tree.results, n);
     const want = bruteQuery(mirror, q);
     check(sameIds(got, want), `${ctx}: query #${i} mismatch (got ${got.length}, want ${want.length})`);
+    const nw = tree.queryWide(q[0], q[1], q[2], q[3]);
+    check(sameIds(sortedIds(tree.results, nw), want), `${ctx}: queryWide #${i} mismatch (got ${nw}, want ${want.length})`);
     check(tree.collides(q[0], q[1], q[2], q[3]) === want.length > 0, `${ctx}: collides #${i} mismatch`);
   }
   diffItems(tree, mirror, ctx);
@@ -223,17 +232,30 @@ function tGuards(): void {
 
   const t = new FlatRTree();
   throws(() => t.insert(0xffffffff, 0, 0, 1, 1), 'guards: id === NONE throws');
+  throws(() => t.insert(0x40000000, 0, 0, 1, 1), 'guards: id === 2^30 throws');
+  throws(() => t.insert(0x40000001, 0, 0, 1, 1), 'guards: id > 2^30 throws');
   throws(() => t.insert(-1, 0, 0, 1, 1), 'guards: negative id throws');
   throws(() => t.insert(1.5, 0, 0, 1, 1), 'guards: fractional id throws');
   t.insert(3, 0, 0, 1, 1);
   throws(() => t.insert(3, 2, 2, 3, 3), 'guards: duplicate insert throws');
   check(t.size === 1, 'guards: rejected inserts left size intact');
   audit(t, 'guards after rejected inserts');
+  t.insert((1 << 22) + 5, 7, 7, 8, 8); // sparse-high valid id — clz32 map growth in one hop
+  check(t.has((1 << 22) + 5) && t.size === 2, 'guards: large valid id insert');
+  audit(t, 'guards large id');
+  t.remove((1 << 22) + 5);
 
   t.load(0, [], []);
   check(t.size === 1, 'guards: load(0) no-op');
   throws(() => t.load(2, [10], [0, 0, 1, 1, 0, 0, 1, 1]), 'guards: load short ids throws');
   throws(() => t.load(2, [10, 11], [0, 0, 1, 1]), 'guards: load short boxes throws');
+  {
+    const ids = [30, 31, 32, 33, 34, 35, 0x40000000, 36];
+    const boxes: number[] = [];
+    for (let i = 0; i < 8; i++) boxes.push(i, i, i + 1, i + 1);
+    const tg = new FlatRTree();
+    throws(() => tg.load(8, ids, boxes), 'guards: load id ≥ 2^30 throws');
+  }
 
   {
     // duplicate WITHIN one batch (count ≥ minEntries so the bulk path runs)
@@ -627,7 +649,7 @@ function tChurn(seed: number, ops: number): void {
 function tRBushParity(seed: number, ops: number): void {
   const rng = mulberry32(seed);
   const t = new FlatRTree();
-  const r = new RBush<RItem>(16);
+  const r = new RBush<RItem>(9);
   const items = new Map<number, RItem>();
   let nextId = 0;
 
@@ -780,7 +802,7 @@ function rbushRetainedKiB(d: Dataset): number | null {
   const before = process.memoryUsage().heapUsed;
   // Items allocated INSIDE the window: they are rbush's only box storage, the
   // counterpart of FlatRTree's _boxes (which its bytes figure includes).
-  const r = new RBush<RItem>(16);
+  const r = new RBush<RItem>(9);
   r.load(makeItems(d));
   g();
   g();
@@ -817,7 +839,7 @@ function benchDataset(d: Dataset, perOp = true): void {
   const itemsForLoad = makeItems(d);
   const loadRbush = measureS(
     () => {
-      const r = new RBush<RItem>(16);
+      const r = new RBush<RItem>(9);
       r.load(itemsForLoad);
       sink += r.all().length;
     },
@@ -836,7 +858,7 @@ function benchDataset(d: Dataset, perOp = true): void {
       sink += t.size;
     }, 5);
     const insRbush = measureS(() => {
-      const r = new RBush<RItem>(16);
+      const r = new RBush<RItem>(9);
       const items = makeItems(d);
       for (let i = 0; i < d.n; i++) r.insert(items[i]);
       sink += r.all().length;
@@ -847,21 +869,27 @@ function benchDataset(d: Dataset, perOp = true): void {
   // steady trees for query/update benches
   const T = new FlatRTree(16);
   T.load(d.n, d.ids, d.boxes);
-  const R = new RBush<RItem>(16);
+  const R = new RBush<RItem>(9);
   const rItems = makeItems(d);
   R.load(rItems);
 
-  const searchBench = (label: string, count: number, w: number, h: number) => {
+  const searchBench = (label: string, count: number, w: number, h: number, wide: boolean) => {
     mkQueries(count, w, h);
     const qs = queries.slice();
     const f = measureS(
-      () => {
-        for (let i = 0; i < qs.length; i++) {
-          const q = qs[i];
-          const n = T.query(q[0], q[1], q[2], q[3]);
-          sink += n;
-        }
-      },
+      wide
+        ? () => {
+            for (let i = 0; i < qs.length; i++) {
+              const q = qs[i];
+              sink += T.queryWide(q[0], q[1], q[2], q[3]);
+            }
+          }
+        : () => {
+            for (let i = 0; i < qs.length; i++) {
+              const q = qs[i];
+              sink += T.query(q[0], q[1], q[2], q[3]);
+            }
+          },
       15,
       2,
     );
@@ -883,10 +911,12 @@ function benchDataset(d: Dataset, perOp = true): void {
     row(label, f, rb, `(${count} queries)`);
   };
 
-  searchBench('search: hit-test 10×10', 4000, 10, 10);
-  searchBench('search: block 500×500', 2000, 500, 500);
-  searchBench('search: viewport 5000×3000', 1000, 5000, 3000);
-  searchBench('search: zoom-out 40000×40000', 100, 40000, 40000);
+  // narrow shape → query(); wide shapes → queryWide() — the caller-selection
+  // rule integration will follow (pickers narrow, culls wide).
+  searchBench('search: hit-test 10×10', 4000, 10, 10, false);
+  searchBench('search: block 500×500 (wide)', 2000, 500, 500, true);
+  searchBench('search: viewport 5k×3k (wide)', 1000, 5000, 3000, true);
+  searchBench('search: zoom-out 40k² (wide)', 100, 40000, 40000, true);
 
   if (perOp) {
     // ── update: jitter every item +δ then −δ — state-neutral per round, so
@@ -946,7 +976,7 @@ function benchDataset(d: Dataset, perOp = true): void {
         T2.load(d.n, d.ids, d.boxes);
       },
     );
-    let R2 = new RBush<RItem>(16);
+    let R2 = new RBush<RItem>(9);
     let r2Items: RItem[] = [];
     const remRbush = measureS(
       () => {
@@ -956,7 +986,7 @@ function benchDataset(d: Dataset, perOp = true): void {
       3,
       1,
       () => {
-        R2 = new RBush<RItem>(16);
+        R2 = new RBush<RItem>(9);
         r2Items = makeItems(d);
         R2.load(r2Items);
       },
@@ -1039,13 +1069,13 @@ function benchChurn(): void {
     churnLine('FlatRTree:', flatSamples);
   }
   {
-    let r = new RBush<RItem>(16);
+    let r = new RBush<RItem>(9);
     let nextId = 0;
     let items = new Map<number, RItem>();
     let live: number[] = [];
     let rng: () => number = mulberry32(31337);
     const setup = () => {
-      r = new RBush<RItem>(16);
+      r = new RBush<RItem>(9);
       nextId = 0;
       items = new Map();
       live = [];
@@ -1148,7 +1178,9 @@ console.log(`\n${checks} checks, ${failures} failures (${elapsed.toFixed(0)} ms)
 if (failures > 0) process.exit(1);
 
 if (process.argv.includes('--bench')) {
-  console.log(`\nA/B benchmark: FlatRTree vs rbush@4 (both maxEntries=16) — p50 (min) over warmed rounds, ${process.version}`);
+  console.log(
+    `\nA/B benchmark: FlatRTree(16) vs rbush@4(9 — its default; avlo production config) — p50 (min) over warmed rounds, ${process.version}`,
+  );
   benchDataset(genUniform(10000, 51));
   benchDataset(genUniform(100000, 52));
   benchDataset(genClustered(100000, 53));
