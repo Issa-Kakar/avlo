@@ -5,9 +5,11 @@ Forked-Pyodide build + artifact packing for the in-browser Python runtime
 (reproducibility root); cross-session state, measurement ledgers, and
 hard-won learnings live in `NOTES.md` — **trust NOTES.md + the code over any
 other prose where they conflict.** Deliberately NO `build` script — the
-toolchain needs docker and never runs in Turbo/CI. All pack scripts are
-byte-reproducible (`--repro` builds twice and compares) and re-exec under
-`PYTHONHASHSEED=0` (marshalled sets iterate in hash order).
+toolchain needs docker and never runs in Turbo/CI. Both pack scripts re-exec
+under `PYTHONHASHSEED=0` (marshalled sets iterate in hash order); `--repro`
+(build twice, byte-compare) exists on `pack-package.py` and `link-groups.py`
+only — `pack-stdlib.py` parses no arguments, so its byte-identity gate is a
+manual double run.
 
 **Toolchain:** Pyodide **314.0.2** / CPython **3.14** / emsdk **5.0.3**,
 **MAIN_MODULE=2 closed world** — DSOs are NOT on the main link line; the only
@@ -35,12 +37,12 @@ signal anyone needs.
 | `pack-stdlib.py` | Pruned pyc-only stdlib zip (`-O2`, DEFLATED 9) + overlay modules + `_avlo_pruned` registry → `dist/stage/python_stdlib.zip` + `stdlib-modules.json`. Refuses to run off the pinned python minor |
 | `dump-builtins.mjs` | Boots the fork on the RAW stdlib → `dist/stage/builtin-modules.json` (sorted `sys.builtin_module_names`); hard-asserts `_sqlite3` is a static builtin. Required stage.mjs input |
 | `fetch-wheels.mjs` | Two jobs: (1) download the pinned recipes wheels → `.cache/wheels/` (sha-verified; release asset → CDN mirror fallback; `--stamp` re-pins from the stock lock, `--only a,b` narrows); (2) ALWAYS regenerate `.cache/link-sos/link.rsp` from the 4 `dist/groups/*.so` import unions — the closed world's link input (hard-error if any group .so is missing) |
-| `pack-package.py` | Bundle tars: wheel patches (`patches/wheels/<pkg>/`) → global excludes → prune (`config/pkg-prune/`) → grouped-DSO swap (drop per-extension `.so`s, assert dropped set == `groups.json` census AND census wheel shas == config pins — the stale-group gate — then inject `.avlo/<bundle>.so` + the `_avlo_groups_<bundle>` registry the sitecustomize finder reads) → [mpl: font subset via pinned `uvx --from fonttools` + fontlist prebake] → pyc `-O1` → `_avlo_pruned_<bundle>` → meta.json-first deterministic ustar → `dist/stage/bundles/`. `--unpruned` materializes tracer trees; `--stage-only`/`--tar-only` split at the prebake seam |
+| `pack-package.py` | Bundle tars, in this order: wheel patches (`patches/wheels/<pkg>/`) → global excludes → prune (`config/pkg-prune/`) → drop per-extension `.so` → **pyc `-O1`** (all four inline, per file, inside the staging loop) → [mpl only: font subset via pinned `uvx --from fonttools`] → grouped-DSO swap (assert dropped set == `groups.json` census AND census wheel shas == config pins — the stale-group gate — then inject `.avlo/<bundle>.so` + the `_avlo_groups_<bundle>` registry the sitecustomize finder reads) → `_avlo_pruned_<bundle>` → **[stage/tar seam]** → [mpl only: `prebake-fontcache.mjs`] → meta.json-first deterministic ustar → `dist/stage/bundles/`. `--unpruned` materializes tracer trees; `--stage-only`/`--tar-only` split at the seam |
 | `prebake-fontcache.mjs` | Bakes `matplotlib/fontlist.json` over the SUBSET faces (fork boot on staged trees, det-env kit, canonical JSON). The wheel ships a stale 39-face list — deleted before the rebuild |
 | `trace-imports.mjs` + `.py` | Import tracer (G3): runs package corpus groups over UNPRUNED trees (raw stdlib; pillow/fonttools mounted for mpl groups) recording attempts + loads. `--check`: trace ∩ prune = ∅ AND no PIL/fontTools attempt. `--propose <pkg>`: unreached-subtree prune candidates. `# trace: skip` samples excluded (deliberate tombstone probes) |
 | `run-corpus.mjs` | Corpus runner: child process per group (RAM-bounded), mounts the REAL bundle tars via the SHIPPED `py-mount.ts` walker (`mountBundleTree`/`parseTarMeta` — asserts `meta.prefix` == interpreter site-packages, dlopen per loadOrder, `ensure_tzpath` after mounts); mpl groups add the font gates (no findfont, no fontManager rebuild) + PNG pixel decode (`lib/png.mjs`) |
 | `analyze-dsos.mjs` | DSO census + grouped-world audit over staged bundle tars + main wasm (imports/exports/dylink.0, import-provider table, lazy-stub audit). `--check` (`dsos:check`): PyInit census equality vs `groups.json`, finder-derivable init names, `needed==[]`, closed world vs main ∪ self ∪ `{exit}`, loadOrder shape, mixed-world hard fail (+ always: PyInit shortname uniqueness, no PyInit-less DSO). Census updates come from the recipes-loop harvest manifests |
-| `run-recipes.mjs` + `recipes-build.sh` | Docker recipe-rebuild loop: pinned pyodide-recipes checkout + patch queues (`patches/recipes/` incl. the numpy legacy-rename; `patches/pyodide-build/` link-record hook) + byte-verified xbuildenv + per-package frozen constraints (`recipes-constraints.d/`; `--freeze-constraints` regenerates them from AVLO-PKG pip-log markers) → serial no-deps builds → harvest → group links → `dist/groups/`. `--pkg <p>` spikes one package (hand-only lane; outputs marked partial/`spike-*` so packaging can't consume them) |
+| `run-recipes.mjs` + `recipes-build.sh` | Docker recipe-rebuild loop: pinned pyodide-recipes checkout + patch queues (`patches/recipes/` incl. the numpy legacy-rename; `patches/pyodide-build/` link-record hook) + byte-verified xbuildenv + per-package frozen constraints (`recipes-constraints.d/`; `--freeze-constraints` regenerates them from AVLO-PKG pip-log markers) → serial no-deps builds → harvest → group links → `dist/groups/`. Flags: `--clone-only`, `--link-only` (= the `groups:link` script — re-links the 4 group `.so` from the committed manifests without a recipe rebuild), `--freeze-constraints`, `--force`, `--allow-undigested`, and `--pkg <p>` to spike one package (hand-only lane; outputs marked partial/`spike-*` so packaging can't consume them) |
 | `harvest-links.py` | Link records → per-bundle manifests (`config/dso-groups/<bundle>.json`): (pkg, PyInit) matching, thin-archive repack, flag-tail reconciliation, content-addressed stash (build-env path normalization), per-bundle duplicate-strong-def collision gate (hard fail) |
 | `link-groups.py` | One `-sSIDE_MODULE=2` link per bundle from its manifest; `--repro` double-link byte-compare; `--allow-partial` spike outputs named `spike-*.so` |
 | `verify-groups.mjs` + `verify-pytree.py` | `groups:verify` — PyInit census equality + `needed==[]` + closed world vs the CURRENT main per group .so; rebuilt-vs-upstream `.py` byte equality per package (allowlist `config/pkg-equality-allow.txt` with reasons). `--spike`/`--pkgs` serve the hand-only spike lane |
@@ -56,22 +58,47 @@ signal anyone needs.
 
 ## Layout
 
-`patches/pyodide/` (fork queue `0001, 0003, 0005, 0006, 0007, 0008, 0008b`),
+`patches/pyodide/` (fork queue `0001` linkflags+memory exports, `0003` drop
+C-extensions — the list `config/stdlib-prune.txt` mirrors, `0005` DSO
+snapshot support, `0006` drop the `pyodide.js`/`package.json`/
+`pyodide-lock.json` boot crutch, `0007` owned-restore seam, `0008` JS-bridge
+closure, `0008b` hiwire `getExpectedKeys`),
 `patches/emsdk/` (`0006` dsoBaseHook + replay ctor/reloc skip — mandatory),
 `patches/pyodide-build/` (link-record hook), `patches/recipes/` (recipe
 source patches incl. the numpy legacy-rename the collision gate depends on),
 `patches/wheels/<pkg>/NNNN-*.patch` (unified diffs rooted at the unpacked
 wheel; deletions are prune-list lines, never patches), `config/stdlib-prune.txt`
 + `config/pkg-prune/<pkg>.txt` (`# reason:` comments become tombstone text),
-`config/dso-groups/` (`groups.json` census + per-bundle harvest manifests),
+`config/dso-groups/` (`groups.json` — the 67→4 census AND the per-bundle
+`packages: {wheel: sha256}` pins the stale-group gate compares against — plus
+the four per-bundle harvest manifests), `config/pkg-equality-allow.txt`
+(`pkg:path` + reason; the `verify-pytree.py` allowlist),
 `config/recipes-constraints.d/` (per-package frozen pins; the flat
 `recipes-constraints.txt` is only the required-to-exist seed),
-`overlay/stdlib/` (sitecustomize tombstone+group finders + `_avlo_runtime`
-post-restore/tz-bridge + `_avlo_png` encoder), `corpus/{basic,sqlite,numpy,
-pandas,mpl,all,seaborn}/` (self-asserting samples; `# trace: skip` marks
-deliberate tombstone probes), `.cache/` (wheels/stage/unpruned/trace/
-link-sos/link-inputs — gitignored), `dist/` (raw fork output, staged
-artifacts, `groups/` recipe-loop output — gitignored).
+`overlay/stdlib/` (exactly three files — `sitecustomize.py` tombstone+group
+finders, `_avlo_runtime.py` post-restore/tz-bridge, `_avlo_png.py` encoder;
+`pack-stdlib.py` globs `*.py`, so **anything** dropped here ships),
+`corpus/{basic 6, sqlite 3, numpy 4, pandas 5, mpl 4, all 2, seaborn 6}`
+(self-asserting samples; `# trace: skip` marks deliberate tombstone probes —
+and `run-corpus.mjs`'s `GROUP_SET` is a hard registry: an unmapped corpus dir
+counts as a FAILURE, not a skip), `.cache/` (wheels/stage/unpruned/trace/
+link-sos/link-inputs + `dso-report.json` — gitignored), `dist/` (raw fork
+output, staged artifacts, and `groups/` = the four `<bundle>.so` +
+`manifests/` + `wheels/` — gitignored).
+
+Also here, and load-bearing: `pyproject.toml` + `uv.lock` (a pytest-only uv
+env; also encodes the "determinism boundary — do NOT cross" note about the
+pinned `uvx --from fonttools`), `tests/test_smoke.py` (pure-CPython toolchain
+logic, run as `pnpm test:py` from the root), `.python-version` (3.14 — matches
+the `python3.14` shebangs and the hard minor check in both pack scripts), and
+`dso-grouping-analysis.md` (the P1.5 grouping evidence writeup `analyze-dsos.mjs`
+cites as its reason to exist).
+
+`NOTES.md` is the cross-session ledger; its stable anchors are Current state ·
+MAIN_MODULE=2 closed world · Trace ledgers · Security model · Hard-won
+learnings · Verification surfaces + last-green stamps · Open items/backlog ·
+Phase log (newest-first). The `F1–F17` / `U4–U9` task-discipline glossary the
+`core/py/` code comments cite lives there too.
 
 Wheel pins live in `build.config.json` `recipes.wheels`; pins with a `url`
 are PyPI universal wheels absent from the stock lock (seaborn) — `--stamp`
@@ -118,9 +145,10 @@ the lock's depends graph.
 
 ## Gate board
 
-`pack:stdlib` ×2 byte-identity · `bundles -- --all --repro` byte-identity ·
-`trace:check` (G3) · `corpus` 7/7 (font + PNG gates) · `dsos:check`
-(grouped-world v2) · `groups:verify` · `compress` → `budgets` (G1) ·
-`stage` + `stage:check` · `harness` (all five sections) · `pnpm typecheck` ·
+`pack:stdlib` ×2 byte-identity (manual — it takes no `--repro`) · `bundles`
+byte-identity (the script already carries `--all --repro`) · `trace:check`
+(G3) · `corpus` 7/7 (font + PNG gates) · `dsos:check` (grouped-world v2) ·
+`groups:verify` · `compress` → `budgets` (G1) · `stage` + `stage:check` ·
+`harness` (all five sections) · `pnpm typecheck` · `pnpm test:py` ·
 vitest (web AVS2 codec + py-loader verify + workers/py) · `pnpm py:seed`.
 Last-green stamps + ledgers live in `NOTES.md`.

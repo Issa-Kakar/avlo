@@ -31,9 +31,10 @@ The supervisor constructs the executor worker FIRST, then three detached
 tasks stream boot inputs so bundle prep + ALL OPFS snapshot I/O run in the
 shadow of worker spin-up + glue import + wasm instantiate:
 
-- **T1** glue preflight (lock-verify the glue trio, memoized per page) →
-  `boot-prep` (artifactBase, SAB, stdlib sha, buildHash, trySnapshot,
-  captureKey).
+- **T1** glue preflight (lock-verify the glue trio, memoized per page **on
+  success only** — a rejection nulls the memo so a transient offline failure
+  can't brick the page) → `boot-prep` (artifactBase, SAB, stdlib sha,
+  buildHash, trySnapshot, captureKey).
 - **T2** bundle fetch/verify → `boot-data` (tar buffers TRANSFERRED; sent on
   restore boots too — site-packages mounts and DSO precompile read them).
 - **T3** (iff trySnapshot) OPFS open+parse → `snap-header` (header|null),
@@ -63,21 +64,22 @@ signal, and a task failure calls `abortSpawn` (unconditional teardown).
 
 | File | Role |
 |------|------|
-| `py-protocol.ts` | Message types for all three threads + frozen `PY_LIMITS` caps. sup→exec is FOUR streamed boot msgs (`boot-prep`/`boot-data`/`snap-header`/`snap-heap`) + `exec`; exec→sup: `exec-ready {bootMs,restored}`, `exec-stdout`, `exec-done {…,needsRespawn}`, `exec-snapshot {captureKey,meta,heap}`, `exec-snap-invalid`, `exec-fatal {error,restored}`, `exec-trace`. `PyBundlePayload` = tar bytes + meta prefix/loadOrder. Single source of truth; workers import type-light |
+| `py-protocol.ts` | Message types for all three threads + frozen `PY_LIMITS` caps. main→sup: `run {runId,code,setKey}`, `cancel {runId}`; sup→main: `phase` (`PyRunPhase` = `queued\|booting\|downloading\|running\|cancelling`, + `received`/`total` download progress — **restore boots surface as plain `booting`**, no dedicated phase: the OPFS I/O hides in the spawn shadow), `stdout`, `result`, `sup-fatal` (→ main tears the whole runtime down), `trace`. sup→exec is FOUR streamed boot msgs (`boot-prep`/`boot-data`/`snap-header`/`snap-heap`) + `exec`; exec→sup: `exec-ready {bootMs,restored}`, `exec-stdout`, `exec-done {…,needsRespawn}`, `exec-snapshot {captureKey,meta,heap}`, `exec-snap-invalid`, `exec-fatal {error,restored}`, `exec-trace`. `PyBundlePayload` = tar bytes + meta prefix/loadOrder; `boot-data` is ALWAYS sent (empty array for `stdlib`). The file also states the formal per-generation arrival contract — and that **teardown IS the abort signal; there is no boot-abort message**. Single source of truth; workers import type-light |
 | `py-sab.ts` | 64 B PY_SAB layout (interrupt u8[0] / state / runId / heartbeat / epoch / futex-reserved / cancelKind / memKiB) + alloc/map + interrupt write/clear. One per executor GENERATION — never reused |
-| `py-mount.ts` | The SINGLE home for ustar walking (`walkTar`/`octal`/`asciiName`), PEP-706 `dataFilterMode`, strict `parseTarMeta`, `collectSoBytes`, and `mountBundleTree` — direct-node MEMFS grafting with adopted tar-subarray contents (no in-wasm tarfile; ~11 ms for `all`, byte-identical — harness `--section parity` is the standing gate). Dependency-FREE (callers wrap spans); imported by executor, supervisor, py-build harness AND corpus |
-| `py-trace.ts` | Always-on boot/run tracing: per-thread span buffer → `performance.measure` + ONE `py:trace` JSON line per boot/run, relayed exec→sup→main — py-manager owns the visible `console.info` + the `pyTraceLines` ring (`window.__avloPyTraces` in DEV; the e2e read surface). `installWasmTimers()` = boot-window WebAssembly shims (compile/instantiate aggregates incl. DSO precompile); MUST uninstall before scrub/harden. Span names are the NOTES ledger keys — keep stable. Span meta key `n` is FORBIDDEN (clobbers the span name in the `{n, at, ms, ...meta}` spread) |
+| `py-mount.ts` | The single home for ustar walking (`walkTar`/`octal`/`asciiName`), PEP-706 `dataFilterMode` (identity today — every live header is 0644 — parsed per-entry anyway so a pack change can't silently break parity), strict `parseTarMeta` (a real trust boundary: `safePathSegs` rejects `''`/`.`/`..`, `prefix` must be absolute, meta.json size-bounded — a bad meta minted build-side would otherwise steer mounting/dlopen outside the mount root), `collectSoBytes`, and `mountBundleTree` — direct-node MEMFS grafting with adopted tar-subarray contents (no in-wasm tarfile; ~11 ms for `all`, byte-identical — harness `--section parity` is the standing gate). Dependency-FREE (callers wrap spans); imported by executor, supervisor, py-build harness AND corpus. **One sanctioned duplicate exists**: py-build's `stage.mjs` keeps a local `parseTarMeta` copy for build-graph isolation (it must never import `web/src`) |
+| `py-snapshot.test.ts` | Vitest over the pure AVS2 half — xxh32 known-answer vectors + chunking invariance, header plan/encode/parse round-trip and every rejection path, chunked heap read + abandon signals. Layer 1 of the four-layer proof surface (see *Verification surfaces*) |
+| `py-trace.ts` | Always-on boot/run tracing: per-thread span buffer → `performance.measure` + ONE `py:trace` JSON line per boot/run, relayed exec→sup→main — py-manager owns the visible `console.info` + the `pyTraceLines` ring (`window.__avloPyTraces` in DEV; the e2e read surface). `installWasmTimers()` = boot-window WebAssembly shims (compile/instantiate aggregates incl. DSO precompile) — it also `Proxy`-wraps the `WebAssembly.Module` and `Instance` CONSTRUCTORS, and since `Instance` is deliberately NOT on `hardenRealm`'s delete list, a left-installed wrapper would survive into user-code territory: that is why it MUST uninstall before scrub/harden. Span names are the NOTES ledger keys — keep stable. Span meta key `n` is FORBIDDEN (clobbers the span name in the `{n, at, ms, ...meta}` spread) |
 | `py-snapshot.ts` | AVS2 codec + OPFS store. Codec: streaming `Xxh32` (u32-lane fast path), crc32, `planAvsHeapOff`/`encodeAvsHeaderBlock`/`parseAvsHeader` (magic/crc/v/buildHash/setKey/offset-arithmetic hard cross-checks — ANY failure throws). OPFS (ALL supervisor-side): `openSetSnapshotSup` (read-only sync handle → buffered `getFile` contention rung → null; `deletable` marks lock-holding rungs — only those may poison-delete), `readSnapshotToBuffer` (chunked reads into ONE buffer folding the hash, macrotask yield + live/abandoned checks per chunk), `writeSetSnapshot` (exclusive handle = multi-tab arbiter; heap chunks FIRST folding the hash, header LAST — torn write ⇒ structurally invalid), `deleteSetSnapshot`, stale-buildHash dir GC. `SnapReadHandle` abstracts OPFS/Node-fd (the py-build harness and vitest import this exact shipped codec) |
-| `py-manager.ts` | Main-thread API: `toggleRunCodeBlock` / `cancelRun` / `isRunnableCodeBlock`. FIFO queue (cap 4), single-flight dispatch, pre-run import gate, ONE Y commit per run, 500 ms status ticker |
-| `py-run-store.ts` | Ephemeral per-block phase + live output (Zustand, non-persisted, presence-store pattern). Never written to Y |
+| `py-manager.ts` | Main-thread API: `toggleRunCodeBlock` / `cancelRun` / `isRunnableCodeBlock` / `pyTraceLines` (100-line ring). Lazy supervisor construction, FIFO queue (cap 4, further clicks silently dropped), single-flight dispatch, pre-run import gate, ONE Y commit per run, 500 ms status ticker, and `resetRuntime()` — a supervisor `onerror` or `sup-fatal` fails every queued AND in-flight run, terminates the worker and nulls it so the next click starts clean. See *Main-thread lifecycle* |
+| `py-run-store.ts` | Ephemeral per-block run phase + progress (Zustand, non-persisted, presence-store pattern). Never written to Y. **`liveOutput` is currently write-only** — the `exec-stdout → stdout → appendOutput` relay has no reader in the tree; both the canvas (`code-system.ts` status text) and the DOM overlay (`CodeTool.createOutputDiv`) render final output from **Y**. Two in-file comments still claim a "DOM overlay live view" consumer that does not exist |
 | `py-figures.ts` | Result-time figure placement: `placeRunFigures(blockId, runId, figures)` — ingest PNGs through the image pipeline, assetId-dedup against the block's still-alive `figureIds` images (same plot = no-op; CREATE-ONLY, never update/move/delete), east placement at drag-drop sizing (400wu) via `slideClear`, then ONE user-origin `transact` per figure: `insertImage` + elbow `insertConnector` + `figureIds` append — UNDO-TRACKED by owner decision, unlike the output commit. Per-block stale-batch guard |
 | `py-imports.ts` | Pure: `scanPythonImports` (triple-quote-aware line scan) + `resolveImports` (GENERATED allowlist + package→set merge by bundle union) + refusal message listing the real available packages |
 | `py-stdlib-modules.gen.ts` | GENERATED by py-build `stage.mjs` (checked in; `stage.mjs --check` = drift gate): `STDLIB_MODULES` (pruned-zip tops + true builtins + tombstoned tops), `PACKAGE_TO_SET`, `AVAILABLE_PACKAGES`, `SET_BUNDLES`, `PySetKey` |
 | `py-harness.ts` | Python harness source: fresh `__main__` per run (belt-and-braces — the blit reset rewinds the whole interpreter), linecache-seeded `'<block>'`, ast last-expression echo, harness-frame-trimmed tracebacks, defense-in-depth import guard, matplotlib figure harvest (dpi-scaled to `maxFigurePx`, first `maxFigures`, PNGs to MEMFS `/tmp`; `Gcf.destroy_all()` unconditional). Primitive-only returns (JSON string; figures as `[path, w, h]` triples) |
 | `py-harden.ts` | Realm hardening, the AUTHORITATIVE isolation layer: `scrubWorkerScope()` (delete network incl. WebRTC + fresh-realm escapes + origin storage + BroadcastChannel, own props AND prototype chain) + `hardenRealm()` (delete the WebAssembly compile surface, freeze protocol-bearing intrinsics/prototypes/constructors) + `assertRealmHardened()` (FAIL-CLOSED full re-sweep — any survivor aborts the boot). Dependency-free — the py-build Node harness exercises the exact shipped code against a real fork boot |
-| `py-supervisor.ts` | Worker — the always-live control plane. Owns every wall clock (30 s soft + 5 s hard grace; 2 s cancel grace; 15 s idle teardown — THE memory-reclaim knob, respawn restores from OPFS), executor lifecycle (L2 spawn tasks above, token+mute teardown discipline, eager respawn on `needsRespawn`), bundle fetch+verify (Cache API; SW `x-avlo-verified` hits skip the re-hash, unmarked hits re-verified — corrupt → delete → refetch; buffers TRANSFERRED outright; download progress live-guarded), `ensureGlueVerified()` preflight, capture persistence (`exec-snapshot` accepted ONLY pre-ready — forged-capture guard; write rides the snapOps chain overlapping the first run), poison ladder (pre-ready `exec-fatal restored:true` ⇒ delete + ONE noSnapshot retry with the run pending; restored gen's first-run hard failure ⇒ chained delete before the eager respawn), result synthesis, `SNAPSHOTS_ENABLED` kill switch. Refuses runs in non-crossOriginIsolated contexts; offline-uncached failures surface a friendly "connect once (~X MB)" result |
-| `py-executor.ts` | Nested worker. Boot: park feeds → precompile group DSOs (overlapped) → uniform `bootPyodide` (restore-or-cold via preBlit; `DirtyRestoreError` ⇒ snap-invalid + fresh second boot in-worker) → walker mounts (`replayed` on restore skips the dlopen loop — the groups are LDSO-registered, but the `.so` FILES must land: ExtensionFileLoader fopen/fstats before dlopen) → stdlib-zip as-mounted hash vs boot-msg sha (ALWAYS before any capture) → `_avlo_runtime.post_restore()` → cold only: `freeDsoFileData` knife (−~14.6 MB) → `captureSetSnapshot` (BUNDLE_IMPORTS bake — numpy MUST bake `numpy.random` — + gc×2 + meta via fork APIs + dense `HEAP8.slice`, transferred; best-effort) → scrub/harden/fail-closed assert BEFORE harness install → hooks + harness → **`resetImage = HEAP8.slice()`** at the ready-point of EVERY boot. Run: `run-python` → figures off MEMFS (fresh buffers, transferred end-to-end) → **blit reset** (guard `wasmTable.length` unchanged → `HEAP8.set(resetImage)` + zero tail + re-arm interrupt + `POST_RUN_RESET` /tmp sweep — MEMFS is JS-side and survives the blit); `needsRespawn = !blitOk \|\| heap > 1.5× image`. Raw-write stdout/stderr hooks (flush ≥100 ms/≥8 KB inside the write callback — no timers run mid-Python; per-run decoders + end-of-run drain), 4096-char output cap |
-| `py-loader.ts` | Fork boot wrapper + preBlit driver — `bootPyodide({ artifactBase, snapshot?: PySnapshotFeeds })`. Feeds = `{headerP, heapP, modulesP, onSnapInvalid, outcome}`. preBlit order: header await (null ⇒ `runCold` = deferred `Module.callMain()` + exitCode re-check) → buildId assert pre-grow → `Module.growMemory(heapLen)` → await precompiled Modules → `loadDynlibReplay(path, Module)` per recorded ABSOLUTE loadOrder (emsdk dsoBaseHook forces memBase, asserts tableBase) → `restoreDsoHandles` → `dsoReplayDone` → HARD `tableLenAtCapture` assert → `touchWhileAwaiting` (pre-touch grown pages via value-preserving `Atomics.or` + MessageChannel yield while the heap is in flight) → blit → `header.hiwire` for `finalizeBootstrap`. Mutation-zone throws wrap in `DirtyRestoreError`; cold-main failures deliberately do NOT. Also `freeDsoFileData` (emsdk-pinned +28/+32 struct offsets, sanity-checked — aborts the knife, never the boot) |
+| `py-supervisor.ts` | Worker — the always-live control plane. Owns every wall clock (30 s soft + 5 s hard grace; 2 s cancel grace; 15 s idle teardown — THE memory-reclaim knob, respawn restores from OPFS), executor lifecycle (L2 spawn tasks above, token+mute teardown discipline, eager respawn on `needsRespawn`), bundle fetch+verify (Cache API; SW `x-avlo-verified` hits skip the re-hash, unmarked hits re-verified — corrupt → delete → refetch; buffers TRANSFERRED outright; download progress live-guarded), `ensureGlueVerified()` preflight, capture persistence (`exec-snapshot` accepted ONLY pre-ready — forged-capture guard; write rides the snapOps chain overlapping the first run), poison ladder — THREE rungs: pre-ready `exec-fatal restored:true` ⇒ delete + ONE noSnapshot retry with the run pending; a restored gen's first-run hard failure ⇒ chained delete before the eager respawn; **and a post-ready `exec-fatal` inside the `firstRunAfterRestore` window ⇒ chained delete too**. Set satisfaction is superset-covers-subset (`setSatisfies` by bundle-name inclusion), so a booted `all` generation serves a `numpy` run with no respawn, and eager respawns reuse the LAST REQUESTED set, not the booted one. Boot failure with nothing pending ⇒ go dormant; boot failure WITH a pending run ⇒ no eager respawn (it would just boot a second doomed worker). Result synthesis (timeout/cancel append their own text — graceful interrupts print nothing), `SNAPSHOTS_ENABLED` kill switch (hardcoded `true`, so the `cold boot (snapshots off)` path is unreachable today). Refuses runs in non-crossOriginIsolated contexts; offline-uncached failures surface a friendly "connect once (~X MB)" result |
+| `py-executor.ts` | Nested worker. Boot: park feeds → precompile group DSOs (overlapped) → uniform `bootPyodide` (restore-or-cold via preBlit; `DirtyRestoreError` ⇒ snap-invalid + fresh second boot in-worker) → walker mounts (`replayed` on restore skips the dlopen loop — the groups are LDSO-registered, but the `.so` FILES must land: ExtensionFileLoader fopen/fstats before dlopen) → stdlib-zip as-mounted hash vs boot-msg sha (ALWAYS before any capture) → `_avlo_runtime.post_restore()` → cold only: `freeDsoFileData` knife (−~14.6 MB) → `captureSetSnapshot` (BUNDLE_IMPORTS bake — numpy MUST bake `numpy.random` — + gc×2 + meta via fork APIs + dense `HEAP8.slice`, transferred; best-effort) → scrub/harden/fail-closed assert BEFORE harness install → hooks + harness → **`resetImage = HEAP8.slice()`** at the ready-point of EVERY boot. Run: `run-python` → figures off MEMFS (fresh buffers, transferred end-to-end) → **blit reset** (guard `wasmTable.length` unchanged → `HEAP8.set(resetImage)` + zero tail + re-arm interrupt + `POST_RUN_RESET` /tmp sweep — MEMFS is JS-side and survives the blit); `needsRespawn = !blitOk \|\| heap > 1.5× image`. Raw-write stdout/stderr hooks (flush ≥100 ms / ≥8 192 **characters** — `stdoutFlushBytes` is compared against the post-decode JS string length, so multi-byte output flushes later than the name suggests — inside the write callback, since no timers run mid-Python; per-run decoders + end-of-run drain), 4096-char output cap |
+| `py-loader.ts` | Fork boot wrapper + preBlit driver — `bootPyodide({ artifactBase, snapshot?: PySnapshotFeeds })`. Feeds = `{headerP, heapP, modulesP, onSnapInvalid, outcome}`. preBlit order: header await (null ⇒ `runCold` = deferred `Module.callMain()` + exitCode re-check) → buildId assert pre-grow → `Module.growMemory(heapLen)` + exact-length assert → await precompiled Modules → **[MUTATION ZONE begins]** `API.setDsoLoadInfo(header.dso)` → `loadDynlibReplay(path, Module)` per recorded ABSOLUTE loadOrder (emsdk dsoBaseHook forces memBase, asserts tableBase) → `restoreDsoHandles` → `dsoReplayDone` → HARD `tableLenAtCapture` assert → `touchWhileAwaiting` (pre-touch grown pages via value-preserving `Atomics.or` + MessageChannel yield while the heap is in flight) → blit → `header.hiwire` for `finalizeBootstrap`. Mutation-zone throws wrap in `DirtyRestoreError`; cold-main failures deliberately do NOT. Also `freeDsoFileData` (emsdk-pinned +28/+32 struct offsets, sanity-checked — aborts the knife, never the boot) |
 
 ## Serving & caching
 
@@ -89,10 +91,13 @@ signal, and a task failure calls `abortSpawn` (unconditional teardown).
   lock-verified before EVERY cache write, stored with `x-avlo-verified: 1`
   and pristine HTTP-cache identity (so V8's disk wasm code cache can engage);
   marked hits serve as-is, unmarked legacy hits delete + refill; mismatch =
-  502 fail-closed, never cached. Tars ride `verifiedTarFirst` — streamed to
-  the page unbuffered (download progress intact), verified + marked-put on a
-  clone in `waitUntil`. Anything else on the py origin falls through to plain
-  cacheFirst. Stale `avlo-py-*` generations are evicted on activate.
+  502 fail-closed, never cached. Tars ride `verifiedTarFirst` — **any** cache
+  hit serves as-is, marked or not (the delete-and-refill rule is
+  `verifiedPyFirst`-only; the supervisor re-verifies unmarked tar reads
+  itself), and a miss streams to the page unbuffered (download progress
+  intact), verified + marked-put on a clone in `waitUntil`. Anything else on
+  the py origin falls through to plain cacheFirst. Stale `avlo-py-*`
+  generations are evicted on activate.
 - The supervisor shares the same Cache API keys: its own miss-path puts are
   marked (it verified the bytes), marked hits skip the ~40 MB/boot re-hash.
 - `.snap` files don't cross HTTP today — snapshots are OPFS-only,
@@ -171,12 +176,22 @@ signal, and a task failure calls `abortSpawn` (unconditional teardown).
   TOCTOU against an actively malicious origin — unclosable without
   `script-src blob:` (a worse trade); every realistic corruption fails
   closed.
-- **Frozen protocol constants.** `PY_LIMITS`, `PyExecState`, `PyCancelKind`,
+- **Frozen protocol constants.** `PY_LIMITS`, `PyExecState`, `PyCancelKind`
   and the generated `PACKAGE_TO_SET`/`SET_BUNDLES` records are
-  `Object.freeze`d at module init — caps and set membership are not
-  reshapeable at runtime in any of the three threads.
-- Caps (`PY_LIMITS`): 30 s + 5 s wall, 4096 output chars, 4 figures ≤ 2048 px,
-  queue 4, 2 GB wasm memory ceiling (build-pinned `MAXIMUM_MEMORY`).
+  `Object.freeze`d at module init, so caps and set→bundle membership are not
+  reshapeable at runtime. Two caveats: the other two generated tables,
+  `STDLIB_MODULES` and `AVAILABLE_PACKAGES`, are plain `Set`s — `ReadonlySet`
+  is a compile-time type only (and `Object.freeze` wouldn't help; Set entries
+  live in internal slots). And this is a **main-thread** property: the
+  executor imports none of these tables (only the erased `PySetKey` type);
+  `SET_BUNDLES` reaches the supervisor, the rest stay in `py-imports.ts`.
+- **Caps (`PY_LIMITS`, complete):** `softTimeoutMs` 30 s, `hardGraceMs` 5 s,
+  `cancelGraceMs` 2 s, `interruptRepeatMs` 50 ms, `queueCap` 4,
+  `stdoutFlushMs` 100 ms, `stdoutFlushBytes` 8192, `idleTeardownMs` 15 s,
+  `maxFigures` 4, `maxFigurePx` 2048, `maxOutputChars` 4096 (mirrored by
+  `MAX_OUTPUT_CHARS` in `core/code/code-tokens.ts`). The **2 GB wasm memory
+  ceiling is NOT in `PY_LIMITS`** — it is a build pin (`MAXIMUM_MEMORY` in
+  py-build patch 0001).
 
 ## Interrupt discipline (load-bearing)
 
@@ -187,6 +202,52 @@ signal, and a task failure calls `abortSpawn` (unconditional teardown).
    replacement executor's first interrupt.
 2. **Repeat SIGINT writes** every `PY_LIMITS.interruptRepeatMs` until the run
    resolves — bounds any one-shot swallow to ~50 ms extra latency.
+3. **Kind arbitration in `beginInterrupt`.** `UserCancel` outranks
+   `SoftTimeout` and re-arms on the shorter `cancelGraceMs`; a soft timeout
+   arriving after a cancel changes nothing; a repeat of the same kind never
+   extends the deadline. The forced-kill closures read `run.cancelKind`
+   **live**, so a forced kill reports the same status (`cancelled` vs
+   `timeout`) the graceful path would have.
+
+## Main-thread lifecycle (`py-manager.ts`)
+
+The supervisor worker is **lazily constructed on first run** and lives until
+something kills it; the executor underneath it is spawned and torn down
+freely (15 s idle teardown is the memory-reclaim knob).
+
+- **Toggle semantics.** One entry point, three meanings by current phase:
+  click on idle = run, on `queued` = **dequeue**, on running = cancel.
+- **Queue.** Global FIFO, `queueCap` 4 counting in-flight + queued; a
+  queue-full click is **silently dropped** (feedback is polish backlog).
+  Single-flight dispatch — one run in flight at a time.
+- **Status clock.** The "Running… N s" counter re-stamps `startedAt` at the
+  `running` phase, so it times execution, not queue/boot/download. The 500 ms
+  ticker and phase changes call `invalidateWorldBBox(block bbox)`.
+- **Commit.** Exactly ONE Y commit per run, and it is dropped entirely if the
+  block was deleted or the room left meanwhile. `placeRunFigures` runs after
+  it on every result, figure-less ones included.
+- **`resetRuntime()`.** A supervisor `onerror` or a `sup-fatal` fails every
+  queued *and* in-flight run, terminates the worker, and nulls it — the next
+  click boots a clean runtime.
+
+## Verification surfaces
+
+Four independent layers; the Node harness is the one that matters most,
+because it exercises **shipped modules verbatim** (`py-harden`, `py-harness`,
+`py-mount`, `py-protocol`, `py-snapshot`, `py-loader` + py-loader's
+`verify.ts`) rather than a re-implementation.
+
+| Layer | What | Where |
+|---|---|---|
+| vitest | pure AVS2 codec — xxh32 vectors, header round-trip + every rejection path, chunked read/abandon | `py-snapshot.test.ts` |
+| py-build Node harness | five sections — `base` · `seaborn` · `snapshot` · `parity` · `verify` — against real fork boots | `pnpm harness` (`packages/py-build/`) |
+| e2e | real browser + real OPFS; parses the `py:trace` line schema | `e2e/py-snapshot.spec.ts` |
+| codegen drift gate | `py-stdlib-modules.gen.ts` + `build-lock.json` byte-identity | `pnpm --filter @avlo/py-build stage:check` |
+
+Trace lines are the shared observability surface: one `py:trace` JSON line
+per boot/run, shape `{ th, kind, seq, …extra, spans }` with `th ∈ {sup,exec}`
+and `kind ∈ {boot, run, boot-fatal, fatal, snap-invalid}`. Span names are the
+NOTES ledger keys — **keep them stable**; e2e parses them.
 
 ## Data flow
 
@@ -203,7 +264,8 @@ click/⌘↵ → toggleRunCodeBlock ── import gate (refusal = one 'unavailab
           capture → exec-snapshot → sup writes OPFS] → scrub/harden/assert →
           harness → resetImage → {exec}
         → post-run blit reset (stateless runs; needsRespawn ⇒ eager respawn)
-        phases/stdout ←── postMessage relay (run-store only; peers see nothing)
+        phases ←── postMessage relay (run-store only; peers see nothing)
+                   (stdout is relayed on the same channel but has no reader)
         result (ONE) ←── status/output/figures (PNG buffers transferred end-to-end)
    ├→ transactPyOutput (PY_RUN_ORIGIN — NOT undo-tracked; persists+broadcasts)
    │    y.set output / outputStatus / outputVisible → observer → bbox → paint
@@ -221,9 +283,11 @@ editing) reads `py-run-store`; the ticker + phase changes call
 `output: string | undefined` (first real writer), `outputVisible: boolean`,
 `outputStatus: CodeOutputStatus | undefined` (`'ok'|'error'|'cancelled'|
 'timeout'|'unavailable'|'oom'` — non-ok tints the output text
-`THEME.chrome.outputError`). All three written ONLY by `transactPyOutput`
-(runs also flip `outputVisible` on; the context-menu toggle still owns manual
-visibility). `figureIds: string[] | undefined` — ids of the figure images
+`THEME.chrome.outputError`). **`output` and `outputStatus` are written ONLY
+by `transactPyOutput`. `outputVisible` is not** — runs flip it on through
+`transactPyOutput`, but block creation (`CodeTool`), the context-menu toggle
+(`CodeTool.toggleOutput`), the selection field table, and the DEV test bridge
+all write it under the normal user origin. `figureIds: string[] | undefined` — ids of the figure images
 this block created (py-figures.ts), written inside the figure-creation
 `transact` (user origin — undo reverts image + connector + the append
 together; dead ids are pruned on the next figure write).
