@@ -51,3 +51,69 @@ pty.py
 dbm/
 # reason: pure-Python ZoneInfo fallback — the _zoneinfo C extension is a static builtin
 zoneinfo/_zoneinfo.py
+
+# --- dead-on-import sweep (session 18) -------------------------------------
+# Everything below already FAILED to import in the shipped runtime; it shipped
+# bytes only to raise. Pruning turns each into a precise tombstone and drops
+# ~10% of the zip. Verified per entry: no top-level reference from any shipped
+# package (numpy/pandas/matplotlib/seaborn/dateutil/pytz — every hit is a lazy
+# in-function import) and absent from every .cache/trace `loaded` set, so
+# trace:check ∩ prune stays ∅.
+#
+# reason: c-extension _lsprof is disabled (patch 0003) — use profile/pstats
+cProfile.py
+# reason: c-extension pyexpat is disabled (patch 0003)
+plistlib.py
+# reason: needs the pruned _pyrepl; no interactive console in a canvas worker
+# (numpy's np.info and pytz.self_test lazy-import these — already dead)
+pdb.py
+pydoc.py
+doctest.py
+bdb.py
+# reason: no processes and no OS threads in the wasm worker — even
+# multiprocessing.dummy routes through the disabled _multiprocessing
+multiprocessing/
+concurrent/futures/process.py
+# reason: c-extension _interpreters is not part of this build
+concurrent/interpreters/
+concurrent/futures/interpreter.py
+# reason: win32-only event loop (asyncio imports these under sys.platform)
+asyncio/windows_events.py
+asyncio/windows_utils.py
+# reason: no network egress from canvas Python
+urllib/request.py
+urllib/robotparser.py
+# reason: logging's config module needs the pruned socketserver
+logging/config.py
+# reason: CJK multibyte codecs — _codecs_cn/hk/iso2022/jp/kr/tw and
+# _multibytecodec are disabled (patch 0003); codecs.lookup reports the usual
+# "unknown encoding" LookupError
+encodings/big5.py
+encodings/big5hkscs.py
+encodings/cp932.py
+encodings/cp949.py
+encodings/cp950.py
+encodings/euc_jis_2004.py
+encodings/euc_jisx0213.py
+encodings/euc_jp.py
+encodings/euc_kr.py
+encodings/gb18030.py
+encodings/gb2312.py
+encodings/gbk.py
+encodings/hz.py
+encodings/iso2022_jp.py
+encodings/iso2022_jp_1.py
+encodings/iso2022_jp_2.py
+encodings/iso2022_jp_2004.py
+encodings/iso2022_jp_3.py
+encodings/iso2022_jp_ext.py
+encodings/iso2022_kr.py
+encodings/johab.py
+encodings/shift_jis.py
+encodings/shift_jis_2004.py
+encodings/shift_jisx0213.py
+# reason: c-extension _bz2 is disabled (patch 0003)
+encodings/bz2_codec.py
+# reason: win32-only codecs
+encodings/mbcs.py
+encodings/oem.py

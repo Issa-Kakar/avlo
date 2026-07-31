@@ -338,8 +338,8 @@ _mpl_logger.setLevel(logging.INFO)`);
   check('kdeplot on vendored KDE — scipy never enters sys.modules', r.ok && r.output === 'False\n', JSON.stringify(r).slice(0, 300));
   r = run("import seaborn as sns\nsns.load_dataset('penguins')");
   check(
-    'load_dataset → http tombstone (lazy urllib patch)',
-    !r.ok && r.output.includes("'http'") && r.output.includes('not available'),
+    'load_dataset → urllib.request tombstone (lazy urllib patch)',
+    !r.ok && r.output.includes("'urllib.request'") && r.output.includes('not available'),
     JSON.stringify(r).slice(0, 300),
   );
   r = run('import seaborn.objects');

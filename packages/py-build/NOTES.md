@@ -12,6 +12,7 @@ later phase makes false.
 (carries per-phase checkboxes, targets table, risk register, rejected
 alternatives — do not re-litigate those without new data).
 
+**UPDATE:** The plan has drifted a meaningful amount. Don't rely on that for independent decision making
 ---
 
 ## Current state — cold-restore attack landed (L1+L2+knives), ledger re-recorded, docs current
@@ -37,12 +38,13 @@ alternatives — do not re-litigate those without new data).
     download progress).
   - **DSO precompile** overlapped with the main instantiate;
     `loadDynlibReplay` accepts precompiled `WebAssembly.Module`s (0005).
-  - **Knives**: stdlib zip `{canOwn:true}` (−3.34 MB/boot copy, 0007) ·
-    `zoneinfo/_zoneinfo.py` pruned (−12.4 KB, tombstoned) · cold-boot
+  - **Knives**: stdlib zip `{canOwn:true}` (−2.84 MB/boot copy, 0007) ·
+    `zoneinfo/_zoneinfo.py` pruned (−12.4 KB, tombstoned) · the session-18
+    dead-on-import sweep (−502 KB, zip 3.34 → 2.84 MB) · cold-boot
     `freeDsoFileData` (**−14.7 MB; `all` capture heapLen 78.5 → 65.4 MB** —
     every restore reads/hashes/transfers/blits that much less).
-- **buildHash `f440369a4275be9a`** (committed with the lock; bundle tars
-  byte-stable — only glue/wasm/stdlib rotated), seeded to local R2 (23 keys).
+- **buildHash `e210f3a9a140f04b`** (committed with the lock; bundle tars
+  byte-stable — only the stdlib zip rotated), seeded to local R2 (23 keys).
   The rotation auto-invalidated every client's OPFS snapshots + caches.
 - **Preview-board ledger — RE-RECORDED by the owner (2026-07-29; production
   build @ localhost:3000, Chrome + SW active, local R2, no throttling;
@@ -96,7 +98,8 @@ alternatives — do not re-litigate those without new data).
   `build.config.json`). Glue is **`pyodide.asm.mjs`** (ESM; renamed from
   `.asm.js` in 314).
 - **buildHash history:** `267194ca75197030` (P2 rotation, committed
-  `af14670`) → **`f440369a4275be9a`** (cold-restore attack rev, current).
+  `af14670`) → `f440369a4275be9a` (cold-restore attack rev) →
+  **`e210f3a9a140f04b`** (dead-on-import stdlib sweep, current).
   Commits: `c6db3ea` (P0 trace+ledger), `479b0f0` (P1 Loop A rebase),
   `8653e84` (P1 Loop B flip + lock + seed), `cb53dd4`/`44fd725`/`ae5806b`
   (P1.5 Steps 0–2), `284d8a1`/`af14670` (P2), `630b17f`/`f332d90`/`ba23635`
@@ -547,7 +550,7 @@ doesn't carry: `e2e/py-snapshot.spec.ts` needs the full `pnpm dev` stack
 `boot` trace labels + OPFS placement; `web/vitest.config.ts` runs the AVS2
 codec unit suite (py-snapshot.test.ts, 15 tests).
 
-- **Last-green (current build `f440369a4275be9a`, cold-restore attack):**
+- **Last-green (current build `e210f3a9a140f04b`, dead-on-import sweep):**
   harness 5/5 sections (base 41 · seaborn 22 · snapshot 24 · parity 3 ·
   verify 8) · corpus 7/7 · full restage board (builtins, pack:stdlib ×2
   byte-identical, bundles `--repro` byte-stable, trace:check, compress,
@@ -625,6 +628,26 @@ codec unit suite (py-snapshot.test.ts, 15 tests).
   (~49 MB). Move staging out of publicDir (touches stage.mjs, run-harness,
   publish, analyze-dsos paths) — needs a harness re-run to land safely. The
   dead P0-era stock-pyodide files that sat beside `fork/` were deleted.
+- **publish.mjs checksum-verified R2 puts (researched 2026-07-29 on
+  wrangler 4.106.0 — facts verified, do not re-derive):** `wrangler r2
+  object put` has NO checksum flag, so today nothing guards the
+  wire/storage leg of a seed/publish (the preflight hashes BEFORE upload
+  only). The R2 Workers **binding** `put()` does take exactly ONE of
+  `md5|sha1|sha256|sha384|sha512` — mismatch throws and nothing is stored;
+  the checksum persists for later `head()` audits; MD5 is auto-stored on
+  every single-part put (etag == md5 hex). Miniflare validates identically
+  (though it's looser than prod — it accepts multiple algorithms; never
+  rely on that). No checksums on multipart (irrelevant — single put caps
+  at ~5 GiB); S3-API checksums are remote-only (miniflare has no S3
+  endpoint). Upgrade route when wanted: `getPlatformProxy({ configPath,
+  persist: { path: '.wrangler/state/v3' } })` → `env.PY.put(key, buf,
+  { sha256, httpMetadata })` with lock shas (hash `.br`/manifest
+  in-script) — NOTE the CLI's `--persist-to` appends `/v3` but
+  getPlatformProxy's persist does NOT, so point it at `…/v3` explicitly;
+  remote leg = same script with the binding `remote: true` in a
+  publish-only config/env (remote bindings are GA; dev's `PY` binding must
+  stay local). One checksum-verified code path for local seed AND prod
+  publish — the intended no-brainer at deploy time.
 - **`overlay/stdlib/` comment staleness deferred on purpose:** three
   "baseline snapshot/warmup" comment references (_avlo_runtime, _avlo_png,
   sitecustomize) are stale but the files ship inside the stdlib zip — even
@@ -635,13 +658,69 @@ codec unit suite (py-snapshot.test.ts, 15 tests).
 - Client polish (pre-redesign backlog, last known open): live stdout
   streaming into the DOM editing overlay (run-store already accumulates it);
   stop-square SVG centroid offset in the DOM button.
-- pydoc is allowlisted but trips the `_pyrepl` tombstone at runtime
-  (top-level import at pydoc.py:80; precise error — acceptable).
 - FF/Safari sweep never done (Chrome-only verification to date).
+- **Non-functional but UNPRUNABLE (session-18 sweep, deliberate keeps).**
+  Import fine, do nothing, but a load-bearing chain imports each at TOP
+  level: `threading` (spawn → `can't start new thread`, no pthreads; `Lock`
+  DOES work and every package holds one), `concurrent.futures.thread` (same;
+  pandas/seaborn import ThreadPoolExecutor eagerly), `socket`
+  (`create_connection` → Host is unreachable; asyncio needs it), `ssl`
+  (Pyodide's pure-py stub over the upstream-disabled C ext —
+  `asyncio.sslproto` try/excepts it, so it IS prunable for ~20 KB; judged not
+  worth the boot risk), `subprocess` (emscripten has no processes;
+  `asyncio.subprocess` + `font_manager` import it). Also kept: the CPython
+  test-support builtins (`_testcapi`/`_xxtestfuzz`/`xxsubtype`/…) — they live
+  in the wasm, not the zip, so only patch 0003 can drop them.
+- `zoneinfo` imports on the bare `stdlib` set but has no tz database until the
+  `pytz` bundle mounts, and the miss leaks Pyodide's own
+  `loadPackage("tzdata")` message. `_avlo_runtime.ensure_tzpath` owns that
+  bridge — worth a friendlier error there.
 
 ---
 
 ## Phase log (compact; newest first — append here each session)
+
+### Session 18 — dead-on-import stdlib sweep (buildHash `e210f3a9a140f04b`)
+
+Started at `py-stdlib-modules.gen.ts` ("looks outdated"). It wasn't —
+`stage --check` clean, and it faithfully mirrors zip tops ∪ builtins ∪
+tombstoned tops. **The lie was in the zip.** Reusable method: boot the fork on
+the STAGED zip, `import_module` all 476 shipped modules — 49 failed, only 23
+deliberately. Five were TOP-LEVEL allowlist entries that passed the click-time
+gate then died: `cProfile` (`_lsprof`), `plistlib` (`pyexpat`),
+`pdb`/`pydoc`/`doctest` (`_pyrepl/` collateral, error naming a module the user
+never typed). Root cause: the prune list had drifted from patch 0003's
+`*disabled*` list — now an invariant in CLAUDE.md.
+
+**Swept** → precise tombstones: those 5 + `bdb` + `multiprocessing/` whole
+(even `.dummy` routes through the disabled `_multiprocessing`) +
+`concurrent/{interpreters/,futures/process.py,futures/interpreter.py}` +
+`asyncio/windows_{events,utils}` + `urllib/{request,robotparser}.py` +
+`logging/config.py` + 27 `encodings/` leaves (CJK/mbcs/oem/bz2 —
+`search_function` swallows the ImportError, so `codecs.lookup` still gives the
+normal "unknown encoding"). **Zip 3.34 → 2.84 MB (−502,657 B, −15.0%)** — wire
+AND resident, it's MEMFS-live for the runtime's life; composites 7.70 → 6.78
+and 15.36 → 13.91 MB br.
+
+**Safety proof per entry:** `co_names`+`co_consts` scan over every shipped pyc
+(packages AND stdlib) → source check that each package hit is a LAZY
+in-function import (`np.info`→pydoc, `font_manager`→plistlib,
+pandas/mpl/numpy/seaborn/six→urllib.request); `logging` reads multiprocessing
+via `sys.modules.get`, and `compileall`/`concurrent.futures.__getattr__`/
+`asyncio.__init__` are lazy or platform-guarded. None in any `.cache/trace`
+`loaded` set, so `trace:check` ∩ prune stayed ∅. Post-repack re-probe: zero
+regressions.
+
+**Forced follow-ups:** `load_dataset` now refuses with the `urllib.request`
+tombstone, not `http` — assertion fixed in BOTH
+`corpus/seaborn/sb05_load_dataset_refusal.py` and `run-harness.mjs`.
+`py-stdlib-modules.gen.ts` came out byte-identical (pruned tops moved
+`modules`→`tombstoned`; the generator unions both). Also killed
+`web/src/core/py/CLAUDE.md`'s false "the build strips `_ssl`".
+
+Board: pack:stdlib ×2 byte-identical · trace:check (138 rules) · corpus 7/7 ·
+harness 5/5 · dsos:check · groups:verify · compress · budgets · stage +
+`--check` · typecheck 12/12 · vitest 20 · py:seed 23 keys. Bundles untouched.
 
 ### Session 17 — live ledger re-record + full doc/comment/dead-code cleanup
 

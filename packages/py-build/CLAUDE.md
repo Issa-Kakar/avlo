@@ -48,7 +48,7 @@ signal anyone needs.
 | `check-budgets.mjs` | G1: per-artifact + composite `.br` ceilings from `build.config.json`; `--update` stamps measured +5% |
 | `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + `manifest.json`, prunes strays) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts` + `packages/py-loader/build-lock.json` (buildHash = 16-hex sha256 of the canonical sha tables). Prestage liveness gate on the built glue (`snapshot DSO table drift` + `loadDynlib` markers). `--check` = drift gate (any artifact/codegen/lock divergence fails). Keeps the ONE sanctioned local `parseTarMeta` copy (build-graph isolation — never import web/src from here) |
 | `run-harness.mjs` | Node verification harness (`pnpm harness`; Node ≥23.6 type-strips the SHIPPED `py-harden`/`py-harness`/`py-mount`/`py-snapshot`/`py-loader`/`py-protocol` + py-loader `verify.ts` via `lib/ts-resolve.mjs`). Five child sections: **base** (exact executor boot re-enactment → scrub/freeze sweeps + fail-closed negatives, 0008 closure probes, tombstones, sqlite3 post-freeze) · **seaborn** (`all` set: plots decode to real pixels, vendored KDE, font gates, pandas↔sqlite3, figure caps vs PY_LIMITS) · **snapshot** (uniform-boot cold probe via the SHIPPED feeds driver → dso-free knife → bake → fork-API capture → AVS2 assemble via the SHIPPED codec → sup-style `readSnapshotToBuffer` positives/negatives → `DirtyRestoreError` negative → precompiled-Module restore → walk-only remount + RNG-pin/blit-reset probes) · **parity** (walker-vs-tarfile zero-diff full-tree gate — the standing L1 proof) · **verify** (`matchesLockEntry` over every staged artifact + corrupt negatives). Runs after any harden/verify/artifact/mount change; never in Turbo/CI |
-| `publish.mjs` | Staged artifacts → R2 under `<buildHash>/…` (every lock artifact + bundle tar with its `.br` sibling; `manifest.json` strictly LAST = completion marker; never fetched by clients — the SW's py fall-through branch exists for it). `--local` (default; `pnpm py:seed` from root) seeds the dev miniflare tree; `--remote` publishes to the real `avlo-py` bucket with a manifest divergence probe; `--dry-run` prints the plan. Preflight re-hashes EVERY source byte against the build-lock + checks `.br` freshness (restage ⇒ reseed) |
+| `publish.mjs` | Staged artifacts → R2 under `<buildHash>/…` (every lock artifact + bundle tar with its `.br` sibling; `manifest.json` strictly LAST = completion marker; never fetched by clients — the SW's py fall-through branch exists for it). `--local` (default; `pnpm py:seed` from root) seeds the dev miniflare tree; `--remote` publishes to the real `avlo-py` bucket with a manifest divergence probe; `--dry-run` prints the plan. Preflight re-hashes EVERY source byte against the build-lock + checks `.br` freshness (restage ⇒ reseed). Uploads via wrangler CLI, which has NO checksum flag — the binding-put upgrade (sha256-verified, local+remote) is researched in NOTES Open items |
 | `lib/ts-resolve.mjs` | Side-effect import, FIRST in harness + corpus: Node ≥23.6 guard + `registerHooks` resolve fallback appending `.ts` — the shipped extensionless-relative web TS imports verbatim |
 | `lib/det-env.mjs` | Deterministic fork-boot env (entropy/Date.now/performance.now stand-ins). Sole consumer: `prebake-fontcache.mjs` |
 | `lib/png.mjs` | Minimal PNG decoder (filters 0-4) for corpus pixel assertions |
@@ -104,6 +104,15 @@ the lock's depends graph.
 - **Tombstone keys are exact dotted prune paths**; the sitecustomize finder
   walks prefixes longest-first and merges `_avlo_pruned` +
   `_avlo_pruned_<bundle>` registries discovered on site-packages.
+- **`config/stdlib-prune.txt` mirrors patch 0003's `*disabled*` list.**
+  Dropping a C extension orphans its pure-python wrappers; if they keep
+  shipping they pass the click-time gate and die at import with an error
+  naming a module the user never typed. This drifted once (session 18:
+  `_lsprof`→`cProfile`, `pyexpat`→`plistlib`, `_multibytecodec`→27
+  `encodings/` leaves). The standing check is the boot-and-import-everything
+  sweep in NOTES session 18 — re-run it after any 0003 edit. Before pruning,
+  prove no shipped package imports the target at TOP level (lazy hits are
+  fine) and that it's absent from every `.cache/trace/*.json` `loaded` set.
 - **traceOnly wheels (pillow, fonttools) never ship** — they exist so the
   tracer can catch residual import sites (the `--check` PIL/fontTools ban).
 

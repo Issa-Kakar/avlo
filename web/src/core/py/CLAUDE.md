@@ -134,10 +134,15 @@ signal, and a task failure calls `abortSpawn` (unconditional teardown).
   `sys.modules` and a `meta_path` guard blocks the `{js, pyodide_js,
   pyodide, _pyodide}` roots; fork patch 0008 removes the js bridge at the
   finder level (proven by the Node harness even with the guard stripped);
-  prod CSP backstops dynamic `import()`. The build already strips `_ssl`/the
-  http stack/`_ctypes`; `subprocess`/`multiprocessing` import but are inert
-  (no fork/execv syscall in wasm). `postMessage` stays (the exec↔sup
-  channel) — a spoof reaches only the user's own block output, no authority.
+  prod CSP backstops dynamic `import()`. The build tombstones the http stack,
+  `_ctypes`, `urllib.request` and `multiprocessing`; `subprocess`/`socket`/
+  `ssl`/`threading` still import but are inert (no fork/execv syscall and no
+  pthreads in wasm, no socket transport — `_ssl` is upstream-disabled as a C
+  extension and survives only as Pyodide's pure-py stub, so `import ssl`
+  succeeds and can encrypt nothing). They stay because load-bearing chains
+  import them at top level; see NOTES "Non-functional but UNPRUNABLE".
+  `postMessage` stays (the exec↔sup channel) — a spoof reaches only the
+  user's own block output, no authority.
 - Executor receives exactly one SAB (its generation's PY_SAB).
 - **Artifact integrity — every byte the runtime consumes is verified against
   the COMMITTED build-lock** (`@avlo/py-loader`; shared predicate
