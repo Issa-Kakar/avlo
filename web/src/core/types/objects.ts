@@ -28,8 +28,9 @@ export interface ObjectHandle {
   maxY: number;
   // Fractional z-key (mirror of y.get('z')). Mutated only by the deep observer's z-key-edit branch.
   z: ZKey;
-  // Stable index into ZRankTable._ranks. Assigned at creation by acquireSlot(); never reassigned.
-  // Returns to the free-list on delete; future objects may reuse it.
+  // Index into the slot-table columns (`core/slots/slot-table.ts`) — the app-wide dense id
+  // space (rank table, lock columns, reverse map, global bbox column all key off it).
+  // Acquired once at creation, never reassigned; returned to the pool on delete (LIFO reuse).
   slot: number;
 }
 
@@ -59,10 +60,12 @@ export function createHandle(
  * Mutate `handle.bbox` and the four rbush mirror fields together.
  *
  * CONTRACT: ONLY callable from `ObjectSpatialIndex.updateHandleBBox` (which has already
- * removed the handle from the rbush tree using the OLD envelope). Direct external call
- * corrupts the spatial index: the tree leaf still carries the old envelope, but the
- * handle's mirror fields now say "new", so the next `spatialIndex.remove(handle)` silently
- * no-ops (rbush descends to the wrong leaf) and the entry leaks.
+ * removed the handle from the rbush tree using the OLD envelope, and follows up by
+ * mirroring the new bbox into the global slot column via `writeSlotBBox` — tuple,
+ * mirrors, and column move together). Direct external call corrupts the spatial index:
+ * the tree leaf still carries the old envelope, but the handle's mirror fields now say
+ * "new", so the next `spatialIndex.remove(handle)` silently no-ops (rbush descends to
+ * the wrong leaf) and the entry leaks.
  */
 export function applyHandleBBox(handle: ObjectHandle, src: Readonly<BBoxTuple>): void {
   const b = handle.bbox;

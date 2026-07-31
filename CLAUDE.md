@@ -4,7 +4,7 @@
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,locks,geometry/recognizer}`, `renderer/grid`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `routes`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,slots,z-order,locks,geometry/recognizer}`, `renderer/grid`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `routes`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -131,7 +131,8 @@ All paths relative to `web/src/` unless noted.
 | `sab/` | Worker-agnostic SharedArrayBuffer control-plane toolkit (`Futex`, `SpmcRing`, `SlotTable`, `allocControlSab`/`assertCrossOriginIsolated`). First consumer: image decode (`image-sab.ts`). See CLAUDE.md |
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
 | `clipboard/` | Nonce-based clipboard + serializer. Entry: `clipboard-actions.ts`, `clipboard-serializer.ts`. See CLAUDE.md |
-| `z-order/` | `ZRankTable` (SoA Uint32 ranks + slot pool) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
+| `slots/` | App-wide dense slot fabric (LEAF) — allocator (`acquireSlot`/`releaseSlot`, LIFO), slot→handle reverse map, global interleaved bbox column (`slot * 4`). RDM writes; z-order ranks, lock columns, veil, renderer/pickers consume. Entry: `slot-table.ts`. See CLAUDE.md |
+| `z-order/` | `ZRankTable` (SoA Uint32 ranks + `slotsByRank` inverse permutation over the slot fabric; zero-arg `ensureRanksValid`, self-healing maxZ/minZ) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
 | `locks/` | Ephemeral conflict-resolution grabs — `lockOwner: Uint32Array` keyed by `handle.slot` (0=unlocked, 1=mine, ≥2=peer key; every guard is ONE `lo[slot] > 1` compare), binary `MSG_LOCK` frames on the Yjs WS (never awareness), DO-arbitrated first-wins, worker-rendered grey veil — PLUS the durable `locked: 1` object property mirrored into `_locked: Uint8Array` (observer-written; marquee/eraser/edit-inert but click-solo-selectable, lock-only context menu, undo writes through). Entry: `lock-table.ts`, `lock-protocol.ts` (+ `@avlo/shared/lock-protocol`, `workers/sync/src/room.ts`, `renderer/lock-veil/`). See CLAUDE.md |
 | `ai/` | Client side of the AI assistant — `short-ids.ts` (per-conversation `sN`↔ULID map + chat-origin int coords; reset on room change), `context-serializer.ts` (three-tier `CanvasContext`: selection full / viewport blurry / offscreen clusters), `apply-actions.ts` (the `canvas` tool executor — shared-Zod re-parse, unknown-id drops, ONE `transact()` per tool call = one undo step, `stopCapturing()` isolation). Wire schemas in `@avlo/shared/src/ai/`; transport in `components/ai/useAiChat.ts` (Agents SDK `useAgent`+`useAgentChat`). See `docs/ai/protocol.md` |
 
@@ -315,10 +316,10 @@ interface ObjectHandle {
   bbox: BBoxTuple;           // [minX,minY,maxX,maxY]
   minX; minY; maxX; maxY;    // rbush envelope — mirrors bbox[0..3]
   z: ZKey;                   // mirrors y.get('z')
-  slot: number;              // immutable Uint32 index into ZRankTable._ranks
+  slot: number;              // immutable Uint32 index into the slot-table columns (core/slots/)
 }
 ```
-**Mutation invariants** (violate → spatial tree desyncs): `applyHandleBBox(handle, src)` — wrapped by `spatialIndex.updateHandleBBox` — is the ONLY legal post-creation writer of `bbox` + the four mirrors, written atomically; never `handle.bbox[N]=…` / `copyBbox(_, handle.bbox)`. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`), reusable after delete but never reassigned on a live handle. The wrapper persists for the id's lifetime — consumers needing a snapshot across fires clone at read time (`[...handle.bbox]`; transform/topology/image-manager do).
+**Mutation invariants** (violate → spatial tree desyncs): `applyHandleBBox(handle, src)` — wrapped by `spatialIndex.updateHandleBBox`, which also mirrors into the global slot bbox column (`writeSlotBBox`) — is the ONLY legal post-creation writer of `bbox` + the four mirrors + the column lane, written atomically; never `handle.bbox[N]=…` / `copyBbox(_, handle.bbox)`. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`, `core/slots/slot-table.ts`), reusable after delete but never reassigned on a live handle. The wrapper persists for the id's lifetime — consumers needing a snapshot across fires clone at read time (`[...handle.bbox]`; transform/topology/image-manager do).
 
 ### Stored vs derived geometry
 
@@ -345,7 +346,7 @@ interface ObjectHandle {
 
 ## RoomDocManager
 
-Public fields (non-null from construction): `objectsById`, `spatialIndex`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (non-connectors first, connectors second so bindable frames exist for routing) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`).
+Public fields (non-null from construction): `objectsById`, `spatialIndex`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (slot + lock tables reset at the TOP, then non-connectors first, connectors second so bindable frames exist for routing; slots acquired inline + durable-lock flags seeded per object — dense [0..N-1] in creation order) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`).
 
 ### Observer Pipeline
 
@@ -358,7 +359,7 @@ Public fields (non-null from construction): `objectsById`, `spatialIndex`, `conn
 - nested `'content'` → code `codeSystem.handleContentChange` / text·label·note `textLayoutCache.invalidateContent`
 
 Then **`applyObjectChanges`** over accumulated `touched`/`deleted` (`_newBBoxScratch` reused):
-- **A · deletions** — `spatialIndex.remove` → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
+- **A · deletions** — `spatialIndex.remove` → `lockSlotReleased` → `zOrder.noteRemove` → `releaseSlot` (last slot-keyed op — every slot consumer finalized before the slot can recycle in Phase B) → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
 - **B · touched** — skip ids queued for reroute (→C); connectors get style-only `router.computeBBox`, else `computeBBoxForInto` (★ **populates subsystem caches**) → `upsertHandle`; a bbox-changed bindable calls `router.onBindableChanged` (queues a reroute).
 - **C · drain reroute queue** — `router.rerouteCanonical` (route + bbox) → `upsertHandle(…, alwaysEvict=true)`. Then `selection.onObjectsKindChanged` (re-derive composition BEFORE refreshStyles) + `onObjectsChanged`.
 

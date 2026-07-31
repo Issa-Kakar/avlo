@@ -14,7 +14,6 @@
 
 import type { RoomId } from '@avlo/shared';
 import type { ObjectSpatialIndex } from '@/core/spatial';
-import type { BBoxTuple } from '@/core/types/geometry';
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import type { ZRankTable } from '@/core/z-order/z-rank-table';
 import { useCameraStore } from '@/stores/camera-store';
@@ -122,10 +121,6 @@ export function getHandle(id: string): ObjectHandle | undefined {
 
 export function getHandleKind(id: string): ObjectKind | undefined {
   return getActiveRoomDoc().objectsById.get(id)?.kind;
-}
-
-export function getBbox(id: string): BBoxTuple | undefined {
-  return getActiveRoomDoc().objectsById.get(id)?.bbox;
 }
 
 // ============================================

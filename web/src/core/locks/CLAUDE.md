@@ -29,11 +29,11 @@ connectors may still snap/attach to locked shapes (attach never mutates the targ
 
 | File | Responsibility |
 |---|---|
-| `lock-table.ts` | The SoA table + entire client API. `lockOwner: Uint32Array` keyed by `handle.slot` (`0`=unlocked · `1`=mine · `≥2`=server peer key), `lockedPos: Int32Array` (slot → index in its owner's dense lists, -1 free) + per-peer parallel `slots`/`ids` arrays (swap-remove, presence-renderer idiom), `_locked: Uint8Array` (durable-lock mirror — `getLockedFlags`/`isLockedObject`/`isLockedId`/`setLockedFlag`). Local sources (`LOCK_SRC_TRANSFORM/TEXT_EDITOR/CODE_EDITOR/ERASER`), reaction hooks, dim-layer bridge, slot lifecycle. |
+| `lock-table.ts` | The SoA table + entire client API. `lockOwner: Uint32Array` keyed by `handle.slot` (`0`=unlocked · `1`=mine · `≥2`=server peer key), `lockedPos: Int32Array` (slot → index in its owner's dense list, -1 free) + per-peer dense `slots` list (swap-remove, presence-renderer idiom; slots-only — the slot fabric's reverse map killed the parallel `ids` copy), `_locked: Uint8Array` (durable-lock mirror — `getLockedFlags`/`isLockedObject`/`isLockedId`/`setLockedFlag`), `fillRemoteLockedBoxes(out)` (veil payload — copies every remote-locked bbox straight from the global slot column, `core/slots/slot-table.ts`). Local sources (`LOCK_SRC_TRANSFORM/TEXT_EDITOR/CODE_EDITOR/ERASER`), reaction hooks, dim-layer bridge, slot lifecycle. |
 | `lock-protocol.ts` | Wire plumbing: `provider.messageHandlers[MSG_LOCK]` registration, receive buffering until 'sync', full-replace egress (immediate on release, 50ms coalesce on growth, presence backpressure), 15s lease resend, `attachLocks`/`detachLocks`. |
 | `packages/shared/src/lock-protocol.ts` | Cross-runtime wire format + caps + codecs (`decodeLockSetBody` is THE server-side network-boundary validator). |
 | `workers/sync/src/room.ts` | DO authority: per-conn `lockKey` (attachment-persisted), `#lockOwner`/`#locks` in-memory tables, first-wins `#applyLockSet`, editor-only broadcast/snapshot, release on close/eviction/permission-demote, lazy 45s lease sweep (no alarms — hibernation empties the tables; leases rebuild). |
-| `renderer/lock-veil/` | The grey-filter veil — a dedicated worker-owned canvas layer (`transferControlToOffscreen`) between base and overlay. `lock-veil.ts` (main): lazy session-scoped worker + canvas, microtask-coalesced bbox gather → one transferred Float64Array, camera posts gated on `hasRemoteLocks()`. `lock-veil-worker.ts`: draws one translucent grey rect per bbox (single-path fill — overlaps don't double-darken), viewport cull, 0×0 backing store while idle. No overlay coupling, no main-thread veil painting. |
+| `renderer/lock-veil/` | The grey-filter veil — a dedicated worker-owned canvas layer (`transferControlToOffscreen`) between base and overlay. `lock-veil.ts` (main): lazy session-scoped worker + canvas, microtask-coalesced `fillRemoteLockedBoxes` copy out of the global slot bbox column (no id interning, no room-runtime import) → one transferred Float64Array, camera posts gated on `hasRemoteLocks()`. `lock-veil-worker.ts`: draws one translucent grey rect per bbox (single-path fill — overlaps don't double-darken), viewport cull, 0×0 backing store while idle. No overlay coupling, no main-thread veil painting. |
 
 ## The guard (hot path)
 
@@ -84,6 +84,11 @@ early-return in `handleBareKey`) plus a `selectAll` filter.
   deleted object is a no-op). Slots recycle LIFO without zeroing, so `lockSlotReleased` must
   run in observer Phase A (before Phase B can reacquire) and release's `=== 1` check must
   never be "simplified" away — it protects a peer key that won arbitration mid-gesture.
+- **PeerLocks liveness invariant: `rec.slots ⊆ live slots with owner ≥ 2`.** Phase A's
+  `lockSlotReleased → removeFromPeer` prunes synchronously BEFORE the slot is freed, so the
+  veil microtask never sees a freed slot. Load-bearing since the `ids` copy died: the old
+  per-id `byId.get` miss degraded gracefully (skip); a stale slot in `fillRemoteLockedBoxes`
+  would silently paint a recycled slot's bbox.
 - **Ordering.** After first sync, per-connection TCP ordering guarantees a peer's creation
   update precedes its lock on that object. The connect snapshot always lands BEFORE the
   client's `synced` flips — `lock-protocol.ts` buffers per-peer until 'sync' (full-replace ⇒

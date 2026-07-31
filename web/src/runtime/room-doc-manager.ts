@@ -15,7 +15,6 @@ import { ensureImageWorkers, hydrateImages } from '@/core/image/image-manager';
 import { attachLocks, detachLocks } from '@/core/locks/lock-protocol';
 import {
   bindLockTable,
-  ensureLockCapacity,
   getLockOwners,
   lockSlotAcquired,
   lockSlotReleased,
@@ -23,6 +22,7 @@ import {
   resetLockTable,
   setLockedFlag,
 } from '@/core/locks/lock-table';
+import { acquireSlot, registerHandle, releaseSlot, resetSlotTable } from '@/core/slots/slot-table';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
@@ -276,6 +276,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.zOrder.clear();
 
     resetLockTable();
+    resetSlotTable();
 
     // Drop UI selection so stale selectedIds don't render against the next room's objects.
     useSelectionStore.getState().clearSelection();
@@ -444,11 +445,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     for (const id of deleted) {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
-      this.spatialIndex.remove(handle); // identity removal; envelope mirrors still describe the live entry
-      this.zOrder.releaseSlot(handle.slot, handle.z);
-      lockSlotReleased(handle.slot); // before Phase B can recycle the slot (LIFO free-list)
+      this.spatialIndex.remove(handle); // FIRST — rbush descends by the still-old envelope mirrors
+      lockSlotReleased(handle.slot); // lock columns + peer prune (+ veil poke)
+      this.zOrder.noteRemove(handle.z);
+      // releaseSlot LAST among the slot-keyed ops. Forward-looking invariant, not a current
+      // dependency (nothing above reads the reverse map): a slot is freed only after every
+      // slot-keyed consumer has finalized — Phase B of this same fire can recycle it (LIFO).
+      releaseSlot(handle.slot);
       removeObjectCaches(id, handle.kind);
-      invalidateIfVisible(handle.bbox, vp);
+      invalidateIfVisible(handle.bbox, vp); // local var — safe after release
       this.objectsById.delete(id);
     }
 
@@ -539,10 +544,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (!handle) {
       const z = getZ(yObj);
       if (!isZKey(z)) throw new Error(`upsertHandle: object ${id} (kind=${kind}) has no z key`);
-      const slot = this.zOrder.acquireSlot();
+      const slot = acquireSlot();
       lockSlotAcquired(slot);
       if (getLocked(yObj)) setLockedFlag(slot, 1); // seed the durable-lock column (create / remote add / undo-of-delete)
       const fresh = createHandle(id, kind, yObj, newBBox, z, slot);
+      registerHandle(fresh); // reverse map + global bbox column
       this.zOrder.noteAdd(z);
       this.objectsById.set(id, fresh);
       this.spatialIndex.insert(fresh);
@@ -572,6 +578,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.spatialIndex.clear();
     this.connectorRouter.clear();
     this.zOrder.clear();
+    // Slot + lock resets FIRST, with the other clears — mandatory, not tidiness: durable-lock
+    // flags are seeded inline per pass below, and an end-of-hydrate resetLockTable() would
+    // wipe them. Safe here: hydrate is synchronous init — WS (and any lock traffic) attaches
+    // only after; incoming lock frames buffer until 'sync'.
+    resetSlotTable();
+    resetLockTable();
     clearAllObjectCaches();
 
     const handles: ObjectHandle[] = [];
@@ -581,7 +593,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // their anchorIds + shapeToConnectors entries here — bbox + route deferred to pass 2.
     // `computeBBoxFor` populates each kind's subsystem cache (image meta + text/code/
     // note/bookmark layout) so the immediately-following hydrateImages() reads them.
-    // Slot acquisition is deferred to zOrder.load() below so slots are densely packed [0..N-1].
+    // Slots are acquired inline against the fresh table, so they come out dense
+    // [0..N-1] in creation order — identical numbering to the old deferred-load path.
     this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
@@ -595,7 +608,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const z = getZ(yObj);
       if (!isZKey(z)) throw new Error(`hydrate: object ${id} (kind=${kind}) has no z key`);
       const bbox = computeBBoxFor(id, kind, yObj);
-      const handle = createHandle(id, kind, yObj, bbox, z, -1); // slot=-1 sentinel; zOrder.load assigns
+      const slot = acquireSlot();
+      lockSlotAcquired(slot);
+      if (getLocked(yObj)) setLockedFlag(slot, 1); // durable-lock seed, inline (no trailing sweep)
+      const handle = createHandle(id, kind, yObj, bbox, z, slot);
+      registerHandle(handle);
+      this.zOrder.noteAdd(z);
       this.objectsById.set(id, handle);
       handles.push(handle);
     });
@@ -612,22 +630,18 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (!isZKey(z)) throw new Error(`hydrate: connector ${id} has no z key`);
       const bbox: BBoxTuple = [0, 0, 0, 0];
       this.connectorRouter.rerouteCanonical(id, yObj, bbox); // mutates bbox tuple in place
-      const handle = createHandle(id, 'connector', yObj, bbox, z, -1); // slot=-1 sentinel; zOrder.load assigns
+      const slot = acquireSlot();
+      lockSlotAcquired(slot);
+      if (getLocked(yObj)) setLockedFlag(slot, 1);
+      const handle = createHandle(id, 'connector', yObj, bbox, z, slot);
+      registerHandle(handle);
+      this.zOrder.noteAdd(z);
       this.objectsById.set(id, handle);
       handles.push(handle);
     }
 
     if (handles.length > 0) {
-      this.spatialIndex.load(handles);
-    }
-    this.zOrder.load(this.objectsById.values());
-    // Slots renumbered densely — all prior lock state is void (WS starts after hydrate,
-    // so no lock traffic can precede this).
-    resetLockTable();
-    ensureLockCapacity(this.objectsById.size);
-    // Seed the durable-lock column (hydrate bypasses upsertHandle's first-insert seed).
-    for (const h of this.objectsById.values()) {
-      if (getLocked(h.y)) setLockedFlag(h.slot, 1);
+      this.spatialIndex.load(handles); // rbush this slice; now runs with REAL slots (FlatRTree bulk-load blocker gone)
     }
 
     hydrateImages();

@@ -452,10 +452,15 @@ function processConnector(
     const ob = conn.bbox;
     const frozenStart = start && Array.isArray(start) ? ([start[0], start[1]] as Point) : null;
     const frozenEnd = end && Array.isArray(end) ? ([end[0], end[1]] as Point) : null;
+    // originalBbox is CLONED, never aliased to the live handle.bbox: a peer moving a
+    // non-selected anchor shape mid-gesture reroutes this connector (reroute is
+    // lock-agnostic) and upsertHandle mutates handle.bbox in place — an alias would
+    // corrupt the frozen begin-time baseline the per-frame translate and cancel
+    // restore read.
     const e: TranslateEntry = {
       mode: 'translate',
       id: conn.id,
-      originalBbox: ob,
+      originalBbox: [ob[0], ob[1], ob[2], ob[3]],
       currBbox: [ob[0], ob[1], ob[2], ob[3]],
       prevBbox: [ob[0], ob[1], ob[2], ob[3]],
       frozenStart,
@@ -480,7 +485,7 @@ function processConnector(
       id: conn.id,
       start: startSide,
       end: endSide,
-      originalBbox: ob,
+      originalBbox: [ob[0], ob[1], ob[2], ob[3]], // cloned — see TranslateEntry note
       currBbox: [ob[0], ob[1], ob[2], ob[3]],
       prevBbox: [ob[0], ob[1], ob[2], ob[3]],
       routeCtx,
@@ -498,7 +503,7 @@ function processConnector(
       id: conn.id,
       start: startSide,
       end: endSide,
-      originalBbox: ob,
+      originalBbox: [ob[0], ob[1], ob[2], ob[3]], // cloned — see TranslateEntry note
       currBbox: [ob[0], ob[1], ob[2], ob[3]],
       prevBbox: [ob[0], ob[1], ob[2], ob[3]],
       routeCtx,

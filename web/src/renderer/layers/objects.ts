@@ -6,6 +6,7 @@ import { getConnectorRoute } from '@/core/connectors/connector-router';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { getImageMeta } from '@/core/image/image-cache';
 import { getBitmap } from '@/core/image/image-manager';
+import { getHandlesBySlot } from '@/core/slots/slot-table';
 import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel } from '@/core/text/shape-label';
 import { drawStickyNote } from '@/core/text/sticky-note';
 import { renderTextLayout, textLayoutCache } from '@/core/text/text-system';
@@ -27,6 +28,7 @@ import {
   type KindWithBBoxGeo,
 } from '@/tools/selection/transform';
 import type { TransformState } from '@/tools/selection/types';
+import { sortU32Range } from '@/utils/sort-u32';
 import { getConnectorPaths, getPath } from '../geometry-cache';
 import {
   readCodeRender,
@@ -44,6 +46,7 @@ import { paintShapeFrame } from './shape-preview';
 
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateHandles: ObjectHandle[] = [];
+let _candRanks = new Uint32Array(256);
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
 
 // Per-frame editing-id snapshot, written once at the top of `drawObjects` and
@@ -128,12 +131,27 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     cullInjected(injectIds, objectsById, viewport, transform, connEntries, epDragEntry, tdx, tdy);
   }
 
-  // Sort by fractional z-key rank (bottom -> top). Rank table is dirty-flag-guarded;
-  // clean frames early-out in one boolean. Main loop excludes inject-set IDs and
-  // injectIds is provably unique — no post-sort dedupe needed.
+  // Sort by fractional z-key rank (bottom -> top), comparator-free: pack each
+  // candidate's u32 rank into a scratch, sort the ranks, rebuild the candidate
+  // list through the rank→slot inverse permutation. Ranks are unique (a
+  // permutation), so the total order is identical to a comparator sort. Rank
+  // table is dirty-flag-guarded; clean frames early-out in one compare. Main
+  // loop excludes inject-set IDs and injectIds is provably unique — no
+  // post-sort dedupe needed.
   const zOrder = getZOrder();
-  zOrder.ensureRanksValid(objectsById.values());
-  _candidateHandles.sort(zOrder.handleAscCmp);
+  zOrder.ensureRanksValid();
+  const ranks = zOrder.getRanks();
+  const slotsByRank = zOrder.getSlotsByRank();
+  const bySlot = getHandlesBySlot();
+  const candCount = _candidateHandles.length;
+  if (candCount > _candRanks.length) {
+    let cap = _candRanks.length;
+    while (cap < candCount) cap *= 2;
+    _candRanks = new Uint32Array(cap);
+  }
+  for (let i = 0; i < candCount; i++) _candRanks[i] = ranks[_candidateHandles[i].slot];
+  sortU32Range(_candRanks, 0, candCount);
+  for (let i = 0; i < candCount; i++) _candidateHandles[i] = bySlot[slotsByRank[_candRanks[i]]]!;
 
   for (let i = 0; i < _candidateHandles.length; i++) {
     const handle = _candidateHandles[i];

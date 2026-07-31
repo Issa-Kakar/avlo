@@ -1,4 +1,5 @@
 import RBush from 'rbush';
+import { writeSlotBBox } from '../slots/slot-table';
 import type { BBoxTuple } from '../types/geometry';
 import { applyHandleBBox, type ObjectHandle } from '../types/objects';
 
@@ -41,11 +42,14 @@ export class ObjectSpatialIndex extends RBush<ObjectHandle> {
    * In-place envelope change. CONTRACT: caller must NOT have mutated `handle.bbox`
    * or the mirror fields between the previous insert and this call — `rbush.remove`
    * descends the tree using the current envelope to locate the leaf. Always wrapped
-   * by `RoomDocManager.upsertHandle`; not called elsewhere.
+   * by `RoomDocManager.upsertHandle`; not called elsewhere. Tuple + 4 mirrors +
+   * the global slot-column lane move together — this is the only post-creation
+   * bbox writer path.
    */
   updateHandleBBox(handle: ObjectHandle, newBBox: Readonly<BBoxTuple>): void {
     this.remove(handle); // identity match; rbush uses current (old) envelope
     applyHandleBBox(handle, newBBox); // mutate bbox tuple + mirrors → new
+    writeSlotBBox(handle.slot, newBBox); // mirror into the global bbox column
     this.insert(handle); // rbush reads new envelope from mirror fields
   }
 }

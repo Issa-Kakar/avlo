@@ -1,5 +1,4 @@
-import { forEachRemoteLockedId, hasRemoteLocks, remoteLockedCount } from '@/core/locks/lock-table';
-import { getObjectsById } from '@/runtime/room-runtime';
+import { fillRemoteLockedBoxes, hasRemoteLocks, remoteLockedCount } from '@/core/locks/lock-table';
 import { getCanvasElement, subscribeCamera, useCameraStore } from '@/stores/camera-store';
 import { VEIL_BOXES, VEIL_CAMERA, VEIL_INIT, type VeilMsg } from './veil-protocol';
 
@@ -8,8 +7,9 @@ import { VEIL_BOXES, VEIL_CAMERA, VEIL_INIT, type VeilMsg } from './veil-protoco
  * canvas and the overlay: same z-index as base, inserted DOM-after it) paints a grey filter
  * rect over every remote-locked bbox. The main thread only ships state:
  *
- *   lock events / locked-geometry changes → microtask-coalesced bbox gather → one
- *     transferred Float64Array (an observer fire touching N locked objects posts once)
+ *   lock events / locked-geometry changes → microtask-coalesced copy out of the global
+ *     slot bbox column (`fillRemoteLockedBoxes` — no id interning, no per-box closure) →
+ *     one transferred Float64Array (an observer fire touching N locked objects posts once)
  *   camera fires (only while locks are held — one compare when idle) → tiny scalar message
  *
  * No overlay coupling, no base dirty rects, no main-thread veil painting; the browser
@@ -52,20 +52,8 @@ function flushVeil(): void {
   if (veilCanvas !== null) veilCanvas.style.display = 'block';
   postCamera();
 
-  const boxes = new Float64Array(remoteLockedCount() * 4);
-  const byId = getObjectsById();
-  let n = 0;
-  forEachRemoteLockedId((id) => {
-    const handle = byId.get(id);
-    if (handle === undefined) return;
-    const b = handle.bbox;
-    const o = n * 4;
-    boxes[o] = b[0];
-    boxes[o + 1] = b[1];
-    boxes[o + 2] = b[2];
-    boxes[o + 3] = b[3];
-    n++;
-  });
+  const boxes = new Float64Array(remoteLockedCount() * 4); // alloc inherent — buffer is transferred
+  const n = fillRemoteLockedBoxes(boxes);
   worker?.postMessage({ t: VEIL_BOXES, b: boxes, n } satisfies VeilMsg, [boxes.buffer]);
 }
 

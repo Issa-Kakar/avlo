@@ -71,15 +71,20 @@ Call site → object-query.ts facade
               ├─ resolveRadius        ({px} ÷ scale | {world} passthrough)
               ├─ regionEnvelope       (rect or point-r → bbox)
               ├─ spatialIndex.queryBBox/queryRadius   (rbush returns ObjectHandle[])
-              ├─ collectHits          (kind prefilter, hitPointFor switch — no Map.get)
-              ├─ sortTopFirst         (ULID desc, in-place)
-              └─ picker walk          (tournament | kind-match | accept+memo)
+              ├─ collectHits          (kind prefilter, hitPointFor switch — packs u32
+              │                        keys `rank * 4 + paintCode` into a module scratch)
+              ├─ sortU32Range         (packed keys, ascending, in-place — utils/sort-u32)
+              └─ picker walk          (DESCENDING over keys = top-first; recover
+                                       paint = key & 3, handle via slotsByRank + the
+                                       slot table's reverse map)
                        ↓
         ObjectHandle | string | T | null    (no intermediate array escapes)
 ```
 
 Call sites never materialize a `HitCandidate[]`, never `.map(h => h.id)`, never
-allocate a `Set` per call, never pass option bags.
+allocate a `Set` per call, never pass option bags. `collectHits` validates the
+rank table FIRST (`ensureRanksValid()` — keys embed ranks), then per passing hit
+packs one u32; no per-hit candidate object, no comparator anywhere.
 
 ---
 
@@ -218,13 +223,15 @@ import** — never per-call `new Set`.
   ink/fill: call `accept`; non-null returns immediately, null returns the
   memoized fallback (handles "nested unfilled rects above a filled rect").
 
-The three walks live inline (~60 LOC total) — they share `collectHits` +
-`sortTopFirst` setup, but each terminal condition is genuinely different.
+The three walks live inline (~60 LOC total) — they share the `collectHits` +
+`sortU32Range` setup, but each terminal condition is genuinely different.
 Don't combinator-ize.
 
-Z-order: ULID descending. ULIDs are time-ordered, so later-created objects win
-ties. The picker has no opinion about input state — Ctrl-to-suppress-snap lives
-in the calling tool, not here.
+Z-order: packed rank keys (`rank * 4 + paintCode` from `ZRankTable`), walked
+descending — higher key ⇔ higher rank ⇔ higher stack position, and the rank
+sort's (z, id) tie-break already decided collisions at rebuild time. The picker
+has no opinion about input state — Ctrl-to-suppress-snap lives in the calling
+tool, not here.
 
 ---
 
@@ -287,10 +294,12 @@ only inside `runtime/room-doc-manager.ts`. Consumers read it via
   picker export unless the occlusion model genuinely differs.
 - **New consumer without hit-testing needs**: call `getSpatialIndex().queryBBox(...)`
   directly. Don't route raw-entry consumers through the facade.
-- **Changing paint semantics**: update the `Paint` union AND the branch logic in
-  all three pickers in `object-query.ts` simultaneously — they're two sides of
-  one contract.
+- **Changing paint semantics**: update the `Paint` union AND the paint-code
+  mapping in `collectHits` AND the branch logic in all three pickers in
+  `object-query.ts` simultaneously — they're two sides of one contract. Codes
+  must stay < 4 (`key & 3` recovery; the pack multiplies rank by 4).
 - **Changing scale conversion**: `resolveRadius` is the single source of truth.
   `handle-hit.ts` imports it from `object-query.ts` — keep that edge.
-- **Changing z-order**: `sortTopFirst` compares ULIDs lex desc. If creation
-  timestamp ever diverges from insertion id, revisit.
+- **Changing z-order**: pickers order by `ZRankTable` ranks packed into u32
+  keys — ordering policy (incl. the (z, id) tie-break) lives entirely in the
+  rank table's rebuild, not here.

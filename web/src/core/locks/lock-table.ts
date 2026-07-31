@@ -1,18 +1,20 @@
 import type { ObjectHandle } from '@/core/types/objects';
+import { getBBoxColumn } from '../slots/slot-table';
 
 /**
  * Ephemeral lock table — the client half of conflict-resolution grabs.
  *
- * SoA columns keyed by `handle.slot` (ZRankTable's stable runtime slot). Owner encoding
- * collapses every guard to one load + one unsigned compare on a Uint32:
+ * SoA columns keyed by `handle.slot` (the app-wide dense slot from
+ * `core/slots/slot-table.ts`). Owner encoding collapses every guard to one load + one
+ * unsigned compare on a Uint32:
  *   0 = unlocked · 1 = locked by me · ≥2 = server-assigned peer key
  *   blocked ⇔ lockOwner[slot] > 1
  *
  * Growth doubles in lockstep with slot acquisition (`lockSlotAcquired`); cells are cleared at
- * release time because ZRankTable recycles slots LIFO without zeroing. Incoming frames carry
- * stable ids interned fresh per frame (`objectsById`), so a reused slot can never be hit by a
- * stale frame — an unknown/deleted id is dropped (a lock on a deleted object is a no-op; Yjs
- * is authority).
+ * release time because the slot table recycles slots LIFO without zeroing. Incoming frames
+ * carry stable ids interned fresh per frame (`objectsById`), so a reused slot can never be hit
+ * by a stale frame — an unknown/deleted id is dropped (a lock on a deleted object is a no-op;
+ * Yjs is authority).
  *
  * The durable `locked` object property rides alongside as `_locked: Uint8Array` (0/1) — a
  * pure mirror of each object's Y.Map `locked` field, written only by the room observer
@@ -22,11 +24,12 @@ import type { ObjectHandle } from '@/core/types/objects';
  *
  * Hot paths never allocate; all allocation lives in the cold acquire/release/apply paths.
  *
- * LEAF MODULE — no runtime imports (type-only above). Tool singletons and store modules
- * call in at module-eval time (EraserTool's constructor, selection-store's subscriber
- * registration); any runtime import here would re-enter the room-runtime import cycle and
- * put these consts in TDZ at those call sites. The two external needs (`objectsById`
- * interning, the veil-layer notification) are injected via `bindLockTable`.
+ * LEAF MODULE — no runtime imports beyond the fellow leaf `core/slots/slot-table` (itself
+ * type-only-importing). Tool singletons and store modules call in at module-eval time
+ * (EraserTool's constructor, selection-store's subscriber registration); any runtime import
+ * of room-runtime here would re-enter its import cycle and put these consts in TDZ at those
+ * call sites. The two external needs (`objectsById` interning, the veil-layer notification)
+ * are injected via `bindLockTable`.
  */
 
 const INITIAL_CAP = 256;
@@ -48,10 +51,13 @@ let _lockedPos = new Int32Array(_cap).fill(-1);
 /** Durable-lock mirror of the Y.Map `locked` field (1 = locked). Observer-written only. */
 let _locked = new Uint8Array(_cap);
 
-/** Parallel dense arrays per peer — `ids` needed because no slot→handle map exists (release re-interns). */
+/** Dense slot list per peer. LIVENESS INVARIANT: `rec.slots ⊆ live slots with owner ≥ 2` —
+ *  `lockSlotReleased → removeFromPeer` prunes synchronously in observer Phase A, before the
+ *  slot is freed and before the veil microtask can read the record. Load-bearing: the veil's
+ *  column reads (`fillRemoteLockedBoxes`) have no analogue of the old id-intern miss-skip —
+ *  a stale slot would silently paint a recycled slot's bbox. */
 interface PeerLocks {
   slots: number[];
-  ids: string[];
 }
 const _peers = new Map<number, PeerLocks>();
 
@@ -187,7 +193,6 @@ export function applyPeerSet(ownerKey: number, ids: readonly string[]): void {
       _lockedPos[slot] = -1;
     }
     rec.slots.length = 0;
-    rec.ids.length = 0;
     changed = true;
   }
 
@@ -201,16 +206,15 @@ export function applyPeerSet(ownerKey: number, ids: readonly string[]): void {
       ensureLockCapacity(slot + 1);
       const cur = _lockOwner[slot];
       // Owned by another peer (ordering race between two peers' frames): last write wins —
-      // evict the entry from that peer's dense lists so structure stays consistent.
+      // evict the entry from that peer's dense list so structure stays consistent.
       if (cur > 1 && cur !== ownerKey) removeFromPeer(cur, slot);
       if (target === undefined) {
-        target = { slots: [], ids: [] };
+        target = { slots: [] };
         _peers.set(ownerKey, target);
       }
       _lockOwner[slot] = ownerKey;
       _lockedPos[slot] = target.slots.length;
       target.slots.push(slot);
-      target.ids.push(id);
       changed = true;
     }
   }
@@ -240,10 +244,8 @@ function removeFromPeer(ownerKey: number, slot: number): void {
   const last = rec.slots.length - 1;
   const lastSlot = rec.slots[last];
   rec.slots[pos] = lastSlot;
-  rec.ids[pos] = rec.ids[last];
   _lockedPos[lastSlot] = pos;
   rec.slots.pop();
-  rec.ids.pop();
   _lockedPos[slot] = -1;
   if (rec.slots.length === 0) _peers.delete(ownerKey);
 }
@@ -278,12 +280,31 @@ export function hasRemoteLocks(): boolean {
 
 export function remoteLockedCount(): number {
   let n = 0;
-  for (const rec of _peers.values()) n += rec.ids.length;
+  for (const rec of _peers.values()) n += rec.slots.length;
   return n;
 }
 
-export function forEachRemoteLockedId(cb: (id: string) => void): void {
-  for (const rec of _peers.values()) for (const id of rec.ids) cb(id);
+/**
+ * Copy every remote-locked bbox out of the global slot column into `out`
+ * (stride 4; caller sizes via `remoteLockedCount() * 4`). Returns the box
+ * count. Safe by the PeerLocks liveness invariant — every slot here is live
+ * with owner ≥ 2, so its column lane is fresh. No per-slot closure, no intern.
+ */
+export function fillRemoteLockedBoxes(out: Float64Array): number {
+  const col = getBBoxColumn();
+  let n = 0;
+  for (const rec of _peers.values()) {
+    for (const slot of rec.slots) {
+      const src = slot * 4;
+      const dst = n * 4;
+      out[dst] = col[src];
+      out[dst + 1] = col[src + 1];
+      out[dst + 2] = col[src + 2];
+      out[dst + 3] = col[src + 3];
+      n++;
+    }
+  }
+  return n;
 }
 
 // ── slot lifecycle (room-doc-manager) ────────────────────────────────────────

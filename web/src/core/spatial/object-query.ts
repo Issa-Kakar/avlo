@@ -2,10 +2,17 @@
  * Object Query — the single entry point for spatial hit testing.
  *
  * Three point-pickers and one region-membership query. Each owns its full
- * pipeline (rbush envelope → optional prefilter → hit dispatch → in-place
- * z-sort → inline picker walk) and returns the single result its caller
+ * pipeline (rbush envelope → optional prefilter → hit dispatch → packed-key
+ * sort → inline picker walk) and returns the single result its caller
  * actually wants. No call site materializes an intermediate hit array,
- * no call site passes option-bag knobs, no per-call `new Set` allocation.
+ * no call site passes option-bag knobs, no per-call allocation.
+ *
+ * Hits pack into u32 keys `rank * 4 + paintCode` (module scratch), sorted
+ * ascending by `sortU32Range` and walked DESCENDING — higher key ⇔ higher
+ * rank ⇔ higher stack position, so the walk is top-first. Recover
+ * `paint = key & 3` and the handle via the rank→slot inverse permutation
+ * (`getSlotsByRank` + the slot table's reverse map). No comparator, no
+ * per-hit candidate object.
  *
  * Region + Radius helpers live here too (used only by the picker entry
  * points; no reason to split them into their own module).
@@ -13,11 +20,13 @@
 
 import { getFrame } from '@/core/accessors';
 import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
+import { getHandlesBySlot } from '@/core/slots/slot-table';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { BINDABLE_KINDS, type BindableHandle, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
-import { getObjectsById, getSpatialIndex, getZOrder } from '@/runtime/room-runtime';
+import { getSpatialIndex, getZOrder } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
-import { hitCircleFor, hitPointFor, hitRectFor, type Paint } from './hit-dispatch';
+import { sortU32Range } from '@/utils/sort-u32';
+import { hitCircleFor, hitPointFor, hitRectFor } from './hit-dispatch';
 
 // ============================================================================
 // Radius + Region
@@ -56,21 +65,15 @@ const BINDABLE_KINDS_SET: ReadonlySet<ObjectKind> = new Set<ObjectKind>(BINDABLE
 // Internal scratch — never leaks to callers
 // ============================================================================
 
-interface Cand {
-  readonly handle: ObjectHandle;
-  readonly paint: Paint;
-}
+// Paint codes for key packing (`rank * 4 + code`; recover `key & 3`).
+// hit-dispatch keeps its string union — mapped once at pack time.
+const PAINT_INK = 0;
+const PAINT_FILL = 1;
+const PAINT_SEETHROUGH = 2;
 
-// Reused across the three pickers; consumers never retain past one picker call (single-threaded JS).
-const _collectHitsScratch: Cand[] = [];
-
-/** Rank-desc z-sort (top first), in-place. Rank table is dirty-flag-guarded; clean call is a single boolean check. */
-function sortTopFirst(cs: Cand[]): void {
-  const zOrder = getZOrder();
-  zOrder.ensureRanksValid(getObjectsById().values());
-  const ranks = zOrder.getRanks(); // live reference; reread per call so grow-rebind is picked up
-  cs.sort((a, b) => ranks[b.handle.slot] - ranks[a.handle.slot]);
-}
+// Packed hit keys, reused across the three pickers; never retained past one
+// picker call (single-threaded JS). Pow2 growth.
+let _hitKeys = new Uint32Array(64);
 
 /** Shape-only area for the frame-aware tournament. Called only when `paint ∈ {'seethrough','fill'}`. */
 function shapeArea(h: ObjectHandle): number {
@@ -78,12 +81,13 @@ function shapeArea(h: ObjectHandle): number {
   return f ? f[2] * f[3] : 0;
 }
 
-/** Shared hit-collection loop for the three pickers. `lo` = lock-owner column: remote-locked
- *  objects (owner > 1) are untouchable — invisible to click/marquee/eraser/editor-entry.
- *  `lf` = durable-lock column: locked objects are skipped where the pick leads to mutation
- *  or edit entry. Either `null` opts that filter out (bindable snap passes both — attaching
- *  a connector never mutates the target; click-pick passes `lf: null` — a locked object
- *  stays click-selectable). */
+/** Shared hit-collection loop for the three pickers — fills `_hitKeys[0..n)` with packed
+ *  `rank * 4 + paintCode` keys and returns `n`. Ranks are validated FIRST (keys embed them).
+ *  `lo` = lock-owner column: remote-locked objects (owner > 1) are untouchable — invisible
+ *  to click/marquee/eraser/editor-entry. `lf` = durable-lock column: locked objects are
+ *  skipped where the pick leads to mutation or edit entry. Either `null` opts that filter
+ *  out (bindable snap passes both — attaching a connector never mutates the target;
+ *  click-pick passes `lf: null` — a locked object stays click-selectable). */
 function collectHits(
   entries: readonly ObjectHandle[],
   p: Point,
@@ -91,18 +95,26 @@ function collectHits(
   kindFilter: ReadonlySet<ObjectKind> | null,
   lo: Uint32Array | null,
   lf: Uint8Array | null,
-): Cand[] {
-  const out = _collectHitsScratch;
-  out.length = 0;
+): number {
+  const zOrder = getZOrder();
+  zOrder.ensureRanksValid(); // before packing — keys embed ranks
+  const ranks = zOrder.getRanks();
+  if (entries.length > _hitKeys.length) {
+    let cap = _hitKeys.length;
+    while (cap < entries.length) cap *= 2;
+    _hitKeys = new Uint32Array(cap);
+  }
+  let n = 0;
   for (const e of entries) {
     if (kindFilter && !kindFilter.has(e.kind)) continue;
     if (lo !== null && lo[e.slot] > 1) continue;
     if (lf !== null && lf[e.slot] === 1) continue;
     const paint = hitPointFor(e, p, r);
     if (paint === null) continue;
-    out.push({ handle: e, paint });
+    const code = paint === 'ink' ? PAINT_INK : paint === 'fill' ? PAINT_FILL : PAINT_SEETHROUGH;
+    _hitKeys[n++] = ranks[e.slot] * 4 + code;
   }
-  return out;
+  return n;
 }
 
 // ============================================================================
@@ -149,42 +161,49 @@ export function queryHandleIds(region: Region): string[] {
 export function pickTopmostPaint(at: Point, radius: Radius): ObjectHandle | null {
   const r = resolveRadius(radius);
   const entries = getSpatialIndex().queryRadius(at[0], at[1], r);
-  const cs = collectHits(entries, at, r, null, getLockOwners(), null); // lf null — locked objects stay click-selectable
-  if (cs.length === 0) return null;
-  if (cs.length === 1) return cs[0].handle;
-  sortTopFirst(cs);
+  const n = collectHits(entries, at, r, null, getLockOwners(), null); // lf null — locked objects stay click-selectable
+  if (n === 0) return null;
+  const slotsByRank = getZOrder().getSlotsByRank();
+  const bySlot = getHandlesBySlot();
+  if (n === 1) return bySlot[slotsByRank[_hitKeys[0] >>> 2]]!;
+  sortU32Range(_hitKeys, 0, n);
 
-  let bestFrame: Cand | null = null;
+  // Tournament state holds raw keys — higher key ⇔ higher stack position.
+  // The seethrough set and the first non-seethrough are disjoint, so key
+  // equality between the two is impossible.
+  let bestFrameKey = 0;
+  let bestFrameHandle: ObjectHandle | null = null;
   let bestFrameArea = Infinity;
-  let bestFrameIdx = -1;
-  let firstPaint: Cand | null = null;
-  let firstPaintIdx = -1;
+  let firstPaintKey = 0;
+  let firstPaintHandle: ObjectHandle | null = null;
 
-  for (let i = 0; i < cs.length; i++) {
-    const c = cs[i];
-    if (c.paint === 'seethrough') {
-      const a = shapeArea(c.handle);
+  for (let i = n - 1; i >= 0; i--) {
+    const key = _hitKeys[i];
+    if ((key & 3) === PAINT_SEETHROUGH) {
+      const h = bySlot[slotsByRank[key >>> 2]]!;
+      const a = shapeArea(h);
       if (a < bestFrameArea) {
-        bestFrame = c;
+        bestFrameKey = key;
+        bestFrameHandle = h;
         bestFrameArea = a;
-        bestFrameIdx = i;
       }
       continue;
     }
-    firstPaint = c;
-    firstPaintIdx = i;
+    firstPaintKey = key;
+    firstPaintHandle = bySlot[slotsByRank[key >>> 2]]!;
     break;
   }
 
-  if (!firstPaint) return bestFrame?.handle ?? cs[0].handle;
-  if (firstPaint.paint === 'ink') return firstPaint.handle;
-  if (!bestFrame) return firstPaint.handle;
+  // Nothing paints → smallest see-through frame, else the topmost hit outright.
+  if (firstPaintHandle === null) return bestFrameHandle ?? bySlot[slotsByRank[_hitKeys[n - 1] >>> 2]]!;
+  if ((firstPaintKey & 3) === PAINT_INK) return firstPaintHandle;
+  if (bestFrameHandle === null) return firstPaintHandle;
 
-  // firstPaint.paint === 'fill' → firstPaint is a shape; compare areas.
-  const paintArea = shapeArea(firstPaint.handle);
-  if (bestFrameArea < paintArea) return bestFrame.handle;
-  if (paintArea < bestFrameArea) return firstPaint.handle;
-  return firstPaintIdx <= bestFrameIdx ? firstPaint.handle : bestFrame.handle;
+  // firstPaint is 'fill' → a shape; compare areas.
+  const paintArea = shapeArea(firstPaintHandle);
+  if (bestFrameArea < paintArea) return bestFrameHandle;
+  if (paintArea < bestFrameArea) return firstPaintHandle;
+  return firstPaintKey > bestFrameKey ? firstPaintHandle : bestFrameHandle;
 }
 
 // ============================================================================
@@ -201,12 +220,16 @@ export function pickTopmostPaint(at: Point, radius: Radius): ObjectHandle | null
 export function pickTopmostOfKind(at: Point, radius: Radius, kind: ObjectKind): string | null {
   const r = resolveRadius(radius);
   const entries = getSpatialIndex().queryRadius(at[0], at[1], r);
-  const cs = collectHits(entries, at, r, null, getLockOwners(), getLockedFlags()); // locked → create-over, never edit-into
-  if (cs.length === 0) return null;
-  sortTopFirst(cs);
-  for (const c of cs) {
-    if (c.paint === 'seethrough') continue; // unfilled shape above target — doesn't block
-    return c.handle.kind === kind ? c.handle.id : null;
+  const n = collectHits(entries, at, r, null, getLockOwners(), getLockedFlags()); // locked → create-over, never edit-into
+  if (n === 0) return null;
+  sortU32Range(_hitKeys, 0, n);
+  const slotsByRank = getZOrder().getSlotsByRank();
+  const bySlot = getHandlesBySlot();
+  for (let i = n - 1; i >= 0; i--) {
+    const key = _hitKeys[i];
+    if ((key & 3) === PAINT_SEETHROUGH) continue; // unfilled shape above target — doesn't block
+    const h = bySlot[slotsByRank[key >>> 2]]!;
+    return h.kind === kind ? h.id : null;
   }
   return null;
 }
@@ -225,18 +248,21 @@ export function pickTopmostOfKind(at: Point, radius: Radius, kind: ObjectKind): 
 export function pickTopmostBindable<T>(at: Point, radius: Radius, accept: (h: BindableHandle) => T | null): T | null {
   const r = resolveRadius(radius);
   const entries = getSpatialIndex().queryRadius(at[0], at[1], r);
-  const cs = collectHits(entries, at, r, BINDABLE_KINDS_SET, null, null);
-  if (cs.length === 0) return null;
-  sortTopFirst(cs);
+  const n = collectHits(entries, at, r, BINDABLE_KINDS_SET, null, null);
+  if (n === 0) return null;
+  sortU32Range(_hitKeys, 0, n);
+  const slotsByRank = getZOrder().getSlotsByRank();
+  const bySlot = getHandlesBySlot();
 
   let fallback: T | null = null;
   let fallbackArea = Infinity;
-  for (const c of cs) {
-    const bh = c.handle as BindableHandle;
-    if (c.paint === 'seethrough') {
+  for (let i = n - 1; i >= 0; i--) {
+    const key = _hitKeys[i];
+    const bh = bySlot[slotsByRank[key >>> 2]]! as BindableHandle;
+    if ((key & 3) === PAINT_SEETHROUGH) {
       const v = accept(bh);
       if (v !== null) {
-        const a = shapeArea(c.handle);
+        const a = shapeArea(bh);
         if (a < fallbackArea) {
           fallback = v;
           fallbackArea = a;
