@@ -11,7 +11,7 @@
  * mutation phase:
  *   1. differential queries vs a brute-force mirror (and vs rbush itself on
  *      replayed op sequences) — catches result-set divergence; every
- *      differential query runs BOTH query() and queryWide(), so the twin
+ *      differential query runs BOTH queryPrecise() and query(), so the twin
  *      leaf-compaction bodies can never drift apart;
  *   2. per-item readBBox/has parity vs the mirror — catches stored-box
  *      corruption that random queries can mask, and is independent of
@@ -149,12 +149,12 @@ function diffQueries(
 ): void {
   for (let i = 0; i < qn; i++) {
     const q = randBox(rng, world, qw, qh);
-    const n = tree.query(q[0], q[1], q[2], q[3]);
+    const n = tree.queryPrecise(q[0], q[1], q[2], q[3]);
     const got = sortedIds(tree.results, n);
     const want = bruteQuery(mirror, q);
-    check(sameIds(got, want), `${ctx}: query #${i} mismatch (got ${got.length}, want ${want.length})`);
-    const nw = tree.queryWide(q[0], q[1], q[2], q[3]);
-    check(sameIds(sortedIds(tree.results, nw), want), `${ctx}: queryWide #${i} mismatch (got ${nw}, want ${want.length})`);
+    check(sameIds(got, want), `${ctx}: queryPrecise #${i} mismatch (got ${got.length}, want ${want.length})`);
+    const nw = tree.query(q[0], q[1], q[2], q[3]);
+    check(sameIds(sortedIds(tree.results, nw), want), `${ctx}: query #${i} mismatch (got ${nw}, want ${want.length})`);
     check(tree.collides(q[0], q[1], q[2], q[3]) === want.length > 0, `${ctx}: collides #${i} mismatch`);
   }
   diffItems(tree, mirror, ctx);
@@ -165,7 +165,7 @@ function diffQueries(
 function tEmpty(): void {
   const t = new FlatRTree();
   check(t.size === 0, 'empty: size 0');
-  check(t.query(-1e9, -1e9, 1e9, 1e9) === 0, 'empty: query 0');
+  check(t.queryPrecise(-1e9, -1e9, 1e9, 1e9) === 0, 'empty: query 0');
   check(!t.collides(-1e9, -1e9, 1e9, 1e9), 'empty: no collides');
   check(t.queryAll() === 0, 'empty: queryAll 0');
   check(!t.remove(42), 'empty: remove missing false');
@@ -187,11 +187,11 @@ function tBasicAndDegenerate(): void {
   put(4, [1e7, 1e7, 1e7 + 1, 1e7 + 1]); // far away
   audit(t, 'basic insert');
 
-  let n = t.query(0, 0, 10, 10);
+  let n = t.queryPrecise(0, 0, 10, 10);
   check(sameIds(sortedIds(t.results, n), [0, 1, 2]), 'basic: overlap query');
-  n = t.query(5, 5, 5, 5);
+  n = t.queryPrecise(5, 5, 5, 5);
   check(sameIds(sortedIds(t.results, n), [0, 1, 2]), 'basic: point query');
-  n = t.query(-101, -101, -99, -99);
+  n = t.queryPrecise(-101, -101, -99, -99);
   check(sameIds(sortedIds(t.results, n), [3]), 'basic: negative query');
   check(t.queryAll() === 5, 'basic: queryAll count');
 
@@ -214,7 +214,7 @@ function tBasicAndDegenerate(): void {
   check(t.remove(1), 'basic: remove true');
   check(!t.remove(1), 'basic: re-remove false');
   mirror.delete(1);
-  n = t.query(0, 0, 10, 10);
+  n = t.queryPrecise(0, 0, 10, 10);
   check(sameIds(sortedIds(t.results, n), [0, 2]), 'basic: query after remove');
   audit(t, 'basic after remove');
 }
@@ -376,7 +376,7 @@ function tRandomInsertSearch(seed: number, count: number): void {
   diffQueries(t, mirror, rng, 150, `rand(${seed})`);
 
   // whole-world query must return everything (exercises the contained-subtree dump)
-  const n = t.query(-1e9, -1e9, 1e9, 1e9);
+  const n = t.queryPrecise(-1e9, -1e9, 1e9, 1e9);
   check(n === count, `rand(${seed}): world query count`);
   check(
     sameIds(
@@ -409,11 +409,11 @@ function tRemove(seed: number, count: number): void {
   }
   check(t.size === 0, `remove(${seed}): emptied`);
   audit(t, `remove(${seed}) emptied`);
-  check(t.query(-1e9, -1e9, 1e9, 1e9) === 0, `remove(${seed}): empty query`);
+  check(t.queryPrecise(-1e9, -1e9, 1e9, 1e9) === 0, `remove(${seed}): empty query`);
 
   // tree remains usable after emptying
   t.insert(123456, 1, 2, 3, 4);
-  check(t.query(0, 0, 5, 5) === 1 && t.results[0] === 123456, `remove(${seed}): reuse after empty`);
+  check(t.queryPrecise(0, 0, 5, 5) === 1 && t.results[0] === 123456, `remove(${seed}): reuse after empty`);
   audit(t, `remove(${seed}) reused`);
 }
 
@@ -551,7 +551,7 @@ function tRebuildAndClear(seed: number): void {
   diffQueries(t, mirror, rng, 100, 'rebuild');
 
   t.clear();
-  check(t.size === 0 && t.query(-1e9, -1e9, 1e9, 1e9) === 0, 'clear: emptied');
+  check(t.size === 0 && t.queryPrecise(-1e9, -1e9, 1e9, 1e9) === 0, 'clear: emptied');
   audit(t, 'clear');
   t.insert(5, 0, 0, 1, 1);
   check(t.size === 1, 'clear: reusable');
@@ -566,7 +566,7 @@ function tDuplicateBoxStress(): void {
     mirror.set(i, [10, 10, 20, 20]);
   }
   audit(t, 'dup boxes');
-  const n = t.query(15, 15, 15, 15);
+  const n = t.queryPrecise(15, 15, 15, 15);
   check(n === 500, `dup boxes: all found (${n})`);
   const rng = mulberry32(1);
   diffQueries(t, mirror, rng, 30, 'dup boxes');
@@ -591,7 +591,7 @@ function tDuplicateBoxStress(): void {
   t2.load(n2, ids2, boxes2);
   check(t2.size === n2, 'dup boxes: bulk load size');
   audit(t2, 'dup boxes bulk load');
-  check(t2.query(15, 15, 15, 15) === n2, 'dup boxes: bulk load all found');
+  check(t2.queryPrecise(15, 15, 15, 15) === n2, 'dup boxes: bulk load all found');
 }
 
 function tChurn(seed: number, ops: number): void {
@@ -629,7 +629,7 @@ function tChurn(seed: number, ops: number): void {
       mirror.delete(id);
     } else {
       const q = randBox(rng, 1200, 400, 400);
-      const n = t.query(q[0], q[1], q[2], q[3]);
+      const n = t.queryPrecise(q[0], q[1], q[2], q[3]);
       const got = sortedIds(t.results, n);
       const want = bruteQuery(mirror, q);
       check(sameIds(got, want), `churn(${seed}): query mismatch @op ${op}`);
@@ -682,7 +682,7 @@ function tRBushParity(seed: number, ops: number): void {
       t.remove(id);
     } else {
       const q = randBox(rng, 1200, 400, 400);
-      const n = t.query(q[0], q[1], q[2], q[3]);
+      const n = t.queryPrecise(q[0], q[1], q[2], q[3]);
       const got = sortedIds(t.results, n);
       const want = r
         .search({ minX: q[0], minY: q[1], maxX: q[2], maxY: q[3] })
@@ -881,13 +881,13 @@ function benchDataset(d: Dataset, perOp = true): void {
         ? () => {
             for (let i = 0; i < qs.length; i++) {
               const q = qs[i];
-              sink += T.queryWide(q[0], q[1], q[2], q[3]);
+              sink += T.query(q[0], q[1], q[2], q[3]);
             }
           }
         : () => {
             for (let i = 0; i < qs.length; i++) {
               const q = qs[i];
-              sink += T.query(q[0], q[1], q[2], q[3]);
+              sink += T.queryPrecise(q[0], q[1], q[2], q[3]);
             }
           },
       15,
@@ -911,7 +911,7 @@ function benchDataset(d: Dataset, perOp = true): void {
     row(label, f, rb, `(${count} queries)`);
   };
 
-  // narrow shape → query(); wide shapes → queryWide() — the caller-selection
+  // narrow shape → queryPrecise(); wide shapes → query() — the caller-selection
   // rule integration will follow (pickers narrow, culls wide).
   searchBench('search: hit-test 10×10', 4000, 10, 10, false);
   searchBench('search: block 500×500 (wide)', 2000, 500, 500, true);
@@ -1058,7 +1058,7 @@ function benchChurn(): void {
             t.remove(id);
           } else {
             const b = randBox(rng, 50000, 3000, 3000);
-            sink += t.query(b[0], b[1], b[2], b[3]);
+            sink += t.queryPrecise(b[0], b[1], b[2], b[3]);
           }
         }
       },

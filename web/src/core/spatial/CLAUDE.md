@@ -37,7 +37,7 @@ tiers; third (pre-integration, profiler-verified) pass: HeapNumber
 argument-boxing elimination (doubles never cross a call boundary — Smi/ref
 args only, boxes travel via instance `Float64Array` channels; steady-state
 data paths are now genuinely allocation-free), twin query bodies —
-**`query()` for narrow probes (hit tests), `queryWide()` for viewport-scale
+**`queryPrecise()` for narrow probes (hit tests), `query()` for viewport-scale
 rects (culls); callers pick by construction** — pool pre-reserve on load,
 validation-free rebuild, loop-free clz32 growth licensed by the id<2^30
 boundary. Proof: 21.6k-check suite — three de-correlated oracles

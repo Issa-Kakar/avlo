@@ -68,11 +68,11 @@
  * - Boxes are finite with min ≤ max. Not re-validated.
  * - `insert` throws on duplicate or out-of-range id (corruption guard — two
  *   compares).
- * - `query()`/`queryWide()` fill `this.results` and return the count; the
+ * - `query()`/`queryPrecise()` fill `this.results` and return the count; the
  *   buffer is reused/regrown across calls — consume before the next
- *   query/mutation. They differ ONLY in leaf compaction: `query()` is tuned
- *   for narrow probes (hit tests), `queryWide()` for viewport-scale rects
- *   (culls) — the caller picks by construction, see the method docs.
+ *   query/mutation. They differ ONLY in leaf compaction: `query()` is tuned for
+ *   viewport-scale rects (culls), `queryPrecise()` for narrow probes (hit
+ *   tests) — the caller picks by construction, see the method docs.
  * - Zero allocation on insert/update/remove/query steady state (argument
  *   boxing included — see above); buffers grow geometrically, loop-free, and
  *   are retained.
@@ -107,7 +107,7 @@ export class FlatRTree {
   /** Min entries per node for split distributions (rbush's 40% rule). */
   readonly minEntries: number;
 
-  /** Query results — valid slots are [0, count) after query()/queryAll(). Aliased; regrown on demand. */
+  /** Query results — valid slots are [0, count) after query()/queryPrecise()/queryAll(). Aliased; regrown on demand. */
   results: Uint32Array;
 
   private _M: number;
@@ -194,8 +194,10 @@ export class FlatRTree {
     return id < this._leafOf.length && this._leafOf[id] !== NONE;
   }
 
-  /** Copy the stored box of `id` into out[0..3]. Returns false if absent. */
-  readBBox(id: number, out: Float64Array | number[]): boolean {
+  /** Copy the stored box of `id` into out[0..3]. Returns false if absent.
+   *  `Float64Array` only — a `number[]` union here would make the four stores
+   *  polymorphic for no caller's benefit. */
+  readBBox(id: number, out: Float64Array): boolean {
     if (id >= this._leafOf.length) return false;
     const leaf = this._leafOf[id];
     if (leaf === NONE) return false;
@@ -403,21 +405,21 @@ export class FlatRTree {
    * Two leaf compactions exist, selected by the CALLER (pickers are narrow by
    * construction, culls are wide by construction — no heuristics here): this
    * one branches once per entry on the AND-combined mask, which near-zero hit
-   * rates predict perfectly; `queryWide()` is the wide-rect twin. Measured
-   * (Zen 2): mask+branch wins probes by 5–10%, loses viewport-scale rects by
-   * 15–20%; a short-circuit `&&` chain loses everywhere (its intermediate
-   * branches are data-dependent).
+   * rates predict perfectly; `query()` is the wide-rect twin. Measured (Zen 2):
+   * mask+branch wins probes by 5–10%, loses viewport-scale rects by 15–20%; a
+   * short-circuit `&&` chain loses everywhere (its intermediate branches are
+   * data-dependent).
    */
-  query(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number {
+  queryPrecise(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number {
     const a = this._argBox;
     a[0] = qMinX;
     a[1] = qMinY;
     a[2] = qMaxX;
     a[3] = qMaxY;
-    return this._queryArg();
+    return this._queryPreciseArg();
   }
 
-  private _queryArg(): number {
+  private _queryPreciseArg(): number {
     const a = this._argBox;
     const qMinX = a[0];
     const qMinY = a[1];
@@ -481,23 +483,23 @@ export class FlatRTree {
 
   /**
    * WIDE range query — viewport culls, marquees, zoom-out windows. Identical
-   * result set and contract as `query()`; only the leaf compaction differs:
-   * fully branchless (unconditional store, conditional advance), because the
-   * partially-covered leaves a wide rect visits run ~50% hit rates (covered
-   * leaves bypass via the subtree dump) — the worst case for a branch
-   * predictor, where a dead store beats a mispredict. See `query()` for the
-   * caller-selection rule and measurements.
+   * result set and contract as `queryPrecise()`; only the leaf compaction
+   * differs: fully branchless (unconditional store, conditional advance),
+   * because the partially-covered leaves a wide rect visits run ~50% hit rates
+   * (covered leaves bypass via the subtree dump) — the worst case for a branch
+   * predictor, where a dead store beats a mispredict. See `queryPrecise()` for
+   * the caller-selection rule and measurements.
    */
-  queryWide(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number {
+  query(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number {
     const a = this._argBox;
     a[0] = qMinX;
     a[1] = qMinY;
     a[2] = qMaxX;
     a[3] = qMaxY;
-    return this._queryWideArg();
+    return this._queryArg();
   }
 
-  private _queryWideArg(): number {
+  private _queryArg(): number {
     const a = this._argBox;
     const qMinX = a[0];
     const qMinY = a[1];
@@ -558,7 +560,7 @@ export class FlatRTree {
 
   /** Convenience wrapper: returns a subarray view over `results` (valid until the next query). */
   search(minX: number, minY: number, maxX: number, maxY: number): Uint32Array {
-    const n = this.query(minX, minY, maxX, maxY);
+    const n = this.queryPrecise(minX, minY, maxX, maxY);
     return this.results.subarray(0, n);
   }
 
