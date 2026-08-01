@@ -11,6 +11,7 @@ import { getContent, getFontFamily, getFontSize, getLanguage, getLocked } from '
 import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
+import { copyBbox } from '@/core/geometry/bounds';
 import { ensureImageWorkers, hydrateImages } from '@/core/image/image-manager';
 import { attachLocks, detachLocks } from '@/core/locks/lock-protocol';
 import {
@@ -22,8 +23,16 @@ import {
   resetLockTable,
   setLockedFlag,
 } from '@/core/locks/lock-table';
-import { acquireSlot, registerHandle, releaseSlot, resetSlotTable } from '@/core/slots/slot-table';
-import { ObjectSpatialIndex } from '@/core/spatial';
+import {
+  acquireSlot,
+  getBBoxColumn,
+  registerHandle,
+  releaseSlot,
+  resetSlotTable,
+  slotHighWater,
+  writeSlotBBox,
+} from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { createHandle, isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
@@ -33,7 +42,7 @@ import { ROOMS_QUERY_KEY, type RoomsQueryData } from '@/query/rooms';
 import { evictGeometry } from '@/renderer/geometry-cache';
 import { notifyLockVeil } from '@/renderer/lock-veil/lock-veil';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
-import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { invalidateWorldAll, invalidateWorldBBox, invalidateWorldSlot } from '@/renderer/RenderLoop';
 import { router } from '@/router';
 import { getUserId } from '@/stores/auth-store';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
@@ -57,7 +66,6 @@ const UNDO_TOUCHED_IDS = Symbol('avlo:undo-touched-ids');
 export interface IRoomDocManager {
   readonly objects: YObjects;
   readonly objectsById: ReadonlyMap<string, ObjectHandle>;
-  readonly spatialIndex: ObjectSpatialIndex;
   readonly connectorRouter: ConnectorRouter;
   readonly zOrder: ZRankTable;
 
@@ -96,7 +104,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Y.Map-based object storage
   readonly objectsById = new Map<string, ObjectHandle>();
-  readonly spatialIndex = new ObjectSpatialIndex();
   readonly connectorRouter = new ConnectorRouter();
   readonly zOrder = new ZRankTable();
   private objectsObserver: ((events: Y.YEvent<Y.AbstractType<unknown>>[], tx: Y.Transaction) => void) | null = null;
@@ -268,7 +275,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.undoManager = dispose(this.undoManager, (m) => m.destroy());
     this.objectsObserver = dispose(this.objectsObserver, (fn) => this.objects.unobserveDeep(fn));
 
-    this.spatialIndex.clear();
+    spatialTree.clear();
 
     // Clear connector router state before object-cache teardown.
     this.connectorRouter.clear();
@@ -445,12 +452,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     for (const id of deleted) {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
-      this.spatialIndex.remove(handle); // FIRST — rbush descends by the still-old envelope mirrors
+      spatialTree.remove(handle.slot); // slot-keyed consumer — must finalize before releaseSlot below
       lockSlotReleased(handle.slot); // lock columns + peer prune (+ veil poke)
       this.zOrder.noteRemove(handle.z);
-      // releaseSlot LAST among the slot-keyed ops. Forward-looking invariant, not a current
-      // dependency (nothing above reads the reverse map): a slot is freed only after every
-      // slot-keyed consumer has finalized — Phase B of this same fire can recycle it (LIFO).
+      // releaseSlot LAST among the slot-keyed ops: a slot is freed only after every slot-keyed
+      // consumer has finalized — Phase B of this same fire can recycle it (LIFO), and a late
+      // spatialTree.remove(slot) would delete the RECYCLED entry.
       releaseSlot(handle.slot);
       removeObjectCaches(id, handle.kind);
       invalidateIfVisible(handle.bbox, vp); // local var — safe after release
@@ -517,16 +524,21 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   /**
    * Insert/update a handle in place. On first insert, allocates the ObjectHandle once
-   * (via `createHandle`) with its own owned `bbox` tuple cloned from `newBBox` and the
-   * rbush mirror fields seeded to match. On update, mutates `handle.bbox` + mirrors
-   * in place via `spatialIndex.updateHandleBBox` — provably safe because no downstream
-   * consumer holds a bbox ref across observer fires (transform/topology/image-manager
-   * snapshot at gesture begin; renderer and spatial index destructure on read).
+   * (via `createHandle`) with its own owned `bbox` tuple cloned from `newBBox`, then
+   * registers the slot columns and guard-inserts into the tree (the duplicate tripwire).
    *
-   * Ordering critical when `bboxChanged`: publish prev rect BEFORE calling
-   * `updateHandleBBox` (rbush's `remove` reads the current envelope to locate the leaf,
-   * and we still want the prev-rect publish to use the old values). `updateHandleBBox`
-   * internally encapsulates the remove → mutate → insert dance.
+   * SOLE-WRITER CONTRACT: the update branch's tripartite write — `handle.bbox` tuple
+   * (`copyBbox`), global slot column (`writeSlotBBox`), tree entry (`spatialTree.update`)
+   * — is the ONLY post-creation bbox writer path in the app; the three always move
+   * together, and only here. In-place mutation is safe because no downstream consumer
+   * holds a bbox ref across observer fires (transform/topology/image-manager snapshot at
+   * gesture begin; renderer and pickers destructure on read).
+   *
+   * `spatialTree.update()` is an upsert, but relies on: handle exists ⇒ slot in tree
+   * (guarded insert below + hydrate bulk load + observer-attaches-after-hydrate make an
+   * absent slot unreachable). Ordering: publish the prev rect BEFORE the write (the only
+   * ordering hazard left — old-rect-before-write); the tree itself needs no envelope
+   * choreography (slot-keyed remove/update, no descent by old box).
    *
    * Returns `bboxChanged`. Caller drives selection bookkeeping + bindable propagation off
    * the flag.
@@ -551,20 +563,25 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       registerHandle(fresh); // reverse map + global bbox column
       this.zOrder.noteAdd(z);
       this.objectsById.set(id, fresh);
-      this.spatialIndex.insert(fresh);
+      spatialTree.insert(slot, newBBox[0], newBBox[1], newBBox[2], newBBox[3]); // guarded — duplicate slot throws
       evictGeometry(id);
-      invalidateIfVisible(fresh.bbox, vp);
+      invalidateWorldSlot(slot); // column fresh post-registerHandle
       return true;
     }
 
     const bboxChanged = !bboxEquals(handle.bbox, newBBox);
 
     if (bboxChanged) {
-      invalidateIfVisible(handle.bbox, vp); // prev area — handle.bbox still old
-      this.spatialIndex.updateHandleBBox(handle, newBBox); // remove(handle) → applyHandleBBox → insert(handle)
+      invalidateIfVisible(handle.bbox, vp); // prev rect — handle.bbox still old
+      copyBbox(newBBox, handle.bbox); // tuple
+      writeSlotBBox(handle.slot, newBBox); // column
+      spatialTree.update(handle.slot, newBBox[0], newBBox[1], newBBox[2], newBBox[3]); // tree
     }
     if (bboxChanged || alwaysEvict) evictGeometry(id);
-    invalidateIfVisible(handle.bbox, vp); // new area — always (content may have changed visually even when bbox identical)
+    // New rect — always (content may change visually with an identical bbox). On the
+    // no-change path the column ≡ tuple still holds: registerHandle seeds, the block
+    // above is the sole writer.
+    invalidateWorldSlot(handle.slot);
 
     // Remote-locked ink changed (the lock holder moved/restyled it) → re-raster the veil.
     if (getLockOwners()[handle.slot] > 1) markLockVeilDirty();
@@ -575,7 +592,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Hydrate from Y.Map
   private hydrateObjectsFromY(): void {
     this.objectsById.clear();
-    this.spatialIndex.clear();
+    spatialTree.clear();
     this.connectorRouter.clear();
     this.zOrder.clear();
     // Slot + lock resets FIRST, with the other clears — mandatory, not tidiness: durable-lock
@@ -586,7 +603,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     resetLockTable();
     clearAllObjectCaches();
 
-    const handles: ObjectHandle[] = [];
     const deferredConnectorIds: string[] = [];
 
     // Pass 1: build handles for everything except connectors. Connectors only get
@@ -615,7 +631,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       registerHandle(handle);
       this.zOrder.noteAdd(z);
       this.objectsById.set(id, handle);
-      handles.push(handle);
     });
 
     // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).
@@ -637,11 +652,19 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       registerHandle(handle);
       this.zOrder.noteAdd(z);
       this.objectsById.set(id, handle);
-      handles.push(handle);
     }
 
-    if (handles.length > 0) {
-      this.spatialIndex.load(handles); // rbush this slice; now runs with REAL slots (FlatRTree bulk-load blocker gone)
+    // OMT bulk load straight off the global bbox column: hydrate starts from
+    // resetSlotTable with no frees, so slots are dense [0..N-1] and item-index
+    // === slot — the slot-indexed column IS load()'s item-indexed layout (it
+    // subarrays the longer buffer). Cold alloc OK. Connector routing-failure
+    // [0,0,0,0] boxes are valid finite min≤max entries — same spurious-near-
+    // origin behavior as before; the next observer fire corrects them.
+    const n = slotHighWater();
+    if (n > 0) {
+      const ids = new Uint32Array(n);
+      for (let i = 0; i < n; i++) ids[i] = i;
+      spatialTree.load(n, ids, getBBoxColumn());
     }
 
     hydrateImages();
@@ -748,10 +771,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
+  // Repack in place from the tree's own live entries — provenance changed from the
+  // old clear+load-from-objectsById: the accidental self-healing that gave is unneeded
+  // (guarded insert + ordered remove leave no divergence path between tree and handles).
   private repackSpatialIndex(): void {
-    this.spatialIndex.clear();
-    const handles = Array.from(this.objectsById.values());
-    if (handles.length > 0) this.spatialIndex.load(handles);
+    spatialTree.rebuild();
   }
 
   public isConnected(): boolean {

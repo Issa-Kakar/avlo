@@ -18,8 +18,10 @@ import {
   getTextProps,
 } from '@/core/accessors';
 import { serializeFragment } from '@/core/clipboard/clipboard-serializer';
+import { getHandlesBySlot } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getObjectsById, getSpatialIndex, hasActiveRoom } from '@/runtime/room-runtime';
+import { getObjectsById, hasActiveRoom } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useRoomSessionStore } from '@/stores/room-session-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -231,7 +233,10 @@ export function buildCanvasContext(): CanvasContext | null {
   const offscreen: ObjectHandle[] = [];
   const counts: Record<string, number> = {};
 
-  const visible = new Set(getSpatialIndex().queryBBox(vp));
+  const nVis = spatialTree.query(vp[0], vp[1], vp[2], vp[3]);
+  const visRes = spatialTree.results;
+  const visSlots = new Set<number>();
+  for (let i = 0; i < nVis; i++) visSlots.add(visRes[i]);
   for (const handle of getObjectsById().values()) {
     counts[handle.kind] = (counts[handle.kind] ?? 0) + 1;
     if (selectedIdSet.has(handle.id) && sel.length < 50) {
@@ -241,7 +246,7 @@ export function buildCanvasContext(): CanvasContext | null {
         continue;
       }
     }
-    if (visible.has(handle)) {
+    if (visSlots.has(handle.slot)) {
       if (vis.length < AI_CONTEXT_VIEWPORT_CAP) vis.push(toBlurry(handle));
       else offscreen.push(handle); // viewport overflow joins the cluster tier
     } else {
@@ -282,7 +287,13 @@ export function readCanvas(input: CanvasReadInput): Record<string, unknown> {
   } else if (input.area === 'all') {
     handles = [...getObjectsById().values()];
   } else {
-    handles = getSpatialIndex().queryBBox(getVisibleBoundsTuple());
+    // Materialize handles from viewport slots (cold path — alloc fine).
+    const vp = getVisibleBoundsTuple();
+    const n = spatialTree.query(vp[0], vp[1], vp[2], vp[3]);
+    const res = spatialTree.results;
+    const bySlot = getHandlesBySlot();
+    handles = [];
+    for (let i = 0; i < n; i++) handles.push(bySlot[res[i]]!);
   }
 
   const capped = handles.slice(0, AI_CONTEXT_VIEWPORT_CAP);

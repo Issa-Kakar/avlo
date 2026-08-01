@@ -1,4 +1,5 @@
 import { manageImageViewport } from '@/core/image/image-manager';
+import { getBBoxColumn } from '@/core/slots/slot-table';
 import type { BBoxTuple, WorldBounds } from '@/core/types/geometry';
 import { applyPendingResize, getBaseContext } from '@/runtime/SurfaceManager';
 import { isMobile, subscribeCamera, useCameraStore } from '@/stores/camera-store';
@@ -174,6 +175,33 @@ export class RenderLoop {
     this.markDirty();
   }
 
+  /**
+   * Add a world-space dirty rect straight off the global slot bbox column
+   * (`slot * 4` lane — live slots only). Smi arg, column read inside — the
+   * prepare-for-typed-array-geometry seam. Unlike invalidateWorld{,BBox},
+   * markDirty is GATED on mark()'s damage flag: the old RDM path was culled
+   * by invalidateIfVisible, but this one publishes every touched slot, and an
+   * ungated markDirty schedules a rAF whose tick runs manageImageViewport
+   * before the nothing-to-do early-out — a peer editing offscreen objects
+   * would drive an idle client at ~60Hz busy-work.
+   */
+  invalidateWorldSlot(slot: number): void {
+    if (!this.started || this.fullClear) return;
+    const col = getBBoxColumn();
+    const o = slot * 4;
+    const s = this.camScale * this.camDpr;
+    if (
+      this.mark(
+        Math.floor((col[o] - this.camPanX) * s - AA_MARGIN),
+        Math.floor((col[o + 1] - this.camPanY) * s - AA_MARGIN),
+        Math.ceil((col[o + 2] - this.camPanX) * s + AA_MARGIN),
+        Math.ceil((col[o + 3] - this.camPanY) * s + AA_MARGIN),
+      )
+    ) {
+      this.markDirty();
+    }
+  }
+
   /** Force full clear on next frame. */
   invalidateAll(): void {
     this.fullClear = true;
@@ -188,16 +216,18 @@ export class RenderLoop {
   /**
    * Clamp a device-space rect to the canvas, short-circuit a near-fullscreen rect to
    * fullClear, else splat it into the tile grid. Off-canvas rects (transform/topology
-   * don't viewport-gate) clamp away to a no-op.
+   * don't viewport-gate) clamp away to a no-op. Returns `true` iff damage was
+   * recorded (splat ran or the area-ratio branch promoted to fullClear) — the
+   * invalidateWorldSlot gate; existing callers markDirty unconditionally.
    */
-  private mark(minX: number, minY: number, maxX: number, maxY: number): void {
+  private mark(minX: number, minY: number, maxX: number, maxY: number): boolean {
     const cw = this.canvasW;
     const ch = this.canvasH;
     if (minX < 0) minX = 0;
     if (minY < 0) minY = 0;
     if (maxX > cw) maxX = cw;
     if (maxY > ch) maxY = ch;
-    if (minX >= maxX || minY >= maxY) return;
+    if (minX >= maxX || minY >= maxY) return false;
 
     if (DEBUG_DIRTY) this.dbgTrueArea += (maxX - minX) * (maxY - minY);
 
@@ -205,10 +235,11 @@ export class RenderLoop {
     // never splat a full-screen rect into the grid.
     if ((maxX - minX) * (maxY - minY) > AREA_RATIO * cw * ch) {
       this.fullClear = true;
-      return;
+      return true;
     }
 
     this.splat(minX, minY, maxX, maxY);
+    return true;
   }
 
   /** Word-parallel OR of a clamped, non-empty device rect into the grid + active sub-rect. */
@@ -712,6 +743,11 @@ export function invalidateWorld(bounds: WorldBounds): void {
 /** Invalidate a world-space dirty rect from BBoxTuple. Safe no-op before start(). */
 export function invalidateWorldBBox(bbox: BBoxTuple): void {
   renderLoop.invalidateWorldBBox(bbox);
+}
+
+/** Invalidate a live slot's rect straight off the global bbox column. Safe no-op before start(). */
+export function invalidateWorldSlot(slot: number): void {
+  renderLoop.invalidateWorldSlot(slot);
 }
 
 /** Force full base-canvas clear on next frame. Safe no-op before start(). */

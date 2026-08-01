@@ -96,7 +96,7 @@ handleUnfurlFailed(objectId): pasteUrlAsText fallback + cleanup
 Bookmark asset IDs flow through the **same decode pipeline as images**, but always at level 0 (ppsp = Infinity, no mip selection). The og/favicon ids are sourced from the `BookmarkLayout` cache — no separate metadata map:
 
 - `computeBookmarkBBox` → `getLayout` stores `ogImageAssetId` / `faviconAssetId` on the layout; `bookmarkCache.evict(id)` (via `removeObjectCaches`) clears it on delete
-- `manageImageViewport()` — per frame, iterates visible bookmark `ObjectHandle`s (rbush items are handles) + reads `bookmarkCache.getLayoutById`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
+- `manageImageViewport()` — per frame, iterates visible bookmark slots (`spatialTree.query`; handles via the slot reverse map, boxes off the bbox column) + reads `bookmarkCache.getLayoutById`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
 - `hydrateImages()` (zero-arg) — at room join, reads `bookmarkCache.forEachLayout`; bookmark assets contribute at level 0 using the handle's bbox
 
 OG images ≤ 300wu (card width); favicons 18×18.
@@ -316,7 +316,7 @@ All worker logs prefixed `[unfurl]`.
 ## Integration Points
 
 ### Hit Testing — `core/spatial/hit-dispatch.ts`
-Bookmark closes over `getBookmarkFrame(h.id)` via the shared `paddedHit*FromFrame` helpers (same precision-pass model as text and note — bbox carries shadow pad, so the rbush envelope is coarser than the frame). Paint is `'ink'` on hit. All marquee + point picking flows through the spatial pipeline; **no per-bookmark cases in `EraserTool` or `snap.ts`**.
+Bookmark closes over `getBookmarkFrame(h.id)` via the shared `paddedHit*FromFrame` helpers (same precision-pass model as text and note — bbox carries shadow pad, so the tree envelope is coarser than the frame). Paint is `'ink'` on hit. All marquee + point picking flows through the spatial pipeline; **no per-bookmark cases in `EraserTool` or `snap.ts`**.
 
 ### Selection
 - `SelectionKind` value: `'bookmark'` (the type is `ObjectKind | 'none' | 'mixed'`)

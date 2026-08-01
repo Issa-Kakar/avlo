@@ -1,6 +1,8 @@
 import { generateNZAtBottom, generateNZAtTop, generateNZBetween } from '@avlo/shared';
+import { getHandlesBySlot } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
+import { getObjectsById, getZOrder, transact } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 
@@ -108,11 +110,14 @@ export function bringSelectedForward(): void {
   const selectedSet = new Set(ids);
 
   const viewport = getVisibleBoundsTuple();
-  const entries = getSpatialIndex().queryBBox(viewport);
+  const n = spatialTree.query(viewport[0], viewport[1], viewport[2], viewport[3]);
+  const res = spatialTree.results;
+  const bySlot = getHandlesBySlot();
 
   _visUnselScratch.length = 0;
   _selectedScratch.length = 0;
-  for (const h of entries) {
+  for (let i = 0; i < n; i++) {
+    const h = bySlot[res[i]]!;
     if (selectedSet.has(h.id)) _selectedScratch.push(h);
     else _visUnselScratch.push(h);
   }
@@ -156,11 +161,14 @@ export function sendSelectedBackward(): void {
   const selectedSet = new Set(ids);
 
   const viewport = getVisibleBoundsTuple();
-  const entries = getSpatialIndex().queryBBox(viewport);
+  const n = spatialTree.query(viewport[0], viewport[1], viewport[2], viewport[3]);
+  const res = spatialTree.results;
+  const bySlot = getHandlesBySlot();
 
   _visUnselScratch.length = 0;
   _selectedScratch.length = 0;
-  for (const h of entries) {
+  for (let i = 0; i < n; i++) {
+    const h = bySlot[res[i]]!;
     if (selectedSet.has(h.id)) _selectedScratch.push(h);
     else _visUnselScratch.push(h);
   }

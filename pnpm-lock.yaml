@@ -226,9 +226,6 @@ importers:
       immer:
         specifier: ^11.1.8
         version: 11.1.8
-      rbush:
-        specifier: ^4.0.1
-        version: 4.0.1
       react:
         specifier: ^19.0.0
         version: 19.2.7
@@ -284,6 +281,9 @@ importers:
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
+      rbush:
+        specifier: ^4.0.1
+        version: 4.0.1
       tailwindcss:
         specifier: ^4.0.0
         version: 4.3.1
@@ -2500,6 +2500,7 @@ packages:
 
   arctic@3.7.0:
     resolution: {integrity: sha512-ZMQ+f6VazDgUJOd+qNV+H7GohNSYal1mVjm5kEaZfE2Ifb7Ss70w+Q7xpJC87qZDkMZIXYf0pTIYZA0OPasSbw==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
   babel-dead-code-elimination@1.0.12:
     resolution: {integrity: sha512-GERT7L2TiYcYDtYk1IpD+ASAYXjKbLTDPhBtYj7X1NuRMDTMtAx9kyBenub1Ev41lo91OHCKdmP+egTDmfQ7Ig==}

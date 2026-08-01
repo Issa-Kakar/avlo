@@ -27,7 +27,7 @@ pnpm lint         # Biome — skip routine runs (noisy, sometimes wrong); pre-co
 
 - **Pre-production, solo dev.** Don't plan migrations, compat shims, or schema-versioning seams — clear history / new room / refresh covers any Y.Doc or store pivot.
 - **Reuse before invention.** Bbox/frame/handle/accessor primitives exist — grep `core/geometry/bounds.ts`, `core/accessors.ts`, `core/types/`, `utils/` first. A named 3-line helper beats inline reinvention.
-- **Low-friction modules.** Cross-module data flows through module-level getters (`getHandle`, `frameOf`, `getSpatialIndex`, `getVisibleBoundsTuple`). Over-encapsulation is the enemy.
+- **Low-friction modules.** Cross-module data flows through module-level getters (`getHandle`, `frameOf`, `getHandlesBySlot`, `getVisibleBoundsTuple`) and singletons (`spatialTree`). Over-encapsulation is the enemy.
 - **Fewest lines for full robustness.** No defensive checks at trusted boundaries, no backwards-compat shims, no half-finished abstractions.
 
 ## Invariants
@@ -67,7 +67,7 @@ All paths relative to `web/src/` unless noted.
 ### Renderer (`renderer/`)
 | File | Responsibility |
 |------|----------------|
-| `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,All}` |
+| `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,Slot,All}` (`Slot` reads the global bbox column and gates markDirty on real damage) |
 | `OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
 | `grid/` | Third canvas — standalone WebGPU/Canvas2D dot grid below content ('G' toggles). See CLAUDE.md |
 | `types.ts` | `FRAME_CONFIG`, Perfect Freehand options, `getSvgPathFromStroke` |
@@ -112,7 +112,7 @@ All paths relative to `web/src/` unless noted.
 | File | Responsibility |
 |------|----------------|
 | `accessors.ts` | Typed Y.Map accessors (per-field + per-kind bulk `getXxxProps`) |
-| `types/objects.ts` | `ObjectKind`, `ObjectHandle` (+ `createHandle`/`applyHandleBBox`), prop types, `BindableKind`/`BINDABLE_KINDS`/`isBindable*` |
+| `types/objects.ts` | `ObjectKind`, `ObjectHandle` (+ `createHandle`), prop types, `BindableKind`/`BINDABLE_KINDS`/`isBindable*` |
 | `types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
 | `types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `index.ts` | Type re-export barrel |
@@ -123,7 +123,7 @@ All paths relative to `web/src/` unless noted.
 | `geometry/scale-system.ts` | Pure math atoms: `uniformFactor`, `preservePosition`, `edgePinPosition1D`, `computeReflowWidth` |
 | `geometry/hit-primitives.ts` | Pure tuple-first hit math: point/segment/polyline/shape/rect/circle atoms |
 | `geometry/recognizer/` | $P/$Q shape recognizer — 550ms-hold match. Entry: `recognize.ts`, `hold-detector.ts`. See CLAUDE.md |
-| `spatial/` | Hit testing + region queries. Entry: `object-query.ts` (picker facade), `handle-hit.ts`, `hit-dispatch.ts` (per-kind switch dispatchers). See CLAUDE.md |
+| `spatial/` | Hit testing + region queries over `spatialTree` — the slot-keyed FlatRTree singleton (`spatial-tree.ts`; queries return dense u32 slots in a reused buffer, twin `query`/`queryPrecise` bodies). Entry: `object-query.ts` (picker facade), `handle-hit.ts`, `hit-dispatch.ts` (per-kind switch dispatchers), `flat-rtree.ts` (the engine). See CLAUDE.md |
 | `connectors/` | Elbow A* + straight routing, snap. Entry: `connector-router.ts`, `snap.ts`, `reroute-connector.ts`, `anchor-atoms.ts`, `connector-paths.ts`, `constants.ts`. See CLAUDE.md |
 | `text/` | Layout engine + three-tier cache + sticky notes. Entry: `text-system.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
 | `code/` | Two-tier tokenization + CodeMirror + canvas renderer. Entry: `code-system.ts`, `code-tokens.ts`, `lezer-worker.ts`, `code-theme.ts`. See CLAUDE.md |
@@ -212,9 +212,9 @@ Y.Doc (source of truth)
    ↓ observers (Y.Map.observeDeep)
 RoomDocManager.applyObjectChanges()
    ├─ computeBBoxForInto(id, kind, yMap, scratch)
-   ├─ upsertHandle (mutates handle.bbox in place; rbush update before mutation)
+   ├─ upsertHandle (tripartite write: bbox tuple + slot column + spatialTree.update, together)
    ├─ evictGeometry(id) + per-kind layout cache evict
-   └─ invalidateIfVisible(bbox, vp) → invalidateWorldBBox      [base canvas]
+   └─ invalidateWorldSlot(slot) (new rect; prev rect via invalidateIfVisible)   [base canvas]
          ↓
    RenderLoop (dirty-rect base)
    OverlayRenderLoop (full-clear overlay)
@@ -251,7 +251,7 @@ All tools implement `PointerTool` (`tools/types.ts`): `canBegin`, `begin(pointer
 
 Module-level room context. `connectRoom(roomId)` from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`/`getZOrder()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`, `renormalizeAttachedAnchors`.
+**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getObjectsById()`/`getObjects()`/`getZOrder()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. (Spatial queries don't route through here — `spatialTree` is a module-level singleton in `core/spatial/spatial-tree.ts`.) Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`, `renormalizeAttachedAnchors`.
 
 Prefer `getHandle(id)` over `getObjectsById().get(id)`. Prefer `transact(fn)` over `getActiveRoomDoc().mutate(fn)` — `transact` returns whatever `fn` returns, so callers can elide the `let foo; transact(()=>{ foo = ... })` dance.
 
@@ -260,7 +260,7 @@ Prefer `getHandle(id)` over `getObjectsById().get(id)`. Prefer `transact(fn)` ov
 ## Invalidation — Singleton Render Loops
 
 Module-level singletons, safe no-ops before `start()`. Tools and observers import directly.
-- **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldAll()`
+- **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldSlot(slot)` (rect read off the global bbox column at `slot * 4`; live slots only; the only variant that gates its rAF schedule on real damage — offscreen publishes stay idle), `invalidateWorldAll()`
 - **OverlayRenderLoop:** `invalidateOverlay()`
 
 ---
@@ -307,19 +307,18 @@ transact(() => {
 
 **`z` is mandatory and never hand-authored** — a fractional sort key minted against the current stack. Generators (`generateZAtTop` etc.) are exported from `@avlo/shared`; `getZOrder()` (room-runtime) returns the client `ZRankTable`, whose `.maxZ()`/`.minZ()` give the current top/bottom `z` (`null` on an empty doc). One object on top → `generateZAtTop(getZOrder().maxZ())`. N objects in one `transact` → `generateNZAtTop(getZOrder().maxZ(), n): ZKey[]` — mint once, assign in order (see `clipboard-actions.ts`). `*AtBottom` (minZ) / `*Between` variants cover the other anchors; reorder actions live in `core/z-order/`.
 
-### ObjectHandle (live reference, IS the rbush item)
-`objectsById` and the spatial index reference the **same** object — one source of truth, two access paths; spatial queries return handles directly. Full shape in `core/types/objects.ts`:
+### ObjectHandle (live reference, slot-keyed into the index)
+The handle is NOT the spatial-index entry — `spatialTree` (FlatRTree, `core/spatial/spatial-tree.ts`) is keyed by `handle.slot`, and queries return dense u32 slots; handles are recovered via the slot table's reverse map (`getHandlesBySlot()`). `bbox` + `slot` are the geometry links: the tuple for in-place object readers, the global bbox column (`getBBoxColumn()`, `slot * 4`) for typed-array paths. Full shape in `core/types/objects.ts`:
 ```ts
 interface ObjectHandle {
   id; kind;                  // kind mirrors y.get('kind')
   y: Y.Map<unknown>;         // LIVE reference
   bbox: BBoxTuple;           // [minX,minY,maxX,maxY]
-  minX; minY; maxX; maxY;    // rbush envelope — mirrors bbox[0..3]
   z: ZKey;                   // mirrors y.get('z')
   slot: number;              // immutable Uint32 index into the slot-table columns (core/slots/)
 }
 ```
-**Mutation invariants** (violate → spatial tree desyncs): `applyHandleBBox(handle, src)` — wrapped by `spatialIndex.updateHandleBBox`, which also mirrors into the global slot bbox column (`writeSlotBBox`) — is the ONLY legal post-creation writer of `bbox` + the four mirrors + the column lane, written atomically; never `handle.bbox[N]=…` / `copyBbox(_, handle.bbox)`. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`, `core/slots/slot-table.ts`), reusable after delete but never reassigned on a live handle. The wrapper persists for the id's lifetime — consumers needing a snapshot across fires clone at read time (`[...handle.bbox]`; transform/topology/image-manager do).
+**Mutation invariants** (violate → spatial tree desyncs): RoomDocManager `upsertHandle`'s tripartite write — `copyBbox` into the tuple, `writeSlotBBox` into the column, `spatialTree.update` into the tree, always together — is the ONLY legal post-creation bbox writer path; never `handle.bbox[N]=…` / a lone `copyBbox(_, handle.bbox)` anywhere else. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`, `core/slots/slot-table.ts`), reusable after delete but never reassigned on a live handle. The tuple persists for the id's lifetime — consumers needing a snapshot across fires clone at read time (`[...handle.bbox]`; transform/topology/image-manager do).
 
 ### Stored vs derived geometry
 
@@ -346,7 +345,7 @@ interface ObjectHandle {
 
 ## RoomDocManager
 
-Public fields (non-null from construction): `objectsById`, `spatialIndex`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (slot + lock tables reset at the TOP, then non-connectors first, connectors second so bindable frames exist for routing; slots acquired inline + durable-lock flags seeded per object — dense [0..N-1] in creation order) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`).
+Public fields (non-null from construction): `objectsById`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (slot + lock tables + `spatialTree` reset at the TOP, then non-connectors first, connectors second so bindable frames exist for routing; slots acquired inline + durable-lock flags seeded per object — dense [0..N-1] in creation order; tail = `spatialTree.load` OMT bulk load straight off the global bbox column, item-index === slot while dense) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`, now `spatialTree.rebuild()`).
 
 ### Observer Pipeline
 
@@ -359,11 +358,11 @@ Public fields (non-null from construction): `objectsById`, `spatialIndex`, `conn
 - nested `'content'` → code `codeSystem.handleContentChange` / text·label·note `textLayoutCache.invalidateContent`
 
 Then **`applyObjectChanges`** over accumulated `touched`/`deleted` (`_newBBoxScratch` reused):
-- **A · deletions** — `spatialIndex.remove` → `lockSlotReleased` → `zOrder.noteRemove` → `releaseSlot` (last slot-keyed op — every slot consumer finalized before the slot can recycle in Phase B) → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
+- **A · deletions** — `spatialTree.remove(slot)` → `lockSlotReleased` → `zOrder.noteRemove` → `releaseSlot` (last slot-keyed op — every slot consumer finalized before the slot can recycle in Phase B; a late tree remove would delete the recycled entry) → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
 - **B · touched** — skip ids queued for reroute (→C); connectors get style-only `router.computeBBox`, else `computeBBoxForInto` (★ **populates subsystem caches**) → `upsertHandle`; a bbox-changed bindable calls `router.onBindableChanged` (queues a reroute).
 - **C · drain reroute queue** — `router.rerouteCanonical` (route + bbox) → `upsertHandle(…, alwaysEvict=true)`. Then `selection.onObjectsKindChanged` (re-derive composition BEFORE refreshStyles) + `onObjectsChanged`.
 
-`upsertHandle` is the only bbox writer. On bbox change: invalidate prev rect → `spatialIndex.updateHandleBBox(handle, newBBox)` (`remove` reads old envelope → `applyHandleBBox` writes new tuple+mirrors → `insert`) → `evictGeometry` → invalidate new rect. **Order-critical** — `handle.bbox` must still hold OLD values at `updateHandleBBox` (rbush's `remove` descends to the old leaf). New rect is always invalidated (content can change visually without a bbox change); the `alwaysEvict` no-bbox-change path only evicts + invalidates. Mutate via `transact(fn)` (room-runtime), not `mutate(fn)`.
+`upsertHandle` is the only bbox writer. On bbox change: invalidate prev rect (handle.bbox still old) → tripartite write (`copyBbox` tuple, `writeSlotBBox` column, `spatialTree.update(slot, …)` tree — always together, only here) → `evictGeometry` → `invalidateWorldSlot` (new rect). The only ordering hazard left is old-rect-before-write — the slot-keyed tree needs no envelope choreography. New rect is always invalidated (content can change visually without a bbox change); the `alwaysEvict` no-bbox-change path only evicts + invalidates. Mutate via `transact(fn)` (room-runtime), not `mutate(fn)`.
 
 ---
 

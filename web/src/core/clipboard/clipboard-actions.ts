@@ -12,9 +12,11 @@ import { generateNZAtTop, generateZAtTop, normalizeUrl } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
+import { getHandlesBySlot } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getLastCursorWorld } from '@/runtime/input/cursor-tracking';
-import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
+import { getObjects, getObjectsById, getZOrder, transact } from '@/runtime/room-runtime';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { animateToFit } from '@/runtime/viewport/zoom';
 import { getUserId } from '@/stores/auth-store';
@@ -570,7 +572,7 @@ export { pasteImage };
 // === Smart Duplicate Offset ===
 
 function computeSmartOffset(bounds: BBoxTuple, excludeIds: Set<string>): [number, number] {
-  const spatialIndex = getSpatialIndex();
+  const bySlot = getHandlesBySlot();
   const [w, h] = bboxSize(bounds);
   const gap = 20;
   const eps = 2;
@@ -584,8 +586,16 @@ function computeSmartOffset(bounds: BBoxTuple, excludeIds: Set<string>): [number
   ];
 
   for (const [dx, dy] of directions) {
-    const query: BBoxTuple = [bounds[0] + dx - eps, bounds[1] + dy - eps, bounds[2] + dx + eps, bounds[3] + dy + eps];
-    if (!spatialIndex.queryBBox(query).some((r) => !excludeIds.has(r.id))) return [dx, dy];
+    const n = spatialTree.queryPrecise(bounds[0] + dx - eps, bounds[1] + dy - eps, bounds[2] + dx + eps, bounds[3] + dy + eps);
+    const res = spatialTree.results; // refetch per direction — growth swaps the buffer
+    let occupied = false;
+    for (let i = 0; i < n; i++) {
+      if (!excludeIds.has(bySlot[res[i]]!.id)) {
+        occupied = true;
+        break;
+      }
+    }
+    if (!occupied) return [dx, dy];
   }
 
   // Fallback

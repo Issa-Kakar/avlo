@@ -44,12 +44,14 @@ import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { Dir, ElbowSnapTarget, SnapTarget } from '@/core/connectors/types';
 import { setBBoxXYWH } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
+import { getBBoxColumn, getHandlesBySlot } from '@/core/slots/slot-table';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint, ObjectHandle, StoredElbowAnchor } from '@/core/types/objects';
 import { isBindableKind } from '@/core/types/objects';
 import { isCtrlHeld } from '@/runtime/input/InputManager';
-import { getAttachedConnectors, getHandle, getObjects, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
+import { getAttachedConnectors, getHandle, getObjects, getZOrder, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
 import { getUserId } from '@/stores/auth-store';
 import { useCameraStore } from '@/stores/camera-store';
@@ -319,12 +321,16 @@ function findFlowCandidate(source: ObjectHandle, side: FlowSide, srcFrame: Reado
     _candRegion[2] = sx + sw + crossDim;
   }
 
-  const handles = getSpatialIndex().queryBBox(_candRegion);
+  const nHits = spatialTree.queryPrecise(_candRegion[0], _candRegion[1], _candRegion[2], _candRegion[3]);
+  const res = spatialTree.results;
+  const bySlot = getHandlesBySlot();
   let best: FlowCandidate | null = null;
   let bestGap = Infinity;
   let bestAlign = Infinity;
 
-  for (const h of handles) {
+  for (let i = 0; i < nHits; i++) {
+    // Retaining the handle in FlowCandidate is safe — handles are live objects, not query-owned.
+    const h = bySlot[res[i]]!;
     if (h.id === source.id || !isBindableKind(h.kind)) continue;
     const cf = frameOf(h);
     if (!cf) continue;
@@ -403,6 +409,8 @@ function computeSiblingBaseFrame(side: FlowSide, src: Readonly<FrameTuple>, cand
  * Returns the cleared perpendicular centre, or `null` once `c` runs past `limit`.
  */
 function slideClear(base: FrameTuple, pIdx: number, half: number, gap: number, dir: number, startC: number, limit: number): number | null {
+  const bySlot = getHandlesBySlot();
+  const col = getBBoxColumn(); // hoistable across queries — nothing in this loop creates objects
   let c = startC;
   for (let guard = 0; guard < 64; guard++) {
     if (dir > 0 ? c > limit : c < limit) return null;
@@ -412,15 +420,17 @@ function slideClear(base: FrameTuple, pIdx: number, half: number, gap: number, d
     _spotFrame[3] = base[3];
     _spotFrame[pIdx] = c - half;
     setBBoxXYWH(_spotBbox, _spotFrame[0], _spotFrame[1], _spotFrame[2], _spotFrame[3]);
-    const hits = getSpatialIndex().queryBBox(_spotBbox);
+    const n = spatialTree.queryPrecise(_spotBbox[0], _spotBbox[1], _spotBbox[2], _spotBbox[3]);
+    const res = spatialTree.results; // refetch per iteration — growth swaps the buffer
     let blocked = false;
     let next = c;
-    for (let i = 0; i < hits.length; i++) {
-      const h = hits[i];
-      if (!isBindableKind(h.kind)) continue;
+    for (let i = 0; i < n; i++) {
+      const slot = res[i];
+      if (!isBindableKind(bySlot[slot]!.kind)) continue;
       blocked = true;
-      // Centre that puts the sibling's near edge `gap` past this blocker's edge.
-      const past = dir > 0 ? (pIdx === 0 ? h.maxX : h.maxY) + gap + half : (pIdx === 0 ? h.minX : h.minY) - gap - half;
+      // Centre that puts the sibling's near edge `gap` past this blocker's edge —
+      // read straight off the bbox column (max lane +2/+3, min lane +0/+1).
+      const past = dir > 0 ? col[slot * 4 + (pIdx === 0 ? 2 : 3)] + gap + half : col[slot * 4 + (pIdx === 0 ? 0 : 1)] - gap - half;
       if (dir > 0 ? past > next : past < next) next = past;
     }
     if (!blocked) return c;

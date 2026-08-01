@@ -10,10 +10,12 @@ import type { BBoxTuple, FrameTuple } from './geometry';
 export const OBJECT_KINDS = ['stroke', 'shape', 'text', 'connector', 'code', 'image', 'note', 'bookmark'] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
-// Lightweight handle pointing to Y.Map. The handle IS the rbush spatial-index item —
-// `minX/minY/maxX/maxY` mirror `bbox[0..3]` and are kept in sync by `applyHandleBBox`
-// (the only legal post-creation bbox mutator). rbush reads its envelope via the default
-// `toBBox(item) = item`, so passing the handle directly satisfies its item shape.
+// Lightweight handle pointing to Y.Map. The handle is NOT the spatial-index entry —
+// the FlatRTree (`core/spatial/spatial-tree.ts`) is keyed by `slot`, and queries
+// recover handles via the slot table's reverse map. `bbox` + `slot` are the geometry
+// links: the tuple for in-place object readers, the global bbox column
+// (`getBBoxColumn()`, `slot * 4`) for typed-array paths — kept identical by
+// RoomDocManager's tripartite write (tuple + column + tree, `upsertHandle` only).
 export interface ObjectHandle {
   id: string;
   // Mirror of `y.get('kind')`. Mutated ONLY by the deep observer's kind-keychange
@@ -21,16 +23,12 @@ export interface ObjectHandle {
   kind: ObjectKind;
   y: Y.Map<unknown>; // Direct Y.Map reference
   bbox: BBoxTuple; // Computed locally, NOT stored in Y.Map
-  // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox. Mirror bbox[0..3].
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
   // Fractional z-key (mirror of y.get('z')). Mutated only by the deep observer's z-key-edit branch.
   z: ZKey;
   // Index into the slot-table columns (`core/slots/slot-table.ts`) — the app-wide dense id
-  // space (rank table, lock columns, reverse map, global bbox column all key off it).
-  // Acquired once at creation, never reassigned; returned to the pool on delete (LIFO reuse).
+  // space (rank table, lock columns, reverse map, global bbox column, spatial tree all key
+  // off it). Acquired once at creation, never reassigned; returned to the pool on delete
+  // (LIFO reuse).
   slot: number;
 }
 
@@ -47,32 +45,9 @@ export function createHandle(
     kind,
     y,
     bbox: [bbox[0], bbox[1], bbox[2], bbox[3]],
-    minX: bbox[0],
-    minY: bbox[1],
-    maxX: bbox[2],
-    maxY: bbox[3],
     z,
     slot,
   };
-}
-
-/**
- * Mutate `handle.bbox` and the four rbush mirror fields together.
- *
- * CONTRACT: ONLY callable from `ObjectSpatialIndex.updateHandleBBox` (which has already
- * removed the handle from the rbush tree using the OLD envelope, and follows up by
- * mirroring the new bbox into the global slot column via `writeSlotBBox` — tuple,
- * mirrors, and column move together). Direct external call corrupts the spatial index:
- * the tree leaf still carries the old envelope, but the handle's mirror fields now say
- * "new", so the next `spatialIndex.remove(handle)` silently no-ops (rbush descends to
- * the wrong leaf) and the entry leaks.
- */
-export function applyHandleBBox(handle: ObjectHandle, src: Readonly<BBoxTuple>): void {
-  const b = handle.bbox;
-  b[0] = handle.minX = src[0];
-  b[1] = handle.minY = src[1];
-  b[2] = handle.maxX = src[2];
-  b[3] = handle.maxY = src[3];
 }
 
 // ============================================================================

@@ -2,10 +2,12 @@
 
 Hit testing and region queries for every object on the canvas. Answers "what's
 under the cursor?", "what's inside this marquee?", "what can this connector
-endpoint snap to?". rbush items ARE `ObjectHandle`s — the handle carries the
-four envelope fields (`minX/minY/maxX/maxY` mirroring `bbox[0..3]`) that rbush
-reads, so queries return handles directly. No `IndexEntry` indirection, no
-`getHandle(e.id)` lookup post-query.
+endpoint snap to?". The live index is `spatialTree` — a module-level
+**FlatRTree** singleton keyed by `handle.slot`. Queries fill a reused
+`Uint32Array` of dense u32 slots; consumers recover handles via the slot
+table's reverse map (`getHandlesBySlot`) and read envelopes off the global
+bbox column (`getBBoxColumn()`, `slot * 4`). No wrapper class, no tuple-first
+shims — call sites pass 4 scalars straight to the tree's twin query methods.
 
 > Architectural overview, not a changelog. Match surrounding detail when updating.
 
@@ -15,52 +17,92 @@ reads, so queries return handles directly. No `IndexEntry` indirection, no
 
 ```
 web/src/core/spatial/
-├── object-spatial-index.ts  — RBush wrapper, tuple-first             (~70 LOC)
-├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers (~250 LOC)
-├── object-query.ts          — Picker facade: 4 exports, no options  (~230 LOC)
-├── handle-hit.ts            — Resize handles + endpoint dots        (~140 LOC)
-├── index.ts                 — Barrel; re-exports `ObjectSpatialIndex` only
-├── flat-rtree.ts            — FlatRTree: mutable SoA R-tree — UNWIRED (~1420 LOC)
-└── flat-rtree.selftest.ts   — Its standalone test+bench runner      (~1140 LOC)
+├── spatial-tree.ts          — the FlatRTree singleton + contracts header  (~70 LOC)
+├── flat-rtree.ts            — FlatRTree: mutable SoA R-tree              (~1420 LOC)
+├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers      (~270 LOC)
+├── object-query.ts          — Picker facade: 4 exports, no options       (~290 LOC)
+├── handle-hit.ts            — Resize handles + endpoint dots             (~140 LOC)
+├── index.ts                 — Barrel; re-exports `spatialTree` only
+└── flat-rtree.selftest.ts   — Standalone test+bench runner               (~1140 LOC)
 ```
 
-**`flat-rtree.ts` is a standalone, not-yet-wired rbush replacement candidate**
-— a mutable Structure-of-Arrays R-tree (typed-array node pool with
-parent-embedded entry boxes, id→leaf reverse map keyed by dense u32 ids =
-`handle.slot` < 2^30, tiered in-place `update()`, exact-MBR invariant
-licensing O(1) update/remove fast tiers, OMT bulk load over a Floyd–Rivest
-co-swapping selector). Nothing imports it; the live index is still the rbush
-wrapper above. Premise and design rationale live in its introducing commit
-(`feat(spatial): FlatRTree …`) and the two file headers. All three planned
-review passes are DONE — second pass: trust-boundary hardening + O(1) fast
-tiers; third (pre-integration, profiler-verified) pass: HeapNumber
-argument-boxing elimination (doubles never cross a call boundary — Smi/ref
-args only, boxes travel via instance `Float64Array` channels; steady-state
-data paths are now genuinely allocation-free), twin query bodies —
-**`queryPrecise()` for narrow probes (hit tests), `query()` for viewport-scale
-rects (culls); callers pick by construction** — pool pre-reserve on load,
-validation-free rebuild, loop-free clz32 growth licensed by the id<2^30
-boundary. Proof: 21.6k-check suite — three de-correlated oracles
-(brute-mirror queries through BOTH query bodies + rbush parity, per-item
-readBBox sweep, structural validate()) across adversarial/degenerate/guard
-suites, maxEntries {4,8,32,64}; V8-verified: all hot methods TurboFanned, no
-recurring deopts, 0 GCs over isolated 200k-op steady phases. A/B vs rbush@4
-**at rbush's default maxEntries 9 — the production `ObjectSpatialIndex`
-config** (p50, within-run): 1.75–11.4× across ops at 10k–100k, mixed churn
-3.1×; at 1M — load 7.9× (~373 ms), queries 3.8–13.3×, 79 MB vs ~167 MB
-retained. FlatRTree's own maxEntries default stays 16 — a sweep vs rbush(9)
-showed 8 edges probes ~5–10% while 32 wins jitter updates 25–30% (bigger
-leaves raise the O(1)-tier hit rate); 16 is the compromise, and the knob is
-an integration-time decision. Pending: the separately planned integration.
-The selftest runs via esbuild+node (command in its header), not in the app
-bundle.
+**`flat-rtree.ts` is the WIRED index engine** — a mutable Structure-of-Arrays
+R-tree (typed-array node pool with parent-embedded entry boxes, id→leaf
+reverse map keyed by dense u32 ids = `handle.slot` < 2^30, tiered in-place
+`update()`, exact-MBR invariant licensing O(1) update/remove fast tiers, OMT
+bulk load over a Floyd–Rivest co-swapping selector). Design rationale lives in
+its file header and introducing commit (`feat(spatial): FlatRTree …`). All
+three review passes are DONE — trust-boundary hardening + O(1) fast tiers;
+profiler-verified HeapNumber argument-boxing elimination (doubles never cross
+a call boundary — Smi/ref args only, boxes travel via instance `Float64Array`
+channels; steady-state data paths are genuinely allocation-free); twin query
+bodies — **`queryPrecise()` for narrow probes (hit tests), `query()` for
+viewport-scale rects (culls); callers pick by construction**. Proof: 21.6k-
+check suite — three de-correlated oracles (brute-mirror queries through BOTH
+query bodies + rbush parity, per-item readBBox sweep, structural validate())
+across adversarial/degenerate/guard suites, maxEntries {4,8,32,64};
+V8-verified: all hot methods TurboFanned, no recurring deopts, 0 GCs over
+isolated 200k-op steady phases. A/B vs rbush@4 at rbush's default
+maxEntries 9 (p50, within-run): 1.75–11.4× across ops at 10k–100k, mixed
+churn 3.1×; at 1M — load 7.9× (~373 ms), queries 3.8–13.3×, 79 MB vs ~167 MB
+retained. Production maxEntries stays the FlatRTree default 16 — a sweep vs
+rbush(9) showed 8 edges probes ~5–10% while 32 wins jitter updates 25–30%
+(bigger leaves raise the O(1)-tier hit rate); 16 is the compromise, and the
+knob is the ctor arg in `spatial-tree.ts`. The selftest runs via esbuild+node
+(command in its header), not in the app bundle; rbush remains a devDependency
+solely as its A/B oracle.
 
 `hit-dispatch.ts` exposes three switch dispatchers (`hitPointFor` /
 `hitRectFor` / `hitCircleFor`) over eight named, monomorphic per-kind
-functions. Image + code share the tight-framed body (reads handle
-envelope mirrors directly — no `getFrame` call, no FrameTuple alloc).
+functions. Image + code share the tight-framed body (reads the global bbox
+column at `slot * 4` directly — no `getFrame` call, no FrameTuple alloc).
 Stroke / connector / shape have bespoke geometry-aware bodies; text /
 note / bookmark close over their frame resolver via small inline helpers.
+
+---
+
+## `spatialTree` contract (spatial-tree.ts)
+
+The singleton's header is the authority; summary:
+
+1. **Results lifetime.** Queries fill `spatialTree.results` and return the
+   count; fetch `results` AFTER each call (growth swaps the buffer), valid
+   `[0, n)`, consume before the next query/mutation. Multi-query loops
+   (slideClear, clipboard probe) refetch inside the loop. `getBBoxColumn()` /
+   `getHandlesBySlot()` refs ARE hoistable across queries — but never across
+   anything that can create objects.
+2. **No nested queries (transitive).** Nothing reachable from hit fns, frame
+   resolvers, or picker `accept` callbacks may query or mutate the tree —
+   callers are mid-consume of the shared results buffer. (rbush's fresh-array-
+   per-call accidentally allowed this; the shared buffer does not.)
+3. **Mutation = RoomDocManager only.** Grep contract:
+   `spatialTree.(insert|remove|update|load|rebuild|clear)` matches only in
+   `runtime/room-doc-manager.ts`.
+4. **`remove(slot)` before `releaseSlot(slot)`** — Phase B of the same
+   observer fire can recycle the slot (LIFO); a late remove would delete the
+   recycled entry.
+5. **Twin rule** — `query()` for viewport-derived envelopes (renderer cull,
+   image-manager padded viewport, z-actions, context-serializer);
+   `queryPrecise()` for everything else (radius probes, marquee + eraser via
+   `queryHandleIds`, clipboard probe, connector-flow). Marquee is the boundary
+   case — precise chosen because marquees are usually small.
+6. **Live slots only.** Query results are always live ⇒ `bySlot[res[i]]!` is
+   non-null by contract; freed slots' column lanes are stale — never index.
+7. **`slot * 4`, never `slot << 2`** for column offsets.
+8. **No-room semantics.** The singleton silently answers 0 over a cleared
+   tree (the old `getSpatialIndex()` threw). Safe: RDM's destroy + hydrate-top
+   double clear makes it silent-empty, never silent-stale.
+9. Singleton survives room switches; buffers retained at high-water.
+
+`search()` / `all()` are **off-limits** for avlo consumers — hardwire one
+twin and alias `results`.
+
+**Lifecycle.** Cleared by RDM `destroy()` and at hydrate top; bulk-loaded at
+hydrate tail straight off the global bbox column (dense slots ⇒ item-index
+=== slot); maintained per-object via `insert(slot, …)` / `remove(slot)` /
+`update(slot, …)` in the deep observer (`upsertHandle`'s tripartite write:
+`copyBbox` tuple → `writeSlotBBox` column → `spatialTree.update` tree);
+repacked on WS first sync via `rebuild()`.
 
 ---
 
@@ -69,10 +111,10 @@ note / bookmark close over their frame resolver via small inline helpers.
 ```
 Call site → object-query.ts facade
               ├─ resolveRadius        ({px} ÷ scale | {world} passthrough)
-              ├─ regionEnvelope       (rect or point-r → bbox)
-              ├─ spatialIndex.queryBBox/queryRadius   (rbush returns ObjectHandle[])
-              ├─ collectHits          (kind prefilter, hitPointFor switch — packs u32
-              │                        keys `rank * 4 + paintCode` into a module scratch)
+              ├─ spatialTree.queryPrecise(x0,y0,x1,y1)   (4 scalars, inline per branch)
+              ├─ collectHits          (consumes results slots: slot lock checks →
+              │                        bySlot recovery → kind prefilter → hitPointFor —
+              │                        packs u32 keys `rank * 4 + paintCode`)
               ├─ sortU32Range         (packed keys, ascending, in-place — utils/sort-u32)
               └─ picker walk          (DESCENDING over keys = top-first; recover
                                        paint = key & 3, handle via slotsByRank + the
@@ -84,7 +126,8 @@ Call site → object-query.ts facade
 Call sites never materialize a `HitCandidate[]`, never `.map(h => h.id)`, never
 allocate a `Set` per call, never pass option bags. `collectHits` validates the
 rank table FIRST (`ensureRanksValid()` — keys embed ranks), then per passing hit
-packs one u32; no per-hit candidate object, no comparator anywhere.
+packs one u32; no per-hit candidate object, no comparator anywhere. Lock checks
+run on the raw slot before handle recovery — cheapest filters first.
 
 ---
 
@@ -122,7 +165,7 @@ inline — one place removes locked objects from marquee AND eraser.
 
 ### `handle-hit.ts` — non-spatial sibling
 
-Resize handles + endpoint dots don't live in rbush; they're derived from
+Resize handles + endpoint dots don't live in the tree; they're derived from
 selection state. Same `Radius` vocabulary, no spatial index, no paint logic.
 
 ```ts
@@ -136,17 +179,25 @@ Corner positions for rendering come from `computeHandles(bbox)` in
 `ENDPOINT_DOT_HIT_PX = 10`, `HANDLE_MIN_BBOX_PX = 12` (corner stamps physically
 meet below this).
 
-### Raw `queryBBox` — three consumers bypass the facade
+### Raw tree consumers — six bypass the facade
 
-They want `ObjectHandle[]` directly (the rbush item shape) and own their own kind
-filtering / dedup:
+They own their own kind filtering / dedup and consume slots directly
+(`bySlot[res[i]]!` for handles, `col[slot * 4 …]` for boxes):
 
-- `renderer/layers/objects.ts` — viewport cull (500+ handles per frame; reads
-  `e.minX/maxX/...` + `e.id/kind` directly off each handle)
-- `core/image/image-manager.ts` — viewport decode/evict (image+bookmark only;
-  reads `e.minX/maxX/...` for asset marking)
+- `renderer/layers/objects.ts` — viewport cull (`query`; packs ranks straight
+  from slots, clip tests on the raw column — zero handle touches pre-sort on a
+  steady non-transform frame)
+- `core/image/image-manager.ts` — viewport decode/evict (`query` on the
+  padded viewport; image+bookmark kinds, boxes off the column)
+- `core/z-order/z-actions.ts` — visible-partition for forward/backward
+  (`query`; needs full handles for the rankAsc sort + `.y.set`)
+- `core/ai/context-serializer.ts` — viewport tier membership (`query`; slot
+  `Set`), `readCanvas` area query (cold — materializes handles)
 - `core/clipboard/clipboard-actions.ts` — smart-duplicate collision probe
-  (reads `r.id` for exclude filtering)
+  (`queryPrecise` per direction; refetches `results` per iteration)
+- `tools/selection/connector-flow.ts` — flow-candidate prefilter + slideClear
+  clear-spot search (`queryPrecise`; blocker edges off the column, `results`
+  refetched per slide iteration)
 
 **Don't wrap these behind a facade function for uniformity.** They don't need it.
 
@@ -174,16 +225,16 @@ hitPointFor(h, p, r) → Paint | null     // null = geometric miss
 3. **Only shapes produce `'fill'` / `'seethrough'`.** `shapeArea` (inline
    `f[2]*f[3]`) is only called when `paint ∈ {fill, seethrough}`, so frames of
    non-shape bindables are never read for area.
-4. **Tight-bbox fast path.** For kinds whose stored rbush bbox equals their
+4. **Tight-bbox fast path.** For kinds whose stored envelope equals their
    tight frame (currently image and code), `hitRectFor` returns `true`
    unconditionally — the envelope filter that produced the candidate IS the
    precision rect check, so a redundant `bboxesIntersect` (and the Y.Map.get
    inside the frame resolver) is skipped. Tight-framed `hitPointFor` and
-   `hitCircleFor` read `handle.minX/maxX/minY/maxY` directly (no `getFrame` /
-   `getCodeFrame` call, no FrameTuple alloc). Kinds with stored padding —
-   text (italic overhang + 2px vert), note/bookmark (shadow), shape (stroke +
-   ellipse/diamond geometry) — keep a real switch arm that filters out
-   marquees touching only the padding zone.
+   `hitCircleFor` read the global bbox column at `slot * 4` directly (no
+   `getFrame` / `getCodeFrame` call, no FrameTuple alloc). Kinds with stored
+   padding — text (italic overhang + 2px vert), note/bookmark (shadow), shape
+   (stroke + ellipse/diamond geometry) — keep a real switch arm that filters
+   out marquees touching only the padding zone.
 
 ### Frame resolution (per kind)
 
@@ -192,19 +243,14 @@ hitPointFor(h, p, r) → Paint | null     // null = geometric miss
 | text, note | `getTextFrame(id)` from `core/text/text-system` (padded — runs precision pass) |
 | bookmark | `getBookmarkFrame(id)` from `core/bookmark/bookmark-render` (padded) |
 | shape | `getFrame(h.y)` (stored) — shape-aware geometry, not a generic rect pass |
-| image, code | envelope mirrors (`handle.minX/maxX/minY/maxY`) — stored bbox === frame, zero padding |
+| image, code | global bbox column at `slot * 4` — stored bbox === frame, zero padding |
 
 `null` from a frame getter ("not yet laid out") propagates to `hitPoint` →
 `null` → picker skips. Code that needs the frame of any bindable handle outside
 hit testing uses `frameOf` from `core/geometry/frame-of.ts` (not a spatial
 concern — but it IS used inside `snap`'s accept callback, which is the consumer's
-choice, not the picker's).
-
-### Bindable kind set
-
-`BINDABLE_KINDS` is exported from `core/types/objects.ts` and wrapped into a
-module-private `BINDABLE_KINDS_SET` by `object-query.ts` **once at module
-import** — never per-call `new Set`.
+choice, not the picker's). Frame resolvers and hit fns are under the transitive
+no-nested-query contract (see `spatialTree` contract 2 above).
 
 ---
 
@@ -223,9 +269,9 @@ import** — never per-call `new Set`.
   ink/fill: call `accept`; non-null returns immediately, null returns the
   memoized fallback (handles "nested unfilled rects above a filled rect").
 
-The three walks live inline (~60 LOC total) — they share the `collectHits` +
-`sortU32Range` setup, but each terminal condition is genuinely different.
-Don't combinator-ize.
+The three walks live inline (~60 LOC total) — they share the query +
+`collectHits` + `sortU32Range` setup, but each terminal condition is genuinely
+different. Don't combinator-ize.
 
 Z-order: packed rank keys (`rank * 4 + paintCode` from `ZRankTable`), walked
 descending — higher key ⇔ higher rank ⇔ higher stack position, and the rank
@@ -233,45 +279,11 @@ sort's (z, id) tie-break already decided collisions at rebuild time. The picker
 has no opinion about input state — Ctrl-to-suppress-snap lives in the calling
 tool, not here.
 
----
+### Bindable kind set
 
-## `ObjectSpatialIndex` (rbush subclass)
-
-```ts
-class ObjectSpatialIndex extends RBush<ObjectHandle> {
-  // Inherited from RBush<ObjectHandle>:
-  insert(handle)            // rbush reads handle.minX/.../maxY
-  remove(handle)            // identity match via default === comparator (no comparator fn)
-  load(handles)             // bulk load
-  clear()
-  search(envelope) → ObjectHandle[]
-  all()             → ObjectHandle[]
-
-  // Tuple-first conveniences:
-  queryBBox(bbox)    → ObjectHandle[]
-  queryRadius(x,y,r) → ObjectHandle[]   // axis-aligned-square envelope
-  updateHandleBBox(handle, newBBox)     // remove → applyHandleBBox → insert
-}
-```
-
-The handle IS the rbush item — `minX/minY/maxX/maxY` mirror `bbox[0..3]` and
-are kept in sync by `applyHandleBBox` (the only legal post-creation bbox
-mutator). Removals use the default `===` comparator — V8 inlines it to a
-single pointer compare per leaf check.
-
-A single instance-scoped scratch bbox is reused across every query — rbush reads
-the fields immediately and doesn't hold a reference, so mutation is safe.
-Envelope queries are intentionally coarse; tight intersection is the capability
-layer's job.
-
-**Lifecycle.** Owned by `RoomDocManager` (`spatialIndex` field, non-null from
-construction). Hydrated via inherited `load(handles)` on room join, maintained
-per-object via `insert(handle)` / `remove(handle)` / `updateHandleBBox(handle, newBBox)`
-in the deep observer, repacked on WS first sync via `repackSpatialIndex()` for
-optimal tree packing. **Only `RoomDocManager` writes to the index** —
-grep `spatialIndex\.(insert|remove|load|clear|updateHandleBBox)` should match
-only inside `runtime/room-doc-manager.ts`. Consumers read it via
-`getSpatialIndex()` from `runtime/room-runtime`.
+`BINDABLE_KINDS` is exported from `core/types/objects.ts` and wrapped into a
+module-private `BINDABLE_KINDS_SET` by `object-query.ts` **once at module
+import** — never per-call `new Set`.
 
 ---
 
@@ -284,16 +296,20 @@ only inside `runtime/room-doc-manager.ts`. Consumers read it via
   a new framed-rect kind:
   - If the `bbox.ts` entry equals its frame with zero padding (no shadow /
     stroke / overhang), join the existing `tightFramedHitPoint` /
-    `tightFramedHitCircle` shared functions and add a `case '<kind>':`
-    fall-through to the `hitRectFor` `return true` arm.
+    `tightFramedHitCircle` shared functions (column reads) and add a
+    `case '<kind>':` fall-through to the `hitRectFor` `return true` arm.
   - Otherwise close over the frame resolver via `paddedHitPointFromFrame` /
     `paddedHitRectFromFrame` / `paddedHitCircleFromFrame` helpers (see
     text/note/bookmark).
 - **New consumer with hit-testing needs**: pick the closest existing picker by
   return shape (handle / id / typed accept result / `string[]`). Don't add a new
   picker export unless the occlusion model genuinely differs.
-- **New consumer without hit-testing needs**: call `getSpatialIndex().queryBBox(...)`
-  directly. Don't route raw-entry consumers through the facade.
+- **New consumer without hit-testing needs**: call `spatialTree.query(...)` /
+  `queryPrecise(...)` directly (twin per the rule above), consume slots via
+  `getHandlesBySlot` / `getBBoxColumn`. Don't route raw consumers through the
+  facade — and never mutate: writer discipline is the grep contract
+  (`spatialTree.(insert|remove|update|load|rebuild|clear)` only in
+  `room-doc-manager.ts`).
 - **Changing paint semantics**: update the `Paint` union AND the paint-code
   mapping in `collectHits` AND the branch logic in all three pickers in
   `object-query.ts` simultaneously — they're two sides of one contract. Codes

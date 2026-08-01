@@ -13,7 +13,6 @@
  */
 
 import type { RoomId } from '@avlo/shared';
-import type { ObjectSpatialIndex } from '@/core/spatial';
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import type { ZRankTable } from '@/core/z-order/z-rank-table';
 import { useCameraStore } from '@/stores/camera-store';
@@ -105,10 +104,6 @@ export function getObjects(): ReturnType<typeof getActiveRoomDoc>['objects'] {
 
 export function getObjectsById(): ReadonlyMap<string, ObjectHandle> {
   return getActiveRoomDoc().objectsById;
-}
-
-export function getSpatialIndex(): ObjectSpatialIndex {
-  return getActiveRoomDoc().spatialIndex;
 }
 
 export function getZOrder(): ZRankTable {

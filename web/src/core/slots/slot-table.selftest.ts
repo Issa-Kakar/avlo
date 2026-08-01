@@ -13,8 +13,8 @@
  *      preserving live boxes + handle refs, release nulls the reverse map,
  *      reset restores initial state.
  *   2. Column sync — `registerHandle` seeds the column from `handle.bbox`;
- *      the `applyHandleBBox` + `writeSlotBBox` pair (the updateHandleBBox
- *      sequence) moves tuple + 4 mirrors + column together.
+ *      the `copyBbox` + `writeSlotBBox` pair (RoomDocManager upsertHandle's
+ *      tripartite write, minus the tree) moves tuple + column together.
  *   3. ZRankTable — randomized add/remove/z-change churn (with slot
  *      recycling) vs a brute (z, id)-sort oracle: ranks match,
  *      `getSlotsByRank()` is the exact inverse over live slots, maxZ/minZ
@@ -31,8 +31,9 @@
 import type { ZKey } from '@avlo/shared';
 import type * as Y from 'yjs';
 import { sortU32Range } from '../../utils/sort-u32';
+import { copyBbox } from '../geometry/bounds';
 import type { BBoxTuple } from '../types/geometry';
-import { applyHandleBBox, createHandle, type ObjectHandle } from '../types/objects';
+import { createHandle, type ObjectHandle } from '../types/objects';
 import { ZRankTable } from '../z-order/z-rank-table';
 import {
   acquireSlot,
@@ -157,12 +158,11 @@ function testColumnSync(): void {
   const h = mkHandle('m', [1, 2, 3, 4]);
   check(boxEq(getBBoxColumn(), h.slot, [1, 2, 3, 4]), 'registerHandle seeds column === bbox');
 
-  // The updateHandleBBox pair: applyHandleBBox then writeSlotBBox.
+  // The upsertHandle write pair (minus the tree): copyBbox then writeSlotBBox.
   const next: BBoxTuple = [10, 20, 30, 40];
-  applyHandleBBox(h, next);
+  copyBbox(next, h.bbox);
   writeSlotBBox(h.slot, next);
-  check(h.bbox[0] === 10 && h.bbox[1] === 20 && h.bbox[2] === 30 && h.bbox[3] === 40, 'applyHandleBBox wrote the tuple');
-  check(h.minX === 10 && h.minY === 20 && h.maxX === 30 && h.maxY === 40, 'applyHandleBBox wrote the 4 mirrors');
+  check(h.bbox[0] === 10 && h.bbox[1] === 20 && h.bbox[2] === 30 && h.bbox[3] === 40, 'copyBbox wrote the tuple');
   check(boxEq(getBBoxColumn(), h.slot, next), 'writeSlotBBox wrote the column lane');
 }
 

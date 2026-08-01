@@ -26,11 +26,13 @@ columns) is a consumer that sizes off `slotHighWater()` / `slotCapacity()`.
   explicit rather than folded in, because lock-table imports this module
   (`fillRemoteLockedBoxes` reads the column) and the fold would create a
   runtime cycle.
-- `writeSlotBBox`: **`ObjectSpatialIndex.updateHandleBBox` only**, right after
-  `applyHandleBBox` — tuple + 4 mirrors + column lane always move together.
-- Phase A delete order: `spatialIndex.remove` → `lockSlotReleased` →
+- `writeSlotBBox`: **RoomDocManager `upsertHandle` only** — the middle leg of
+  the tripartite bbox write (`copyBbox` tuple → `writeSlotBBox` column →
+  `spatialTree.update` tree); the three always move together, only there.
+- Phase A delete order: `spatialTree.remove(slot)` → `lockSlotReleased` →
   `zOrder.noteRemove` → `releaseSlot` LAST — a slot is freed only after every
-  slot-keyed consumer has finalized (Phase B of the same fire can recycle it).
+  slot-keyed consumer has finalized (Phase B of the same fire can recycle it,
+  and a late tree remove would delete the recycled entry).
 
 ## Contracts
 
@@ -50,11 +52,10 @@ columns) is a consumer that sizes off `slotHighWater()` / `slotCapacity()`.
 
 ZRankTable (rebuild walks the reverse map; rank arrays sized to capacity),
 lock-table (`fillRemoteLockedBoxes` copies veil boxes straight from the
-column), renderer + pickers (recover handles from sorted rank keys via
-`slotsByRank` + reverse map).
-
-## Future
-
-FlatRTree integration: `load(count, ids, boxes)` is ITEM-indexed — the
-slot-indexed column feeds it directly only while slots are dense
-(post-hydrate); repack-after-churn needs a pack loop or `rebuild()`.
+column), the spatial tree (`spatialTree` is keyed by slot; RDM's hydrate bulk
+load feeds `load(count, ids, boxes)` the column directly — its ITEM-indexed
+layout coincides with the slot-indexed column while slots are dense, i.e.
+post-hydrate; the WS repack uses `rebuild()`), renderer + pickers (query
+results are slots; handles recovered via the reverse map, clip/hit envelopes
+read off the column, sorted rank keys via `slotsByRank`), and
+`invalidateWorldSlot` (RenderLoop reads the dirty rect off the column).

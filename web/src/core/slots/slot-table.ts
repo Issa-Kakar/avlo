@@ -8,9 +8,10 @@ import type { ObjectHandle } from '../types/objects';
  *
  *   `_handles`  slot → ObjectHandle reverse map (the inverse of `handle.slot`)
  *   `_bboxes`   interleaved minX,minY,maxX,maxY at `slot * 4` — the global
- *               bbox column (veil worker payloads; future FlatRTree bulk load,
- *               whose item-indexed `load()` layout coincides with this column
- *               exactly while slots are dense, i.e. post-hydrate)
+ *               bbox column (veil worker payloads; renderer clip tests;
+ *               tight-framed hit fns; the spatial tree's hydrate bulk load —
+ *               FlatRTree's item-indexed `load()` layout coincides with this
+ *               column exactly while slots are dense, i.e. post-hydrate)
  *
  * Consumers with their own slot-keyed columns (ZRankTable ranks, lock-table
  * owner/locked columns) size off `slotHighWater()` / `slotCapacity()`.
@@ -22,9 +23,9 @@ import type { ObjectHandle } from '../types/objects';
  *   the sibling leaf `core/locks/lock-table.ts`, which must stay importable
  *   from here-adjacent consumers without a runtime cycle, so the pairing is
  *   explicit at the call sites rather than folded in.
- * - `writeSlotBBox`: `ObjectSpatialIndex.updateHandleBBox` only — the sole
- *   post-creation bbox writer path, immediately after `applyHandleBBox`, so
- *   tuple + 4 mirrors + column always move together.
+ * - `writeSlotBBox`: RoomDocManager `upsertHandle` only — the middle leg of
+ *   the sole post-creation bbox writer path (tuple via `copyBbox`, column
+ *   here, tree via `spatialTree.update`), so all three always move together.
  *
  * LIFECYCLE
  * - Release nulls the reverse-map entry (a retained ref would root a deleted
@@ -99,7 +100,7 @@ export function registerHandle(h: ObjectHandle): void {
 }
 
 /** Mirror a live handle's new bbox into the column. Called ONLY by
- *  `ObjectSpatialIndex.updateHandleBBox`, right after `applyHandleBBox`. */
+ *  RoomDocManager `upsertHandle`, right after its `copyBbox` tuple write. */
 export function writeSlotBBox(slot: number, b: Readonly<BBoxTuple>): void {
   const o = slot * 4;
   _bboxes[o] = b[0];

@@ -25,8 +25,10 @@
 
 import { hexToBytesInto } from '@avlo/shared';
 import { assertCrossOriginIsolated } from '@/core/sab';
+import { getBBoxColumn, getHandlesBySlot } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getHandle, getSpatialIndex, hasActiveRoom } from '@/runtime/room-runtime';
+import { getHandle, hasActiveRoom } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { getScaleEntry, getTransformMode } from '@/tools/selection/transform';
@@ -242,8 +244,8 @@ const inflightIngests = new Map<string, { resolve: (result: IngestResult) => voi
 // Helpers
 // ============================================================
 
-// Scratch tuple — overwritten each call. Safe because rbush queryBBox reads
-// the bounds synchronously into its scratch envelope and doesn't retain.
+// Scratch tuple — overwritten each call. Safe because spatialTree.query reads
+// the four scalars synchronously and doesn't retain them.
 const _paddedScratch: BBoxTuple = [0, 0, 0, 0];
 function padViewport(vb: Readonly<[number, number, number, number]>): BBoxTuple {
   const vw = vb[2] - vb[0];
@@ -458,7 +460,7 @@ const _decodeQueue: DecodeRequest[] = [];
 /**
  * Mark an asset as visible this frame. First mark resets the entry; subsequent marks aggregate
  * (max ppsp, union bbox). Coords passed as 4 numbers to avoid a tuple-construction at the
- * spatial-index call site (rbush items expose flat min/maxX/Y on the ObjectHandle itself).
+ * spatial call site (boxes read straight off the global bbox column at `slot * 4`).
  */
 function markAsset(assetId: string, ppsp: number, nw: number, nh: number, x0: number, y0: number, x1: number, y1: number): void {
   let info = _assetInfo.get(assetId);
@@ -522,23 +524,30 @@ export function manageImageViewport(): void {
   const dpr = window.devicePixelRatio || 1;
 
   // === MARK PHASE A: spatial visibility ===
-  // Spatial query returns ObjectHandle[] (the handle IS the rbush item) — id/kind/min/max
-  // resolve on the handle directly, no getHandle() needed per result. hasActiveRoom guard
-  // above already covers the no-room case.
-  const visible = getSpatialIndex().queryBBox(padded);
-  for (const entry of visible) {
+  // Wide-twin query fills `spatialTree.results` with slots; kind/id resolve via the
+  // slot reverse map, boxes straight off the global bbox column (`slot * 4` lanes).
+  // hasActiveRoom guard above already covers the no-room case.
+  const n = spatialTree.query(padded[0], padded[1], padded[2], padded[3]);
+  const res = spatialTree.results;
+  const bySlot = getHandlesBySlot();
+  const col = getBBoxColumn();
+  for (let i = 0; i < n; i++) {
+    const slot = res[i];
+    const entry = bySlot[slot]!;
     if (entry.kind === 'image') {
       const meta = getImageMeta(entry.id);
       if (!meta) continue;
-      const w = entry.maxX - entry.minX;
+      const b = slot * 4;
+      const w = col[b + 2] - col[b];
       const ppsp = (w * scale * dpr) / meta.nw;
-      markAsset(meta.assetId, ppsp, meta.nw, meta.nh, entry.minX, entry.minY, entry.maxX, entry.maxY);
+      markAsset(meta.assetId, ppsp, meta.nw, meta.nh, col[b], col[b + 1], col[b + 2], col[b + 3]);
     } else if (entry.kind === 'bookmark') {
       const layout = bookmarkCache.getLayoutById(entry.id);
       if (!layout) continue;
+      const b = slot * 4;
       // Bookmarks always decode at level 0; nw/nh unused for level 0 (worker uses width=0,height=0).
-      if (layout.ogImageAssetId) markAsset(layout.ogImageAssetId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
-      if (layout.faviconAssetId) markAsset(layout.faviconAssetId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
+      if (layout.ogImageAssetId) markAsset(layout.ogImageAssetId, Infinity, 1, 1, col[b], col[b + 1], col[b + 2], col[b + 3]);
+      if (layout.faviconAssetId) markAsset(layout.faviconAssetId, Infinity, 1, 1, col[b], col[b + 1], col[b + 2], col[b + 3]);
     }
   }
 

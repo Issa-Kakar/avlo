@@ -6,13 +6,14 @@ import { getConnectorRoute } from '@/core/connectors/connector-router';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { getImageMeta } from '@/core/image/image-cache';
 import { getBitmap } from '@/core/image/image-manager';
-import { getHandlesBySlot } from '@/core/slots/slot-table';
+import { getBBoxColumn, getHandlesBySlot } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel } from '@/core/text/shape-label';
 import { drawStickyNote } from '@/core/text/sticky-note';
 import { renderTextLayout, textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getObjectsById, getSpatialIndex, getZOrder } from '@/runtime/room-runtime';
+import { getObjectsById, getZOrder } from '@/runtime/room-runtime';
 import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -49,6 +50,15 @@ const _candidateHandles: ObjectHandle[] = [];
 let _candRanks = new Uint32Array(256);
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
 
+/** Pow2-grow `_candRanks` to hold `count` packed ranks. MUST run before the pack
+ *  loops — Uint32Array out-of-bounds stores are silent no-ops. */
+function ensureCandCapacity(count: number): void {
+  if (count <= _candRanks.length) return;
+  let cap = _candRanks.length;
+  while (cap < count) cap *= 2;
+  _candRanks = new Uint32Array(cap);
+}
+
 // Per-frame editing-id snapshot, written once at the top of `drawObjects` and
 // read by leaf `draw*` functions. Avoids one `useSelectionStore.getState()`
 // per relevant object per frame.
@@ -60,7 +70,6 @@ let _codeEditingId: string | null = null;
 let _hoveredOpenBookmarkId: string | null = null;
 
 export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array | null, clipCount: number): void {
-  const spatialIndex = getSpatialIndex();
   const objectsById = getObjectsById();
   const sel = useSelectionStore.getState();
   const selectedSet = sel.selectedIdSet;
@@ -92,66 +101,75 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   const tdx = ctrl ? ctrl.dx : 0;
   const tdy = ctrl ? ctrl.dy : 0;
 
-  const viewport = getVisibleBoundsTuple();
-  const entries = spatialIndex.queryBBox(viewport);
+  // Hoists BEFORE the query — rank state, reverse map, bbox column, inject set.
+  // (Legal: nothing between here and the pack mutates rank state or slots.)
+  const zOrder = getZOrder();
+  zOrder.ensureRanksValid();
+  const ranks = zOrder.getRanks();
+  const slotsByRank = zOrder.getSlotsByRank();
+  const bySlot = getHandlesBySlot();
+  const col = getBBoxColumn();
+  const injectIds = isTransforming ? (getTransformInjectIds() ?? sel.selectedIds) : null;
 
-  _candidateHandles.length = 0;
+  const viewport = getVisibleBoundsTuple();
+  const n = spatialTree.query(viewport[0], viewport[1], viewport[2], viewport[3]);
+  const res = spatialTree.results; // fetched AFTER the query — growth swaps the buffer
+
+  // Pre-size BEFORE packing — Uint32Array OOB stores are SILENT no-ops, and
+  // injected candidates pack past the query count (bound = n + injectIds.length).
+  ensureCandCapacity(n + (injectIds ? injectIds.length : 0));
+
   const hasClip = clipBuf !== null && clipCount > 0;
   const cbuf = clipBuf; // narrowed local — avoids repeated NNA inside hot loop
 
-  // Main loop: rbush entries from the viewport (handles directly), rect-filtered by clipBuf.
-  // Transform-injected IDs (selected + attached-topology connectors, or the
-  // dragged endpoint connector — already in selectedSet by drill invariant)
-  // are skipped here and re-pushed below via their preview bbox.
-  for (let k = 0; k < entries.length; k++) {
-    const e = entries[k];
-    if (isTransforming) {
-      if (selectedSet.has(e.id)) continue;
-      if (haveAttached && attachedSet!.has(e.id)) continue;
+  // Main pack loop: viewport slots → ranks, clip-filtered on the raw bbox column.
+  // A steady non-transform frame touches zero handle objects pre-sort. Transform-
+  // injected IDs (selected + attached-topology connectors, or the dragged endpoint
+  // connector — already in selectedSet by drill invariant) are skipped here and
+  // re-packed below via their preview bbox.
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    const slot = res[i];
+    if (injectIds) {
+      // Transform-skip needs the id — recover the handle only in this branch.
+      const h = bySlot[slot]!;
+      if (selectedSet.has(h.id)) continue;
+      if (haveAttached && attachedSet!.has(h.id)) continue;
     }
 
     if (hasClip && cbuf !== null) {
+      const s4 = slot * 4; // slot * 4, never << 2
       let hit = false;
-      for (let i = 0; i < clipCount; i++) {
-        const off = i * 4;
-        if (e.minX <= cbuf[off + 2] && e.maxX >= cbuf[off] && e.minY <= cbuf[off + 3] && e.maxY >= cbuf[off + 1]) {
+      for (let ci = 0; ci < clipCount; ci++) {
+        const off = ci * 4;
+        if (col[s4] <= cbuf[off + 2] && col[s4 + 2] >= cbuf[off] && col[s4 + 1] <= cbuf[off + 3] && col[s4 + 3] >= cbuf[off + 1]) {
           hit = true;
           break;
         }
       }
       if (!hit) continue;
     }
-    _candidateHandles.push(e);
+    _candRanks[k++] = ranks[slot];
   }
 
-  // Pre-dispatched inject cull. Outer switch picks the loop body once;
-  // inner is straight-line per kind.
-  if (isTransforming) {
-    const injectIds = getTransformInjectIds() ?? sel.selectedIds;
-    cullInjected(injectIds, objectsById, viewport, transform, connEntries, epDragEntry, tdx, tdy);
+  // Pre-dispatched inject cull — packs preview-bbox-visible inject ranks past k.
+  // Outer switch picks the loop body once; inner is straight-line per kind.
+  if (injectIds) {
+    k = cullInjected(injectIds, objectsById, viewport, transform, connEntries, epDragEntry, tdx, tdy, ranks, k);
   }
 
-  // Sort by fractional z-key rank (bottom -> top), comparator-free: pack each
-  // candidate's u32 rank into a scratch, sort the ranks, rebuild the candidate
-  // list through the rank→slot inverse permutation. Ranks are unique (a
-  // permutation), so the total order is identical to a comparator sort. Rank
-  // table is dirty-flag-guarded; clean frames early-out in one compare. Main
-  // loop excludes inject-set IDs and injectIds is provably unique — no
-  // post-sort dedupe needed.
-  const zOrder = getZOrder();
-  zOrder.ensureRanksValid();
-  const ranks = zOrder.getRanks();
-  const slotsByRank = zOrder.getSlotsByRank();
-  const bySlot = getHandlesBySlot();
-  const candCount = _candidateHandles.length;
-  if (candCount > _candRanks.length) {
-    let cap = _candRanks.length;
-    while (cap < candCount) cap *= 2;
-    _candRanks = new Uint32Array(cap);
-  }
-  for (let i = 0; i < candCount; i++) _candRanks[i] = ranks[_candidateHandles[i].slot];
-  sortU32Range(_candRanks, 0, candCount);
-  for (let i = 0; i < candCount; i++) _candidateHandles[i] = bySlot[slotsByRank[_candRanks[i]]]!;
+  // Sort by fractional z-key rank (bottom -> top), comparator-free: the packed
+  // u32 ranks sort in place, then the candidate list rebuilds through the
+  // rank→slot inverse permutation. Ranks are unique (a permutation), so the
+  // total order is identical to a comparator sort. Rank table is dirty-flag-
+  // guarded; clean frames early-out in one compare. Main loop excludes
+  // inject-set IDs and injectIds is provably unique — no post-sort dedupe.
+  sortU32Range(_candRanks, 0, k);
+  for (let i = 0; i < k; i++) _candidateHandles[i] = bySlot[slotsByRank[_candRanks[i]]]!;
+  // MANDATORY truncation — indexed fills don't shrink length; without this the
+  // paint loop draws stale handles from prior frames (incl. deleted objects)
+  // and roots deleted Y.Maps.
+  _candidateHandles.length = k;
 
   for (let i = 0; i < _candidateHandles.length; i++) {
     const handle = _candidateHandles[i];
@@ -220,6 +238,11 @@ function drawConnectorEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle,
  * once per frame, then the inner loop is monomorphic — no per-iteration
  * `switch (transform.kind)`. EndpointDrag is a single ID so the loop is
  * elided entirely (read directly off `epDragEntry`).
+ *
+ * Packs each visible inject's rank into `_candRanks[k++]` (capacity
+ * pre-sized by the caller) and returns the new cursor. The preview-bbox
+ * intersect logic per arm is untouched — every former push site flows into
+ * the pack.
  */
 function cullInjected(
   injectIds: readonly string[],
@@ -230,7 +253,9 @@ function cullInjected(
   epDragEntry: EndpointDragEntry | null,
   tdx: number,
   tdy: number,
-): void {
+  ranks: Uint32Array,
+  k: number,
+): number {
   switch (transform.kind) {
     case 'translate': {
       for (let i = 0; i < injectIds.length; i++) {
@@ -239,7 +264,7 @@ function cullInjected(
         if (!h) continue;
         const ce = connEntries?.get(id);
         if (ce) {
-          if (bboxesIntersect(ce.currBbox, viewport)) _candidateHandles.push(h);
+          if (bboxesIntersect(ce.currBbox, viewport)) _candRanks[k++] = ranks[h.slot];
           continue;
         }
         // Non-connector translate: handle.bbox + delta. Inline writes — no allocation.
@@ -248,9 +273,9 @@ function cullInjected(
         _previewScratch[1] = b[1] + tdy;
         _previewScratch[2] = b[2] + tdx;
         _previewScratch[3] = b[3] + tdy;
-        if (bboxesIntersect(_previewScratch, viewport)) _candidateHandles.push(h);
+        if (bboxesIntersect(_previewScratch, viewport)) _candRanks[k++] = ranks[h.slot];
       }
-      return;
+      return k;
     }
     case 'scale': {
       for (let i = 0; i < injectIds.length; i++) {
@@ -259,29 +284,29 @@ function cullInjected(
         if (!h) continue;
         const ce = connEntries?.get(id);
         if (ce) {
-          if (bboxesIntersect(ce.currBbox, viewport)) _candidateHandles.push(h);
+          if (bboxesIntersect(ce.currBbox, viewport)) _candRanks[k++] = ranks[h.slot];
           continue;
         }
         if (h.kind !== 'connector') {
           const entry = getScaleEntry(h.kind, id);
           const bbox = entry ? (entry.out as { bbox: BBoxTuple }).bbox : h.bbox;
-          if (bboxesIntersect(bbox, viewport)) _candidateHandles.push(h);
+          if (bboxesIntersect(bbox, viewport)) _candRanks[k++] = ranks[h.slot];
         } else if (bboxesIntersect(h.bbox, viewport)) {
-          _candidateHandles.push(h);
+          _candRanks[k++] = ranks[h.slot];
         }
       }
-      return;
+      return k;
     }
     case 'endpointDrag': {
       // Single connector — read directly off the controller's synthetic entry.
-      if (!epDragEntry) return;
+      if (!epDragEntry) return k;
       const h = objectsById.get(epDragEntry.id);
-      if (!h) return;
-      if (bboxesIntersect(epDragEntry.currBbox, viewport)) _candidateHandles.push(h);
-      return;
+      if (!h) return k;
+      if (bboxesIntersect(epDragEntry.currBbox, viewport)) _candRanks[k++] = ranks[h.slot];
+      return k;
     }
     case 'none':
-      return;
+      return k;
   }
 }
 

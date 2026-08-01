@@ -12,16 +12,22 @@
  * `'seethrough'` is the see-through class (only unfilled shape interiors
  * produce this); `'ink'` and `'fill'` are the two paint-blocker classes.
  *
- * Tight-bbox fast path: for kinds whose stored rbush bbox equals their
- * tight frame (image, code), `hitRectFor` returns `true` unconditionally
+ * Tight-bbox fast path: for kinds whose stored tree/column envelope equals
+ * their tight frame (image, code), `hitRectFor` returns `true` unconditionally
  * — the envelope filter that produced the candidate IS the precision rect
- * check. Tight-framed `hitPointFor` / `hitCircleFor` read the handle's
- * envelope mirrors (`handle.minX/maxX/minY/maxY`) directly, avoiding a
- * `getFrame` / `getCodeFrame` call and a FrameTuple allocation.
+ * check. Tight-framed `hitPointFor` / `hitCircleFor` read the global bbox
+ * column at `handle.slot * 4` directly, avoiding a `getFrame` /
+ * `getCodeFrame` call and a FrameTuple allocation.
  *
- * Invariant for tight-framed reads: `handle.minX/maxX/minY/maxY` IS the
- * live frame envelope. Safe per `core/geometry/bbox.ts` image/code branches
- * — both populate handles only after the frame/layout is committed.
+ * Invariant for tight-framed reads: the column lane IS the live frame
+ * envelope. Safe per `core/geometry/bbox.ts` image/code branches — both
+ * populate handles only after the frame/layout is committed.
+ *
+ * NO NESTED QUERIES (transitive — see `spatial-tree.ts` contract 2): nothing
+ * reachable from these hit fns — including the frame resolvers
+ * (`getTextFrame`/`getCodeFrame`/`getBookmarkFrame`/`getFrame`) — may query
+ * or mutate `spatialTree`; callers are mid-consume of its shared `results`
+ * buffer. All paths bottom out in caches / Y reads / pure geometry.
  */
 
 import { getFillColor, getFrame, getPoints, getShapeType, getWidth } from '@/core/accessors';
@@ -41,6 +47,7 @@ import {
   strokeHitTest,
   triangleIntersectsBBox,
 } from '@/core/geometry/hit-primitives';
+import { getBBoxColumn } from '@/core/slots/slot-table';
 import { getTextFrame } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle } from '@/core/types/objects';
@@ -120,21 +127,24 @@ function shapeHitCircle(h: ObjectHandle, c: Point, r: number): boolean {
 }
 
 // ============================================================================
-// Tight-framed (image, code) — handle envelope IS the frame
+// Tight-framed (image, code) — column envelope IS the frame
 // ============================================================================
 //
-// Stored bbox === frame (zero padding). Read mirrors directly; no `getFrame` /
-// `getCodeFrame` call, no FrameTuple allocation. `hitRectFor` for these kinds
-// returns `true` unconditionally because the rbush envelope filter that
-// produced the candidate IS the precision rect check.
+// Stored bbox === frame (zero padding). Read the global bbox column at
+// `slot * 4` directly; no `getFrame` / `getCodeFrame` call, no FrameTuple
+// allocation. `hitRectFor` for these kinds returns `true` unconditionally
+// because the tree envelope filter that produced the candidate IS the
+// precision rect check (same column values fed the tree).
 
 function tightFramedHitPoint(h: ObjectHandle, p: Point, r: number): Paint | null {
+  const col = getBBoxColumn();
+  const b = h.slot * 4;
   const px = p[0];
   const py = p[1];
-  const xL = h.minX;
-  const xR = h.maxX;
-  const yT = h.minY;
-  const yB = h.maxY;
+  const xL = col[b];
+  const yT = col[b + 1];
+  const xR = col[b + 2];
+  const yB = col[b + 3];
   if (px >= xL && px <= xR && py >= yT && py <= yB) return 'ink';
   const cx = px < xL ? xL : px > xR ? xR : px;
   const cy = py < yT ? yT : py > yB ? yB : py;
@@ -143,10 +153,16 @@ function tightFramedHitPoint(h: ObjectHandle, p: Point, r: number): Paint | null
   return dx * dx + dy * dy <= r * r ? 'ink' : null;
 }
 function tightFramedHitCircle(h: ObjectHandle, c: Point, r: number): boolean {
+  const col = getBBoxColumn();
+  const b = h.slot * 4;
   const px = c[0];
   const py = c[1];
-  const cx = px < h.minX ? h.minX : px > h.maxX ? h.maxX : px;
-  const cy = py < h.minY ? h.minY : py > h.maxY ? h.maxY : py;
+  const xL = col[b];
+  const yT = col[b + 1];
+  const xR = col[b + 2];
+  const yB = col[b + 3];
+  const cx = px < xL ? xL : px > xR ? xR : px;
+  const cy = py < yT ? yT : py > yB ? yB : py;
   const dx = px - cx;
   const dy = py - cy;
   return dx * dx + dy * dy <= r * r;
@@ -156,7 +172,7 @@ function tightFramedHitCircle(h: ObjectHandle, c: Point, r: number): boolean {
 // Padded-framed (text, note, bookmark) — frame derived from subsystem layout
 // ============================================================================
 //
-// Bbox carries padding (italic overhang / shadow / etc) so the rbush envelope
+// Bbox carries padding (italic overhang / shadow / etc) so the tree envelope
 // is coarser than the frame — the precision pass against the subsystem-derived
 // FrameTuple matters here. Inline-rect math, no `rectFrameHit` call, no
 // `bboxesIntersect([x,y,x+w,y+h], bbox)` array allocation.
@@ -239,7 +255,7 @@ export function hitRectFor(h: ObjectHandle, bbox: BBoxTuple): boolean {
       return bookmarkHitRect(h, bbox);
     case 'code':
     case 'image':
-      // Tight bbox: rbush envelope filter IS the precision rect check.
+      // Tight bbox: the tree's envelope filter IS the precision rect check.
       return true;
   }
 }
