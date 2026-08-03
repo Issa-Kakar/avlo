@@ -61,7 +61,9 @@ export interface PhaseMsg {
   received?: number;
   total?: number;
 }
-/** Batched stdout+stderr (≥100 ms / ≥8 KB) — DOM overlay live view only. */
+/** Batched stdout+stderr (≥100 ms / ≥8 KB). Currently write-only downstream:
+ * py-run-store.liveOutput has no reader (both render surfaces show final
+ * output from Y) — the relay stays as the live-view seam. */
 export interface StdoutMsg {
   t: 'stdout';
   runId: number;
@@ -186,8 +188,9 @@ export interface ExecDoneMsg {
   runId: number;
   /** ok=false carries the harness-trimmed traceback in `output`'s tail. */
   ok: boolean;
-  /** True when the failure was a KeyboardInterrupt (cancel/timeout mapping
-   * to 'cancelled' vs 'timeout' is the supervisor's call via CANCEL_KIND). */
+  /** True when the failure was a KeyboardInterrupt. Since the 2026-08
+   * interrupt disarm this only fires when USER CODE raises it (the buffer is
+   * never armed) — the supervisor maps it to plain 'error'. */
   interrupted: boolean;
   output: string;
   durationMs: number;
@@ -236,14 +239,11 @@ export type ExecToSup = ExecReadyMsg | ExecStdoutMsg | ExecDoneMsg | ExecSnapsho
 // Frozen: shared by all three threads' module scopes — a cap must never be
 // reshapeable at runtime, least of all from the executor realm.
 export const PY_LIMITS = Object.freeze({
-  /** Wall-clock soft timeout → SIGINT (supervisor clock). */
+  /** Wall-clock timeout (supervisor clock) → immediate synthesized result +
+   * executor kill + eager respawn. No grace windows: the interrupt buffer is
+   * never armed (2026-08 — the armed signal check taxed every run 2-4.5%),
+   * so nothing graceful could use one. */
   softTimeoutMs: 30_000,
-  /** Grace after soft timeout / cancel before executor.terminate(). */
-  hardGraceMs: 5_000,
-  cancelGraceMs: 2_000,
-  /** SIGINT repeat cadence until acknowledged — a terminated-but-still-
-   * spinning zombie executor can eat one write (P0-B finding). */
-  interruptRepeatMs: 50,
   /** Run queue cap; further clicks are ignored (silently — queue-full
    * feedback is polish backlog). */
   queueCap: 4,

@@ -98,9 +98,9 @@ def _harvest_figures(interrupted):
     interpreter is shared across runs, so a leaked figure would reappear in
     the next run's harvest. Detection never imports matplotlib itself:
     _pylab_helpers (Gcf's home) is in sys.modules iff pyplot ran. Skips the
-    dump when interrupted (cancel/timeout must not fight the kill grace with
-    savefig work) but still closes. SIGINT repeats until the run resolves, so
-    every step is BaseException-guarded."""
+    dump when interrupted (a user-raised KeyboardInterrupt — the interrupt
+    buffer is never armed since 2026-08) but still closes; every step stays
+    BaseException-guarded as plain robustness."""
     helpers = sys.modules.get("matplotlib._pylab_helpers")
     if helpers is None:
         return []

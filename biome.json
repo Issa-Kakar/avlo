@@ -13,6 +13,7 @@
       "!**/.cache",
       "!**/.turbo",
       "!web/src/routeTree.gen.ts",
+      "!web/src/core/py/pyodide-fork.gen.d.ts",
       "!packages/py-loader/build-lock.json",
       "!web/src/core/code/vendor/sql/sql.grammar.js",
       "!web/src/core/code/vendor/sql/sql.grammar.terms.js",
@@ -113,7 +114,7 @@
       }
     },
     {
-      "includes": ["scripts/verify/**", "web/scripts/**", "web/src/dev/**", "packages/py-build/scripts/**"],
+      "includes": ["scripts/verify/**", "web/scripts/**", "web/src/dev/**", "packages/py-build/scripts/**", "packages/py-build/bench/**"],
       "linter": {
         "rules": {
           "suspicious": {

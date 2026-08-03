@@ -13,7 +13,7 @@
 //   pnpm harness            all sections (base / seaborn / snapshot / parity / verify children)
 //   node scripts/run-harness.mjs --section base|seaborn|snapshot|parity|verify
 import './lib/ts-resolve.mjs'; // FIRST: Node ≥23.6 guard + `.ts` resolve shim for shipped-module imports
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, openSync, readFileSync, readSync, rmSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -32,12 +32,32 @@ const section = (() => {
 
 // ---------------------------------------------------------------- parent
 if (!section) {
+  // Sections run in a 2-wide pool (each child boots a full fork — RAM-bound on
+  // the ~9 GB WSL2 box; 5-wide would thrash). Output is buffered per child and
+  // printed on completion so interleaving can't scramble the PASS/FAIL lines.
+  const SECTIONS = ['base', 'seaborn', 'snapshot', 'parity', 'verify'];
+  const WIDTH = 2;
+  const runSection = (s) =>
+    new Promise((resolveDone) => {
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--section', s], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const chunks = [];
+      child.stdout.on('data', (d) => chunks.push(d));
+      child.stderr.on('data', (d) => chunks.push(d));
+      child.on('close', (code) => {
+        console.log(`\n=== section ${s} ===`);
+        process.stdout.write(Buffer.concat(chunks));
+        resolveDone(code === 0 ? 0 : 1);
+      });
+    });
   let failed = 0;
-  for (const s of ['base', 'seaborn', 'snapshot', 'parity', 'verify']) {
-    console.log(`\n=== section ${s} ===`);
-    const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--section', s], { stdio: 'inherit' });
-    if (r.status !== 0) failed++;
-  }
+  const queue = [...SECTIONS];
+  await Promise.all(
+    Array.from({ length: WIDTH }, async () => {
+      for (let s = queue.shift(); s !== undefined; s = queue.shift()) failed += await runSection(s);
+    }),
+  );
   console.log(failed ? `\nharness: ${failed} section(s) FAILED` : '\nharness: all sections pass');
   process.exit(failed ? 1 : 0);
 }
@@ -103,6 +123,29 @@ async function bootHardened(setKey) {
   // tz bridge) replaced ensure_tzpath at P3.
   pyodide.runPython('import _avlo_runtime; _avlo_runtime.post_restore(); del _avlo_runtime');
 
+  // Wasm-gc trampoline census (runs pre-harden — Table.prototype freezes
+  // later): with the trampoline live, METH_NOARGS calls stay in wasm, so a
+  // 10k-call loop crosses into JS ~0 times. The regression mode this guards
+  // (MAIN_MODULE=2 never extracting emscripten_trampoline_wasm.o — dead from
+  // P1 until 2026-08) measured ~10.4k crossings: one _PyEM_TrampolineCall_JS
+  // per call. Companion gate: stage.mjs's getWasmTrampolineModule glue grep.
+  {
+    const table = pyodide._module.wasmTable;
+    const origGet = table.get;
+    let crossings = 0;
+    Object.defineProperty(table, 'get', {
+      value: (...a) => {
+        crossings++;
+        return origGet.apply(table, a);
+      },
+      configurable: true,
+      writable: true,
+    });
+    pyodide.runPython('q=(1234567890).bit_length\nfor _ in range(10000): q()\ndel q');
+    delete table.get;
+    check(`trampoline live: ≤16 table.get crossings /10k METH_NOARGS (${setKey})`, crossings <= 16, `${crossings} crossings`);
+  }
+
   harden.scrubWorkerScope();
   harden.hardenRealm();
   let gateThrew = null;
@@ -149,7 +192,7 @@ async function bootHardened(setKey) {
 // over the product `numpy` set, plus the constructor-freeze sweep and
 // post-freeze sqlite3 proofs (sqlite3 is STATIC since 314 — zero tars).
 if (section === 'base') {
-  const { pyodide, run } = await bootHardened('numpy');
+  const { pyodide, run } = await bootHardened('numpy+pandas');
 
   for (const name of harden.SCRUBBED_GLOBALS) {
     if (name in globalThis && globalThis[name] !== undefined) check(`scrub removed ${name}`, false, 'still reachable');

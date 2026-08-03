@@ -1,0 +1,90 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: fork API types — declare _module/_api + Module runtime exports for d.ts emission
+
+Type-only, zero runtime bytes (declare/interface edits only — the built
+glue + wasm stay byte-identical, so this patch alone rotates nothing):
+- api.ts: `declare static _module` / `_api` on PyodideAPI_ so the emitted
+  pyodide.d.ts types the fork-private surfaces the app boots, captures
+  and restores through (makePublicAPI has assigned them untyped since
+  upstream; the d.ts silently dropped them).
+- types.ts: PyodideModule gains the runtime-export members the app uses
+  (wasmTable / growMemory / callMain — all real at runtime via 0001's
+  EXPORTED_RUNTIME_METHODS; upstream never declared them; exitCode was
+  already on EmscriptenModule).
+  Only the app-used surface is declared — extend as consumers appear.
+- pyodide.ts: _avloRestore.preBlit params typed (PyodideModule +
+  PyodideModule["API"]) and the return widened with `undefined` (a cold
+  main returns undefined — finalizeBootstrap(undefined) IS the cold
+  branch; the old annotation predated that contract).
+Consumer: stage.mjs stages dist/raw/pyodide.d.ts as
+web/src/core/py/pyodide-fork.gen.d.ts (checked in, drift-gated, never
+hashed into buildHash — types carry no runtime bytes).
+
+diff --git a/src/js/api.ts b/src/js/api.ts
+index 2b15711..acbb22e 100644
+--- a/src/js/api.ts
++++ b/src/js/api.ts
+@@ -11,6 +11,8 @@ import { version } from "./version";
+ import { setStdin, setStdout, setStderr } from "./streams";
+ import { scheduleCallback } from "./scheduler";
+ import { TypedArray, FSType } from "./types";
++// AVLO (0009): type-only — the _module/_api member declarations below.
++import type { PyodideModule } from "./types";
+ import { RUNTIME_ENV } from "./environments";
+ // @ts-ignore
+ import LiteralMap from "./common/literal-map";
+@@ -132,6 +134,18 @@ export class PyodideAPI_ {
+   /** @hidden */
+   static setStderr = setStderr;
+ 
++  /**
++   * AVLO (0009): the live Emscripten Module and the internal API object —
++   * the fork-private surfaces the app's boot/capture/restore path types
++   * against. Assigned (untyped, upstream) in makePublicAPI below; declared
++   * here so the emitted pyodide.d.ts carries them. `declare` = type-only,
++   * zero runtime emission.
++   * @hidden
++   */
++  declare static _module: PyodideModule;
++  /** @hidden AVLO (0009): see _module. */
++  declare static _api: PyodideModule["API"];
++
+   /**
+    *
+    * An alias to the global Python namespace.
+diff --git a/src/js/pyodide.ts b/src/js/pyodide.ts
+index d9a9790..9efec7f 100644
+--- a/src/js/pyodide.ts
++++ b/src/js/pyodide.ts
+@@ -188,9 +188,9 @@ export interface PyodideConfig {
+    */
+   _avloRestore?: {
+     preBlit: (
+-      module: any,
+-      api: any,
+-    ) => SnapshotConfig | Promise<SnapshotConfig>;
++      module: PyodideModule,
++      api: PyodideModule["API"],
++    ) => SnapshotConfig | undefined | Promise<SnapshotConfig | undefined>;
+   };
+ 
+   /**
+diff --git a/src/js/types.ts b/src/js/types.ts
+index d17d454..dc67cc1 100644
+--- a/src/js/types.ts
++++ b/src/js/types.ts
+@@ -328,6 +328,14 @@ export interface PythonModule extends EmscriptenModule {
+ /** @hidden */
+ export interface PyodideModule extends PythonModule {
+   API: API;
++  // AVLO (0009): runtime-export surface the app's owned restore + capture
++  // path uses — all real at runtime (0001's EXPORTED_RUNTIME_METHODS);
++  // upstream never declared them on the Module type. Only the app-used
++  // members are declared — extend as consumers appear. (exitCode is already
++  // on EmscriptenModule.)
++  wasmTable: WebAssembly.Table;
++  growMemory(size: number): void;
++  callMain(args?: string[]): void;
+   _compat_to_string_repr: number;
+   _compat_null_to_none: number;
+   _compat_dict_to_literalmap: number;

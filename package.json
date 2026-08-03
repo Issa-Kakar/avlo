@@ -31,6 +31,7 @@
     "deploy:py": "pnpm --filter @avlo/py deploy",
     "deploy": "pnpm deploy:main && pnpm deploy:sync && pnpm deploy:images && pnpm deploy:unfurl && pnpm deploy:auth && pnpm deploy:users && pnpm deploy:py",
     "py:seed": "pnpm --filter @avlo/py-build seed",
+    "py:board": "pnpm --filter @avlo/py-build board",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",

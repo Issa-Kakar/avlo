@@ -41,7 +41,7 @@ const unprunedRoot = join(pkgRoot, '.cache/unpruned');
 // Package groups only — 'basic' tests the PRUNED artifact's own behavior and
 // 'sqlite' rides the bare stdlib since 314 made _sqlite3 static (no package
 // tree to trace).
-const GROUP_SET = { numpy: 'numpy', pandas: 'numpy+pandas', mpl: 'numpy+matplotlib', all: 'all', seaborn: 'all' };
+const GROUP_SET = { numpy: 'numpy+pandas', pandas: 'numpy+pandas', mpl: 'numpy+matplotlib', all: 'all', seaborn: 'all' };
 const setWheels = (setKey) => SETS[setKey].flatMap((b) => BUNDLES[b]);
 
 function loadTraces() {

@@ -55,6 +55,45 @@ if [ -e "${EMSDK_PATCHES[0]:-}" ]; then
     }
   fi
 fi
+# AVLO cpython source patches: staged into pyodide's cpython/patches/ (that
+# whole dir is applied by cpython/Makefile's `.patched` rule at tarball
+# extract, `cat patches/*.patch | patch -p1`). Numbered >= 0010 so they sort
+# after upstream's 0009. The `.patched` stamp's only prerequisite is the
+# TARBALL — a new/changed lane patch is inert against an existing build tree,
+# so any lane change nukes the tree for a clean re-extract + re-patch +
+# re-configure (full cpython rebuild, ~20 min — the price of a lane change).
+# Same AVLO-marker discipline as the emsdk lane.
+CPYTHON_PATCHES=(/pb/patches/cpython/*.patch)
+PYBUILD_DIR="cpython/build/Python-$(python3 -c "import json;print(json.load(open('/pb/build.config.json'))['toolchain']['python'])")"
+CPY_BUST=0
+if [ -e "${CPYTHON_PATCHES[0]:-}" ]; then
+  for p in "${CPYTHON_PATCHES[@]}"; do
+    grep -q AVLO "$p" || { echo "!!! cpython patch $(basename "$p") lacks the AVLO marker"; exit 1; }
+    dest="cpython/patches/$(basename "$p")"
+    if [ ! -f "$dest" ] || ! cmp -s "$p" "$dest"; then
+      echo "=== staging cpython patch $(basename "$p")"
+      cp "$p" "$dest"
+      CPY_BUST=1
+    fi
+  done
+fi
+# A lane patch deleted host-side must also leave the checkout (and rebuild).
+for existing in cpython/patches/*avlo*.patch; do
+  [ -e "$existing" ] || continue
+  if [ ! -f "/pb/patches/cpython/$(basename "$existing")" ]; then
+    echo "=== removing stale cpython patch $(basename "$existing")"
+    rm -f "$existing"
+    CPY_BUST=1
+  fi
+done
+if [ "$CPY_BUST" = 1 ]; then
+  # The build tree alone is not enough: the top-level Makefile links against
+  # the INSTALL tree (cpython/installs/…/libpython*.a) and only descends into
+  # cpython/ when that path is missing — a stale install silently satisfies it.
+  echo "=== cpython patch lane changed — removing build + install trees (full cpython rebuild)"
+  rm -rf "$PYBUILD_DIR" cpython/installs
+  rm -f dist/pyodide.asm.* dist/python_stdlib.zip
+fi
 shopt -u nullglob
 
 # link.rsp is @-consumed by the main link via MAIN_MODULE_LDFLAGS (patch 0001)
@@ -66,12 +105,24 @@ if [ -f /pb/.cache/link-sos/link.rsp ] && [ -f dist/pyodide.asm.mjs ] && [ /pb/.
   rm -f dist/pyodide.asm.*
 fi
 
-echo "=== make ${TARGETS}"
+# Same staleness class for the pyodide patch queue itself: the replay above
+# rewrites Makefile.envs & co. on every run, but no make rule depends on them,
+# so a queue edit would silently keep the old glue. Stamp the queue hash.
+QUEUE_HASH=$(cat /pb/patches/pyodide/*.patch 2>/dev/null | sha256sum | cut -d' ' -f1)
+if [ ! -f .avlo-queue-stamp ] || [ "$(cat .avlo-queue-stamp)" != "$QUEUE_HASH" ]; then
+  echo "=== pyodide patch queue changed — forcing main relink"
+  rm -f dist/pyodide.asm.*
+  echo "$QUEUE_HASH" > .avlo-queue-stamp
+fi
+
+# Top-level make runs parallel (libffi/hiwire/lzma/zstd/sqlite3/src-core are
+# independent); cpython's inner sub-makes carry their own -j via PYODIDE_JOBS.
+echo "=== make -j${PYODIDE_JOBS:-2} ${TARGETS}"
 # shellcheck disable=SC2086
-make ${TARGETS}
+make -j"${PYODIDE_JOBS:-2}" ${TARGETS}
 
 mkdir -p /out/raw
-for f in dist/pyodide.asm.mjs dist/pyodide.asm.wasm dist/pyodide.mjs dist/python_stdlib.zip; do
+for f in dist/pyodide.asm.mjs dist/pyodide.asm.wasm dist/pyodide.mjs dist/python_stdlib.zip dist/pyodide.d.ts; do
   [ -f "$f" ] && cp -f "$f" /out/raw/ && echo "=== copied $f"
 done
 echo "=== build.sh done"

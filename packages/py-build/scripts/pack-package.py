@@ -30,11 +30,14 @@ hash order).
 
 import hashlib
 import json
+import multiprocessing
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -68,6 +71,24 @@ BUNDLE_OF = {w: b for b, members in BUNDLES.items() for w in members}
 GROUPS = json.loads((ROOT / "config/dso-groups/groups.json").read_text())["bundles"]
 GROUPS_SO_DIR = ROOT / "dist/groups"
 
+# Per-file pyc compiles fan out over a process pool (fork children inherit the
+# PYTHONHASHSEED=0 re-exec env, and every job writes a distinct pre-created
+# path, so parallel order can't touch byte-determinism).
+_POOL_JOBS = min(os.cpu_count() or 2, 8)
+
+
+def _compile_job(src: str, dest: str, dfile: str) -> None:
+    Path(dest).write_bytes(packlib.compile_pyc(Path(src).read_bytes(), dfile, optimize=1))
+
+
+def _compile_many(jobs: list[tuple[str, str, str]]) -> None:
+    if len(jobs) < 32 or _POOL_JOBS < 2:
+        for job in jobs:
+            _compile_job(*job)
+        return
+    with multiprocessing.Pool(_POOL_JOBS) as pool:
+        pool.starmap(_compile_job, jobs, chunksize=32)
+
 
 def subset_mpl_fonts(stage: Path) -> None:
     """Keep the configured faces: text faces subset to the pinned unicode
@@ -84,14 +105,8 @@ def subset_mpl_fonts(stage: Path) -> None:
     ttf_dir = stage / "matplotlib/mpl-data/fonts/ttf"
     keep = set(fonts["faces"])
     whole = set(fonts["keepUnsubset"])
-    for f in sorted(ttf_dir.iterdir()):
-        if f.name.startswith("LICENSE"):
-            continue  # STIX faces ship too — both license files stay
-        if f.name in whole:
-            continue
-        if f.name not in keep:
-            f.unlink()
-            continue
+
+    def subset_face(f: Path) -> None:
         tmp = f.with_suffix(".subset.ttf")
         subprocess.run(
             [
@@ -112,6 +127,22 @@ def subset_mpl_fonts(stage: Path) -> None:
             capture_output=True,
         )
         tmp.replace(f)
+
+    faces: list[Path] = []
+    for f in sorted(ttf_dir.iterdir()):
+        if f.name.startswith("LICENSE"):
+            continue  # STIX faces ship too — both license files stay
+        if f.name in whole:
+            continue
+        if f.name not in keep:
+            f.unlink()
+            continue
+        faces.append(f)
+    # Faces subset concurrently — each invocation owns its file pair; the
+    # fonttools PIN (not invocation order) is what fixes the bytes.
+    with ThreadPoolExecutor(max_workers=len(faces) or 1) as pool:
+        for _ in pool.map(subset_face, faces):
+            pass
 
 
 def wheel_path(name: str) -> Path:
@@ -209,6 +240,7 @@ def stage_bundle(bundle: str) -> tuple[Path, dict[str, str]]:
         with tempfile.TemporaryDirectory() as td:
             tree = Path(td)
             extract_and_patch(name, tree)
+            py_jobs: list[tuple[str, str, str]] = []
             for f in sorted(p for p in tree.rglob("*") if p.is_file()):
                 rel = f.relative_to(tree).as_posix()
                 if globally_excluded(rel) or packlib.is_pruned(rel, rules):
@@ -222,13 +254,12 @@ def stage_bundle(bundle: str) -> tuple[Path, dict[str, str]]:
                 if rel.endswith(".py"):
                     out = stage / (rel[:-3] + ".pyc")
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    out.write_bytes(
-                        packlib.compile_pyc(f.read_bytes(), f"{PREFIX}/{rel}", optimize=1)
-                    )
+                    py_jobs.append((str(f), str(out), f"{PREFIX}/{rel}"))
                 else:
                     out = stage / rel
                     out.parent.mkdir(parents=True, exist_ok=True)
                     out.write_bytes(f.read_bytes())
+            _compile_many(py_jobs)  # must run inside the tempdir context
 
     if bundle == "matplotlib":
         subset_mpl_fonts(stage)

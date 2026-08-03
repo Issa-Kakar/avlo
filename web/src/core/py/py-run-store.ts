@@ -1,8 +1,10 @@
 /**
- * Ephemeral per-block run state — live phase + streaming stdout for the UI
- * (play-button toggle, status text, DOM overlay live output). NEVER written
- * to Y: peers see only the final one-commit output. Plain Zustand, no
- * persist (presence-store pattern); reset on reload.
+ * Ephemeral per-block run state — live phase (play-button toggle, status
+ * text). NEVER written to Y: peers see only the final one-commit output.
+ * Plain Zustand, no persist (presence-store pattern); reset on reload.
+ * `liveOutput` accumulates the stdout relay but currently has NO reader —
+ * both render surfaces show final output from Y; it stays as the seam for a
+ * future live output view.
  */
 
 import { create } from 'zustand';
@@ -11,7 +13,7 @@ import type { PyRunPhase } from './py-protocol';
 export interface PyRunEntry {
   runId: number;
   phase: PyRunPhase;
-  /** Live stdout/stderr accumulation — editing-overlay display only. */
+  /** Live stdout/stderr accumulation — write-only today (no reader). */
   liveOutput: string;
   startedAt: number;
   /** Download progress while phase === 'downloading'. */

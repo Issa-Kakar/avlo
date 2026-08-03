@@ -29,9 +29,13 @@
 
 import type { AvsHeader } from './py-snapshot';
 import { traceBegin, traceSpanAsync } from './py-trace';
+import type { PyodideInterface } from './pyodide-fork.gen';
 
-// biome-ignore lint/suspicious/noExplicitAny: fork loader has no bundled types in-app
-export type Pyodide = any;
+/** The fork's emitted public type (pyodide-fork.gen.d.ts, staged by py-build
+ * stage.mjs — patch 0009 declares the `_module`/`_api` surfaces on it). */
+export type Pyodide = PyodideInterface;
+type PyModule = Pyodide['_module'];
+type PyApi = Pyodide['_api'];
 
 /** Tags every failure raised in preBlit's MUTATION zone (DSO replay onward).
  * The executor's cue that the Module is unusable for a same-Module cold
@@ -81,8 +85,7 @@ const msgOf = (err: unknown): string => String((err as Error)?.message ?? err);
  * yield observes the settled promise) when the heap already arrived.
  */
 async function touchWhileAwaiting(
-  // biome-ignore lint/suspicious/noExplicitAny: live emscripten Module — no types in-app
-  Module: any,
+  Module: PyModule,
   oldLen: number,
   heapLen: number,
   heapP: Promise<ArrayBuffer | null>,
@@ -107,7 +110,7 @@ async function touchWhileAwaiting(
     await yield_(); // lets snap-heap onmessage + the settle microtask run first
     if (settled) break;
     const end = Math.min(off + SLICE, heapLen);
-    const i32 = new Int32Array((Module.HEAPU8 as Uint8Array).buffer);
+    const i32 = new Int32Array(Module.HEAPU8.buffer);
     for (let p = off; p < end; p += 4096) Atomics.or(i32, p >> 2, 0);
     touched += end - off;
     off = end;
@@ -133,8 +136,7 @@ async function touchWhileAwaiting(
  * cold main — finalizeBootstrap(undefined) IS the cold branch).
  */
 function makePreBlit(feeds: PySnapshotFeeds) {
-  // biome-ignore lint/suspicious/noExplicitAny: live emscripten Module + fork API — no types in-app
-  return async (Module: any, API: any): Promise<unknown> => {
+  return async (Module: PyModule, API: PyApi): Promise<unknown> => {
     const runCold = (): undefined => {
       Module.callMain();
       // With noInitialRun the factory promise resolved BEFORE main, so the
@@ -149,7 +151,7 @@ function makePreBlit(feeds: PySnapshotFeeds) {
     const header = await feeds.headerP;
     endWaitHeader({ hit: header !== null });
     if (!header) return runCold();
-    const oldLen = (Module.HEAPU8 as Uint8Array).length;
+    const oldLen = Module.HEAPU8.length;
     let mods: Map<string, WebAssembly.Module>;
     try {
       // Pre-mutation zone — everything here leaves the Module clean (growth
@@ -158,8 +160,8 @@ function makePreBlit(feeds: PySnapshotFeeds) {
         throw new Error(`snapshot buildId ${header.buildId} ≠ glue ${API.config.BUILD_ID}`);
       }
       if (oldLen < header.heapLen) Module.growMemory(header.heapLen);
-      if ((Module.HEAPU8 as Uint8Array).length !== header.heapLen) {
-        throw new Error(`pre-grow failed: heap ${(Module.HEAPU8 as Uint8Array).length} ≠ ${header.heapLen}`);
+      if (Module.HEAPU8.length !== header.heapLen) {
+        throw new Error(`pre-grow failed: heap ${Module.HEAPU8.length} ≠ ${header.heapLen}`);
       }
       const m = await feeds.modulesP; // compile failures land here
       if (!m) throw new Error('snapshot DSO precompile unavailable');
@@ -182,7 +184,7 @@ function makePreBlit(feeds: PySnapshotFeeds) {
       API.restoreDsoHandles(header.dsoHandles);
       API.dsoReplayDone();
       endReplay({ count: header.dso.loadOrder.length });
-      if ((Module.wasmTable.length as number) !== header.tableLenAtCapture) {
+      if (Module.wasmTable.length !== header.tableLenAtCapture) {
         throw new Error(`snapshot table drift: ${Module.wasmTable.length} ≠ ${header.tableLenAtCapture}`);
       }
       const heap = await touchWhileAwaiting(Module, oldLen, header.heapLen, feeds.heapP);
@@ -190,7 +192,7 @@ function makePreBlit(feeds: PySnapshotFeeds) {
         throw new Error(heap ? `snapshot heap ${heap.byteLength} B ≠ ${header.heapLen}` : 'snapshot heap unavailable');
       }
       const endBlit = traceBegin('heap-blit');
-      (Module.HEAPU8 as Uint8Array).set(new Uint8Array(heap), 0);
+      Module.HEAPU8.set(new Uint8Array(heap), 0);
       endBlit({ mb: Math.round(header.heapLen / 1e6) });
       feeds.outcome.restored = true;
       return header.hiwire;
@@ -217,9 +219,9 @@ export function freeDsoFileData(pyodide: Pyodide): { freedBytes: number; aborted
   let freedBytes = 0;
   try {
     const M = pyodide._module;
-    const heapU32 = M.HEAPU32 as Uint32Array;
-    const heapU8 = M.HEAPU8 as Uint8Array;
-    const dsoHandles = pyodide._api.recordDsoHandles() as Record<string, { handles: number[] }>;
+    const heapU32 = M.HEAPU32;
+    const heapU8 = M.HEAPU8;
+    const dsoHandles = pyodide._api.recordDsoHandles();
     for (const { handles } of Object.values(dsoHandles)) {
       for (const h of handles) {
         const p = heapU32[(h + 28) >> 2];

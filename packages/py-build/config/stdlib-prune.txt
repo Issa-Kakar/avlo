@@ -12,10 +12,10 @@ bz2.py
 # reason: c-extension _lzma is not part of this build
 lzma.py
 # reason: 3.14 compression-namespace wrappers over disabled C modules
-# (_bz2/_lzma/_zstd); compression.gzip/zlib stay — zlib is static
+# (_bz2/_lzma); compression.gzip/zlib stay — zlib is static, and
+# compression.zstd stays — _zstd went STATIC again 2026-08 (patch 0003)
 compression/bz2.py
 compression/lzma.py
-compression/zstd/
 # xml.etree.ElementTree stays: the pure-python fallback works without _elementtree.
 # reason: c-extension pyexpat is disabled (patch 0003)
 xml/parsers/

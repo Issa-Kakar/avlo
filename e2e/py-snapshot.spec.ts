@@ -2,9 +2,11 @@ import { expect, test } from './fixtures';
 
 /**
  * P2 owned-snapshot lifecycle over a REAL browser: cold boot + capture →
- * `opfs:/py/<hash>/numpy.snap` lands → reload → restored boot (trace-asserted)
- * → warm re-run in the same generation (no new boot). Timing/RAM ledgers are
- * the owner's browser board — this spec pins CORRECTNESS of the loop only.
+ * `opfs:/py/<hash>/numpy+pandas.snap` lands (the standalone numpy set was
+ * dropped 2026-08 — `import numpy` resolves to its smallest covering set) →
+ * reload → restored boot (trace-asserted) → warm re-run in the same
+ * generation (no new boot). Timing/RAM ledgers are the owner's browser
+ * board — this spec pins CORRECTNESS of the loop only.
  *
  * Needs the FULL dev stack (`pnpm dev`: vite + workers — the py worker serves
  * the lock-pinned artifacts out of local R2; seed via `pnpm py:seed`). The
@@ -24,7 +26,7 @@ const supBoots = () =>
     .filter((t) => t.th === 'sup' && t.kind === 'boot');
 
 test('owned snapshot: cold+capture → OPFS → restore → warm run', async ({ page, avlo }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(300_000); // numpy+pandas set: bigger tars + capture than the old numpy-only run
   await avlo.openRoom();
   // A cold Vite dep-optimizer cache forces a full page reload moments after
   // the first load, which would wipe the bridge and kill an in-flight run.
@@ -57,7 +59,7 @@ test('owned snapshot: cold+capture → OPFS → restore → warm run', async ({ 
         for await (const name of py.keys()) {
           const dir = await py.getDirectoryHandle(name);
           try {
-            await dir.getFileHandle('numpy.snap');
+            await dir.getFileHandle('numpy+pandas.snap');
             return true;
           } catch {
             /* not yet */

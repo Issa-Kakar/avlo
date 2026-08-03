@@ -6,7 +6,7 @@
 /** Set keys the runtime can boot: 'stdlib' plus the configured bundle sets.
  * THE PySetKey — py-protocol re-exports this union, so the type can never
  * lag the set tables again. */
-export type PySetKey = 'stdlib' | 'numpy' | 'numpy+pandas' | 'numpy+matplotlib' | 'all';
+export type PySetKey = 'stdlib' | 'numpy+pandas' | 'numpy+matplotlib' | 'all';
 
 /** Top-level importable names in the shipped runtime: pruned-stdlib zip
  * contents + the fork's true builtin_module_names. Tombstoned top-levels are
@@ -94,6 +94,7 @@ export const STDLIB_MODULES: ReadonlySet<string> = new Set([
   '_weakrefset',
   '_xxtestfuzz',
   '_zoneinfo',
+  '_zstd',
   'abc',
   'annotationlib',
   'antigravity',
@@ -291,7 +292,7 @@ export const PACKAGE_TO_SET: Readonly<Record<string, Exclude<PySetKey, 'stdlib'>
   kiwisolver: 'numpy+matplotlib',
   matplotlib: 'numpy+matplotlib',
   mpl_toolkits: 'numpy+matplotlib',
-  numpy: 'numpy',
+  numpy: 'numpy+pandas',
   packaging: 'numpy+matplotlib',
   pandas: 'numpy+pandas',
   pylab: 'numpy+matplotlib',
@@ -307,7 +308,6 @@ export const AVAILABLE_PACKAGES: ReadonlySet<string> = new Set(Object.keys(PACKA
 /** Set key -> member bundles, deps-first (mount order). Mirrors the packer
  * config; the click-time gate merges multi-package needs by bundle union. */
 export const SET_BUNDLES: Readonly<Record<Exclude<PySetKey, 'stdlib'>, readonly string[]>> = Object.freeze({
-  numpy: Object.freeze(['numpy']),
   'numpy+pandas': Object.freeze(['numpy', 'dateutil', 'pytz', 'pandas']),
   'numpy+matplotlib': Object.freeze(['numpy', 'dateutil', 'pytz', 'mpl-deps', 'matplotlib']),
   all: Object.freeze(['numpy', 'dateutil', 'pytz', 'mpl-deps', 'pandas', 'matplotlib', 'seaborn']),

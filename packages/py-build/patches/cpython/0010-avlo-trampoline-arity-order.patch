@@ -1,0 +1,30 @@
+AVLO: wasm-gc trampoline — test the 2-arg shape first (2, 3, 1, 0).
+
+METH_VARARGS, METH_O, METH_NOARGS and getset getters all cross the
+trampoline as 2-arg calls; 3-arg is only METH_VARARGS|METH_KEYWORDS.
+Upstream tests 3-arg first, so the majority of calls pay one wasted
+ref.test. The compiled module hex regenerates from this source during
+the cpython build (emscripten_trampoline_inner.wasm ->
+emscripten_trampoline_wasm.c), so no other file changes.
+
+Applied by cpython/Makefile's .patched rule (cat patches/*.patch |
+patch -p1) after upstream 0001-0009; staged there by build.sh's
+patches/cpython/ lane, which nukes the build tree on any lane change.
+
+--- a/Python/emscripten_trampoline_inner.c
++++ b/Python/emscripten_trampoline_inner.c
+@@ -30,9 +30,12 @@
+ {
+   *success = 1;
+-  TRY_RETURN_CALL(three_arg, self, args, kw);
+-  TRY_RETURN_CALL(two_arg, self, args);
++  // AVLO: 2-arg first — METH_VARARGS / METH_O / METH_NOARGS and getset
++  // getters all cross as 2-arg; 3-arg is only METH_VARARGS|METH_KEYWORDS.
++  // Testing the common shape first saves one ref.test on the hottest calls.
++  TRY_RETURN_CALL(two_arg, self, args);
++  TRY_RETURN_CALL(three_arg, self, args, kw);
+   TRY_RETURN_CALL(one_arg, self);
+   TRY_RETURN_CALL(zero_arg);
+   *success = 0;
+   return 0;
+ }

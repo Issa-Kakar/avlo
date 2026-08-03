@@ -141,7 +141,7 @@ class _AvloPrunedFinder:
                 try:
                     merged.update(__import__(mod).PRUNED)
                 except ImportError:
-                    pass  # baseline zip before the registry exists
+                    pass  # registry module not present on this path yet
         finally:
             cls._busy = False
         cls._cache = (merged, sig)

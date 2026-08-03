@@ -1,8 +1,9 @@
 """AVLO runtime fixups — the Python side of the snapshot restore contract.
 
 The JS executor calls post_restore() immediately after every snapshot restore
-AND after every in-place blit reset. Keep this module import-light: it must
-not drag anything into the baseline snapshot that isn't already there.
+AND after every in-place blit reset. Keep this module import-light: it runs
+inside every captured heap image, so anything it imports gets baked into
+every set's snapshot.
 """
 
 import sys
@@ -18,9 +19,8 @@ def post_restore() -> None:
 
     linecache.clearcache()
 
-    # random: reseed from the (JS-backed) OS entropy source. Only if the
-    # snapshot happened to import it — the baseline warmup deliberately
-    # excludes it.
+    # random: reseed from the (JS-backed) OS entropy source — only if the
+    # captured image happened to import it (the capture bake doesn't).
     random = sys.modules.get("random")
     if random is not None:
         random.seed()

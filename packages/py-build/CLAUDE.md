@@ -1,5 +1,12 @@
 # py-build — AVLO Python toolchain
 
+> **Everything here is mutable and rapidly changing.** This doc describes
+> TODAY's toolchain — none of it is a commitment. The "Hard gates" below are
+> real correctness requirements; everything else (set shapes, caps, script
+> topology, snapshot residence, compression levels) is a current choice the
+> owner changes freely and often. Don't block a change because prose calls
+> something an invariant — check WHY, then update the prose with the change.
+
 Forked-Pyodide build + artifact packing for the in-browser Python runtime
 (`web/src/core/py/`). Everything is pinned in `build.config.json`
 (reproducibility root); cross-session state, measurement ledgers, and
@@ -19,9 +26,10 @@ imported by the group DSOs; see NOTES for why the obvious alternative dies on
 weak-COMDAT preemption). Side modules are **grouped 67→4**: each DSO-bearing
 bundle ships ONE `.avlo/<bundle>.so` (numpy / mpl-deps / pandas / matplotlib)
 linked by the recipes loop from committed manifests. Glue is
-`pyodide.asm.mjs`. sqlite3 is **static in the main module** (no bundle, no
-set — `import sqlite3` works everywhere). Sets =
-`{stdlib, numpy, numpy+pandas, numpy+matplotlib, all}`. Snapshots are
+`pyodide.asm.mjs`. sqlite3 and `_zstd` are **static in the main module** (no bundle, no
+set — `import sqlite3` / `import compression.zstd` work everywhere). Sets =
+`{stdlib, numpy+pandas, numpy+matplotlib, all}` (the standalone `numpy` set
+was dropped 2026-08 — `import numpy` rides `numpy+pandas`). Snapshots are
 CLIENT-captured today (OPFS, `web/src/core/py/`) — no snapshot artifacts are
 built or staged here YET (build-time capture + shipping is an open owner
 direction; see NOTES Open items); what the build owns is making every input
@@ -32,7 +40,8 @@ signal anyone needs.
 
 | Script | Role |
 |---|---|
-| `run-build.mjs` + `build.sh` | Docker fork build (pyodide 314.0.2 + the patch queue) → `dist/raw/`. Flags: `--clone-only`, `--targets`, `--allow-undigested` (image digest drift gate). build.sh replays pyodide patches from a clean tag checkout (one commit each), direct-applies missing emsdk patches + hard-asserts the `AVLO` marker in the installed dylink glue, and force-relinks when `link.rsp` is newer than the built glue |
+| `run-build.mjs` + `build.sh` | Docker fork build (pyodide 314.0.2 + the patch queue) → `dist/raw/`. Flags: `--clone-only`, `--targets`, `--allow-undigested` (image digest drift gate). build.sh replays pyodide patches from a clean tag checkout (one commit each), stages `patches/cpython/*.patch` into pyodide's `cpython/patches/` (any lane change nukes the cpython build+install trees — full ~20 min rebuild; AVLO-marker gated), direct-applies missing emsdk patches + hard-asserts the `AVLO` marker in the installed dylink glue, force-relinks when `link.rsp` is newer than the built glue, and stamps the pyodide-queue hash so a queue edit always forces the relink (`make -j$PYODIDE_JOBS` top-level) |
+| `board.mjs` | **The one-command gate board** (`pnpm board`, root `pnpm py:board`): stdlib×2 byte-compare → bundles → builtins → trace:check → corpus → dsos:check → groups:verify → compress → budgets → stage(+check) → harness → typecheck → test:py → test → seed. `--fast` skips repro doubles, `--from/--until/--skip` slice it, `--update-budgets` restamps. Early-exit + timing summary |
 | `packlib.py` | Shared pack primitives: hashseed re-exec guard, `compile_pyc` (UNCHECKED_HASH), prune-rule parsing + EXACT dotted tombstone keys, deterministic zip/ustar writers (names ≤100 chars AND ASCII-only — the shipped walker's charCode contract), canonical JSON |
 | `pack-stdlib.py` | Pruned pyc-only stdlib zip (`-O2`, DEFLATED 9) + overlay modules + `_avlo_pruned` registry → `dist/stage/python_stdlib.zip` + `stdlib-modules.json`. Refuses to run off the pinned python minor |
 | `dump-builtins.mjs` | Boots the fork on the RAW stdlib → `dist/stage/builtin-modules.json` (sorted `sys.builtin_module_names`); hard-asserts `_sqlite3` is a static builtin. Required stage.mjs input |
@@ -48,7 +57,7 @@ signal anyone needs.
 | `verify-groups.mjs` + `verify-pytree.py` | `groups:verify` — PyInit census equality + `needed==[]` + closed world vs the CURRENT main per group .so; rebuilt-vs-upstream `.py` byte equality per package (allowlist `config/pkg-equality-allow.txt` with reasons). `--spike`/`--pkgs` serve the hand-only spike lane |
 | `compress.mjs` | Brotli q11 `.br` siblings for every servable artifact (`--force` overrides the up-to-date skip) |
 | `check-budgets.mjs` | G1: per-artifact + composite `.br` ceilings from `build.config.json`; `--update` stamps measured +5% |
-| `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + `manifest.json`, prunes strays) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts` + `packages/py-loader/build-lock.json` (buildHash = 16-hex sha256 of the canonical sha tables). Prestage liveness gate on the built glue (`snapshot DSO table drift` + `loadDynlib` markers). `--check` = drift gate (any artifact/codegen/lock divergence fails). Keeps the ONE sanctioned local `parseTarMeta` copy (build-graph isolation — never import web/src from here) |
+| `stage.mjs` | dist → `web/public/py-dev/fork/` (+ `bundles/*.tar` + `manifest.json`, prunes strays) and REGENERATES `web/src/core/py/py-stdlib-modules.gen.ts` + `web/src/core/py/pyodide-fork.gen.d.ts` (the fork's emitted d.ts, `node:stream/web` import stripped; drift-gated but NEVER hashed — types carry no runtime bytes) + `packages/py-loader/build-lock.json` (buildHash = 16-hex sha256 of the canonical sha tables). Prestage liveness gate on the built glue (`snapshot DSO table drift` + `loadDynlib` markers). `--check` = drift gate (any artifact/codegen/lock divergence fails). Keeps the ONE sanctioned local `parseTarMeta` copy (build-graph isolation — never import web/src from here) |
 | `run-harness.mjs` | Node verification harness (`pnpm harness`; Node ≥23.6 type-strips the SHIPPED `py-harden`/`py-harness`/`py-mount`/`py-snapshot`/`py-loader`/`py-protocol` + py-loader `verify.ts` via `lib/ts-resolve.mjs`). Five child sections: **base** (exact executor boot re-enactment → scrub/freeze sweeps + fail-closed negatives, 0008 closure probes, tombstones, sqlite3 post-freeze) · **seaborn** (`all` set: plots decode to real pixels, vendored KDE, font gates, pandas↔sqlite3, figure caps vs PY_LIMITS) · **snapshot** (uniform-boot cold probe via the SHIPPED feeds driver → dso-free knife → bake → fork-API capture → AVS2 assemble via the SHIPPED codec → sup-style `readSnapshotToBuffer` positives/negatives → `DirtyRestoreError` negative → precompiled-Module restore → walk-only remount + RNG-pin/blit-reset probes) · **parity** (walker-vs-tarfile zero-diff full-tree gate — the standing L1 proof) · **verify** (`matchesLockEntry` over every staged artifact + corrupt negatives). Runs after any harden/verify/artifact/mount change; never in Turbo/CI |
 | `publish.mjs` | Staged artifacts → R2 under `<buildHash>/…` (every lock artifact + bundle tar with its `.br` sibling; `manifest.json` strictly LAST = completion marker; never fetched by clients — the SW's py fall-through branch exists for it). `--local` (default; `pnpm py:seed` from root) seeds the dev miniflare tree; `--remote` publishes to the real `avlo-py` bucket with a manifest divergence probe; `--dry-run` prints the plan. Preflight re-hashes EVERY source byte against the build-lock + checks `.br` freshness (restage ⇒ reseed). Uploads via wrangler CLI, which has NO checksum flag — the binding-put upgrade (sha256-verified, local+remote) is researched in NOTES Open items |
 | `lib/ts-resolve.mjs` | Side-effect import, FIRST in harness + corpus: Node ≥23.6 guard + `registerHooks` resolve fallback appending `.ts` — the shipped extensionless-relative web TS imports verbatim |
@@ -58,12 +67,18 @@ signal anyone needs.
 
 ## Layout
 
-`patches/pyodide/` (fork queue `0001` linkflags+memory exports, `0003` drop
-C-extensions — the list `config/stdlib-prune.txt` mirrors, `0005` DSO
-snapshot support, `0006` drop the `pyodide.js`/`package.json`/
-`pyodide-lock.json` boot crutch, `0007` owned-restore seam, `0008` JS-bridge
-closure, `0008b` hiwire `getExpectedKeys`),
+`patches/pyodide/` (fork queue `0001` linkflags+memory exports+trampoline
+`-u`+`-lzstd`, `0003` drop C-extensions — the list `config/stdlib-prune.txt`
+mirrors, `0005` DSO snapshot support, `0006` drop the `pyodide.js`/
+`package.json`/`pyodide-lock.json` boot crutch, `0007` owned-restore seam,
+`0008` JS-bridge closure, `0008b` hiwire `getExpectedKeys`, `0009` fork API
+types — type-only `_module`/`_api` + Module runtime-export declarations
+feeding the emitted d.ts),
+`patches/cpython/` (AVLO cpython-source lane, staged into pyodide's
+`cpython/patches/` ≥0010 by build.sh: `0010` trampoline arity reorder),
 `patches/emsdk/` (`0006` dsoBaseHook + replay ctor/reloc skip — mandatory),
+`bench/` (Node perf probes + `bench.py` suite + the running ledger —
+`README.md` there; `--fork=dist/raw` benches unstaged builds),
 `patches/pyodide-build/` (link-record hook), `patches/recipes/` (recipe
 source patches incl. the numpy legacy-rename the collision gate depends on),
 `patches/wheels/<pkg>/NNNN-*.patch` (unified diffs rooted at the unpacked
@@ -106,7 +121,7 @@ and the drift guard skip them, downloads go straight to the url (sha pin =
 provenance), and their `depends` field feeds `bundle_requires` in place of
 the lock's depends graph.
 
-## Invariants
+## Hard gates (real correctness requirements)
 
 - **Restage ⇒ recapture ⇒ reseed.** Any staged-artifact byte change mints a
   new `buildHash` in the committed build-lock (`packages/py-loader/`) — the
@@ -117,10 +132,8 @@ the lock's depends graph.
   drifted stdlib under an unrotated hash is caught by the executor's
   as-mounted zip hash (zipimport TOC offsets live in captured heaps — the
   corruption class BUILD_ID cannot see). `stage --check` flags any drift;
-  publish.mjs's preflight refuses a stale mix loudly.
-- **`overlay/stdlib/` sources ship inside the stdlib zip** — even a comment
-  edit there rotates `buildHash` and forces a full restage + reseed. Batch
-  overlay changes (including doc-wording fixes) with a planned restage.
+  publish.mjs's preflight refuses a stale mix loudly. **This is a one-command
+  flow now: `pnpm board`.**
 - **meta.json is the FIRST tar entry** — every consumer (executor, harness,
   corpus, supervisor) reads it via the one shared walker's 512-byte header
   parse (`web/src/core/py/py-mount.ts parseTarMeta`; stage.mjs keeps the one
@@ -140,15 +153,33 @@ the lock's depends graph.
   sweep in NOTES session 18 — re-run it after any 0003 edit. Before pruning,
   prove no shipped package imports the target at TOP level (lazy hits are
   fine) and that it's absent from every `.cache/trace/*.json` `loaded` set.
-- **traceOnly wheels (pillow, fonttools) never ship** — they exist so the
-  tracer can catch residual import sites (the `--check` PIL/fontTools ban).
+- **Trampoline liveness** — the built glue must DEFINE
+  `getWasmTrampolineModule` (stage.mjs grep) and a 10k METH_NOARGS loop must
+  cross into JS ~0 times (harness census). Guards the MAIN_MODULE=2
+  lazy-archive regression that silently cost ~40% on C-method calls until
+  2026-08 (patch 0001's `-Wl,-u,__em_js__getWasmTrampolineModule`).
+
+## Current conventions (change freely, update prose with the change)
+
+- **`overlay/stdlib/` sources ship inside the stdlib zip** — even a comment
+  edit there rotates `buildHash`. Batching overlay edits with a planned
+  restage is a cost optimization, not a rule; with `pnpm board` a rotation
+  is one command + one seed.
+- **traceOnly wheels (pillow, fonttools) never ship** — a consequence of the
+  pillow-ectomy wheel patch; they exist so the tracer can catch residual
+  import sites (the `--check` PIL/fontTools ban).
+- Patch 0001 is the **single writer for `Makefile.envs`** (queue hunks never
+  conflict on rebase); the cpython lane owns cpython-source changes.
+- `run-corpus.mjs`'s `GROUP_SET` is a hard registry — an unmapped corpus dir
+  counts as a FAILURE, not a skip.
 
 ## Gate board
 
-`pack:stdlib` ×2 byte-identity (manual — it takes no `--repro`) · `bundles`
-byte-identity (the script already carries `--all --repro`) · `trace:check`
-(G3) · `corpus` 7/7 (font + PNG gates) · `dsos:check` (grouped-world v2) ·
-`groups:verify` · `compress` → `budgets` (G1) · `stage` + `stage:check` ·
-`harness` (all five sections) · `pnpm typecheck` · `pnpm test:py` ·
-vitest (web AVS2 codec + py-loader verify + workers/py) · `pnpm py:seed`.
+**`pnpm board` runs the whole thing** (board.mjs — see the script table for
+slicing flags). The sequence: `pack:stdlib` ×2 byte-identity · `bundles`
+byte-identity (`--all --repro`) · `builtins` · `trace:check` (G3) · `corpus`
+7/7 (font + PNG gates) · `dsos:check` (grouped-world v2) · `groups:verify` ·
+`compress` → `budgets` (G1) · `stage` + `stage:check` (incl. the trampoline
+glue grep) · `harness` (all five sections, incl. the trampoline census) ·
+`pnpm typecheck` · `pnpm test:py` · `pnpm test` · `pnpm py:seed`.
 Last-green stamps + ledgers live in `NOTES.md`.

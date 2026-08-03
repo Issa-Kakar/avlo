@@ -59,6 +59,8 @@ prompt.md
 packages/py-build/.work/
 # Downloaded recipe wheels (sha-pinned in build.config.json)
 packages/py-build/.cache/
+# Saved raw builds for bench A/Bs (v1-ship / v2-o3-ref / v3-tailcall — ~30 MB each)
+packages/py-build/bench/builds/
 # py-build staging target (stage.mjs writes the fork artifacts here)
 web/public/py-dev/
 

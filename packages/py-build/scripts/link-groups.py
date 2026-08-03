@@ -28,6 +28,7 @@ import argparse
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -35,10 +36,14 @@ def fail(msg: str) -> None:
     sys.exit(f"link-groups: FAIL — {msg}")
 
 
+class LinkError(RuntimeError):
+    """Raised inside pool workers (sys.exit in a thread only kills the thread)."""
+
+
 def sh(cmd: list[str], **kw) -> None:
     r = subprocess.run(cmd, **kw)
     if r.returncode != 0:
-        fail(f"command failed ({r.returncode}): {' '.join(cmd[:8])} ...")
+        raise LinkError(f"command failed ({r.returncode}): {' '.join(cmd[:8])} ...")
 
 
 def link_one(manifest: dict, stash: Path, out_so: Path, tmp: Path) -> None:
@@ -47,7 +52,7 @@ def link_one(manifest: dict, stash: Path, out_so: Path, tmp: Path) -> None:
     archives = [stash / f"{a['h']}.a" for a in manifest["archives"]]
     for p in [*objects, *archives]:
         if not p.is_file():
-            fail(f"stash miss: {p}")
+            raise LinkError(f"stash miss: {p}")
     rsp = tmp / "objects.rsp"
     rsp.write_text("\n".join(str(p) for p in objects) + "\n")
     exports = tmp / "exports.json"
@@ -69,6 +74,23 @@ def link_one(manifest: dict, stash: Path, out_so: Path, tmp: Path) -> None:
     sh(cmd)
 
 
+def process_manifest(manifest: dict, args) -> str:
+    bundle = manifest["bundle"]
+    partial = manifest.get("partial")
+    name = f"spike-{bundle}.so" if partial else f"{bundle}.so"
+    out_so = args.out / name
+    tmp = args.out / f".link-{bundle}"
+    link_one(manifest, args.stash, out_so, tmp)
+    if args.repro:
+        out2 = tmp / "repro.so"
+        link_one(manifest, args.stash, out2, tmp)
+        if out_so.read_bytes() != out2.read_bytes():
+            raise LinkError(f"{bundle}: --repro FAIL — group link differs across identical invocations")
+        out2.unlink()
+    n_ext = len(manifest["extensions"])
+    return f"{name}: {out_so.stat().st_size:,} bytes ({n_ext} extensions{' PARTIAL' if partial else ''}, repro {'OK' if args.repro else 'skipped'})"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifests", required=True, type=Path)
@@ -76,36 +98,41 @@ def main() -> None:
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--repro", action="store_true")
     ap.add_argument("--allow-partial", action="store_true")
+    ap.add_argument("--jobs", type=int, default=2, help="concurrent bundle links (RAM-bound; wasm-opt peaks ~1 GB each)")
     args = ap.parse_args()
 
-    manifests = sorted(args.manifests.glob("*.json"))
-    if not manifests:
+    manifest_paths = sorted(args.manifests.glob("*.json"))
+    if not manifest_paths:
         fail(f"no manifests in {args.manifests} — run harvest-links.py first")
     args.out.mkdir(parents=True, exist_ok=True)
-    embuilder_done = False
 
-    for mp in manifests:
-        manifest = json.loads(mp.read_text())
-        bundle = manifest["bundle"]
+    manifests = [json.loads(mp.read_text()) for mp in manifest_paths]
+    for manifest in manifests:
         partial = manifest.get("partial")
         if partial and not args.allow_partial:
-            fail(f"{bundle}: manifest is partial (missing {len(partial)}) — spike leftovers? re-harvest fully")
-        if any("freetype-legacysjlj" in f for f in manifest["flagsTail"]) and not embuilder_done:
-            print("=== embuilder build freetype-legacysjlj --pic (PIC cache warm-up)")
+            fail(f"{manifest['bundle']}: manifest is partial (missing {len(partial)}) — spike leftovers? re-harvest fully")
+
+    # PIC cache warm-up must precede the pool (embuilder is not concurrency-safe
+    # against its own empty cache); once warm it is a no-op for every link.
+    if any(any("freetype-legacysjlj" in f for f in m["flagsTail"]) for m in manifests):
+        print("=== embuilder build freetype-legacysjlj --pic (PIC cache warm-up)")
+        try:
             sh(["embuilder", "build", "freetype-legacysjlj", "--pic"])
-            embuilder_done = True
-        name = f"spike-{bundle}.so" if partial else f"{bundle}.so"
-        out_so = args.out / name
-        tmp = args.out / f".link-{bundle}"
-        link_one(manifest, args.stash, out_so, tmp)
-        if args.repro:
-            out2 = tmp / "repro.so"
-            link_one(manifest, args.stash, out2, tmp)
-            if out_so.read_bytes() != out2.read_bytes():
-                fail(f"{bundle}: --repro FAIL — group link differs across identical invocations")
-            out2.unlink()
-        n_ext = len(manifest["extensions"])
-        print(f"{name}: {out_so.stat().st_size:,} bytes ({n_ext} extensions{' PARTIAL' if partial else ''}, repro {'OK' if args.repro else 'skipped'})")
+        except LinkError as e:
+            fail(str(e))
+
+    # Bundles link concurrently — zero shared state (per-bundle tmp dirs,
+    # content-addressed read-only stash). Output order stays manifest order.
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        futures = [pool.submit(process_manifest, m, args) for m in manifests]
+        errors = []
+        for m, fut in zip(manifests, futures):
+            try:
+                print(fut.result())
+            except LinkError as e:
+                errors.append(f"{m['bundle']}: {e}")
+    if errors:
+        fail("; ".join(errors))
 
 
 if __name__ == "__main__":

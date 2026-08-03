@@ -59,6 +59,20 @@ link model is the closed world.
   was never exported by default; the deferred-main safety chain is
   receipted in the plan/NOTES).
 
+- Trampoline revival: -Wl,-u,__em_js__getWasmTrampolineModule pulls
+  emscripten_trampoline_wasm.o out of libpython3.14.a. Its only content
+  is the getWasmTrampolineModule EM_JS (the wasm-gc call trampoline's
+  inner module); nothing in C references it — the sole reference lives
+  inside another EM_JS string body, invisible to wasm-ld — so under
+  MAIN_MODULE=2 lazy-archive semantics the member was never extracted,
+  getPyEMTrampolinePtr() swallowed the ReferenceError, and EVERY
+  PY_CALL_TRAMPOLINE call fell back to the wasm->JS->wasm JS trampoline
+  (~40% tax on METH_* calls, measured). This is NOT the forbidden "-u
+  sweep" from the DSO import-union story (that promotes WEAK refs to
+  strong across the closed world — see fetch-wheels.mjs); it pulls ONE
+  defined data symbol from ONE archive member. ERROR_ON_UNDEFINED_SYMBOLS=1
+  makes a future upstream rename fail the LINK loudly; stage.mjs's
+  liveness gate + the harness table.get census guard the glue.
 diff --git a/Makefile b/Makefile
 index e6ca08c..53b95ed 100644
 --- a/Makefile
@@ -72,10 +86,20 @@ index e6ca08c..53b95ed 100644
  
  	if [[ -n $${PYODIDE_SOURCEMAP+x} ]] || [[ -n $${PYODIDE_SYMBOLS+x} ]] || [[ -n $${PYODIDE_DEBUG_JS+x} ]]; then \
 diff --git a/Makefile.envs b/Makefile.envs
-index 0ba8b4b..fc4dcd7 100644
+index 0ba8b4b..65e6494 100644
 --- a/Makefile.envs
 +++ b/Makefile.envs
-@@ -155,20 +155,18 @@ export CXXFLAGS_BASE=
+@@ -131,6 +131,9 @@ ifdef PYODIDE_ASSERTIONS
+ endif
+ 
+ 
++# AVLO: -O3 was A/B'd 2026-08 under a FIXED cpu boost policy: ~0-3% vs -O2
++# on the ceval/bench suite (an earlier 30% reading was a Windows boost-policy
++# artifact) at +3% wasm — stays -O2. Ledger: py-build bench/ledger-2026-08.
+ export OPTFLAGS=-O2
+ export CFLAGS_BASE=\
+ 	$(OPTFLAGS) \
+@@ -155,20 +158,18 @@ export CXXFLAGS_BASE=
  
  export MAIN_MODULE_LDFLAGS= $(LDFLAGS_BASE) \
  	-s ENVIRONMENT=web,webview,worker,node,shell \
@@ -101,13 +125,16 @@ index 0ba8b4b..fc4dcd7 100644
  	-s AUTO_JS_LIBRARIES=0 \
  	-s AUTO_NATIVE_LIBRARIES=0 \
  	-s NODEJS_CATCH_EXIT=0 \
-@@ -178,27 +176,14 @@ export MAIN_MODULE_LDFLAGS= $(LDFLAGS_BASE) \
+@@ -176,29 +177,18 @@ export MAIN_MODULE_LDFLAGS= $(LDFLAGS_BASE) \
+ 	-s EXPORTED_FUNCTIONS='$(EXPORTS)'\
+ 	-s EXIT_RUNTIME \
  	\
++	-Wl,-u,__em_js__getWasmTrampolineModule \
  	-lpython$(PYMAJOR).$(PYMINOR)$(CPYTHON_ABI_FLAGS) \
  	-lffi \
 -	-llzma \
  	-lsqlite3 \
--	-lzstd \
+ 	-lzstd \
  	-lstdc++ \
 -	-lidbfs.js \
 -	-lnodefs.js \
@@ -130,7 +157,7 @@ index 0ba8b4b..fc4dcd7 100644
  
  EXPORTS=_main \
     ,_free \
-@@ -256,6 +241,9 @@ EXPORTS=_main \
+@@ -256,6 +246,9 @@ EXPORTS=_main \
     \
     ,___stack_low \
     ,___stack_high \

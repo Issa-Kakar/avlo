@@ -153,38 +153,38 @@
     "seaborn": ["seaborn"]
   },
   "sets": {
-    "numpy": ["numpy"],
     "numpy+pandas": ["numpy", "dateutil", "pytz", "pandas"],
     "numpy+matplotlib": ["numpy", "dateutil", "pytz", "mpl-deps", "matplotlib"],
     "all": ["numpy", "dateutil", "pytz", "mpl-deps", "pandas", "matplotlib", "seaborn"]
   },
   "jobs": {
-    "$comment": "Conservative parallelism: WSL2 host has ~9GB RAM total.",
+    "$comment": "RAM-derived, tune per box (~9GB WSL2 host). pyodideJobs also drives build.sh's top-level make -j.",
     "emsdkCores": 2,
     "emccCores": 2,
-    "pyodideJobs": 2
+    "pyodideJobs": 4
   },
   "targets": {
-    "m0": "dist/pyodide.asm.mjs dist/pyodide.js dist/python_stdlib.zip"
+    "$comment": "pyodide.d.ts rides along for the app-side LSP types (staged as web/src/core/py/pyodide-fork.gen.d.ts — types only, never hashed into buildHash).",
+    "m0": "dist/pyodide.asm.mjs dist/pyodide.js dist/python_stdlib.zip dist/pyodide.d.ts"
   },
   "budgets": {
     "$comment": "Byte ceilings. `artifacts` (name -> {raw, br}) is stamped by check-budgets.mjs --update (+5% headroom over measurement, human-committed); plain runs hard-fail over any ceiling. `composites` are wire-download sums of .br sizes. Restamped at P1 Gate B (314.0.2 / MAIN_MODULE=2).",
     "artifacts": {
       "pyodide.asm.mjs": {
-        "raw": 360860,
-        "br": 79650
+        "raw": 362215,
+        "br": 80164
       },
       "pyodide.asm.wasm": {
-        "raw": 7200944,
-        "br": 2066813
+        "raw": 7600712,
+        "br": 2155069
       },
       "pyodide.mjs": {
-        "raw": 17676,
-        "br": 6408
+        "raw": 17689,
+        "br": 6411
       },
       "python_stdlib.zip": {
-        "raw": 3523236,
-        "br": 3459106
+        "raw": 2991868,
+        "br": 2937574
       },
       "bundles/numpy.tar": {
         "raw": 9590784,

@@ -1,22 +1,22 @@
 {
   "schema": 1,
-  "buildHash": "e210f3a9a140f04b",
+  "buildHash": "7fdf68788eb8a2a4",
   "artifacts": {
     "pyodide.asm.mjs": {
-      "sha256": "9da2d9132e31c4dd4da243ee65cb923a6e80d1908756041ed9a19083925ed7e8",
-      "size": 343738
+      "sha256": "dbdc067c06a73187d76cb597a0ccf3fad6bc9aaf6b91c67b65bfed97e769d51c",
+      "size": 344966
     },
     "pyodide.asm.wasm": {
-      "sha256": "e267de722dcf705f7edfe13847861079f3df9e010e335f5f7222b5d580e0bd8d",
-      "size": 6858040
+      "sha256": "9db05929b38c781e8f1bed438869a820def77baa08a797631b9b2dd0e180db33",
+      "size": 7238773
     },
     "pyodide.mjs": {
-      "sha256": "c2dc64bdbea87b171815cbca60bbf8d3bcc9dc4f68003a9e2cf731b2a5b59c3c",
+      "sha256": "2082dc80743da444c0d814ef1969988e11909e1ff8c687ce0d90d1a24014f841",
       "size": 16846
     },
     "python_stdlib.zip": {
-      "sha256": "eeeeb2495e8e7513b8a6dc071c55675e7427fc9758aa6dbe0744ecefdc2f3121",
-      "size": 2840365
+      "sha256": "df012867b88cf3af881dace3055d12556223955458611a96850e790d56db2837",
+      "size": 2849398
     }
   },
   "bundles": {
@@ -50,9 +50,6 @@
     }
   },
   "sets": {
-    "numpy": [
-      "numpy"
-    ],
     "numpy+pandas": [
       "numpy",
       "dateutil",

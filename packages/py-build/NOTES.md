@@ -7,16 +7,47 @@ when a phase lands, append a compact entry to the phase log at the bottom and
 fold its durable facts into the sections above it. Kill anything here that a
 later phase makes false.
 
-**Authoritative plan (P0–P5):**
-`/home/issak/.claude/plans/docs-local-py-runtime-redesign-condense-parsed-piglet.md`
-(carries per-phase checkboxes, targets table, risk register, rejected
-alternatives — do not re-litigate those without new data).
+**Everything here is mutable and rapidly changing.** Current-state sections
+describe TODAY's implementation, never commitments — the owner pivots
+surfaces (sets, caps, snapshot residence, compression, boot topology)
+frequently and expects agents to engage with proposed changes on the merits,
+not to defend prose. Only two classes are firm: **owner-settled** decisions
+(explicitly labeled — e.g. the same-origin security posture) and
+**hard-correctness** gates (hash verification, meta.json-first, deps-first
+DSO order, trampoline liveness). When a change lands, UPDATE the prose it
+falsifies — don't leave "invariants" describing the previous design.
 
-**UPDATE:** The plan has drifted a meaningful amount. Don't rely on that for independent decision making
+**Redesign plan (P0–P5), historical:**
+`/home/issak/.claude/plans/docs-local-py-runtime-redesign-condense-parsed-piglet.md`
+(local-only). It has drifted meaningfully from what landed — treat it as
+background reading, not authority; THIS file + the code are current. Its
+rejected-alternatives register is still worth checking before re-proposing
+something.
+
 ---
 
-## Current state — cold-restore attack landed (L1+L2+knives), ledger re-recorded, docs current
+## Current state — 2026-08 perf batch (trampoline fix, -O2 confirmed, cancel=kill, L1 figures, board)
 
+- **2026-08 perf batch landed (Session 19; buildHash `7fdf68788eb8a2a4` —
+  the whole batch rode ONE rotation).** Headlines: the dead wasm-gc
+  trampoline FIXED (0 JS crossings /10k METH_NOARGS, was 10,367; meth −48% /
+  json −11% clean same-policy) + two permanent gates; **-O2 confirmed as
+  ship state** (the apparent "-O3 ~30% win" was a CPU-boost-policy artifact;
+  clean A/B ~0–3%); tail-call variant 0 REJECTED on clean redone data
+  (geomean +25% regression, Liftoff worse too; cross-verified against the
+  remote PR #16 sweep — `bench/tailcall-bridge/`, Session 20 — with
+  `bench/v3-tailcall-patches/` keeping the kit for a fork-lane variant-4
+  test); mimalloc REJECTED
+  (+42 MB heap); interrupt
+  disarmed — cancel = kill+respawn; figure PNG encode zlib L9→L1 streaming
+  (big-figure savefig 906→160 ms measured on the staged fork); mpl
+  first-figure bake in capture (569 ms capture-side, `all` heap flat at
+  65.4 MB); standalone `numpy` set dropped; script parallelism + the
+  one-command **`pnpm board`**; fork API types staged
+  (`pyodide-fork.gen.d.ts`, patch 0009 — py-loader's `Pyodide` is a real
+  type). Story + verdicts: Session-19 phase entry; raw probe rows:
+  `bench/ledger-2026-08.jsonl` (only `*-agg-*`/`V1-ship-agg` entries are
+  policy-clean — see the learnings entry on boost-policy pinning).
 - **Cold-restore attack landed** (Session 16; commits `630b17f` L1 walker,
   `f332d90` build rev, `ba23635` L2 flip + knives; receipts in
   `docs(local)/ColdRestoreAttack.md`). The mechanics are now current-state
@@ -43,9 +74,9 @@ alternatives — do not re-litigate those without new data).
     dead-on-import sweep (−502 KB, zip 3.34 → 2.84 MB) · cold-boot
     `freeDsoFileData` (**−14.7 MB; `all` capture heapLen 78.5 → 65.4 MB** —
     every restore reads/hashes/transfers/blits that much less).
-- **buildHash `e210f3a9a140f04b`** (committed with the lock; bundle tars
-  byte-stable — only the stdlib zip rotated), seeded to local R2 (23 keys).
-  The rotation auto-invalidated every client's OPFS snapshots + caches.
+- buildHash at the sweep was `e210f3a9a140f04b` (superseded — current is
+  `7fdf68788eb8a2a4`, 2026-08 perf batch, seeded to local R2, 23 keys; every
+  rotation auto-invalidates clients' OPFS snapshots + caches).
 - **Preview-board ledger — RE-RECORDED by the owner (2026-07-29; production
   build @ localhost:3000, Chrome + SW active, local R2, no throttling;
   snapshots already in OPFS + tars SW-cached except the first-visit row;
@@ -99,13 +130,16 @@ alternatives — do not re-litigate those without new data).
   `.asm.js` in 314).
 - **buildHash history:** `267194ca75197030` (P2 rotation, committed
   `af14670`) → `f440369a4275be9a` (cold-restore attack rev) →
-  **`e210f3a9a140f04b`** (dead-on-import stdlib sweep, current).
+  `e210f3a9a140f04b` (dead-on-import stdlib sweep) →
+  **`7fdf68788eb8a2a4`** (2026-08 perf batch, current).
   Commits: `c6db3ea` (P0 trace+ledger), `479b0f0` (P1 Loop A rebase),
   `8653e84` (P1 Loop B flip + lock + seed), `cb53dd4`/`44fd725`/`ae5806b`
   (P1.5 Steps 0–2), `284d8a1`/`af14670` (P2), `630b17f`/`f332d90`/`ba23635`
   (cold-restore attack).
-- **Sets:** `{stdlib, numpy, numpy+pandas, numpy+matplotlib, all}` — stdlib is
-  the implicit no-bundle set; the other four are `build.config.json` `sets`.
+- **Sets:** `{stdlib, numpy+pandas, numpy+matplotlib, all}` — stdlib is
+  the implicit no-bundle set; the other three are `build.config.json` `sets`.
+  The standalone `numpy` set was DROPPED 2026-08 (`import numpy` rides
+  `numpy+pandas`; PySetKey/PACKAGE_TO_SET regenerated at stage).
   sqlite3 is **static in the main module** (314 upstream) — its old wheel,
   bundle, and standalone set are gone; `import sqlite3` works on every set.
   `PySetKey` is codegen'd by `stage.mjs` into `py-stdlib-modules.gen.ts`
@@ -134,7 +168,10 @@ alternatives — do not re-litigate those without new data).
   this glue, memory is wasm-exported) + the dylink trio
   `LDSO,newDSO,loadWebAssemblyModule` (closure-internal otherwise; 0005 reads
   them off Module) + `callMain` (cold-restore rev — the uniform-boot driver's
-  deferred cold main)), `0003` (drop C extensions; 314 upstream now disables
+  deferred cold main); since 2026-08 also
+  `-Wl,-u,__em_js__getWasmTrampolineModule` (the trampoline fix — see
+  learnings), `-lzstd`, and `OPTFLAGS=-O2` carrying the measured ship
+  verdict), `0003` (drop C extensions; 314 upstream now disables
   pwd/_ssl/_hashlib/_uuid itself and adds static `_hmac`+`_sqlite3`, both
   kept; we add `_zstd`; `_lzma` stays disabled), `0005` (AVLO DSO replay API
   on dynload.ts: get/setDsoLoadInfo, loadDynlibReplay — now accepting
@@ -145,7 +182,15 @@ alternatives — do not re-litigate those without new data).
   getExpectedKeys/syncUpSnapshotLoad1/2 kept; + installStdlib
   `writeFile {canOwn:true}` — the stdlib zip buffer is adopted, not copied),
   `0008` (js-bridge closure), `0008b` (expected-keys = the REAL 5-entry boot
-  table). **One emsdk patch:** `0006` dsoBaseHook (record/replay of DSO
+  table), `0009` (fork API types — `declare static _module`/`_api` on
+  PyodideAPI_ + Module runtime exports + typed preBlit seam, so the emitted
+  d.ts types the app surface; type-only, wasm byte-identical; consumed by
+  stage.mjs → `web/src/core/py/pyodide-fork.gen.d.ts`). **NEW cpython lane**
+  (2026-08): `patches/cpython/*.patch` staged into pyodide's
+  `cpython/patches/` ≥0010 by build.sh (lane change nukes cpython
+  build+installs — BOTH, see learnings); first occupant `0010` trampoline
+  arity reorder (2,3,1,0 — the 2-arg wrapped forms first).
+  **One emsdk patch:** `0006` dsoBaseHook (record/replay of DSO
   memBase/tableBase in loadWebAssemblyModule + v2: postInstantiation SKIPS
   `__wasm_apply_data_relocs` + `__wasm_call_ctors` under replay — the heap
   blit supplies their capture-time effects; running them pre-blit against the
@@ -208,7 +253,9 @@ line, exports, or DSO handling must understand this:
 - **Tripwires:** `ERROR_ON_UNDEFINED_SYMBOLS=1` at link; 5.0.3's named
   runtime throws on both unresolved surfaces; corpus (all 7 groups) is the
   closed-world proof — every DSO dlopens, zero stub throws.
-- **Numbers (Loop B vs Loop A / 0.29):** wasm 6,858,149 B (−13.8% vs Loop A's
+- **Numbers (Loop B vs Loop A / 0.29 — pre-2026-08 values; the trampoline
+  `-u` + `_zstd` re-add moved wasm to 7,238,773 B raw, the within-row
+  comparisons stay valid):** wasm 6,858,149 B (−13.8% vs Loop A's
   7,952,003; 0.29 was ~7.47 MB), exports 1,013 (Loop A EXPORT_ALL: 8,015;
   0.29: 9,651), glue 343,521 B (−60% — DSOs on the line had dragged ~290 KB
   of JS-library stubs in via `DEFAULT_LIBRARY_FUNCS_TO_INCLUDE`), GOT
@@ -296,8 +343,11 @@ residue only; the full census is regenerable via `dsos:check` /
   dlopen (table-map ~17 · GOT scans ~3 · Global traffic ~8) — why
   dso-replay @4 runs in the tens of ms where the 67-DSO world took 428–464.
   `convertJsFunctionToWasm`: 0 during mounts (1 known preRun trampoline in
-  main boot).
-- `all` owned capture: tableLenAtCapture 21,526; zero pages only 12.5 %
+  main boot — pre-2026-08: the wasm-gc trampoline fix adds a second preRun
+  `addFunction`).
+- `all` owned capture: tableLenAtCapture 21,526 (pre-2026-08 value —
+  capture-relative, re-derives on the next capture; the extra preRun
+  `addFunction` shifts it); zero pages only 12.5 %
   @64 KiB (why dense AVS2 stands, no sparse encoding); fused xxh32 ≈ 28 ms.
 
 ## Security model (durable decisions + residuals)
@@ -323,6 +373,115 @@ decision record and the accepted residuals:
   wasm-syscall absence, not policy.
 
 ## Hard-won learnings (do not re-derive)
+
+**2026-08 perf batch (Session 19):**
+- **The wasm-gc trampoline was DEAD in every shipped build — root cause +
+  fix:** patch 0001's MAIN_MODULE 1→2 flip left
+  `emscripten_trampoline_wasm.o` — whose ONLY content is the
+  `getWasmTrampolineModule` EM_JS, referenced from JS alone, never from C —
+  unreferenced at link, so wasm-ld never pulled the archive member and the
+  jsifier never emitted the EM_JS into the glue. `getPyEMTrampolinePtr()`
+  swallowed the ReferenceError and returned 0, silently and forever: every
+  METH_NOARGS/O/VARARGS call + getset access round-tripped wasm→JS→wasm
+  (10,367 `table.get` crossings /10k calls; fixing it = meth −48% /
+  json −11%, same-policy interleaved). Fix:
+  `-Wl,-u,__em_js__getWasmTrampolineModule` in MAIN_MODULE_LDFLAGS — this
+  `-u` extracts ONE defined symbol from ONE archive member and is NOT the
+  forbidden "-u sweep" (promoting weak refs across the DSO import union —
+  different mechanism, still forbidden). TWO permanent gates so this class
+  of bug can never be silent again: stage.mjs prestage occurrence count
+  (≥2 in the glue) + the harness pre-harden own-property `wasmTable.get`
+  census (≤16 crossings /10k). Snapshot-safe by construction: the preRun
+  hook runs on EVERY boot (cold + restore), `addFunction` mints the same
+  index both sides, `tableLenAtCapture` asserts are the tripwire.
+- **`grep -c` on minified glue LIES** — it counts lines and both trampoline
+  occurrences share one line; count with `grep -o X | wc -l` (stage.mjs
+  splits on the needle). Cost a full false-regression investigation; the
+  `EMCC_DEBUG=1` emcc-NN-*.js artifact chain is the debugging tool if a
+  real emission failure ever appears.
+- **Bench discipline: pin the CPU boost policy for the WHOLE session and
+  stamp it in the ledger line.** A mid-session Windows processor-boost
+  shift (efficient-aggressive → …-at-guaranteed → aggressive; ~2.9 vs
+  ~4.2 GHz) contaminated every absolute number and manufactured a fake
+  "~30% -O3 win" — the clean same-policy interleaved A/B read ~0–3% ⇒
+  **-O2 stays**. Only `*-agg-*`/`V1-ship-agg` rows in
+  `bench/ledger-2026-08.jsonl` are clean; always interleave A/B pairs.
+- **Tail-call interp: without `-mtail-call`, clang IGNORES `musttail` with
+  only a warning** (confirmed 2026-08, incl. by a second remote session) —
+  a "tail-call build" compiles fine and silently doesn't tail-call. Gates:
+  `ceval.o` must carry `tail-call` in its `target_features` section (the
+  FINAL linked wasm carries NO target_features — check the object, not the
+  binary), and a Py_TAIL_CALL_INTERP=1 build that BOOTS proves real tail
+  calls (fake ones nest a wasm frame per dispatched bytecode and overflow
+  the engine stack almost immediately). The clean 2026-08-03 redo (gate
+  passed, real tail calls) REJECTED variant 0: geomean +25% steady-state
+  regression AND worse under Liftoff — V8's per-bytecode
+  `return_call_indirect` path is just slow. Mechanism (V8 design doc +
+  measurements): wasm tail calls shine for DIRECT, signature-matched,
+  register-resident calls (the fib self-call ideal); variant 0 is the
+  opposite — indirect through a 231-entry table with a wide shared
+  signature, paying table-bounds + signature check + frame bookkeeping per
+  dispatched bytecode where the megafunction pays one `br_table` branch
+  with everything live in locals (fib_rec +48% was the worst probe —
+  Python-level recursion hammers dispatch hardest). **Companion finding
+  (remote session 2026-08-03, mechanism reproduced locally on V8 13.6):
+  V8 compiles wasm LAZILY by default** — `WebAssembly.compile` of the full
+  7.24 MB module is ~13–20 ms (decode+validate only; ~72 ms forced eager);
+  function bodies compile on first call. It does NOT rescue variant 0:
+  probe boots are fresh processes and bootMs was flat-to-worse (CPython
+  init touches nearly the whole dispatch surface before any user code),
+  steady state is paid every run, and the app amortizes first-touch
+  compile anyway (snapshots + Chrome's disk wasm code cache). Kit +
+  protocol: `bench/v3-tailcall-patches/README.md`.
+- **Interpreter-dispatch perf verdicts do NOT transfer across builds or
+  hosts (Session 20, `bench/tailcall-bridge/README.md` — the PR #16
+  cross-verification):** the SAME variant-0-vs-goto A/B, same 11-benchmark
+  suite, same V8 binaries, inverts between builds on one machine — fork
+  +23–25% slower (both engines, and unchanged under `--no-liftoff` pure
+  TurboFan) vs stock-standalone 7–17% FASTER on Zen 2 — and flips again
+  between hosts on the same standalone build (Zen 2 0.83 vs the remote
+  Xeon 1.02 geomean, V8 14.6). Mechanism: **tail-call dispatch runs at
+  the same absolute speed in both builds** (fib 25.8 vs 26.4 ms) while
+  **the fork's goto baseline is ~2× faster than stock CPython's
+  emscripten build** (fib 17.4 vs 34.3 ms; unbisected suspects:
+  `-fwasm-exceptions -sSUPPORT_LONGJMP=wasm` vs default JS-based EH,
+  MAIN_MODULE=2 + the pyodide link recipe) — so "variant X wins N%" is
+  meaningless without naming the baseline build; the remote's +20–27%
+  variants-3/4/6 wins are against headroom the fork already banked.
+  Emitted dispatch shape does NOT explain any of it (opcode censuses
+  match: fork v0 1146 direct/300 indirect `return_call` vs standalone
+  1248/302). Also verified: stock 3.14.2 cannot even build variant 0
+  under emscripten (`preserve_none` hard-errors; PR #6122's 0010 patch or
+  our 0011 is required). Rule: dispatch-style A/Bs are only valid in the
+  fork lane, interleaved, on ≥2 uarchs.
+- **-O3 structural hazard (remote session 2026-08-03; reversion already
+  stood on flat perf):** -O3 barely touches the eval loop (78,942 →
+  78,485 B) but inlining mints a NEW 157,736 B function — 2× the
+  megafunction — while code section grows 4.06 → 4.32 MB. Under lazy
+  compilation that is a first-call latency spike on whatever path calls
+  it, and `check-budgets.mjs` cannot see per-function shape. -O2 stays;
+  `bench/builds/v2-o3-ref/` retained for reference.
+- **`PYTHONMALLOC=mimalloc` REJECTED on data:** perf ±5% noise, heap
+  54→96 MB (+42 MB in every snapshot + resetImage). Do not set it.
+- **cpython lane rebuilds nuke BOTH trees:** build.sh removes
+  `cpython/build/Python-3.14.2` AND `cpython/installs` on any lane change —
+  make links against the INSTALL tree, so nuking only build/ silently
+  relinks stale libpython (bit us once). A Makefile.envs-only change
+  (e.g. OPTFLAGS) triggers NEITHER — nuke manually or you A/B stale
+  objects against a fresh flag line.
+- **Full cpython nukes are NOT byte-reproducible** (found 2026-08-03: two
+  identical-source -O2 builds differ by 13,912 scattered bytes at the SAME
+  7,238,773-byte size — address-constant immediates shifted by small
+  deltas, i.e. a data-segment layout shift; the raw stdlib zip differs too
+  (pyc headers embed extraction-time mtimes), and BUILD_ID follows the
+  wasm. Suspects: readdir/archive-order-dependent link inputs or an
+  embedded `__DATE__`/`__TIME__`; unrooted — Open items). Consequences:
+  byte-size equality is NOT byte equality (the earlier "byte-size-identical
+  revert" comparisons proved nothing); expect a buildHash rotation on ANY
+  cpython nuke even with identical sources; `bench/builds/v1-ship/` holds
+  the exact bytes behind the current lock — restore from it rather than
+  re-rotating for a semantically identical rebuild. JS-side outputs
+  (glue, d.ts) ARE reproducible.
 
 **Cold-restore attack (Session 16 — the L1/L2 mechanics):**
 - **Direct MEMFS node creation facts (this glue, verified):**
@@ -382,6 +541,37 @@ decision record and the accepted residuals:
   closer lands in the NEXT boot's trace line); posting to a terminated
   captured worker is benign. Serialize snapshot-file mutations on a per-set
   promise chain that reads AWAIT — deletes and probes race otherwise (U6).
+
+  **Tag glossary** (the codes `core/py/` comments cite — reconstructed
+  2026-08 from the citing sites; F8/F12/F17 and U5/U7-U9 were retired or
+  folded during the session-16/17 rework and no longer appear in code):
+  - **F1** — every detached task captures `w`/`token`/`gen`, never module
+    vars; posts only behind a synchronous `live()` check.
+  - **F2** — teardown/supersession bumps `spawnToken`; stale tasks go inert.
+  - **F3** — mute `worker.onmessage = null` BEFORE `terminate()`.
+  - **F4** — cold-main failures do NOT wrap in `DirtyRestoreError`; running
+    cold over an ABORTed runtime is forbidden (py-loader.ts:144).
+  - **F5** — a `DirtyRestoreError` retry boots WITHOUT the snapshot feeds:
+    retrying the same failing cold boot would loop (py-executor.ts:319).
+  - **F6** — every executor-side await has a guaranteed sup-side completion
+    signal (boot-data / snap-header / snap-heap / teardown).
+  - **F7** — the executor parks boot feeds in module-scope deferreds; any
+    arrival order is legal (py-supervisor.ts:455).
+  - **F9** — poison-deletes only off a LOCK-HOLDING open rung; the buffered
+    getFile rung may see another tab's mid-write bytes (py-snapshot.ts:296).
+  - **F10** — all snapshot-file mutations ride the per-set `snapOps` chain;
+    reads await its head.
+  - **F11** — pre-touching grown wasm pages must be a value-preserving RMW
+    (`Atomics.or(x,0)`) with MessageChannel yields (py-loader.ts:72).
+  - **F13** — download-progress posts are live()-guarded (py-supervisor.ts:232).
+  - **F14** — span closers are live()-guarded (stale closer → wrong trace line).
+  - **F15** — transferred buffers are nulled at the post site, never retained.
+  - **F16** — `gen.snapAbandoned`: after exec-snap-invalid the executor
+    provably never awaits snap-heap; in-flight T3 reads stop posting.
+  - **U4** — exec-snap-invalid ⇒ delete only, NO respawn (the cold boot's
+    capture re-persists).
+  - **U6** — a restored generation's first-run hard failure poisons the
+    snapshot file BEFORE the eager respawn, chained on snapOps.
 - **git-native patch editing:** re-stack `.work/pyodide` one-commit-per-patch
   via `git checkout <commit>` → edit → `commit --amend` → cherry-pick the
   rest (non-interactive), then regenerate each edited patch's diff body
@@ -413,12 +603,15 @@ decision record and the accepted residuals:
   slot expectations are **boot-allocation-order empirical**, not derivable;
   confirmed via `__hiwire_get` walk, and the harness dumps the live table on
   any mismatch so a future boot-sequence change re-derives in one command.
-- **Zombie-executor interrupt steal:** `Worker.terminate()` on a wasm busy
-  loop closes ports but the thread spins until its next yield and keeps
-  consuming SIGINT from a shared interrupt SAB — the next executor's first
-  interrupt vanishes. Production supervisor already does both fixes: fresh
-  interrupt SAB per spawn (never reuse across generations) + repeat SIGINT
-  writes every 50 ms until exec-result.
+- **Zombie-executor interrupt steal (HISTORICAL since the 2026-08 disarm):**
+  `Worker.terminate()` on a wasm busy loop closes ports but the thread spins
+  until its next yield and keeps consuming SIGINT from a shared interrupt
+  SAB — the next executor's first interrupt vanishes. The P0-B-era fixes
+  were fresh SAB per spawn + 50 ms SIGINT repeats. The interrupt is now
+  never armed (the armed signal check taxed every run 2-4.5%; cancel =
+  immediate kill + eager respawn), so only the fresh-SAB-per-generation half
+  survives (generation state isolation). If real cancellation ever re-lands
+  on the signal path, BOTH fixes apply again.
 - **numpy 2.x defers `numpy.random`:** `import numpy` does not seed the
   global RandomState — capture must bake `import numpy.random` explicitly or
   every restore re-seeds at first touch (breaks run determinism).
@@ -550,14 +743,21 @@ doesn't carry: `e2e/py-snapshot.spec.ts` needs the full `pnpm dev` stack
 `boot` trace labels + OPFS placement; `web/vitest.config.ts` runs the AVS2
 codec unit suite (py-snapshot.test.ts, 15 tests).
 
-- **Last-green (current build `e210f3a9a140f04b`, dead-on-import sweep):**
-  harness 5/5 sections (base 41 · seaborn 22 · snapshot 24 · parity 3 ·
-  verify 8) · corpus 7/7 · full restage board (builtins, pack:stdlib ×2
-  byte-identical, bundles `--repro` byte-stable, trace:check, compress,
-  budgets green, dsos:check, stage + `--check`) · typecheck 12/12 · vitest
-  15 codec · seed 23 keys · preview-board ledger re-recorded 2026-07-29
-  (Current state).
-- **Historical last-greens:** P2 (`267194ca75197030`) — full board + the
+- **Last-green (current build `7fdf68788eb8a2a4`, 2026-08 perf batch):**
+  full `pnpm board --update-budgets` green 2026-08-02 — harness 5/5
+  sections (base 45 — incl. the trampoline census — · seaborn 23 ·
+  snapshot 24 · verify 8 · parity 3 @1,675 entries) · corpus 7/7 ·
+  pack:stdlib ×2 + bundles `--repro` byte-identical · trace:check ·
+  dsos:check · groups:verify · budgets RESTAMPED (+5%; composites
+  numpy-path 6.88 MB br / pandas-mpl 14.00 — still under the P1.5-era
+  ceilings despite wasm +5.5%) · stage + `--check` · typecheck 12/12 ·
+  test:py · vitest 15 codec · seed 23 keys. Post-stage probes: big-figure
+  savefig 160 ms (L1 encoder live), `all` capture heap 65.4 MB (mpl bake
+  added ~0), capture-side mpl bake 569 ms.
+- **Historical last-greens:** `e210f3a9a140f04b` (dead-on-import sweep) —
+  harness 5/5 (base 41 · seaborn 22 · snapshot 24 · parity 3 · verify 8),
+  corpus 7/7, full restage board, typecheck, vitest, seed 23 keys,
+  preview-board ledger re-recorded 2026-07-29 (Current state). P2 (`267194ca75197030`) — full board + the
   Session-15 preview browser session (cold+capture → restore → warm × three
   sets, corrupt-OPFS self-heal, teardown@15 s + respawn-restore, figures,
   marker fast-path). P1.5 (`bc46093ffa4fb5e8`) — full board, corpus 7/7 vs
@@ -610,9 +810,9 @@ codec unit suite (py-snapshot.test.ts, 15 tests).
     1,389 ms) serializes ahead of boot-prep; the SW-install double-fetch
     pattern shows every artifact twice in the waterfall. Room to overlap
     once the lifecycle rework lands.
-  - **Set consolidation:** drop or merge one of numpy-standalone /
-    numpy+matplotlib — restores are fast enough that extra sets buy little
-    (check the numpy.snap ≈ stdlib.snap 30 MB size oddity while there).
+  - ~~**Set consolidation:** drop or merge one of numpy-standalone /
+    numpy+matplotlib~~ — DONE 2026-08: the standalone `numpy` set is gone;
+    `import numpy` rides `numpy+pandas`.
   - **Build-time snapshot generation (ship, don't client-capture) — still
     under heavy consideration:** generate per-set snapshots at build time
     and serve them as artifacts (the baseline.snap lineage) instead of /
@@ -648,11 +848,10 @@ codec unit suite (py-snapshot.test.ts, 15 tests).
   publish-only config/env (remote bindings are GA; dev's `PY` binding must
   stay local). One checksum-verified code path for local seed AND prod
   publish — the intended no-brainer at deploy time.
-- **`overlay/stdlib/` comment staleness deferred on purpose:** three
-  "baseline snapshot/warmup" comment references (_avlo_runtime, _avlo_png,
-  sitecustomize) are stale but the files ship inside the stdlib zip — even
-  a comment edit rotates buildHash. Batch the rewording with the next
-  planned restage.
+- ~~**`overlay/stdlib/` comment staleness deferred on purpose**~~ — DONE
+  2026-08: all three "baseline snapshot/warmup" references reworded in the
+  perf-batch restage (_avlo_png also rewritten wholesale: level 1,
+  streaming compressobj).
 - Prod CSP additions (`wasm-unsafe-eval`, py.avlo.io in script/connect-src)
   have never been exercised — verify on first prod deploy.
 - Client polish (pre-redesign backlog, last known open): live stdout
@@ -679,6 +878,108 @@ codec unit suite (py-snapshot.test.ts, 15 tests).
 ---
 
 ## Phase log (compact; newest first — append here each session)
+
+### Session 20 — PR #16 cross-verification (no build change, no rotation)
+
+The remote Codespaces session published its independent tail-call/-O3 sweep
+as draft PR #16 (`packages/py-build/bench/tailcall/` on
+`claude/codespaces-python-builds-73xnm8`: standalone CPython 3.14.2 builds,
+10 variants × 11 benchmarks × V8 13.6/14.6, headline "variants 3/4/6 win
++20–27%, variant 0 fails, take variant 4"). This session audited it and ran
+bridge experiments — full data + protocol in `bench/tailcall-bridge/README.md`,
+durable rule in the learnings ("verdicts do not transfer across builds or
+hosts"). Compact outcomes:
+- Report internally honest (every geomean recomputes from its raw JSON;
+  v1/v2 controls isolate direct-vs-indirect `return_call` cleanly); its
+  transferability caveat is the failure — the fork/standalone verdict
+  INVERTS on one machine, because the fork's goto baseline is ~2× stock
+  while tail-call dispatch speed is build-insensitive.
+- Fork v0 rejection RE-confirmed on the remote's own suite: +23–25%
+  geomean, both engines, flat iteration curves, unchanged under
+  `--no-liftoff` — no tier rescues it.
+- Remote-report corrections found: AVLO does NOT PGO
+  (`--enable-optimizations` is passed but pyodide's Makefile never runs
+  `profile-opt` — verified empty `PGO_PROF_USE_FLAG`, no profdata);
+  `raw-sweep.log` cited but absent from the PR; the −54 ms bare-startup
+  "lazy-compile" attribution fails a 10× back-of-envelope; cold table flat
+  once its (self-flagged) contaminated baseline cell is excluded.
+- Verdict on variant 4: promising ONLY as a fork-lane experiment
+  (`-DTAIL_CALL_DISPATCH_MODE=4`, PR's 0010 + our 0011, kit protocol,
+  ≥2 uarchs); two independent projections put v4-in-fork ≈ wash vs the
+  fork baseline. PR comment posted with the split: remote re-runs its
+  sweep with the fork's EH flags vs the strong baseline; fork-lane build
+  stays local/owner-gated.
+
+The `prompt.md` analysis batch (owner-confirmed findings), one rotation.
+What landed, in causal order:
+
+- **A1 trampoline fix (the smoking gun).** MAIN_MODULE=2 had orphaned the
+  `getWasmTrampolineModule` EM_JS archive member since the original flip —
+  every C-method call crossed into JS through `wasmTable.get` (10,367
+  crossings /10k METH_NOARGS). One `-Wl,-u` in patch 0001 + two permanent
+  gates (stage grep, harness census). Full post-mortem in Hard-won
+  learnings.
+- **A2 cpython patch lane** (`patches/cpython/` staged ≥0010 by build.sh,
+  auto-nuke of build+installs on lane change, queue-hash stamp forcing the
+  main relink) — first occupant `0010` trampoline arity reorder (2,3,1,0).
+- **A4 `_zstd` re-add** (static in main, `-lzstd`, prune dropped, corpus
+  `b07_zstd.py`; tombstone probe moved to `compression.lzma`).
+- **A3 experiments — verdicts re-derived after the CPU-boost-policy
+  contamination** (mid-session policy shift ≈30% — see learnings; ledger
+  carries a POLICY CONTAMINATION note, only `*-agg-*` rows are clean):
+  | variant | verdict | clean evidence (run2, ms) |
+  |---|---|---|
+  | V1 ship (-O2 + tramp + arity + zstd) | **SHIPS** | crossings 10,367→0 · meth_noargs 129→61 (−48% vs V0-agg) · json 8,655→7,775 (−11%) · heap 54 MB · `V1-ship-agg` row |
+  | V2 `-O3` | **REVERTED** | shim-isolated same-policy A/B ~0–3% (V2-agg vs V0shim-agg); the "30% win" was the policy switch. wasm +3% not paid |
+  | V3 tail-call v0 | **REJECTED (clean redo 2026-08-03)** | first bench was void (policy shift); redone same-policy interleaved ×3: geomean **+25%** (meth +38%, meth_o +46%, fib +48%, json +7%); Liftoff-only ALSO worse, bootMs flat, wasm +11 KB; ceval.o `target_features` carried `tail-call` (real tail calls — the silent-musttail gate passed). Kit stays at `bench/v3-tailcall-patches/` for variants 3/4/6 |
+  | V4 `PYTHONMALLOC=mimalloc` | **REJECTED** | heap 54→96 MB, perf ±5% noise |
+  Saved builds: `bench/builds/v1-ship/` (THE ship bytes + V3-redo baseline),
+  `bench/builds/v2-o3-ref/`.
+- **B interrupt disarmed, cancel = blunt kill.** `setInterruptBuffer` never
+  called; `killRun` posts `cancelling` then immediately fails the run with
+  respawn (warm ~1 s); soft timeout 30 s same path; partial stdout
+  discarded (owner-OK'd). SAB u8[0]/i32[6] documented reserved; UI seam
+  (CancelMsg/phase/buttons) untouched for a future real cancel.
+- **C figures.** `_avlo_png.py` rewritten: zlib L9→L1, streaming
+  compressobj over memoryview slices (~1× peak, was ~3×). Measured staged:
+  1920×1440 savefig 906→160 ms (that buffer: L9 535 ms vs L1 29 ms; size
+  355→453 KB accepted). Matplotlib BUNDLE_IMPORTS bakes a throwaway
+  figure→savefig→close so Agg/font/encoder warmup lands in the capture
+  image (bake 569 ms capture-side; `all` heap FLAT at 65.4 MB).
+- **D standalone `numpy` set dropped** (rides `numpy+pandas`); harness/
+  corpus/tracer/e2e re-pointed; runtime code needed zero edits.
+- **E fork API types.** Patch `0009` (type-only, wasm byte-identical):
+  `declare static _module`/`_api` on PyodideAPI_, Module gains
+  wasmTable/growMemory/callMain, preBlit seam params typed. stage.mjs
+  stages the emitted d.ts → `web/src/core/py/pyodide-fork.gen.d.ts`
+  (drift-gated, NOT in buildHash, biome-ignored; the `node:stream/web`
+  import is deterministically stripped — lib.dom covers it). py-loader:
+  `Pyodide = PyodideInterface`, all three `any` params gone; the one
+  fallout was `loadDynlib`'s now-mandatory `global` arg (passed `false` =
+  the old undefined behavior).
+- **F parallelism + the board.** Async brotli pool, link-groups
+  ThreadPool, pack-package pyc process pool + concurrent font subsetting,
+  2-wide harness/corpus pools, 4-wide wheel downloads, top-level
+  `make -j`; recipes loop deliberately serial (PIP_CONSTRAINT + AVLO-PKG
+  log protocol are load-bearing serializers). **`pnpm board`** runs the
+  whole gate sequence; `--update-budgets` restamped 11 ceilings.
+- **G docs** — mutability banners, invariants split into Hard gates vs
+  conventions, interrupt→cancellation rewrite, F1–F17/U4–U9 glossary
+  written, stale-claims sweep, this fold.
+- **Rotation:** ONE buildHash `e210f3a9a140f04b` → `7fdf68788eb8a2a4`,
+  board green end-to-end (see last-green stamp), local R2 seeded (23
+  keys). Tail-call epilogue: the clean redo (2026-08-03, same-policy ×3 +
+  liftoff pair, musttail gate passed) REJECTED variant 0 decisively —
+  geomean +25%, no compile/tier-up consolation; patches deleted. The
+  cleanup rebuild came back functionally correct but NOT byte-identical
+  (cpython-nuke non-reproducibility — see learnings), so dist/raw was
+  restored from `bench/builds/v1-ship` (the exact bytes the lock + staged
+  tree + seeded R2 reference); `stage --check` clean. Cloudflare
+  PR #6122's dispatcher variants 3/4 (`return_call` switch) + 6
+  (`br_table`) were subsequently measured standalone by the remote
+  session (PR #16) — see Session 20 for why those numbers don't decide
+  anything for the fork. Browser support note for any future tail-call
+  ship: wasm tail calls need Chrome 112+ / Firefox 121+ / Safari 18.2+.
 
 ### Session 18 — dead-on-import stdlib sweep (buildHash `e210f3a9a140f04b`)
 

@@ -21,13 +21,15 @@
  * - A run whose required bundles aren't mounted in the current generation
  *   forces a respawn with the right set (supersets satisfy subsets).
  *
- * Interrupt discipline (P0-B findings, load-bearing):
- * - FRESH PY_SAB per executor generation — a terminated executor blocked in a
- *   wasm busy loop keeps spinning until its next yield and would consume
- *   SIGINT writes from a shared buffer, stealing the replacement's first
- *   interrupt.
- * - Repeat SIGINT writes every PY_LIMITS.interruptRepeatMs until the run
- *   resolves — converts any one-shot swallow into bounded extra latency.
+ * Cancel discipline (2026-08 — interrupt DISARMED):
+ * - The executor never arms pyodide's interrupt buffer (the armed signal
+ *   check taxed every run 2-4.5%), so graceful in-Python interruption is
+ *   impossible. Cancel and soft-timeout both resolve IMMEDIATELY: synthesized
+ *   result → executor kill → eager respawn (cached bundles + OPFS restore
+ *   make the replacement warm in ~1 s). The whole UI path (CancelMsg →
+ *   'cancelling' phase → result) stays wired for a future real cancellation.
+ * - FRESH PY_SAB per executor generation — generation state (state/run-id/
+ *   heartbeat/mem) must never bleed into the replacement.
  *
  * Snapshot discipline (P2 owned dense snapshots + L2 topology flip):
  * - EVERY set (stdlib included) may restore `opfs:/py/<buildHash>/<set>.snap`.
@@ -84,7 +86,7 @@ import {
   type SnapHeaderMsg,
   type SnapHeapMsg,
 } from './py-protocol';
-import { allocPySab, clearInterrupt, EPOCH, PyCancelKind, type PySabViews, writeInterrupt } from './py-sab';
+import { allocPySab, EPOCH, type PySabViews } from './py-sab';
 import {
   type AvsHeader,
   deleteSetSnapshot,
@@ -112,9 +114,6 @@ interface ActiveRun {
   reqAt: number;
   startedAt: number;
   softTimer: ReturnType<typeof setTimeout> | null;
-  hardTimer: ReturnType<typeof setTimeout> | null;
-  interruptRepeat: ReturnType<typeof setInterval> | null;
-  cancelKind: PyCancelKind;
 }
 
 let executor: Worker | null = null;
@@ -327,9 +326,7 @@ function downloadFailureMessage(err: unknown, setKey: PySetKey): string {
 
 function clearRunTimers(run: ActiveRun): void {
   if (run.softTimer !== null) clearTimeout(run.softTimer);
-  if (run.hardTimer !== null) clearTimeout(run.hardTimer);
-  if (run.interruptRepeat !== null) clearInterval(run.interruptRepeat);
-  run.softTimer = run.hardTimer = run.interruptRepeat = null;
+  run.softTimer = null;
 }
 
 /** Terminate + null the executor generation (heap + RAM freed; verified tars
@@ -548,42 +545,28 @@ function dispatch(run: ActiveRun): void {
   run.dispatched = true;
   run.startedAt = performance.now();
   traceAdd('req-to-dispatch', run.reqAt, run.startedAt);
-  clearInterrupt(sab);
   executor.postMessage({ t: 'exec', runId: run.runId, code: run.code });
   post({ t: 'phase', runId: run.runId, phase: 'running' });
   run.softTimer = setTimeout(() => {
     run.softTimer = null;
-    beginInterrupt(run, PyCancelKind.SoftTimeout, PY_LIMITS.hardGraceMs);
+    killRun(run, 'timeout');
   }, PY_LIMITS.softTimeoutMs);
 }
 
-/** Write SIGINT now, keep re-writing until the run resolves, hard-kill after
- * the grace window if Python never surfaces the interrupt. UserCancel
- * OUTRANKS SoftTimeout: a Stop click during the timeout grace re-arms the
- * kill on the shorter cancel grace, a soft timeout landing after a cancel
- * changes nothing, and repeats of the same kind never extend the deadline.
- * Closures read `run.cancelKind` live so the forced-kill label always
- * matches the graceful exec-done mapping. */
-function beginInterrupt(run: ActiveRun, kind: PyCancelKind, graceMs: number): void {
-  if (!sab || run !== active) return;
-  const arm = run.hardTimer === null || (kind === PyCancelKind.UserCancel && run.cancelKind !== PyCancelKind.UserCancel);
-  if (arm) {
-    run.cancelKind = kind;
-    if (run.hardTimer !== null) clearTimeout(run.hardTimer);
-    run.hardTimer = setTimeout(() => {
-      run.hardTimer = null;
-      const cancelled = run.cancelKind === PyCancelKind.UserCancel;
-      failActiveRun(
-        cancelled ? 'Cancelled (forced stop).' : 'Timed out (forced stop).',
-        cancelled ? 'cancelled' : 'timeout',
-        /* respawn */ true,
-      );
-    }, graceMs);
-  }
+/** Cancel/timeout resolution with the interrupt DISARMED (2026-08): no
+ * graceful in-Python path exists, so synthesize the result and kill the
+ * executor NOW — the eager respawn (cached bundles + OPFS restore) lands a
+ * warm replacement in ~1 s, cheaper than any grace window was worth. The
+ * 'cancelling' phase post only flashes, but it keeps the whole UI path wired
+ * for a future real cancellation behind this same seam. */
+function killRun(run: ActiveRun, status: 'cancelled' | 'timeout'): void {
+  if (run !== active) return;
   post({ t: 'phase', runId: run.runId, phase: 'cancelling' });
-  const views = sab;
-  writeInterrupt(views, run.cancelKind);
-  run.interruptRepeat ??= setInterval(() => writeInterrupt(views, run.cancelKind), PY_LIMITS.interruptRepeatMs);
+  failActiveRun(
+    status === 'cancelled' ? 'Run cancelled.' : `Run timed out after ${PY_LIMITS.softTimeoutMs / 1000} s.`,
+    status,
+    /* respawn */ true,
+  );
 }
 
 /** Synthesize a result for the active run (executor dead/hung paths). */
@@ -670,30 +653,16 @@ function onExecutorMessage(m: ExecToSup): void {
       if (!run || run.runId !== m.runId) break;
       active = null;
       clearRunTimers(run);
-      if (sab) clearInterrupt(sab);
-      const status: PyRunStatus = m.ok
-        ? 'ok'
-        : m.interrupted
-          ? run.cancelKind === PyCancelKind.SoftTimeout
-            ? 'timeout'
-            : run.cancelKind === PyCancelKind.UserCancel
-              ? 'cancelled'
-              : 'error'
-          : 'error';
-      // Graceful interrupts print nothing (the harness eats KeyboardInterrupt)
-      // — never leave the output panel blank on a non-ok result.
-      let output = m.output;
-      if (status === 'timeout') {
-        output += `${output ? '\n' : ''}Run timed out after ${PY_LIMITS.softTimeoutMs / 1000} s.`;
-      } else if (status === 'cancelled') {
-        output += `${output ? '\n' : ''}Run cancelled.`;
-      }
+      // `interrupted` now only means user code raised KeyboardInterrupt itself
+      // (the buffer is never armed) — plain error semantics; cancel/timeout
+      // never arrive on this leg anymore (killRun synthesizes them).
+      const status: PyRunStatus = m.ok ? 'ok' : 'error';
       post(
         {
           t: 'result',
           runId: m.runId,
           status,
-          output,
+          output: m.output,
           durationMs: m.durationMs,
           figures: m.figures,
         } satisfies ResultMsg,
@@ -783,7 +752,7 @@ self.onmessage = (e: MessageEvent<MainToSup>) => {
     case 'cancel': {
       if (active?.runId === m.runId) {
         if (active.dispatched) {
-          beginInterrupt(active, PyCancelKind.UserCancel, PY_LIMITS.cancelGraceMs);
+          killRun(active, 'cancelled');
         } else {
           // Not dispatched yet (executor still booting/downloading) — drop it.
           failActiveRun('Cancelled.', 'cancelled', false);
@@ -801,7 +770,7 @@ function onRun(m: RunMsg): void {
     return;
   }
   if (!globalThis.crossOriginIsolated) {
-    // No COOP/COEP ⇒ no SharedArrayBuffer ⇒ no interrupt/cancel channel.
+    // No COOP/COEP ⇒ no SharedArrayBuffer ⇒ no PY_SAB control plane.
     // Refuse with a precise result instead of a constructor throw later.
     post({
       t: 'result',
@@ -825,9 +794,6 @@ function onRun(m: RunMsg): void {
     reqAt,
     startedAt: reqAt,
     softTimer: null,
-    hardTimer: null,
-    interruptRepeat: null,
-    cancelKind: PyCancelKind.None,
   };
   desiredSetKey = m.setKey;
   if (executor && setSatisfies(bootedSetKey, m.setKey)) {

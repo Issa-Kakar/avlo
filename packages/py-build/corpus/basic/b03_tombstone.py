@@ -1,6 +1,7 @@
 # self-asserting: pruned modules raise the friendly tombstone error
-# (compression.zstd: the 3.14 wrapper over the disabled _zstd)
-for name in ("ctypes", "bz2", "http", "compression.zstd"):
+# (compression.lzma: the 3.14 wrapper over the disabled _lzma;
+# compression.zstd is NOT here — _zstd is static since 2026-08, see b07)
+for name in ("ctypes", "bz2", "http", "compression.lzma"):
     try:
         __import__(name)
     except ModuleNotFoundError as e:

@@ -5,7 +5,8 @@
  * in the DevTools Performance lane), and emits ONE
  * `console.info('py:trace', <json>)` line per boot / per run. The ledger in
  * `packages/py-build/NOTES.md` is built from those lines — span names are the
- * cross-phase comparison keys, keep them stable.
+ * cross-phase comparison keys — rename freely, just re-key the NOTES ledger
+ * (e2e parses th/kind/path only, never span names).
  *
  * The wasm shims split "compile+instantiate" out of loadPyodide/DSO-replay
  * without patching the glue: installed for the boot window only, and MUST be

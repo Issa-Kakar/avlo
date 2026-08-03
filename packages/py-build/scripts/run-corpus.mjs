@@ -9,7 +9,7 @@
 //
 //   node scripts/run-corpus.mjs [--index dist/raw] [--stdlib dist/stage/python_stdlib.zip] [--group numpy]
 import './lib/ts-resolve.mjs'; // FIRST: Node ≥23.6 guard + `.ts` resolve shim (shipped py-mount import below)
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -35,7 +35,7 @@ const SETS = config.sets;
 const GROUP_SET = {
   basic: null,
   sqlite: null,
-  numpy: 'numpy',
+  numpy: 'numpy+pandas',
   pandas: 'numpy+pandas',
   mpl: 'numpy+matplotlib',
   all: 'all',
@@ -52,13 +52,32 @@ if (!groupArg) {
     if (!(g in GROUP_SET)) {
       console.error(`SKIP ${g}: no set mapping in run-corpus.mjs GROUP_SET`);
       failed++;
-      continue;
     }
-    const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--group', g, '--index', indexDir, '--stdlib', stdlibZip], {
-      stdio: 'inherit',
-    });
-    if (r.status !== 0) failed++;
   }
+  const runnable = groups.filter((g) => g in GROUP_SET);
+  // Heavy groups (full 7-tar mounts) first so they overlap the light ones —
+  // 2-wide pool keeps the RAM bound (one process per group is unchanged).
+  const heavy = new Set(['all', 'seaborn', 'pandas', 'mpl']);
+  const queue = [...runnable.filter((g) => heavy.has(g)), ...runnable.filter((g) => !heavy.has(g))];
+  const WIDTH = 2;
+  const runGroup = (g) =>
+    new Promise((resolveDone) => {
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--group', g, '--index', indexDir, '--stdlib', stdlibZip], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const chunks = [];
+      child.stdout.on('data', (d) => chunks.push(d));
+      child.stderr.on('data', (d) => chunks.push(d));
+      child.on('close', (code) => {
+        process.stdout.write(Buffer.concat(chunks));
+        resolveDone(code === 0 ? 0 : 1);
+      });
+    });
+  await Promise.all(
+    Array.from({ length: WIDTH }, async () => {
+      for (let g = queue.shift(); g !== undefined; g = queue.shift()) failed += await runGroup(g);
+    }),
+  );
   console.log(failed ? `corpus: ${failed} group(s) FAILED` : 'corpus: all groups pass');
   process.exit(failed ? 1 : 0);
 }

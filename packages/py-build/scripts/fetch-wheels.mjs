@@ -92,20 +92,21 @@ mkdirSync(cacheDir, { recursive: true });
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 let fetched = 0;
-for (const name of names) {
+// Downloads run 4-wide (pure network wait; per-wheel sha verify is
+// order-independent). Log lines print whole per wheel — no interleaving.
+const fetchOne = async (name) => {
   const { file, sha256: want } = wheels[name];
   if (!file || !want) throw new Error(`${name}: unpinned (run --stamp first)`);
   const dest = join(cacheDir, file);
   if (existsSync(dest) && sha256(readFileSync(dest)) === want) {
     console.log(`ok      ${file}`);
-    continue;
+    return;
   }
   // Release asset first (canonical), then the CDN mirror; url pins go straight
   // to their source — the sha256 pin below makes every source
   // provenance-equivalent.
   const bases = [config.recipes.base, config.recipes.mirror].filter(Boolean);
   const sources = wheels[name].url ? [wheels[name].url] : bases.map((base) => `${base}/${file}`);
-  process.stdout.write(`fetch   ${file} ... `);
   let buf = null;
   let lastErr = null;
   for (const source of sources) {
@@ -121,7 +122,15 @@ for (const name of names) {
   if (got !== want) throw new Error(`${file}: sha256 mismatch\n  want ${want}\n  got  ${got}`);
   writeFileSync(dest, buf);
   fetched++;
-  console.log(`${(buf.length / 1e6).toFixed(1)} MB ok`);
+  console.log(`fetch   ${file} ${(buf.length / 1e6).toFixed(1)} MB ok`);
+};
+{
+  const queue = [...names];
+  await Promise.all(
+    Array.from({ length: 4 }, async () => {
+      for (let n = queue.shift(); n !== undefined; n = queue.shift()) await fetchOne(n);
+    }),
+  );
 }
 console.log(`wheels: ${names.length} pinned, ${fetched} fetched, cache ${cacheDir}`);
 

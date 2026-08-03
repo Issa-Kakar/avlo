@@ -2,8 +2,9 @@
  * Python EXECUTOR worker — nested child of py-supervisor. Owns the pyodide
  * instance; its event loop is BLOCKED for the whole of a synchronous run, so
  * everything time-based (timeouts, cancellation clocks) lives in the
- * supervisor. Cancellation reaches a blocked run only through the interrupt
- * byte of PY_SAB (pyodide's signal check reads it between bytecodes).
+ * supervisor. The interrupt buffer is DISARMED (2026-08): the armed signal
+ * check taxed every run 2-4.5%, so cancel/timeout resolve supervisor-side as
+ * an immediate kill + eager respawn — nothing here can be interrupted.
  *
  * stdout/stderr: raw `write` hooks (byte-exact, streaming decode) → one
  * shared buffer → relayed in ≥100 ms / ≥8 KB chunks (flush decisions happen
@@ -31,7 +32,7 @@ import { HEARTBEAT, MEM_KIB, mapPySab, PyExecState, type PySabViews, RUN_ID, STA
 import type { AvsCaptureMeta, AvsHeader } from './py-snapshot';
 import { installWasmTimers, setTraceSink, traceBegin, traceEmit, traceReset, traceSpan, traceSpanAsync } from './py-trace';
 
-let pyodide: Pyodide = null;
+let pyodide: Pyodide; // unassigned until boot() — the boot-after-boot guard reads it falsy
 let sab: PySabViews | null = null;
 let currentRunId = 0;
 /** True once this generation booted from an OPFS snapshot restore (the blit
@@ -63,23 +64,35 @@ const D = {
 };
 
 /** Ready-point heap copy — the blit-reset image. Taken at the END of boot on
- * EVERY path (cold included), so it already contains the harness, the armed
- * interrupt C-state, and post_restore's reseeded entropy: the post-blit fixup
- * is just re-arm + post_restore, never a harness re-install. null (slice OOM)
- * ⇒ every run reports needsRespawn and isolation rides eager respawn. */
+ * EVERY path (cold included), so it already contains the harness and
+ * post_restore's reseeded entropy: the post-blit fixup is just post_restore,
+ * never a harness re-install. null (slice OOM) ⇒ every run reports
+ * needsRespawn and isolation rides eager respawn. */
 let resetImage: Uint8Array | null = null;
 let tableLenAtReady = 0;
 
 /** Per-set generation imports, keyed by BUNDLE name (deps ride their own
  * bundles; mpl-deps has no top-level import — matplotlib pulls them). numpy
  * MUST bake numpy.random: numpy 2.x defers the global RandomState, and an
- * unbaked global re-seeds fresh at first touch after every restore (G8R). */
+ * unbaked global re-seeds fresh at first touch after every restore (G8R).
+ * matplotlib also bakes a THROWAWAY render+savefig (BytesIO, tiny dpi): the
+ * first real figure otherwise pays ~70 ms of Agg/font/encoder warmup — this
+ * moves it into the one-time capture; the blit reset keeps every later run
+ * on the warmed image. Figures are closed before capture, nothing leaks. */
 const BUNDLE_IMPORTS: Record<string, string> = {
   numpy: 'import numpy, numpy.random\n_ = numpy.random.get_state()\ndel _',
   dateutil: 'import dateutil',
   pytz: 'import pytz',
   pandas: 'import pandas',
-  matplotlib: 'import matplotlib, matplotlib.pyplot', // Agg default + fontlist prebaked by py-build
+  matplotlib: [
+    'import matplotlib, matplotlib.pyplot', // Agg default + fontlist prebaked by py-build
+    'import io',
+    '_f = matplotlib.pyplot.figure()',
+    '_f.gca().plot([0, 1], [0, 1])',
+    '_f.savefig(io.BytesIO(), format="png", dpi=8)',
+    "matplotlib.pyplot.close('all')",
+    'del _f',
+  ].join('\n'),
   seaborn: 'import seaborn',
 };
 
@@ -191,7 +204,7 @@ async function mountBundle(b: PyBundlePayload, replayed: boolean): Promise<void>
   if (replayed) return;
   const endDlopen = traceBegin('mount-dlopen');
   for (const so of b.loadOrder) {
-    await pyodide._api.loadDynlib(`${b.prefix}/${so}`);
+    await pyodide._api.loadDynlib(`${b.prefix}/${so}`, false);
   }
   // `dsos`, not `n` — a meta key named `n` clobbers the span-name field in
   // py-trace's `{ n, at, ms, ...meta }` spread (browser-ledger finding).
@@ -346,7 +359,9 @@ async function boot(m: BootPrepMsg): Promise<void> {
       // an unconfined realm. Same-origin ⇒ this scrub IS the boundary.
       assertRealmHardened();
     });
-    pyodide.setInterruptBuffer(sab.u8);
+    // Interrupt buffer deliberately NOT armed (2026-08): Py_EMSCRIPTEN_SIGNAL_
+    // HANDLING stays 0, so the interpreter's periodic check degrades to a
+    // load+compare — the 2-4.5% armed tax is gone. Cancel = supervisor kill.
     pyodide.setStdout({ write: makeWriteHook('out'), isatty: false });
     pyodide.setStderr({ write: makeWriteHook('err'), isatty: false });
     traceSpan('harness', () => pyodide.runPython(HARNESS_INSTALL));
@@ -450,7 +465,6 @@ function exec(m: ExecRunMsg): void {
       // address space, not corruption (respawn reclaims it via needsRespawn).
       if (heapLen > img.length) (pyodide._module.HEAP8 as Uint8Array).fill(0, img.length);
       endBlit({ mb: Math.round(img.length / 1e6) });
-      pyodide.setInterruptBuffer(sab.u8); // C-side flag is in the image; re-arm is free paranoia
       traceSpan('post-run-reset', () => pyodide.runPython(POST_RUN_RESET));
       blitOk = true;
     } catch (err) {
