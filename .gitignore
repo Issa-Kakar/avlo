@@ -64,3 +64,6 @@ web/public/py-dev/
 
 # Python bytecode (host pack scripts)
 __pycache__/
+
+# LLVM profiling artifacts dropped by instrumented tooling
+*.profraw
