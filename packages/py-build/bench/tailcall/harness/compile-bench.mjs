@@ -1,7 +1,7 @@
 // Measures pure WebAssembly.compile() wall time for a module, under whatever
 // V8 flags this process was launched with. Run with --liftoff-only for baseline
 // tier cost, --no-liftoff for top-tier (TurboFan) cost.
-import { readFileSync } from "node:fs";
+import { readFileSync } from 'node:fs';
 
 const path = process.argv[2];
 const iters = Number(process.argv[3] ?? 5);
@@ -19,7 +19,7 @@ for (let i = 0; i < iters; i++) {
 
 const sorted = [...times].sort((a, b) => a - b);
 console.log(
-  "COMPILE_JSON:" +
+  'COMPILE_JSON:' +
     JSON.stringify({
       file: path,
       first: times[0],

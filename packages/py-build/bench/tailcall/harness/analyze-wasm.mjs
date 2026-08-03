@@ -2,13 +2,24 @@
 // name-section lookup. Tests the "megafunction vs N small functions" hypothesis
 // directly. No opcode decoding needed — the code section carries explicit
 // per-body byte lengths.
-import { readFileSync } from "node:fs";
-import { brotliCompressSync, constants } from "node:zlib";
+import { readFileSync } from 'node:fs';
+import { brotliCompressSync, constants } from 'node:zlib';
 
 const SECTION_NAMES = {
-  0: "custom", 1: "type", 2: "import", 3: "function", 4: "table", 5: "memory",
-  6: "global", 7: "export", 8: "start", 9: "element", 10: "code", 11: "data",
-  12: "datacount", 13: "tag",
+  0: 'custom',
+  1: 'type',
+  2: 'import',
+  3: 'function',
+  4: 'table',
+  5: 'memory',
+  6: 'global',
+  7: 'export',
+  8: 'start',
+  9: 'element',
+  10: 'code',
+  11: 'data',
+  12: 'datacount',
+  13: 'tag',
 };
 
 export function analyze(path) {
@@ -16,14 +27,28 @@ export function analyze(path) {
   let p = 8; // skip magic + version
 
   const u32 = () => {
-    let r = 0, s = 0, b;
-    do { b = buf[p++]; r |= (b & 0x7f) << s; s += 7; } while (b & 0x80);
+    let r = 0,
+      s = 0,
+      b;
+    do {
+      b = buf[p++];
+      r |= (b & 0x7f) << s;
+      s += 7;
+    } while (b & 0x80);
     return r >>> 0;
   };
-  const str = () => { const n = u32(); const s = buf.toString("utf8", p, p + n); p += n; return s; };
+  const str = () => {
+    const n = u32();
+    const s = buf.toString('utf8', p, p + n);
+    p += n;
+    return s;
+  };
 
   const sections = [];
-  let codeStart = -1, codeEnd = -1, importedFuncs = 0, declaredFuncs = 0;
+  let codeStart = -1,
+    _codeEnd = -1,
+    importedFuncs = 0,
+    declaredFuncs = 0;
   const names = new Map();
 
   while (p < buf.length) {
@@ -36,13 +61,28 @@ export function analyze(path) {
       // import section — count function imports (they occupy low func indices)
       const n = u32();
       for (let i = 0; i < n; i++) {
-        str(); str();                       // module, field
+        str();
+        str(); // module, field
         const kind = buf[p++];
-        if (kind === 0) { u32(); importedFuncs++; }
-        else if (kind === 1) { p++; const lim = buf[p++]; u32(); if (lim & 1) u32(); }
-        else if (kind === 2) { const lim = buf[p++]; u32(); if (lim & 1) u32(); }
-        else if (kind === 3) { p++; p++; }
-        else if (kind === 4) { p++; u32(); }
+        if (kind === 0) {
+          u32();
+          importedFuncs++;
+        } else if (kind === 1) {
+          p++;
+          const lim = buf[p++];
+          u32();
+          if (lim & 1) u32();
+        } else if (kind === 2) {
+          const lim = buf[p++];
+          u32();
+          if (lim & 1) u32();
+        } else if (kind === 3) {
+          p++;
+          p++;
+        } else if (kind === 4) {
+          p++;
+          u32();
+        }
       }
     } else if (id === 3) {
       declaredFuncs = u32();
@@ -57,11 +97,12 @@ export function analyze(path) {
         if (kind === 0 && !names.has(idx)) names.set(idx, nm);
       }
     } else if (id === 10) {
-      codeStart = start; codeEnd = start + size;
+      codeStart = start;
+      _codeEnd = start + size;
     } else if (id === 0) {
       const save = p;
       const cname = str();
-      if (cname === "name") {
+      if (cname === 'name') {
         const end = start + size;
         while (p < end) {
           const sub = buf[p++];
@@ -69,7 +110,10 @@ export function analyze(path) {
           const subEnd = p + subSize;
           if (sub === 1) {
             const cnt = u32();
-            for (let i = 0; i < cnt; i++) { const idx = u32(); names.set(idx, str()); }
+            for (let i = 0; i < cnt; i++) {
+              const idx = u32();
+              names.set(idx, str());
+            }
           }
           p = subEnd;
         }
@@ -93,9 +137,9 @@ export function analyze(path) {
 
   const codeSection = sections.find((s) => s.id === 10)?.size ?? 0;
   const sorted = [...bodies].sort((a, b) => b.size - a.size);
-  const tailCall = bodies.filter((b) => b.name?.startsWith("_TAIL_CALL_"));
+  const tailCall = bodies.filter((b) => b.name?.startsWith('_TAIL_CALL_'));
   const evalFrame = bodies.filter((b) => b.name && /_PyEval_EvalFrameDefault/.test(b.name));
-  const dispatcher = bodies.filter((b) => b.name === "tail_call_dispatcher");
+  const dispatcher = bodies.filter((b) => b.name === 'tail_call_dispatcher');
 
   return {
     file: path,
@@ -114,14 +158,12 @@ export function analyze(path) {
     tailCallFuncs: tailCall.length,
     tailCallTotalBytes: tailCall.reduce((a, b) => a + b.size, 0),
     tailCallMaxBytes: tailCall.length ? Math.max(...tailCall.map((f) => f.size)) : 0,
-    tailCallMedianBytes: tailCall.length
-      ? [...tailCall].sort((a, b) => a.size - b.size)[Math.floor(tailCall.length / 2)].size
-      : 0,
+    tailCallMedianBytes: tailCall.length ? [...tailCall].sort((a, b) => a.size - b.size)[Math.floor(tailCall.length / 2)].size : 0,
     dispatcherBytes: dispatcher.length ? dispatcher[0].size : 0,
     sections: sections.map((s) => ({ name: s.name, size: s.size })),
   };
 }
 
-if (process.argv[1] && process.argv[1].endsWith("analyze-wasm.mjs")) {
+if (process.argv[1]?.endsWith('analyze-wasm.mjs')) {
   console.log(JSON.stringify(analyze(process.argv[2]), null, 2));
 }

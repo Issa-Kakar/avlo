@@ -33,7 +33,7 @@ Three results contradict assumptions in the plan; they are argued with data in `
 | `dispatch-verify.txt` | `return_call` / `return_call_indirect` / `br_table` counts per build |
 | `raw-sweep.log` | unedited stderr of the measurement sweep |
 | `harness/` | everything needed to reproduce |
-| `reference/` | pyodide PR #6122 sources, unmodified, for provenance |
+| `reference/` | pyodide PR #6122 sources, for provenance — `.patch` and `.py` byte-exact; the `.mjs` had its formatting normalized by repo biome, logic untouched |
 
 ## Environment
 
