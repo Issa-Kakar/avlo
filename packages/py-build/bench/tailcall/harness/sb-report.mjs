@@ -62,6 +62,29 @@ P('Ranges in <sub>small type</sub> are the spread implied by the best/worst repe
 P('error bar, deliberately pessimistic (it pairs the fastest baseline run with the slowest variant run).');
 P();
 
+// ---- verdict -----------------------------------------------------------------
+{
+  const ehA = gm('goto-O2', 'goto-O2-eh', 'node26');
+  const ehB = gm('goto-O2', 'goto-O2-eh', 'node24');
+  const v4a = gm('goto-O2-eh', 'tc4-O3-eh', 'node26');
+  const v4b = gm('goto-O2-eh', 'tc4-O3-eh', 'node24');
+  P('## Verdict');
+  P();
+  P(`**Q(a) — no.** Adding the fork's EH flags to computed-goto changes nothing: geomean`);
+  P(`${ehA.mid.toFixed(3)} (node26) / ${ehB.mid.toFixed(3)} (node24) — if anything marginally *slower*, not the ~2× faster`);
+  P("the fork baseline is. **The exception/longjmp scheme is not the mechanism.** Per the review's");
+  P('own branch condition, the next bisection step is `-O2 -g0` in CFLAGS proper, then link-level');
+  P('(binaryen/wasm-opt) settings.');
+  P();
+  P(`**Q(b) — yes, decisively.** Variant 4 against the strong baseline: **${v4a.mid.toFixed(3)}** (node26,`);
+  P(`worst-case ${v4a.lo.toFixed(2)}) and **${v4b.mid.toFixed(3)}** (node24, worst-case ${v4b.lo.toFixed(2)}). Both clear the ~+10%`);
+  P('rule with the pessimistic bound to spare. Note this is moot until Q(a) is resolved — the strong');
+  P('baseline here is *not* the fork baseline, because EH turned out not to be what makes the fork fast.');
+  P();
+  P('**Ask 3 — the startup claim was wrong and does not survive.** Details in the last section.');
+  P();
+}
+
 // ---- Q(a) --------------------------------------------------------------------
 P('## Q(a) — does the EH scheme close the baseline gap?');
 P();
@@ -121,17 +144,49 @@ P();
 P('## Startup attribution counter-test');
 P();
 P('The first report attributed a −54 ms bare-startup delta to lazy compilation. Liftoff compiles');
-P('a 79 KB function in single-digit ms, so that attribution was ~10x too large. If the gap survives');
-P('`--no-wasm-lazy-compilation`, lazy compile is not the cause.');
+P('a 79 KB function in single-digit ms, so that attribution was ~10x too large — the review was');
+P('right to reject it.');
 P();
-P('| variant | lazy (default) | eager `--no-wasm-lazy-compilation` | Δ eager−lazy |');
-P('|---|--:|--:|--:|');
-for (const v of R.meta.variants) {
-  const l = R.startup[`${v}|lazy`]?.median;
-  const e = R.startup[`${v}|eager`]?.median;
-  P(`| ${v} | ${l ?? '—'} | ${e ?? '—'} | ${l && e ? (e - l >= 0 ? '+' : '') + (e - l) : '—'} |`);
+P('The direct counter-test could **not** be run: `--no-wasm-lazy-compilation` deadlocks this');
+P("module's async startup (`unsettled top-level await` at `node_entry.mjs:51`), so every eager");
+P('cell came back empty. Instead the startup wall clock is decomposed in-process:');
+P();
+P('| phase | span |');
+P('|---|---|');
+P('| `glue` | parse `python.mjs` |');
+P('| `compile+inst` | wasm compile + instantiate (where lazy-vs-eager would show) |');
+P('| `rtInit` | emscripten runtime bring-up |');
+P('| `pyMain` | `Py_Initialize` + run `pass` |');
+P();
+let SP = null;
+try {
+  SP = JSON.parse(readFileSync(`${TC}/startup-probe.json`, 'utf8'));
+} catch {
+  /* probe not run */
 }
-P();
+if (SP) {
+  P('Median of 7, ms:');
+  P();
+  P('| variant | glue | compile+inst | rtInit | pyMain | total |');
+  P('|---|--:|--:|--:|--:|--:|');
+  for (const [v, o] of Object.entries(SP)) {
+    P(
+      `| ${v} | ${o.importGlue.toFixed(1)} | ${o.compileInstantiate.toFixed(1)} | ${o.runtimeInit.toFixed(1)} | ${o.pythonMain.toFixed(1)} | ${o.total.toFixed(1)} |`,
+    );
+  }
+  P();
+  P('**The startup claim does not survive.** `compile+inst` is ~97–104 ms for every variant with');
+  P('heavily overlapping per-run spreads (goto −O2 `[98.8 … 117.3]`, tc4 −O3 `[98.9 … 117.8]`) and');
+  P('shows no ordering by dispatch shape — exactly what you would *not* see if lazily compiling a');
+  P('79 KB megafunction were the cost. The in-process ranking also contradicts the subprocess');
+  P('measurement (there tc4 −O3 looked ~26 ms *faster* than goto −O2; here it is ~7 ms slower), and');
+  P('the subprocess samples carried 553/586 ms outliers.');
+  P();
+  P('So the original "bare startup improves 328 → 274 ms" reading was **process-spawn noise, not a');
+  P('tail-call effect**. The right correction is that the effect is not real — not that some other');
+  P('mechanism explains it.');
+  P();
+}
 
 writeFileSync('/home/user/avlo/packages/py-build/bench/tailcall/STRONG-BASELINE.md', L.join('\n'));
 console.log(L.join('\n'));

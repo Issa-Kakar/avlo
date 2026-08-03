@@ -96,5 +96,13 @@ main module's interpreter).
 > speed in both. The v3–v6 headline was measured against headroom the fork's build config had
 > already banked. Host uarch moves results by ~20 points on its own.
 >
-> A follow-up sweep isolating the exception/longjmp scheme is in flight; results will land as
-> `STRONG-BASELINE.md`.
+> **Follow-up done — see [`STRONG-BASELINE.md`](./STRONG-BASELINE.md).** The fork's
+> exception/longjmp scheme (`-fwasm-exceptions -sSUPPORT_LONGJMP=wasm`) is **not** the
+> mechanism: adding it to computed-goto scores 0.972 / 0.970, i.e. marginally *slower*, nowhere
+> near the ~2× the fork baseline runs. Variant 4 does still clear ~+10% against that
+> strong baseline (1.413 / 1.346), but that is moot until the real cause of the fork's
+> baseline advantage is bisected. Next steps per the review: `-O2 -g0` in CFLAGS proper,
+> then link-level (binaryen/wasm-opt) settings.
+>
+> The same sweep also **retracts this report's startup claim** — the 328 → 274 ms "improvement"
+> is process-spawn noise, not a tail-call effect.

@@ -1,0 +1,47 @@
+{
+  "goto-O2": {
+    "importGlue": 13.86,
+    "compileInstantiate": 101.24,
+    "runtimeInit": 7.07,
+    "pythonMain": 99.57,
+    "total": 223.33,
+    "n": 7,
+    "compileAll": [102.24, 110.43, 101.24, 117.34, 98.79, 99.86, 99.56]
+  },
+  "goto-O2-eh": {
+    "importGlue": 12.91,
+    "compileInstantiate": 97.06,
+    "runtimeInit": 6.84,
+    "pythonMain": 92.03,
+    "total": 208.61,
+    "n": 7,
+    "compileAll": [99.14, 97.06, 98.62, 93.82, 92.25, 92.99, 130.11]
+  },
+  "tc0-O2": {
+    "importGlue": 13.27,
+    "compileInstantiate": 97.83,
+    "runtimeInit": 6.7,
+    "pythonMain": 88.95,
+    "total": 207.24,
+    "n": 7,
+    "compileAll": [98.19, 92.95, 97.76, 95.13, 102.19, 97.83, 100.53]
+  },
+  "tc4-O3": {
+    "importGlue": 13,
+    "compileInstantiate": 104.1,
+    "runtimeInit": 7.18,
+    "pythonMain": 104.86,
+    "total": 230.29,
+    "n": 7,
+    "compileAll": [99.1, 98.87, 111.06, 107.68, 117.81, 104.1, 102.01]
+  },
+  "tc6-O3": {
+    "importGlue": 13.73,
+    "compileInstantiate": 100.71,
+    "runtimeInit": 7.11,
+    "pythonMain": 99.94,
+    "total": 221.94,
+    "n": 7,
+    "compileAll": [99.88, 98.06, 103.05, 100.35, 100.71, 102.91, 104.11]
+  }
+}
