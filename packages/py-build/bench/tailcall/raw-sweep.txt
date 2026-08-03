@@ -1,0 +1,77 @@
+== structural ==
+  goto-O2  wasm=7.55 br=2.15 eval=78942 tc=0 disp=0
+  goto-O3  wasm=7.80 br=2.16 eval=78485 tc=0 disp=0
+  tc0-O2   wasm=7.57 br=2.16 eval=726 tc=231 disp=0
+  tc0-O3   wasm=7.82 br=2.16 eval=700 tc=231 disp=0
+  tc1-O3   wasm=7.82 br=2.16 eval=700 tc=231 disp=32
+  tc2-O3   wasm=7.82 br=2.16 eval=700 tc=231 disp=36
+  tc3-O3   wasm=7.82 br=2.16 eval=700 tc=231 disp=4016
+  tc4-O3   wasm=7.82 br=2.16 eval=700 tc=231 disp=4011
+  tc5-O3   wasm=7.82 br=2.16 eval=700 tc=231 disp=6561
+  tc6-O3   wasm=7.82 br=2.16 eval=700 tc=231 disp=4023
+== decode+validate ==
+  goto-O2  17.1ms
+  goto-O3  17.5ms
+  tc0-O2   16.6ms
+  tc0-O3   19.1ms
+  tc1-O3   18.2ms
+  tc2-O3   17.5ms
+  tc3-O3   16.9ms
+  tc4-O3   17.0ms
+  tc5-O3   23.2ms
+  tc6-O3   18.2ms
+== bare startup ==
+  goto-O2  328ms
+  goto-O3  325ms
+  tc0-O2   274ms
+  tc0-O3   283ms
+  tc1-O3   290ms
+  tc2-O3   310ms
+  tc3-O3   287ms
+  tc4-O3   302ms
+  tc5-O3   287ms
+  tc6-O3   301ms
+== cold isolated (node26) ==
+  goto-O2  total=4512ms
+  goto-O3  total=4343ms
+  tc0-O2   total=4296ms
+  tc0-O3   total=4305ms
+  tc1-O3   total=4366ms
+  tc2-O3   total=4241ms
+  tc3-O3   total=4341ms
+  tc4-O3   total=4390ms
+  tc5-O3   total=4349ms
+  tc6-O3   total=4358ms
+== steady ==
+  goto-O2|node26|default       608ms
+  goto-O3|node26|default       611ms
+  tc0-O2|node26|default        630ms
+  tc0-O3|node26|default        628ms
+  tc1-O3|node26|default        688ms
+  tc2-O3|node26|default        729ms
+  tc3-O3|node26|default        525ms
+  tc4-O3|node26|default        495ms
+  tc5-O3|node26|default        514ms
+  tc6-O3|node26|default        517ms
+  goto-O2|node26|liftoff       1052ms
+  goto-O3|node26|liftoff       999ms
+  tc0-O2|node26|liftoff        1383ms
+  tc0-O3|node26|liftoff        1335ms
+  tc1-O3|node26|liftoff        1347ms
+  tc2-O3|node26|liftoff        1346ms
+  tc3-O3|node26|liftoff        1398ms
+  tc4-O3|node26|liftoff        1393ms
+  tc5-O3|node26|liftoff        1473ms
+  tc6-O3|node26|liftoff        1376ms
+  goto-O2|node24|default       603ms
+  goto-O3|node24|default       632ms
+  tc0-O2|node24|default        685ms
+  tc0-O3|node24|default        656ms
+  tc1-O3|node24|default        746ms
+  tc2-O3|node24|default        759ms
+  tc3-O3|node24|default        503ms
+  tc4-O3|node24|default        515ms
+  tc5-O3|node24|default        520ms
+  tc6-O3|node24|default        502ms
+
+wrote results.json

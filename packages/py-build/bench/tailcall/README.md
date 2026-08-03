@@ -31,7 +31,7 @@ Three results contradict assumptions in the plan; they are argued with data in `
 | `FINDINGS.md` | the report — verdicts, tables, mechanism, caveats |
 | `results.json` | raw data: 10 variants × 11 benchmarks × 2 V8 versions × 3 tiers |
 | `dispatch-verify.txt` | `return_call` / `return_call_indirect` / `br_table` counts per build |
-| `raw-sweep.log` | unedited stderr of the measurement sweep |
+|  `raw-sweep.txt` | unedited stderr of the measurement sweep (`.txt` because root `.gitignore` has `*.log`) |
 | `harness/` | everything needed to reproduce |
 | `reference/` | pyodide PR #6122 sources, for provenance — `.patch` and `.py` byte-exact; the `.mjs` had its formatting normalized by repo biome, logic untouched |
 
@@ -78,9 +78,23 @@ patch -p1 < reference/0010-generated-tail-dispatch.patch
 ## What this run is not
 
 A standalone CPython-for-emscripten build, **not** the AVLO fork: no patch queue 0001–0008b,
-no `MAIN_MODULE=2` closed world, no grouped DSOs, no snapshot restore, no
-`--enable-optimizations` (PGO), and no numpy/pandas/matplotlib (separate DSOs — their
-dispatch does not route through the main module's interpreter).
+no `MAIN_MODULE=2` closed world, no grouped DSOs, no snapshot restore, stock JS-based
+exception/longjmp support instead of the fork's `-fwasm-exceptions -sSUPPORT_LONGJMP=wasm`,
+and no numpy/pandas/matplotlib (separate DSOs — their dispatch does not route through the
+main module's interpreter).
 
-**Relative deltas between dispatch variants should transfer. Absolute figures should not.**
-Re-verify on the fork before shipping.
+> `--enable-optimizations` is **not** a delta: AVLO passes it at configure but PGO never
+> runs (pyodide builds `$(PYLIB)` directly and never invokes `profile-opt`). Verified during
+> the PR #16 review.
+
+> ### ⚠️ "Relative deltas transfer" was wrong
+>
+> That claim is **empirically false** — disproved by local cross-verification on the fork
+> (PR #16 review). Variant 0 measures ~17% *faster* than goto on a standalone build and
+> ~24% *slower* on a fork build, same host and engine, because **the fork's goto baseline is
+> roughly 2× faster than the stock one** while tail-call dispatch runs at the same absolute
+> speed in both. The v3–v6 headline was measured against headroom the fork's build config had
+> already banked. Host uarch moves results by ~20 points on its own.
+>
+> A follow-up sweep isolating the exception/longjmp scheme is in flight; results will land as
+> `STRONG-BASELINE.md`.

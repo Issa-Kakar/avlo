@@ -38,8 +38,11 @@ concern does not apply.
   no `MAIN_MODULE=2` closed world, no grouped DSOs, no snapshot restore.
 - `--enable-wasm-dynamic-linking` (CPython's own emscripten default). AVLO's `MAIN_MODULE=2`
   is a narrower export surface, so absolute module sizes differ.
-- No `--enable-optimizations` (PGO). AVLO's build uses it; PGO could interact with dispatch
-  shape, and this run cannot see that.
+- No `--enable-optimizations`. ~~AVLO's build uses it, and PGO could interact with dispatch
+  shape.~~ **Corrected (PR #16 review, verified):** AVLO passes `--enable-optimizations` at
+  configure (`cpython/Makefile:231`) but **PGO never runs** — pyodide builds `$(PYBUILD)/$(PYLIB)`
+  directly (`cpython/Makefile:243`), never invoking `profile-opt`, and no `llvm-profdata` or
+  profdata exists anywhere in the Makefiles. So this is *not* a fidelity delta.
 - `--without-pymalloc`, matching AVLO.
 - **Relative deltas between dispatch variants should transfer; absolute figures should not.**
 

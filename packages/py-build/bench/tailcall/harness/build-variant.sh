@@ -6,6 +6,10 @@
 set -euo pipefail
 
 ID="$1"; DISPATCH="$2"; OPT_LEVEL="$3"
+# Optional 4th arg: extra flags added to BOTH CFLAGS and LDFLAGS. Used for the
+# strong-baseline sweep, which adds the fork's exception/longjmp scheme
+# (`-fwasm-exceptions -sSUPPORT_LONGJMP=wasm`) that stock emscripten does not use.
+EXTRA="${4:-}"
 
 TC=/tmp/claude-0/-home-user-avlo/80de0d9c-acb2-50c4-9c1a-d238eb42e5f5/scratchpad/tc
 SRC="$TC/src/Python-3.14.2"
@@ -29,6 +33,8 @@ if [ "$DISPATCH" != "goto" ]; then
     CF_EXTRA="$CF_EXTRA -DTAIL_CALL_DISPATCH_MODE=$MODE"
   fi
 fi
+
+CF_EXTRA="$CF_EXTRA $EXTRA"
 
 OPTV="-DNDEBUG -fwrapv -O${OPT_LEVEL} -Wall"
 
