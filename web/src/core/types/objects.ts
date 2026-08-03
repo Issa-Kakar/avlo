@@ -10,6 +10,28 @@ import type { BBoxTuple, FrameTuple } from './geometry';
 export const OBJECT_KINDS = ['stroke', 'shape', 'text', 'connector', 'code', 'image', 'note', 'bookmark'] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
+// Numeric kind codes — OBJECT_KINDS order IS the canonical numbering. The K_*
+// literal consts exist for switch-case narrowing + jump-table dispatch on hot
+// paths (renderer, transform kernels); KIND_CODE is the string→code map for
+// cold writers (slot-table registration, RDM kind-keychange). The kernels
+// selftest asserts `K_X === KIND_CODE[OBJECT_KINDS[i]]` for all 8 — drift
+// between the two is caught there without runtime cost.
+export const KIND_CODE: Readonly<Record<ObjectKind, number>> = OBJECT_KINDS.reduce(
+  (acc, k, i) => {
+    acc[k] = i;
+    return acc;
+  },
+  {} as Record<ObjectKind, number>,
+);
+export const K_STROKE = 0,
+  K_SHAPE = 1,
+  K_TEXT = 2,
+  K_CONNECTOR = 3,
+  K_CODE = 4,
+  K_IMAGE = 5,
+  K_NOTE = 6,
+  K_BOOKMARK = 7;
+
 // Lightweight handle pointing to Y.Map. The handle is NOT the spatial-index entry —
 // the FlatRTree (`core/spatial/spatial-tree.ts`) is keyed by `slot`, and queries
 // recover handles via the slot table's reverse map. `bbox` + `slot` are the geometry

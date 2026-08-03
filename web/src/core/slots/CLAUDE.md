@@ -7,13 +7,16 @@ columns) is a consumer that sizes off `slotHighWater()` / `slotCapacity()`.
 
 ## Files
 
-- `slot-table.ts` — module-level state, LEAF (type-only imports; lock-table
-  pattern). Allocator (`acquireSlot`/`releaseSlot` — LIFO free list sized in
-  lockstep with capacity, so release never grows), slot→handle reverse map
+- `slot-table.ts` — module-level state, LEAF (type-only imports + the frozen
+  `KIND_CODE` const from `core/types/objects`; lock-table pattern). Allocator
+  (`acquireSlot`/`releaseSlot` — LIFO free list sized in lockstep with
+  capacity, so release never grows), slot→handle reverse map
   (`getHandlesBySlot`), interleaved global bbox column (`getBBoxColumn`,
-  minX,minY,maxX,maxY at `slot * 4`), `registerHandle` (seed both),
-  `writeSlotBBox` (column update), `resetSlotTable` (hydrate top + RDM
-  destroy).
+  minX,minY,maxX,maxY at `slot * 4`), numeric kind column (`getKindCodes`,
+  `K_*` code at `slot` — the renderer's int draw dispatch + transform-kernel
+  meta), `registerHandle` (seed all three), `writeSlotBBox` (column update),
+  `writeSlotKind` (RDM kind-keychange branch only, paired with the
+  `handle.kind` mirror), `resetSlotTable` (hydrate top + RDM destroy).
 - `slot-table.selftest.ts` — standalone esbuild+node runner (command in its
   header). Allocator/column oracle checks + ZRankTable churn-vs-brute-sort +
   `sortU32Range` vs `Array.sort`.
@@ -30,9 +33,11 @@ columns) is a consumer that sizes off `slotHighWater()` / `slotCapacity()`.
   the tripartite bbox write (`copyBbox` tuple → `writeSlotBBox` column →
   `spatialTree.update` tree); the three always move together, only there.
 - Phase A delete order: `spatialTree.remove(slot)` → `lockSlotReleased` →
-  `zOrder.noteRemove` → `releaseSlot` LAST — a slot is freed only after every
-  slot-keyed consumer has finalized (Phase B of the same fire can recycle it,
-  and a late tree remove would delete the recycled entry).
+  `zOrder.noteRemove` → `transformEvictSlot` → `releaseSlot` LAST — a slot is
+  freed only after every slot-keyed consumer has finalized (Phase B of the
+  same fire can recycle it, and a late tree remove would delete the recycled
+  entry; a late gesture-map read would route the recycled object into a dead
+  gesture entry).
 
 ## Contracts
 
@@ -57,5 +62,7 @@ load feeds `load(count, ids, boxes)` the column directly — its ITEM-indexed
 layout coincides with the slot-indexed column while slots are dense, i.e.
 post-hydrate; the WS repack uses `rebuild()`), renderer + pickers (query
 results are slots; handles recovered via the reverse map, clip/hit envelopes
-read off the column, sorted rank keys via `slotsByRank`), and
-`invalidateWorldSlot` (RenderLoop reads the dirty rect off the column).
+read off the column, draw dispatch off the kind column, sorted rank keys via
+`slotsByRank`), the transform engine (`_slotGesture` sparse map + freeze
+lanes sized/read off the columns; `transformEvictSlot` is its Phase A hook),
+and `invalidateWorldSlot` (RenderLoop reads the dirty rect off the column).

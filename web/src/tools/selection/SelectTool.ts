@@ -32,7 +32,7 @@ import {
   flowButtonGate,
   hitFlowButton,
 } from '@/tools/selection/connector-flow';
-import { getController } from '@/tools/selection/transform';
+import * as tf from '@/tools/selection/transform';
 import type { PointerTool, PreviewData } from '../types';
 
 // === Constants ===
@@ -70,8 +70,8 @@ type DownHit =
  * - Cursor: useDeviceUIStore (applyCursor, setCursorOverride)
  * - Camera/Selection: Zustand stores
  *
- * Endpoint drag's RouteContext + buffer + bbox snapshots live on TransformController;
- * SelectTool just routes lifecycle through `getController().beginEndpointDrag(...)`
+ * Endpoint drag's RouteContext + buffer + bbox snapshots live on the transform
+ * engine; SelectTool just routes lifecycle through `tf.beginEndpointDrag(...)`
  * and the standard `endTransform` / `cancelTransform` store actions.
  */
 export class SelectTool implements PointerTool {
@@ -323,8 +323,8 @@ export class SelectTool implements PointerTool {
 
             const connHandle = getHandle(connectorId);
             if (!connHandle) break;
-            // Controller owns RouteContext + buffer + bbox snapshots for the gesture.
-            if (!getController().beginEndpointDrag(connectorId, slot, connHandle)) break;
+            // The engine owns RouteContext + buffer + bbox snapshots for the gesture.
+            if (!tf.beginEndpointDrag(connectorId, slot, connHandle)) break;
             this.phase = 'endpointDrag';
             useSelectionStore.getState().beginEndpointDrag(connectorId, slot);
             setCursorOverride('grabbing');
@@ -430,7 +430,7 @@ export class SelectTool implements PointerTool {
               prevAttach: epTransform.currentSnap,
               connectorType: getConnectorType(handle.y),
             });
-        getController().updateEndpointDrag(worldX, worldY, snap);
+        tf.updateEndpointDrag(worldX, worldY, snap);
         const currentPosition: [number, number] = snap ? snap.position : [worldX, worldY];
         useSelectionStore.getState().updateEndpointDrag(currentPosition, snap);
         break;
@@ -599,7 +599,7 @@ export class SelectTool implements PointerTool {
   }
 
   cancel(): void {
-    // Controller's cancel() handles all gesture modes (translate / scale / endpointDrag).
+    // The engine's cancelTransform handles all gesture modes (translate / scale / endpointDrag).
     useSelectionStore.getState().cancelTransform();
 
     this.marqueeActive = false;

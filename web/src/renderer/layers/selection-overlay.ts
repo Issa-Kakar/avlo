@@ -6,9 +6,9 @@
  * Per-mode dispatch + per-call WHY live on the individual functions below.
  *
  * Two cross-cutting concerns:
- *   - `transformHasChange()` gates the begin→first-update gap (`entry.out.*` is
- *     zero-bbox until the first update writes real values). Connector topology
- *     skips the gate — its `currBbox` is initialized live at build.
+ *   - Per-object rects read the gesture engine's seeded out-bbox lanes without
+ *     a hasChange gate (seeded = at-rest rect, identical pre-first-move); the
+ *     UNION rect keeps `transformHasChange()` gating its scale/translate math.
  *   - `shouldShowHandles` is the single render/hit/cursor visibility gate so
  *     they can never disagree.
  *
@@ -20,10 +20,10 @@
 import { getConnectorType } from '@/core/accessors';
 import { getEndpointEdgePosition, isInteriorAnchored } from '@/core/connectors/anchor-atoms';
 import { SLOT_END, SLOT_START, slotKey, slotOther, slotPointIndex } from '@/core/connectors/reroute-connector';
-import { frameToBbox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { uniformFactor } from '@/core/geometry/scale-system';
+import { getBBoxColumn } from '@/core/slots/slot-table';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { computeHandles } from '@/core/types/handles';
@@ -34,16 +34,19 @@ import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
 import type { EndpointDragEntry } from '@/tools/selection/connector-topology';
 import {
-  getController,
   getEndpointDragEntry,
-  getScaleEntry,
+  getGestureLanes,
+  getGestureSlotMap,
+  getTopoEntries,
+  getTransformModeCode,
   getTransformScaleCtx,
-  getTransformTopology,
+  getTranslateDX,
+  getTranslateDY,
   getTranslateSelBounds,
   isOverlayUniform,
-  type KindWithBBoxGeo,
   transformHasChange,
 } from '@/tools/selection/transform';
+import { G_STRIDE, GIDX_MASK, TOPO_TAG } from '@/tools/selection/transform-kernels';
 import type { EndpointDragTransform, TransformState } from '@/tools/selection/types';
 import { drawConnectorFlow } from './connector-flow';
 import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
@@ -143,7 +146,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   if (selectedIds.length === 1) {
     const handle = getHandle(selectedIds[0]);
     if (!handle) return;
-    const bbox = currentBoundsForHandle(handle, transform);
+    const bbox = currentBoundsForHandle(handle);
     drawSelectionBox(ctx, bbox, scale);
     if (!isTranslating && !hideHandlesForEdit && !selectionLocked && shouldShowHandles(bbox, scale)) {
       drawResizeHandles(ctx, computeHandles(bbox), scale);
@@ -161,14 +164,14 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   for (const id of selectedIds) {
     const handle = getHandle(id);
     if (!handle) continue;
-    const bbox = currentBoundsForHandle(handle, transform);
+    const bbox = currentBoundsForHandle(handle);
     if (!bboxesIntersect(bbox, visible)) continue;
     ctx.strokeRect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]);
   }
   ctx.restore();
 
   // Selection-bounds rect + handles (sliding for scale, translated for translate, base for idle).
-  const selRect = selectionRectForOverlay(transform);
+  const selRect = selectionRectForOverlay();
   if (selRect) {
     drawSelectionBox(ctx, selRect, scale);
     if (!isTranslating && !hideHandlesForEdit && !selectionLocked && shouldShowHandles(selRect, scale)) {
@@ -181,33 +184,57 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
 // PER-OBJECT BOUNDS / HIGHLIGHT
 // =============================================================================
 
+/** Module scratch for `currentBoundsForHandle` / `selectionRectForOverlay` —
+ *  callers consume (strokeRect / computeHandles) before the next call. */
+const _boundsScratch: BBoxTuple = [0, 0, 0, 0];
+const _selRectScratch: BBoxTuple = [0, 0, 0, 0];
+
 /**
- * Live bbox during transform; frame-aware fallback when idle (or when a transform has
- * begun but no movement has been applied yet — `entry.out.bbox` is uninitialized
- * between begin and the first update, so `transformHasChange()` gates the live read
- * and the function falls through to the idle path. Connector topology entries are
- * initialized correctly at build, so they don't need the gate. Endpoint drag never
- * reaches this function (connector mode renders dots only, never per-object bbox).
+ * Live per-object rect, routed through the gesture engine's sparse slot map:
+ * topology connectors return their live `currBbox` ref; gesture entries the
+ * out-bbox lanes (NO hasChange gate — seeded lanes ≡ the at-rest rect, and
+ * for text the seeded fBBox is the TIGHT frame bbox, exactly the old idle
+ * `frameOf` read); idle text the derived frame (italic-overhang pad lives on
+ * the column rect, not the visual edge); everything else the column rect.
+ * Returns a module scratch (or the entry ref) — consume immediately.
  */
-function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTuple {
+function currentBoundsForHandle(handle: ObjectHandle): BBoxTuple {
+  const sg = getGestureSlotMap();
+  const g = sg[handle.slot];
   if (handle.kind === 'connector') {
-    if (t.kind === 'scale' || t.kind === 'translate') {
-      const ce = getTransformTopology()?.byId.get(handle.id);
-      if (ce) return ce.currBbox;
+    if (g >= 0 && (g & TOPO_TAG) !== 0) {
+      const entries = getTopoEntries();
+      if (entries) return entries[g & GIDX_MASK].currBbox;
     }
-    return handle.bbox;
+  } else {
+    const tmode = getTransformModeCode();
+    if (g >= 0 && (tmode === 1 || tmode === 2)) {
+      const lanes = getGestureLanes();
+      const b = g * G_STRIDE;
+      _boundsScratch[0] = lanes[b + 8];
+      _boundsScratch[1] = lanes[b + 9];
+      _boundsScratch[2] = lanes[b + 10];
+      _boundsScratch[3] = lanes[b + 11];
+      return _boundsScratch;
+    }
+    if (handle.kind === 'text') {
+      const f = frameOf(handle);
+      if (f) {
+        _boundsScratch[0] = f[0];
+        _boundsScratch[1] = f[1];
+        _boundsScratch[2] = f[0] + f[2];
+        _boundsScratch[3] = f[1] + f[3];
+        return _boundsScratch;
+      }
+    }
   }
-  if ((t.kind === 'scale' || t.kind === 'translate') && transformHasChange()) {
-    const e = getScaleEntry(handle.kind as KindWithBBoxGeo, handle.id);
-    if (e) return e.out.bbox;
-  }
-  if (handle.kind === 'text') {
-    // handle.bbox carries italic-overhang horizontal padding (from computeTextBBox);
-    // highlights/handles must sit on the visual frame edge, so prefer frameOf().
-    const f = frameOf(handle);
-    return f ? frameToBbox(f) : handle.bbox;
-  }
-  return handle.bbox;
+  const col = getBBoxColumn();
+  const o = handle.slot * 4;
+  _boundsScratch[0] = col[o];
+  _boundsScratch[1] = col[o + 1];
+  _boundsScratch[2] = col[o + 2];
+  _boundsScratch[3] = col[o + 3];
+  return _boundsScratch;
 }
 
 // =============================================================================
@@ -217,12 +244,11 @@ function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTu
 /**
  * Sliding for scale, translated for translate, base bounds otherwise.
  * `transformHasChange()` short-circuits the transform paths to live
- * `computeSelectionBounds` before the first update fires — same graceful fallback
- * as `currentBoundsForHandle`.
+ * `computeSelectionBounds` before the first update fires.
  *
  * Scale: uses `uniformFactor` when `isOverlayUniform()` is true (every active kind
  * is `uniform`, OR all-connector selection on a corner). The all-connector branch
- * is the subtle one — connectors don't enter the entry store (topology owns
+ * is the subtle one — connectors don't enter the lane buffer (topology owns
  * them), so their corner gesture transforms free endpoints via `uniformFactor`
  * and side gestures via per-axis `scaleAround` (rawScaleFactors hardcodes the
  * inactive axis to 1). The overlay must mirror that math — using `(sx, sy)` on
@@ -231,24 +257,45 @@ function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTu
  *
  * Translate: union frozen at `beginTranslate` (`getTranslateSelBounds`). Parallels
  * `scaleCtx.selBounds`; recomputing live every frame would let remote mid-drag
- * mutations wobble the rect.
+ * mutations wobble the rect. Both transform arms fill a module scratch
+ * (alloc-free `scaleBBoxAround`/`translateBBox` ports).
  */
-function selectionRectForOverlay(t: TransformState): BBoxTuple | null {
-  if (t.kind === 'none' || !transformHasChange()) return computeSelectionBounds();
-  if (t.kind === 'scale') {
+function selectionRectForOverlay(): BBoxTuple | null {
+  const tmode = getTransformModeCode();
+  if (tmode === 0 || !transformHasChange()) return computeSelectionBounds();
+  if (tmode === 1) {
     const s = getTransformScaleCtx();
     if (!s) return null;
+    let sx = s.sx;
+    let sy = s.sy;
     if (isOverlayUniform()) {
       const uf = uniformFactor(s.sx, s.sy, s.handleId);
-      return scaleBBoxAround(s.selBounds, s.origin, uf, uf);
+      sx = uf;
+      sy = uf;
     }
-    return scaleBBoxAround(s.selBounds, s.origin, s.sx, s.sy);
+    // scaleBBoxAround, inlined into the scratch (same math, no tuple alloc).
+    const o = s.origin;
+    const bb = s.selBounds;
+    const x1 = o[0] + (bb[0] - o[0]) * sx;
+    const y1 = o[1] + (bb[1] - o[1]) * sy;
+    const x2 = o[0] + (bb[2] - o[0]) * sx;
+    const y2 = o[1] + (bb[3] - o[1]) * sy;
+    _selRectScratch[0] = Math.min(x1, x2);
+    _selRectScratch[1] = Math.min(y1, y2);
+    _selRectScratch[2] = Math.max(x1, x2);
+    _selRectScratch[3] = Math.max(y1, y2);
+    return _selRectScratch;
   }
-  if (t.kind === 'translate') {
+  if (tmode === 2) {
     const base = getTranslateSelBounds();
     if (!base) return null;
-    const c = getController();
-    return translateBBox(base, c.dx, c.dy);
+    const dx = getTranslateDX();
+    const dy = getTranslateDY();
+    _selRectScratch[0] = base[0] + dx;
+    _selRectScratch[1] = base[1] + dy;
+    _selRectScratch[2] = base[2] + dx;
+    _selRectScratch[3] = base[3] + dy;
+    return _selRectScratch;
   }
   return computeSelectionBounds();
 }

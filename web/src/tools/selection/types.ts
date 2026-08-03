@@ -140,8 +140,8 @@ export interface ScaleTransform {
 /**
  * Endpoint drag transform: dragging a single connector endpoint.
  *
- * Renderer-and-overlay-only fields. The buffer + bbox + RouteContext live on
- * `TransformController.endpointDrag` (one source of truth for active gesture
+ * Renderer-and-overlay-only fields. The buffer + bbox + RouteContext live in
+ * the transform engine's module state (one source of truth for active gesture
  * state). The renderer reads the synthetic `EndpointDragEntry` directly via
  * `getEndpointDragEntry()`; the overlay reads `currentPosition`/`currentSnap`
  * here for the dragged-dot + snap feedback.

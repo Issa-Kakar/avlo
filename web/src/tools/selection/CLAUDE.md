@@ -2,7 +2,7 @@
 
 > **Maintenance:** Architectural overview, not a changelog. Match surrounding detail level when updating.
 
-SelectTool + transform engine + selection store + hit testing + transform rendering. Handles translate, scale (per-kind-aware), connector endpoint drag, marquee, multi-select, text/code editing entry, and Z-order-aware hit testing.
+SelectTool + the SoA transform engine + selection store + hit testing + transform rendering. Handles translate, scale (per-kind-aware), connector endpoint drag, marquee, multi-select, text/code editing entry, and Z-order-aware hit testing.
 
 ---
 
@@ -10,21 +10,24 @@ SelectTool + transform engine + selection store + hit testing + transform render
 
 | File | Responsibility |
 |------|----------------|
-| `tools/selection/SelectTool.ts` | State machine, hit dispatch, routes transform lifecycle through the store. Endpoint drag begun via `getController().beginEndpointDrag(...)`; rest of lifecycle flows through `endTransform`/`cancelTransform`. |
-| `tools/selection/transform.ts` | `TransformController` — owns scale + translate + **endpoint drag** modes, structural traits, mapped types (incl. `KindWithBBoxGeo`), dispatch tables, apply/commit/freeze, `getEndpointDragEntry()` accessor, controller-owned `injectIds` buffer, module getters |
+| `tools/selection/SelectTool.ts` | State machine, hit dispatch, routes transform lifecycle through the store. Endpoint drag begun via `tf.beginEndpointDrag(...)`; rest of lifecycle flows through `endTransform`/`cancelTransform`. |
+| `tools/selection/transform.ts` | **The module-level SoA gesture engine** (no class) — one interleaved Float64 lane buffer, op-partitioned kernel ranges, sparse slot→gesture map, reflow sidecars, stroke pool, endpoint drag, batched damage, commit/cancel, RDM eviction hook, getter surface |
+| `tools/selection/transform-kernels.ts` | Pure lane math (canvas-free LEAF): lane/op/meta/tag consts, `BEHAVIOR_LUT`/`OP_LUT`, the six apply kernels, `UniformPack` + `fillUniformPack`, `reflowLeftWidth`. Oracle-proven — see selftest |
+| `tools/selection/transform-kernels.selftest.ts` | esbuild+node runner (command in header): verbatim pre-SoA oracle frozen in-file; ≥5k fuzz cases/op asserting EXACT float equality; LUT ≡ `resolveBehavior`; commit-value + `fillFrameFromBind` mirrors; `K_*` ≡ `OBJECT_KINDS` order |
+| `tools/selection/transform-damage.ts` | Damage accumulator (LEAF between engine/topology and RenderLoop): `pushDamage(minX,minY,maxX,maxY)` + `flushDamage()` → one `invalidateWorldRects` batch per pointermove |
 | `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState`, `ScaleCtx`, `SelectedStyles`, `InlineStyles`. `EndpointDragTransform` carries renderer/UI fields only. |
-| `tools/selection/connector-topology.ts` | `ConnectorEntry` discriminated union (static / translate / reroute / endpoint-drag synthetic), per-pipeline Side types, `newTopologyBuilder`, `runTopologyScale/Translate`, `commitTopology`, `cancelTopology`, `fillFrameFromBind` |
+| `tools/selection/connector-topology.ts` | `ConnectorEntry` discriminated union (static / translate / reroute / endpoint-drag synthetic; all carry `slot`), per-pipeline Side types (bind sides hold a lane index `gi`), `newTopologyBuilder`, `runTopologyScale/Translate` (lanes threaded), `commitTopology`, `cancelTopology`, `fillFrameFromBind` |
 | `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeStyles` (declarative `foldField` composition), `computeUniformInlineStyles` |
 | `tools/selection/selection-actions.ts` | Mutation wrappers for context menu — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` call, plus `convertSelectionTo`/`convertSelectionToShape` delegating to `convert-kind.ts` (see `components/context-menu/CLAUDE.md`) |
-| `tools/selection/selection-field-table.ts` | `FieldDescriptor<V>` type + `Aggregate<V>` + `foldField`/`applyField`/`toggleField`/`adjustByPresets`/`withEditorOr` primitives + ~17 typed descriptors (one per property). Single source of truth for read/write/persist/accept per kind |
-| `tools/selection/convert-kind.ts` | Cross-kind conversion (text ↔ note ↔ shape): in-place kind mutation on the same Y.Map. Per-direction PRE-READ plan builders (center/glyph-preserving geometry, fill palette mapping, `color`↔`labelColor` remap) + one `transact()` commit (`kind` set last, then `renormalizeAttachedAnchors`). Downstream is fully observer-driven — the kind-keychange branch in `room-doc-manager.ts` + `selection-store.onObjectsKindChanged` |
-| `stores/selection-store.ts` | Zustand store, orchestrates `TransformController`, `computeSelectionBounds()` |
-| `core/geometry/scale-system.ts` | Pure math atoms: `scaleAround`, `uniformFactor`, `preservePosition[Mut]`, `edgePinPosition1D`, `computeReflowWidth`, `scaleBBoxUniform/Edges`, `derivePaddedFrame` |
-| `core/geometry/bounds.ts` | Bbox/frame helpers + mutating offset primitives (`offsetBBox`, `offsetFrame`, `offsetPoint`, `setBBoxXYWH`) |
+| `tools/selection/selection-field-table.ts` | `FieldDescriptor<V>` table + `Aggregate<V>` + `foldField`/`applyField`/`toggleField`/`adjustByPresets`/`withEditorOr` primitives + ~17 typed descriptors (one per property). Single source of truth for read/write/persist/accept per kind |
+| `tools/selection/convert-kind.ts` | Cross-kind conversion (text ↔ note ↔ shape): in-place kind mutation on the same Y.Map. Per-direction PRE-READ plan builders (center/glyph-preserving geometry, fill palette mapping, `color`↔`labelColor` remap) + one `transact()` commit (`kind` set last, then `renormalizeAttachedAnchors`). Downstream is fully observer-driven — the kind-keychange branch in `room-doc-manager.ts` (incl. `writeSlotKind` + `transformEvictSlot`) + `selection-store.onObjectsKindChanged` |
+| `stores/selection-store.ts` | Zustand store, orchestrates the engine via `import * as tf`, `computeSelectionBounds()` |
+| `core/geometry/scale-system.ts` | Pure SCALAR atoms only: `scaleAround`, `round3`, `uniformFactor`, `preservePositionMut`, `edgePinPosition1D`, `rawScaleFactorsInto(out,…)`, `MIN_SHAPE_FRAME_DIM`. The old tuple-allocating bbox composites live on only as the selftest oracle |
+| `core/geometry/bounds.ts` | Bbox/frame helpers + mutating offset primitives |
 | `core/types/handles.ts` | HandleId taxonomy, type guards, `scaleOrigin`, `handleCursor` |
 | `core/spatial/` | Hit testing — see `core/spatial/CLAUDE.md` |
-| `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderScaleEntry` (entry-based), `renderTranslatedEntry` (edge-pin fallback) |
-| `renderer/layers/selection-overlay.ts` | Marquee, single-select bounds rect (doubles as highlight), multi-select per-object highlights + union rect, connector mode endpoint dots only. `shouldHideHandlesForEditing` keeps handles VISIBLE for shape/note label editing (label DOM lives strictly inside the padded bbox) and hides them only when the editor occupies the full bbox (`text` standalone, `code`). |
+| `renderer/layers/objects.ts` | `drawObjects` (kind-code jump table), sparse-map pack skip + slot-keyed inject cull, `renderScaleEntryLanes` (op-dispatched lane paint), `drawConnectorEntry` |
+| `renderer/layers/selection-overlay.ts` | Marquee, single-select bounds rect (doubles as highlight), multi-select per-object highlights + union rect, connector mode endpoint dots only. Per-object rects route through the sparse map + lanes/column into module scratches (alloc-free). `shouldHideHandlesForEditing` keeps handles VISIBLE for shape/note label editing (label DOM lives strictly inside the padded bbox) and hides them only when the editor occupies the full bbox (`text` standalone, `code`). |
 
 ---
 
@@ -65,7 +68,7 @@ Transition gated by `passMove` (`dist > MOVE_THRESHOLD_PX`). Gap/background also
 | DownHit kind | Transition | Notes |
 |---|---|---|
 | `handle`     | `scale`        | `store.beginScale(handleId, downWorld)` |
-| `endpoint`   | `endpointDrag` | Drill to single connector if multi-selected. Controller owns the gesture (RouteContext + buffer + bbox snapshots). |
+| `endpoint`   | `endpointDrag` | Drill to single connector if multi-selected. The engine owns the gesture (RouteContext + buffer + bbox snapshots). |
 | `object` (unselected) | `translate` | Selects first. Durably-locked objects + anchored connectors → `marquee` instead. |
 | `object` (selected)   | `translate` | Durably-locked objects + anchored connectors → `marquee` instead. |
 | `openButton` | `translate`    | Drift on a pressed Open button = translate intent (user moving the bookmark). Hover stays painted; `ctx.translate(tdx, tdy)` in `objects.ts` carries the hovered chip with the card. |
@@ -80,12 +83,12 @@ SelectTool hands the store raw cursor coords; **all gesture math lives in the st
 1. `computeSelectionBounds()` → selBounds.
 2. `scaleOrigin(handleId, selBounds)` → origin; `handlePosition` → handlePos.
 3. `initialDelta = handlePos - origin`; `clickOffset = downWorld - handlePos`.
-4. `ctrl.beginScale(selectedIdSet, handleId, origin, selBounds)`.
+4. `tf.beginScale(selectedIdSet, handleId, origin, selBounds)`.
 5. `transform = { kind: 'scale', initialDelta, clickOffset }`.
 
-`store.updateScale(worldX, worldY)`: read `scaleCtx` from controller, `rawScaleFactors(worldX - clickOffset[0], worldY - clickOffset[1], origin, initialDelta, handleId) → [sx, sy]`, then `ctrl.updateScale(sx, sy)`.
+`store.updateScale(worldX, worldY)`: read `scaleCtx` via `tf.getTransformScaleCtx()`, `rawScaleFactorsInto(_rsf, worldX - clickOffset[0], worldY - clickOffset[1], origin, initialDelta, handleId)` (module scratch — no tuple alloc), then `tf.updateScale(_rsf[0], _rsf[1])`.
 
-The split: controller owns `handleId`/`origin`/`selBounds` (per-apply); store owns `initialDelta`/`clickOffset` (gesture math feeding `rawScaleFactors`). Per-frame `sx`/`sy` stay on the controller — mutating the Zustand discriminant on every pointermove would fire subscribers wastefully.
+The split: the engine owns `handleId`/`origin`/`selBounds` (COPIED into module-owned arrays at begin — a single-selected handle's live geometry must never alias the gesture baseline); the store owns `initialDelta`/`clickOffset` (gesture math feeding `rawScaleFactorsInto`). Per-frame `sx`/`sy` stay in the engine — mutating the Zustand discriminant on every pointermove would fire subscribers wastefully.
 
 ### Translate phase
 
@@ -97,7 +100,7 @@ store.updateTranslate(worldX - downWorld[0], worldY - downWorld[1])
 
 Click (no drag): handle → no-op; endpoint → drill to single; openButton → re-verify against fresh handle and re-test rect, then `openBookmarkUrl(id)` (the bookmark may have been deleted mid-press; drift >MOVE_THRESHOLD_PX would have promoted to translate already); outside → shift/ctrl additive xor replace; in-selection → shift/ctrl subtractive xor (multi: drill, single text/note/shape: enter text edit, single code: enter code edit); gap → quick tap deselects; background → deselect.
 
-Drag commit: `store.endTransform()` calls `ctrl.commit()` xor `ctrl.clear()` and resets the discriminant. `store.cancelTransform()` does the same for Esc.
+Drag commit: `store.endTransform()` routes endpointDrag → `tf.commitEndpointDrag(snap)`, else `tf.transformHasChange() ? tf.commitTransform() : tf.clearTransform()`, and resets the discriminant. `store.cancelTransform()` does the same for Esc.
 
 After every `end()` / `cancel()`: `rehoverFromLastCursor()` re-runs `handleHoverCursor` against `getLastCursorWorld()` so a just-committed bookmark scale immediately reflects in the hover indicator without requiring a cursor wiggle.
 
@@ -116,187 +119,122 @@ SelectTool exposes `getHoveredOpenBookmarkId(): string | null` — `objects.ts` 
 
 ---
 
-## Transform System (`transform.ts`)
+## Transform Engine (`transform.ts` + `transform-kernels.ts`)
 
-The entry-based engine. SelectTool delegates lifecycle; renderer reads via module getters. All transform state lives in `TransformController`.
+Module-level SoA state, no class, no controller object. The store consumes via `import * as tf`; the renderer/overlay read typed-array buffers through per-frame getters (FlatRTree `results` idiom: refs valid within a frame, refetch per frame — arrays swap only at begin/growth). Steady-state begin/update/commit allocates nothing except reflow-sidecar field writes and cold pool growth.
 
-### Type system
+### Lane buffer — stride 16, one Float64Array
 
-```typescript
-// Structural traits — functions typed by trait accept any kind whose Geo/Out has the field
-type HasOrigin = { origin: Point };
-type HasBBox = { bbox: BBoxTuple };
-type HasFrame = { frame: FrameTuple };
-type HasScale = { scale: number };
-type HasFontSize = { fontSize: number };
-type HasWidth = { width: number };
-type HasPoints = { points: Point[] };
+Per gesture entry `gi`, `base = gi * G_STRIDE` (consts in `transform-kernels.ts`: `G_STRIDE=16, GF_BBOX=0, GF_AUX=4, GO_BBOX=8, GO_AUX=12`):
 
-interface Entry<K extends ObjectKind = ObjectKind> {
-  readonly id: string;
-  readonly y: Y.Map<unknown>;
-  readonly frozen: Readonly<GeoOf<K>>;  // immutable snapshot at begin
-  out: OutOf<K>;                         // mutated per-frame, read by renderer
-  prevBbox: BBoxTuple;                   // dirty-rect tracking
-}
-type EntryStore = { [K in ObjectKind]?: Map<string, Entry<K>> };
-
-type ScalableKind = Exclude<ObjectKind, 'connector'>;  // connectors → topology
-```
-
-`GeoOf<K>` = frozen geometry per kind. `OutOf<K>` = mutable output. Trait composition (kept tight; behavior-specific fields are optional and only populated by behaviors that read them):
-
-```
-shape:    HasFrame & HasBBox
-image:    HasFrame & HasBBox
-stroke:   GeoOf = HasPoints & HasBBox & {width?}        OutOf = HasBBox & {factor, fcx, fcy}
-text:     HasOrigin & HasBBox & {fontSize, width?, align?, measured?, minW?}
-                                                         OutOf = +HasFontSize & HasWidth & {layout}
-code:     HasOrigin & HasBBox & {fontSize?, width?, source?, lineNumbers?, …}
-                                                         OutOf = +HasFontSize & HasWidth & {layout}
-note:     HasOrigin & HasBBox & {scale?}                 OutOf = +HasScale
-bookmark: HasOrigin & HasBBox & {scale?}                 OutOf = +HasScale
-```
-
-`text.fontSize` is **required** (no `?`) — every text behavior captures it, including translate/edgePin. Reason: `applyOffset` propagates `f.fontSize → o.fontSize` unconditionally so `fillDirty`'s italic-overhang pad math can read `out.fontSize` without branching on behavior.
-
-`KindWithBBoxGeo = Exclude<ObjectKind, 'connector'>` — every non-connector has `bbox`. Exported and shared with `selection-overlay.ts`.
-
-**Per-behavior freeze.** `freezeScaleEntry(kind, behavior, ...)` captures only fields the chosen behavior will read. `edgePin` delegates to `freezeTranslateEntry`; `uniform` adds the tracked scalar; `reflow` adds the layout inputs.
-
-| Behavior | Per-kind freeze (beyond origin/frame/bbox) |
+| lanes | meaning |
 |---|---|
-| translate / edgePin (text)     | `fontSize` — propagated by `applyOffset` so `fillDirty`'s italic-pad reads `out.fontSize` unconditionally |
-| translate / edgePin (note, bookmark) | `scale` — propagated by `applyOffset` so `fillFrameFromBind`'s `ratio = out.scale / frozen.scale` works under translate (ratio = 1) |
-| translate / edgePin (others)   | nothing extra |
-| uniform (text/code)            | `fontSize`, `width` |
-| uniform (note/bookmark)        | `scale` |
-| uniform (stroke)               | `points`, `width` (only uniform commit reads them) |
-| reflow (text)                  | `align`, `measured`, `minW` |
-| reflow (code)                  | `source`, `lineNumbers`, `headerVisible`, `outputVisible`, `output`, `minW` |
+| `+0..3` | fBBox — frozen bbox (text: TIGHT frame bbox, OFFSET null-frame fallback = padded column rect; code: column ≡ tight; others: column rect) |
+| `+4..7` | fAux (table below) |
+| `+8..11` | oBBox — output bbox, seeded = fBBox at freeze |
+| `+12..15` | oAux — seeded = fAux, ⚠ EXCEPT STROKE_UNIFORM entries seed `[frozenCx, frozenCy, 1, 0]` — the renderer's stroke arm reads oAux as fcx/fcy/factor from the first overlapping repaint in the begin→first-move window; a blind fAux copy would paint the stroke scaled `width`× around `(ptsOff, ptsCount)` |
 
-**Stroke OutMap** drops `points`/`width` entirely. Apply mutates only `o.bbox` and stores `factor`/`fcx`/`fcy` for `ctx.scale` preview rendering. Commit reads `frozen.points` directly. **No per-frame point allocation regardless of stroke length.**
-
-### Behavior resolution
-
-```typescript
-type ScaleBehavior = 'uniform' | 'nonUniform' | 'edgePin' | 'reflow';
-```
-
-**Default** (most kinds): single → `uniform`; multi → corner: `uniform`, sides: `edgePin`.
-
-**Overrides** (only the exceptions):
-
-| Key | Behavior |
+| kind | fAux `[0] [1] [2] [3]` |
 |---|---|
-| `shape_corner_single` | `nonUniform` (multi-shape corners → default `uniform` so groups scale together) |
-| `shape_hSide_*`, `shape_vSide_*` | `nonUniform` (shapes always non-uniform on sides) |
-| `text_hSide_*`, `code_hSide_*` | `reflow` (E/W handles re-layout at new width) |
+| shape, image | frame `x, y, w, h` |
+| stroke | `ptsOff, ptsCount, width, 0` (width always filled; OFFSET commit ignores it — uniform freeze body) |
+| text | `originX, originY, fontSize, width` (NaN = `'auto'`) |
+| code | `originX, originY, fontSize, width` (OFFSET freeze leaves `[2..3]` = 0 — unread) |
+| note, bookmark | `originX, originY, scale, 0` |
 
-`resolveBehavior(kind, handleId, single)` always returns a value (defaults provide fallback).
+Post-OFFSET stroke oAux is documented garbage (aux0..1 offset, aux2..3 copied) — the stroke offset commit reads frozen lanes + oBBox only.
 
-### Dispatch tables (3 + the unified `applyOffset`)
+Parallel per-gi arrays: `_meta: Uint32Array` (bits 0–2 kindCode · 3–5 op · 6 DEAD · 7–9 code lineNumbers/headerVisible/outputVisible), `_gslot: Uint32Array`, `_gy: (Y.Map|null)[]` (commit refs; `length = 0` at dispose so deleted maps aren't rooted).
 
-```typescript
-type ScaleApplyTable     = { [K in ScalableKind]: Partial<Record<ScaleBehavior, ApplyFn<K>>> };
-type ScaleCommitTable    = { [K in ScalableKind]: Partial<Record<ScaleBehavior, CommitFn<K>>> };
-type TranslateCommitTable = { [K in ScalableKind]: CommitFn<K> };
-```
+Stroke frozen points: packed x,y pairs in `_strokePool: Float64Array` (pow2, reset per begin); per-entry `[off, count]` in fAux. Reflow sidecars (`_textSidecars`/`_codeSidecars`, pooled, dense index `gi - opStart[op]`): measured/source ref + minW + anchor/output + a pooled layout (`createTextLayout()`/`createCodeLayout()` once per pool slot, `lineCount`/`visualLineCount` zeroed at freeze so a begin→first-move repaint paints nothing rather than a previous gesture's stale glyphs); refs nulled at dispose.
 
-Translate has **no apply table** — `updateTranslate` calls `applyOffset` directly for every kind.
-
-`COMMIT_SCALE` includes frozen geometry as third param so stroke can defer point computation to commit. `TRANSLATE_COMMIT` reuses `commitFrame` / `commitOrigin` / `commitStrokeOffset` and shares the `(y, o, f) => void` signature.
-
-**APPLY_SCALE:**
-
-| Kind | uniform | nonUniform | edgePin | reflow |
-|---|---|---|---|---|
-| shape | `scaleFrameUniform` | `scaleFrameNonUniform` | — | — |
-| image | `scaleFrameUniform` | — | `edgePinOffset` | — |
-| stroke | `scaleStrokeBBox` | — | `edgePinOffset` | — |
-| text | `scaleOriginFontSize` | — | `edgePinOffset` | `reflowText` |
-| code | `scaleOriginFontSize` | — | `edgePinOffset` | `reflowCode` |
-| note | `scaleOriginScale` | — | `edgePinOffset` | — |
-| bookmark | `scaleOriginScale` | — | `edgePinOffset` | — |
-
-**Commit fns:** `commitFrame` (shape/image), `commitOrigin` (text/code/note/bookmark edgePin + translate), `commitOriginScale` (note/bookmark uniform), `commitTextScale` (text uniform — skips width when frozen was `'auto'` → `NaN`), `commitCodeScale`, `commitReflow` (text/code reflow), `commitStrokeUniform` (reads `frozen.points/width`, applies `o.factor` around `bboxCenter(o.bbox)`), `commitStrokeOffset` (stroke edgePin + translate — reads `frozen.points + (o.bbox - f.bbox)`).
-
-**Correlated-union casts:** `activeKinds` iteration can't prove `APPLY_SCALE[kind]` and `store[kind]` share K. ONE cast per loop with biome-ignore comment — the mapped table type already proves correctness at definition.
-
-### Apply atoms compose primitives from `core/geometry/`
-
-Two-liner shape/image: `scaleBBoxUniform`/`scaleBBoxEdges` then `derivePaddedFrame` rebuilds frame with **constant** stroke padding (output bbox = frame + constant pad — stroke doesn't scale). Shape `nonUniform` passes `MIN_SHAPE_FRAME_DIM + 2*pad` per axis into `scaleBBoxEdges` so `derivePaddedFrame` leaves the frame ≥ `MIN_SHAPE_FRAME_DIM` — connectors anchored to a shape collapsing through origin stay well-defined. Clamp reuses `computeReflowWidth`'s edge-pin (text/code reflow uses the same atom).
-
-Stroke `scaleStrokeBBox` is bbox-only; stores `factor`/`fcx`/`fcy` for `ctx.translate/scale/translate` preview.
-
-Text/code `scaleOriginFontSize` (shared): `scaleBBoxOriginProp` (bbox scale + `roundProp` + origin-from-relative-offset), then writes `fontSize` and `width`. Same math works for both because origin encodes the in-frame anchor offset naturally. Width uses `typeof f.width === 'number'` guard — text's `'auto'` produces `NaN` (skipped at commit).
-
-Note/bookmark `scaleOriginScale`: same `scaleBBoxOriginProp` pattern with `scale` as tracked prop.
-
-**Unified offset pipeline:**
-```ts
-function applyOffset(f, dx, dy, o) {
-  if ('frame' in o)  offsetFrameMut(o.frame, f.frame, dx, dy);
-  if ('origin' in o) offsetPoint(o.origin, f.origin, dx, dy);
-  offsetBBox(o.bbox, f.bbox, dx, dy);
-}
-function edgePinOffset(f, ctx, o) {
-  const [dx, dy] = edgePinDelta(f.bbox, ctx);
-  applyOffset(f, dx, dy, o);
-}
-```
-One function replaces six. Stroke also goes through this — only `bbox` updates per frame, commit (`commitStrokeOffset`) derives final points from `frozen.points + bbox delta`.
-
-**Reflow:** `computeReflowWidth` + re-layout at new width. `reflowText` → `layoutMeasuredContent(frozen.measured, w, fontSize, o.layout)` (reuses the pre-allocated `TextLayout` buffer from `createOutFor`) + `anchorFactor(align)`. `reflowCode` → `layoutCodeSourceInto(frozen.source, fontSize, w, lineNumbers, o.layout)` (reuses the pre-allocated `CodeLayout` buffer). Both use `frozen.minW` (from `getMinCharWidth`/`getCodeMinWidth` at begin). The reflow buffer is allocated once at freeze; per-pointermove allocation is zero.
-
-### TransformController
-
-State: `store: EntryStore`, `activeKinds: ScalableKind[]`, `behaviors`, `scaleCtx: ScaleCtx | null`, `dx, dy`, `mode`, `topology`.
+### Ops + LUTs
 
 ```
-beginScale(selectedIds, handleId, origin, selBounds):
-  clear() → newTopologyBuilder → loop selected ids (one getHandle each):
-    connector  → builder.onSelectedConnector
-    bindable   → freezeScaleEntry → createOutFor → store as Entry → builder.onSelectedBindable
-  topology = builder.finalize()
-
-updateScale(sx, sy):
-  scaleCtx.sx/sy = ...; for each activeKind: APPLY_SCALE[kind][behavior] on all entries
-  invalidate dirty rects; runTopologyScale(topology, scaleCtx)
-
-beginTranslate / updateTranslate / commit / cancel: parallel structure
+OP_OFFSET=0  OP_FRAME_UNIFORM=1  OP_FRAME_EDGES=2  OP_STROKE_UNIFORM=3
+OP_ORIGIN_UNIFORM=4  OP_REFLOW_TEXT=5  OP_REFLOW_CODE=6            (OP_COUNT=7)
+BEH_UNIFORM=0  BEH_NON_UNIFORM=1  BEH_EDGE_PIN=2  BEH_REFLOW=3
 ```
 
-**`fillDirty`** inflates text rects by italic-overhang pad (read from `out.fontSize`, family-agnostic). Dirty rects invalidated before apply (old) and after (new) — `prevBbox` tuple reuse is load-bearing.
+`BEHAVIOR_LUT: Uint8Array(64)`, index `kindCode*8 + cat*2 + (single?1:0)` (cat: corner=0 hSide=1 vSide=2; `cat`/`single` computed once per beginScale; `single = selectedIds.size === 1`, connectors included — legacy rule). Built from the same declarative rules as the old `resolveBehavior`: defaults corner→UNIFORM, sides→single UNIFORM / multi EDGE_PIN; overrides shape corner-single + shape sides → NON_UNIFORM, text/code hSide → REFLOW. `OP_LUT: Uint8Array(32)`, `kindCode*4 + behavior` → op; populated cells mirror the old APPLY_SCALE table exactly, everything else 0xFF — unreachable by construction (shape-edgePin can't be produced by BEHAVIOR_LUT; connectors branch to the topology builder before LUT resolution). The selftest proves both LUTs against verbatim oracle copies.
 
-### Module getters (for renderer + overlay)
+Behavior is a pure fn of kind per gesture ⇒ op is too ⇒ begin counting-sorts entries into contiguous op ranges (`_opStart`/`_opCount`). Scale update = one tight kernel per non-empty op; translate ignores ops entirely — ONE branchless `applyOffsetRange` over `[0, count)`.
 
-```typescript
-getScaleEntry<K>(kind, id): Entry<K> | undefined  // generic flows through
-getScaleBehavior(kind):     ScaleBehavior | undefined
-getTransformMode():         'none' | 'scale' | 'translate' | 'endpointDrag'
-getTranslateDelta():        [number, number] | null
-getTransformTopology():     ConnectorTopology | null      // null in idle / endpointDrag
-getEndpointDragEntry():     EndpointDragEntry | null      // null unless dragging
-getTransformInjectIds():    readonly string[] | null      // controller-owned reused buffer
-getTransformScaleCtx():     ScaleCtx | null
-transformHasChange():       boolean              // overlay-only — gates begin→first-update reads
-isOverlayUniform():         boolean              // overlay-only — uniform vs per-axis rect
-getTranslateSelBounds():    BBoxTuple | null     // overlay-only — translate union frozen at begin
-getController():            TransformController  // lazy singleton
+### Kernels (`transform-kernels.ts`)
+
+Exact ports of the old apply fns, operation order preserved — the selftest asserts BIT-IDENTICAL output, so never "simplify" float expressions (`scaleAround(fx + fw, …)` ≠ `scaleAround(maxX, …)`; `ob2 - ob0` ≠ `w`):
+
+- `applyOffsetRange(lanes, start, end, dx, dy)` — branch-free 8-lane copy+add (old `applyOffset` + its fontSize/scale propagation; kind-blind because every layout puts "the coords that move" in aux 0–1 and "scalars that ride along" in aux 2–3).
+- `applyEdgePinRange(lanes, start, end, ox, oy, sx, sy, sel0..3)` — per-entry per-axis `edgePinPosition1D` delta, then the offset writes.
+- `applyFrameUniformRange(lanes, start, end, U)` — uniform bbox scale + inline `derivePaddedFrame` with the max(0)-clamped frame BACK-WRITTEN into oBBox (load-bearing at small scales).
+- `applyFrameEdgesRange(lanes, start, end, ox, oy, sx, sy)` — per-axis `reflowLeftWidth` with `minDim = MIN_SHAPE_FRAME_DIM + 2*pad(axis)`, then the same derive + back-write.
+- `applyStrokeUniformRange(lanes, start, end, U)` — uniform bbox scale; oAux ← `[frozenCx, frozenCy, af]` (af is ABS — strokes never mirror on flip).
+- `applyOriginUniformRange(lanes, start, end, U)` — uniform bbox scale; inline roundProp (`r = round(prop·af·1000)/1000; ef = r/prop`); origin reprojects with **ef** (not af); aux3 rides `· ef` (NaN flows for text `'auto'`).
+- `reflowLeftWidth(fx, fw, originX, sx, minW)` → 2-slot `reflowOut` scratch — old `computeReflowWidth`, shared by FRAME_EDGES and the reflow arms.
+- `UniformPack` + `fillUniformPack(sx, sy, handleId, sel0..3, ox, oy)` — the per-frame hoist: uf/af + scaled selection corners (old `uniformFactor` + `preservePositionMut` gesture-global prefix); per-entry residue is tx/ty (0.5 fallback on degenerate axes) + center + dims.
+
+Reflow arms live in `transform.ts` (heap sidecars + layout engines): REFLOW_TEXT runs `layoutMeasuredContent(measured, targetWidth, fontSize, sidecar.layout)`, writes origin = `newLeft + anchor·targetWidth`, width = `layout.boxWidth`, height = `lineCount·lineHeight`; REFLOW_CODE runs `layoutCodeSourceInto`, height = `blockHeight(layout, fontSize, headerBit, outputBit, sidecar.output)` — WITHOUT outputCache (legacy parity).
+
+### Sparse slot routing
+
+`_slotGesture: Int32Array` — maintained −1; capacity ensured ≥ `slotHighWater()` at begin AND by `getGestureSlotMap()` each frame (peers mint slots mid-gesture; growth copies live tags + fills −1). Encodings (consts in kernels): `-1` not in gesture · `gi` gesture entry · `TOPO_TAG|ti` (1<<30) topology connector (index into `topology.entries`) · `EPDRAG_TAG` (1<<29) the endpoint-drag connector; `GIDX_MASK = (1<<29)-1`.
+
+Populated at begin (pass 2, topology finalize walk, epDrag), cleared by `derender()` walking `_gslot` + topology entry slots + epSlot. Replaces in hot paths: the pack-loop string-Set probes (and the handle recovery they forced), the paint `Map.get`/id-equality, the cull's per-id `objectsById.get`.
+
+`_injectSlots: Uint32Array` + count — gesture slots + topology entry slots + epSlot; the cull re-validates each against `_slotGesture` (tag mismatch ⇒ evicted mid-gesture ⇒ skip — prevents recycled-slot aliasing AND double-pack).
+
+`_injectIds: string[]` survives for LOCKS ONLY (`acquireLocalLocks` is id-keyed): all non-locked selected ids incl. freeze-bailed ones + the FULL `attachedConnectorIds` set (an attached connector whose entry construction bailed is still lock-acquired) or the epDrag id. Consumed only by selection-store's `acquireTransformLocks`; the renderer never sees it.
+
+### Freeze (begin) — two passes over `selectedIds` (cold)
+
+**Pass 1** (validate + count): per id → `getHandle`; skip null / remote-locked / durably-locked (BEFORE the injectIds push); push id; connector → `builder.onSelectedConnector` + continue; resolve behavior/op via the LUTs; run the **op-qualified bail predicate** (OFFSET freezes are minimal: shape/image `getFrame`, stroke non-empty points, text `getTextProps` ONLY — null `getTextFrame` falls back to the column rect, code `getOrigin` ONLY, note/bkmk `getOrigin`; uniform adds the frame getters; reflow adds measured/source). A bailed id stays in `_injectIds` (locked, draws in place — ledgered) but gets no lanes. **Prefix-sum** `_opStart`. **Pass 2**: `gi = opStart[op] + cursor[op]++`; write `_gslot`/`_gy`/`_meta`; register `_slotGesture[slot] = gi` + inject slot; `freezeLanes` fills fBBox (column, text = tight frame) + fAux + sidecars and seeds out = frozen; bindables → `builder.onSelectedBindable(id, kind, gi, handle)`. Accessors return LIVE Yjs refs — the lane writes ARE the copy; zero `[...x]` clones. Then `builder.finalize()`, register topo entries (`TOPO_TAG|ti`), push attached ids, compute `_overlayUniform` (`count===0 ? topology && corner : all behaviors uniform`).
+
+### Per-frame update
+
+```
+updateScale(sx, sy):  ctx.sx/sy = …
+  pushAllDamage()                        // OLD: every entry's current oBBox (+ text italic pad)
+  per non-empty op: kernel range loop    // UniformPack hoisted once for the three *_UNIFORM ops
+  runTopologyScale(topology, ctx, lanes) // pushes its own old/new pairs internally
+  pushAllDamage()                        // NEW rects — without this the preview trails/vanishes
+  flushDamage()                          // ONE invalidateWorldRects batch
+updateTranslate(dx, dy): pushAllDamage(); applyOffsetRange(lanes, 0, count, dx, dy);
+  runTopologyTranslate(topology, dx, dy, lanes); pushAllDamage(); flushDamage()
 ```
 
-### Scale-bounds invariants
+`pushAllDamage()` walks `[0, count)`: text entries pad horizontally by `getItalicOverhangPad(oAux2)` ±2 vertical (the real fn — memoized 'Inter' factor, ≥2 floor); op-sorted entries make the branch perfectly predicted. Two rects per entry per frame (old, new) — parity with the old per-entry publishes (union rejected: inflates repaint on fast drags). First frame is exact: seeded oBBox = fBBox, and for text tight+pad ≡ the column bbox (`computeTextBBox` uses the identical `[padH, 2]` pads). Dead entries' stale lanes are pushed too — erases their last preview pixels harmlessly. Damage is markDirty-gated end-to-end: fully-offscreen gesture damage never schedules a base-canvas rAF.
 
-- **`computeSelectionBounds()`** (zero-arg, in selection-store): union of `handle.bbox`. Exception: text uses `frameToBbox(getTextFrame())` — `handle.bbox` carries italic-overhang pad; overlay handles must sit on the visual frame.
-- **Shape/image padding invariant.** `padding = strokeWidth/2 + 1`. During scale: bbox is scaled for position; frame derived by subtracting **constant** padding; output bbox = frame + constant pad. Prevents dirty-rect artifacts at small scales where scaled padding < actual stroke extent.
-- **Stroke `ctx.scale` rendering.** Output stores `factor`/`fcx`/`fcy`; preview uses cached Path2D with `ctx.translate/ctx.scale/ctx.translate`. No per-frame point mutation.
+### Commit / clear / cancel
+
+`commitTransform()`: capture locals → **derender FIRST** (mode→0, sparse map + inject reset — the renderer sees idle before the observer repaints; old clear-first glitch guard) → ONE `transact`: per gi skip `META_DEAD` (dead FIRST — a recycled slot's lock lanes belong to someone else) then skip `lo[slot]>1 || lf[slot]===1` (loser's heal) → build values from lanes → `_gy[gi]!.set(…)`:
+- FRAME ops + shape/image OFFSET → `frame` from oAux.
+- STROKE_UNIFORM → points from `_strokePool` mapped `[ncx + (px−fcx)·af, ncy + (py−fcy)·af]` (ncx/ncy = oBBox center, fcx/fcy/af = oAux) + `width = fWidth·af`.
+- stroke OFFSET → pool + `(oBBox0−fBBox0, oBBox1−fBBox1)`.
+- origin-kind OFFSET → `origin` ONLY. ORIGIN_UNIFORM → origin + fontSize (+ width unless NaN) / code width / note-bkmk `scale`. REFLOW_* → origin + width ONLY (no fontSize).
+
+Then `commitTopology(topology, mode, dx, dy)` inside the same transact (id-keyed lock rechecks stay — slots recycle, ids can't). Finally dispose (release `_gy`/sidecar refs, reset counters). `clearTransform()` = derender + dispose. `cancelTransform()`: epDrag → precise prev/curr damage + flush + teardown; else `invalidateWorldAll()` + `cancelTopology` + teardown (full-repaint parity — cancel is rare). `transformHasChange()`: scale → sx/sy ≠ 1; translate → dx/dy ≠ 0; else false.
+
+### Endpoint drag — ported, slot-registered
+
+`beginEndpointDrag(connectorId, slot, handle)`: lock guard, `buildRouteContext` (false on failure → SelectTool stays idle), scratch resets — `currBbox`/`prevBbox` seeds read the COLUMN at `handle.slot*4`; registers `EPDRAG_TAG` + inject slot + inject id. `updateEndpointDrag`: snapshot curr→prev BEFORE the reroute (load-bearing), push OLD, `rerouteEndpointDragInto`, then GATED on `count > 0`: `unionConnectorLabelRectInto` + push NEW; flush unconditionally. `commitEndpointDrag(snap)`: damage + flush, validCount≥2 gate, id-keyed lock/handle rechecks, one `transact` writing `slotKey(slot)` = anchor record xor cloned free Point; teardown clears the sparse slot on EVERY exit. `EndpointDragEntry` gains mutable `slot` (the reused scratch, reassigned per gesture — unlike `BaseEntry.slot`'s readonly).
+
+### Mid-gesture eviction — `transformEvictSlot(slot)`
+
+RoomDocManager calls it in Phase A (after `zOrder.noteRemove`, BEFORE `releaseSlot` — the finalize-before-release invariant) and in the kind-keychange branch. No-op when idle/OOB/absent; clears the map cell; gesture entries also get `META_DEAD` (commit-skip only — hot loops never test it, `pushAllDamage` keeps erasing the dead preview). Fires inside the synchronous observer, never between the renderer's `ensureRanksValid()` and its pack loop — the rank-stability contract holds. Import-cycle: RDM→transform exists transitively (via selection-store); runtime calls only, no module-eval reads across the cycle.
+
+Fallout semantics (deliberate, ledgered in the plan): remote delete mid-gesture → dead entries evict, SURVIVORS keep their preview and commit at pointerup (the renderer keys off module mode, not the store discriminant, so the store's clear-selection-without-cancel no longer strands previews); remote kind-conversion mid-gesture → the object draws canonically in its new kind, commit skips; locked/freeze-bailed selected objects draw in place instead of vanishing.
+
+### Export surface
+
+Lifecycle (store via `import * as tf`; SelectTool for epDrag): `beginScale(selectedIds, handleId, origin, selBounds)` · `updateScale(sx, sy)` · `beginTranslate(selectedIds, selBounds)` · `updateTranslate(dx, dy)` · `beginEndpointDrag(id, slot, handle): boolean` · `updateEndpointDrag(x, y, snap)` · `commitEndpointDrag(snap): boolean` · `commitTransform()` · `clearTransform()` · `cancelTransform()` · `transformHasChange()`.
+
+Consumers: `getTransformModeCode()` (0/1/2/3 = none/scale/translate/epDrag) · `getGestureSlotMap()` (capacity-ensured) · `getGestureLanes()` · `getGestureMeta()` · `getGestureCount()` · `getInjectSlots()`/`getInjectSlotCount()` · `getTopoEntries()` · `getEndpointDragEntry()` · `getTranslateDX()/DY()` · `getTransformScaleCtx()` (null unless scaling — persistent object must not leak stale consts) · `isOverlayUniform()` (gated on scale mode) · `getTranslateSelBounds()` · `getReflowLayout(gi)` · `readGestureOutBBox(slot, out): boolean` (image-manager's narrow accessor; guards OOB — `undefined < 0` is false and would decode gi 0 — non-membership, and tags) · `getTransformInjectIds()` (LOCKS ONLY) · `transformEvictSlot(slot)` (RDM only).
 
 ---
 
 ## Connector Topology (`connector-topology.ts`)
 
-Connectors never enter the per-kind entry store. The controller drives a builder inline with its single begin-phase freeze loop. **One `getHandle` per selected id, one per non-selected attached connector.**
+Connectors never enter the lane buffer. The engine drives a builder inline with its begin passes. **One `getHandle` per selected id, one per non-selected attached connector.**
 
 ### Endpoint state × connector mode
 
@@ -328,81 +266,55 @@ type ConnectorEntry =
   | StraightRerouteEntry;      // RerouteEntryBase<StraightSide>
 
 type ConnectorTopology = {
-  byId:                 ReadonlyMap<string, ConnectorEntry>;   // renderer lookup (all reroute variants share mode/currBbox/pointsBuf/validCount)
+  entries:              readonly ConnectorEntry[];          // registration order (selected, then attached);
+                                                            // entry i is registered as TOPO_TAG|i in the sparse map
   translates:           readonly TranslateEntry[];
-  elbowReroutes:        readonly ElbowRerouteEntry[];          // partitioned for monomorphic apply
+  elbowReroutes:        readonly ElbowRerouteEntry[];       // partitioned for monomorphic apply
   straightReroutes:     readonly StraightRerouteEntry[];
-  attachedConnectorIds: ReadonlySet<string>;                   // non-selected connectors bound to a selected bindable
-};
-
-interface RerouteEntryBase<S> extends DirtyEntry {
-  readonly mode: 'reroute';
-  readonly start: S;             // ElbowSide | StraightSide; never null (canonical = kind:'static')
-  readonly end:   S;
-  readonly routeCtx: RouteContext;
-  readonly pointsBuf: Point[];   // persistent buffer, .length may exceed validCount (HWM)
-  validCount: number;            // -1 = routing failed this frame
-}
+  attachedConnectorIds: ReadonlySet<string>;                // LOCKS ONLY — must stay the FULL attached set
+};                                                          // (bailed entries are still lock-acquired)
 ```
 
-The **per-pipeline Side unions** live here. `AnchorSource` fields (anchor / shapeId / interior) are inlined directly onto the `bind` variant so `side` IS structurally an `AnchorSource` — `Pipeline.configAnchored(out, frame, shapeType, side)` passes it as the source with no allocation. ELBOW bind also carries `shapeType` (frozen at begin) and `frame` (aliased to `endpoint.frame`). STRAIGHT bind carries the same minus `shapeType`; `frame` is aliased for `interior` variant, standalone scratch for `edge`.
+`BaseEntry` carries `readonly slot` (from `conn.slot` at build); all bbox triples (`originalBbox`/`currBbox`/`prevBbox`) are CLONED from the global bbox column at `conn.slot*4` — never aliased to live geometry (a peer moving a non-selected anchor mid-gesture reroutes this connector and upsertHandle rewrites the lane in place). `finalize()` is null iff `entries.length === 0`.
 
-**See `core/connectors/CLAUDE.md` "Side ownership model" for the full alias contract and frozen-at-begin invariants.** This file owns the topology integration angle; the connector docs own the pipeline contract.
+Bind sides hold `readonly gi` (lane index of the bind target) instead of an entry object; the lane buffer is THREADED into `runTopologyScale/Translate(…, lanes)` per frame — no topology→transform import. `AnchorSource` fields (anchor / shapeId / interior) stay inlined on the bind variant so `side` IS structurally an `AnchorSource`. ELBOW bind also carries `shapeType` (frozen at begin) and `frame` (aliased to `endpoint.frame`); STRAIGHT bind the same minus `shapeType` (`frame` aliased for `interior`, standalone scratch for `edge`).
 
-### `fillFrameFromBind` (bind-side frame derivation)
+**See `core/connectors/CLAUDE.md` "Side ownership model" for the full alias contract and frozen-at-begin invariants.**
 
-Per-frame, for each bind side, write the live anchor frame into `side.frame`. For ELBOW + STRAIGHT-interior, `side.frame === side.endpoint.frame` (alias) — same write updates both.
+### `fillFrameFromBind(scratch, side, lanes)` (bind-side frame derivation)
 
-| `bindKind` | Write |
+Per frame, for each bind side, write the live anchor frame into `side.frame` off the lane buffer at `side.gi`:
+
+| `bindKind` | Read |
 |---|---|
-| `shape`, `image` | `copyFrame(scratch, e.out.frame)` |
-| `text`, `code` | `bboxToFrameMut(e.out.bbox, scratch)` (italic-overhang pad lives on `entry.prevBbox`, never on `out.bbox`) |
-| `note`, `bookmark` | `[origin.x, origin.y, frozen.w × ratio, frozen.h × ratio]` where `ratio = out.scale / frozen.scale` |
+| `shape`, `image` | oAux lanes ARE the live frame |
+| `text`, `code` | oBBox lanes read as a frame (out bboxes are tight for these kinds) |
+| `note`, `bookmark` | `ratio = oAux2/fAux2` (OFFSET's aux-copy gives ratio = 1 under translate/edgePin); `[oAux0, oAux1, frozenFrame·ratio]` — the frozen frame clone stays load-bearing (bookmark height isn't in the lanes) |
 
-Mode-agnostic: same function serves translate and scale because `applyOffset` propagates `f.scale → o.scale` (ratio = 1 under translate). After `fillFrameFromBind`, the apply loop calls `Pipeline.configAnchored(side.endpoint, side.frame, side.shapeType, side)`. ELBOW re-derives `endpoint.dir` via `projectAnchorToEdge` and writes `endpoint.pos` via `fillElbowAnchorPointInto`; STRAIGHT writes `endpoint.pos` via `fillAnchorPoint`. Frame slots written by `configAnchored` are self-writes when aliased.
+Mode-agnostic: whatever the kernels just wrote is what it reads. After `fillFrameFromBind`, the apply loop calls `Pipeline.configAnchored(side.endpoint, side.frame, side.shapeType, side)`. Frame slots written by `configAnchored` are self-writes when aliased.
 
 ### Free-side aliasing
 
-Each free side owns a private `scratch: Point` allocated once at build. `Pipeline.newFree(scratch)` preserves the reference, so `endpoint.pos === scratch`. Per-frame apply mutates scratch slots; the endpoint sees updates automatically.
+Each free side owns a private `scratch: Point` allocated once at build. `Pipeline.newFree(scratch)` preserves the reference, so `endpoint.pos === scratch`. Per-frame apply mutates scratch slots; the endpoint sees updates automatically. Per-side (not module-shared): the routing pipeline holds free `Point`s by reference and writes them into the returned route. `originalPos` is cloned at begin.
 
-Per-side (not module-shared): the routing pipeline holds free `Point`s by reference and writes them into the returned route — sharing one scratch across two sides would corrupt one read. `originalPos` is also cloned at begin so a prior gesture's preserved Y.Map reference can't corrupt this gesture's baseline.
+Free-apply math: translate → `offsetPoint(scratch, originalPos, dx, dy)`; scale → corner (hoisted with `uf = uniformFactor(...)`) → `preservePositionMut`, side handles → axis-aligned `scaleAround` (inactive axis hardcoded 1 by `rawScaleFactorsInto`).
 
-Free-apply math (`runTopologyScale` / `runTopologyTranslate`):
-- Translate: `offsetPoint(s.scratch, s.originalPos, dx, dy)`.
-- Scale: branch on `corner` (hoisted across both pipelines since it's gesture-stable). Corner → `preservePositionMut(s.scratch, …, uf)` so free endpoints track the selection's uniform corner scale. Side handles → axis-aligned `scaleAround` (inactive axis hardcoded `1` by `rawScaleFactors`).
+### Monomorphic apply loops + damage
 
-### Monomorphic apply loops
-
-Reroute entries are partitioned at finalize into `elbowReroutes` / `straightReroutes`. Each pipeline gets its own `apply*ReroutesScale/Translate` loop calling ELBOW or STRAIGHT directly — no `Pipeline<unknown>` cast in the hot path.
+Reroute entries are partitioned at finalize into `elbowReroutes` / `straightReroutes`; each pipeline gets its own apply loop calling ELBOW or STRAIGHT directly. Dirty publication goes through `pushDamage` (old/new pairs per entry, inside `applyTranslates`/`publish*Route`) — flushed once per pointermove by the engine's update fns. `cancelTopology` keeps `invalidateWorldAll()`.
 
 ### Commit rule
 
 > **Free endpoints commit a Point. Bound (and static) endpoints commit nothing. `points` is never committed.**
 
-The bound shape's frame write in the same `transact()` triggers the observer reroute on tx end → `ConnectorRouter.rerouteCanonical` populates the local route cache → off-gesture consumers read the fresh cache.
-
-- `commitTranslate(e, dx, dy)` reads `e.frozenStart`/`frozenEnd` (cloned at begin). Free → `y.set(side, [frozen + dx, frozen + dy])`. Bound → `null` frozen → no write. **No Y.Map read at commit.**
-- `commitReroute(e)` reads each side. `'free'` → write a clone of `s.scratch`. `'static'` / `'bind'` → no-op. The clone is load-bearing: Y.Map preserves references, scratch must stay private.
-
-### Public API
-
-| Function | Called by |
-|---|---|
-| `newTopologyBuilder(mode, selectedIdSet) → TopologyBuilder` | `TransformController.beginScale/beginTranslate` |
-| `builder.onSelectedConnector(id, handle)` / `.onSelectedBindable(id, kind, entry, handle)` | Per-id dispatch in the controller's freeze loop |
-| `builder.finalize() → ConnectorTopology \| null` | End of controller's begin |
-| `runTopologyScale(topology, ctx)` / `runTopologyTranslate(topology, dx, dy)` | After non-connector apply each frame |
-| `commitTopology(topology, mode, dx, dy)` | Inside `commit()`'s transact block |
-| `cancelTopology(topology)` | `TransformController.cancel()` |
+The bound shape's frame write in the same `transact()` triggers the observer reroute on tx end → `ConnectorRouter.rerouteCanonical` populates the local route cache → off-gesture consumers read the fresh cache. `commitTopology` is id-keyed (`lockedElsewhere` via `getObjectsById` — slots recycle, ids don't); the attachedIds durable-lock asymmetry (`lo` only at build, `lf` caught at commit) is deliberate legacy parity.
 
 ### Topology-specific invariants
 
-(In addition to the shared pool/alias contract in `core/connectors/CLAUDE.md`.)
-
-1. **Zero per-frame allocation.** Per-side scratches built once at gesture begin; `pointsBuf` mutated find-or-push and grows only past its high-water mark. No `BindCtx` record — `AnchorSource` fields inlined.
-2. **Zero per-frame Y.Map reads.** `RouteContext` (start/end/cap/width/cachedRoute/pipeline) built ONCE at `processConnector`; per-frame apply reads only side state + `entry.out.*`.
+1. **Zero per-frame allocation.** Per-side scratches built once at gesture begin; `pointsBuf` mutated find-or-push and grows only past its high-water mark.
+2. **Zero per-frame Y.Map reads.** `RouteContext` built ONCE at `processConnector`; per-frame apply reads only side state + bind lanes.
 3. **No null Side slots.** Canonical sides are `kind: 'static'` — apply loop never branches on null.
-4. **Apply paths of bindable kinds are untouched.** `fillFrameFromBind` reads `entry.out.*` / `entry.frozen.*`. The only apply-adjacent concession: `applyOffset` propagates `f.scale → o.scale` when both sides carry the field.
+4. **Reroute internals are deferred surface** — typed routes / SoA entries come in a later slice; the draw-loop dispatch, bind-side reads, and dirty publishing already run the new architecture.
 
 ---
 
@@ -423,54 +335,12 @@ Marquee uses no tolerance (exact region intersect).
 
 ## Rendering During Transforms (`renderer/layers/objects.ts`)
 
-`drawObjects()` reads `useSelectionStore` for transform state and **resolves dispatch tokens once per frame** before iterating objects. No per-iteration optional chaining, no per-iteration `useSelectionStore.getState()`, no per-iteration kind switches the caller already knows.
+Frame-top hoists: editing ids, `tmode = getTransformModeCode()`, `sg = getGestureSlotMap()`, gesture lanes/meta (module lets), `topoEntries`, `epEntry`, `tdx/tdy`, kind codes + bbox column. **`drawObjects` does not read `sel.transform`** — module mode is the single render truth (the store discriminant remains for React/overlay/keyboard).
 
-Frame-top hoists:
-
-```ts
-_textEditingId / _codeEditingId             // module-state snapshot — leaf draw fns read these
-_hoveredOpenBookmarkId                       // from selectTool.getHoveredOpenBookmarkId(); drawObject's
-                                             // bookmark branch passes `_hoveredOpenBookmarkId === handle.id`
-const topology = getTransformTopology()
-const connEntries = topology?.byId           // null in idle / endpointDrag
-const attachedSet = topology?.attachedConnectorIds  // ReadonlySet | null
-const epDragEntry = getEndpointDragEntry()   // EndpointDragEntry | null
-const epDragId    = epDragEntry?.id ?? null
-const tdx / tdy   = isTranslating ? ctrl.dx/dy : 0  // hoisted scalars
-```
-
-Per object in ULID order:
-
-- **Connector:** ONE Map.get (topology) OR ONE string equality (endpoint drag) + ONE dispatch (`drawConnectorEntry`):
-  - `connEntries` non-null → `connEntries.get(handle.id)` (topology gestures).
-  - else `epDragId !== null && handle.id === epDragId` → `epDragEntry` (endpoint drag).
-  - Resolved `ce` → switch on `ce.mode`:
-    - `'static'` → `drawConnector(ctx, handle)`.
-    - `'translate'` → `ctx.translate(tdx, tdy)` + `drawConnector`.
-    - `'reroute'` (topology scale-driven OR endpoint-drag synthetic) → `drawConnectorFromPoints(ctx, handle, ce.pointsBuf, ce.validCount)`.
-  - No entry → `drawConnector(ctx, handle)` (off-gesture or partially-built).
-- **Non-connector, not transforming or unselected:** `drawObject(ctx, handle)`.
-- **Non-connector, translate:** `ctx.translate(tdx, tdy)` + `drawObject()`.
-- **Non-connector, scale:** `renderScaleEntry(ctx, handle)` per-kind dispatch (closure-free `ctx.save/translate/scale/[body]/restore` inline at every site).
-
-**Spatial-loop skip** during transforms: `selectedSet.has(id)` OR (`attachedSet !== null && attachedSet.has(id)`). The endpoint-drag id is already in `selectedSet` by drill invariant — no third branch needed. Tighter than checking `connEntries.has(id)` (which spans selected ∪ attached redundantly).
-
-**Culling guard.** During transforms, inject IDs (selected ∪ attached-connectors via topology, OR the dragged connector for endpoint drag) are pushed using their preview bbox regardless of spatial-index query. The cull is **pre-dispatched** — outer switch on `transform.kind` resolves once per frame, inner loop is monomorphic. EndpointDrag's cull reads `epDragEntry` directly (no `for` loop ceremony for one ID).
-
-**Endpoint drag's render path is structurally indistinguishable from a single-connector reroute** — the controller exposes a synthetic `EndpointDragEntry` (`mode: 'reroute'`, `pointsBuf`, `validCount`, `currBbox`) that flows through the same `drawConnectorEntry` dispatch as topology reroute entries. The renderer's only branch on endpoint drag is the frame-top accessor split (`connEntries` vs `epDragId`), not the hot per-iteration loop.
-
-### `renderScaleEntry()` per kind
-
-| Kind | uniform | reflow | edgePin (fallback) |
-|---|---|---|---|
-| shape | Build fresh Path2D from `entry.out.frame`, guard on bbox size | — | — |
-| image | Bitmap at `entry.out.bbox` | — | — |
-| stroke | `ctx.scale(factor)` on cached Path2D | — | `renderTranslatedEntry` |
-| text | Cached layout + `ctx.scale(ratio)` around `out.origin` | Render `entry.out.layout` at `out.origin` | `renderTranslatedEntry` |
-| code | Cached layout + `ctx.scale(ratio)` around `out.bbox` corner | Render `entry.out.layout` at `out.origin` | `renderTranslatedEntry` |
-| note/bookmark | `ctx.scale(ratio)` around `out.origin`, then `drawObject()` | — | `renderTranslatedEntry` |
-
-`renderTranslatedEntry()` (typed `Entry<KindWithBBoxGeo>`): delta = `out.bbox - frozen.bbox` → `ctx.translate(dx, dy)`.
+- **Pack loop** skip: `if (transforming && sg[slot] >= 0) continue;` — one load + sign test, zero handle recovery pre-sort even mid-gesture. Clip test unchanged (column reads).
+- **Cull** (`cullInjectedSlots`): walk `injectSlots[0..count)`; re-validate `g = sg[slot]` (−1 ⇒ evicted ⇒ skip); `TOPO_TAG` → entry `currBbox`; `EPDRAG_TAG` → `epEntry.currBbox`; translate → LIVE column + delta (paint draws live geometry offset by d — the cull must track the live rect); scale → out-bbox lanes (paint is frozen-derived preview). Pack `ranks[slot]`. Zero Map/handle lookups.
+- **Paint routing**: `g = sg[handle.slot]`; `g >= 0` → tag branches to `drawConnectorEntry` (string `ce.mode` switch stays — 3 interned strings, deliberate), translate → `ctx.translate(tdx, tdy)` + `drawObject`, scale → `renderScaleEntryLanes(ctx, handle, g)`. Everything else → `drawObject` (kind-code int jump table off the slot column; images draw at their column rect via the scalar-signature `drawImage`).
+- **`renderScaleEntryLanes`** dispatches on the meta op: FRAME ops → shape `paintShapeFrame` + `drawShapeLabelWithFrame` from a frame scratch filled off oAux / image at oBBox; STROKE_UNIFORM → cached Path2D under `translate·scale·translate` (fcx/fcy/factor from oAux); ORIGIN_UNIFORM → per-kind cached-layout `ctx.scale(oAux2/fAux2)` arms (text around out-origin, code around oBBox corner, note/bkmk around out-origin with `-fAux` back-shift + recursive `drawObject`); REFLOW_* → sidecar layout at out-origin lanes (code gated `visualLineCount > 0`, else in-place fallback); OFFSET → translated draw by `oBBox − fBBox`. sg membership ⇒ entry exists — no null probes.
 
 ---
 
@@ -485,54 +355,37 @@ interface SelectionState {
 }
 ```
 
-`TranslateTransform` is a thin marker. `ScaleTransform` carries `{kind, initialDelta, clickOffset}` (gesture-frame constants for `rawScaleFactors`). `EndpointDragTransform` carries `{kind, connectorId, slot: Slot, currentPosition, currentSnap}` — renderer/UI only; the route buffer + bbox snapshots + `RouteContext` live on the controller. All entry state (frozen, output, topology, dx/dy, sx/sy, endpoint drag) lives in `TransformController`. The store orchestrates the whole gesture; SelectTool never touches the controller directly except for `getController().beginEndpointDrag(...)` at gesture start (controller needs the live handle to build `RouteContext`).
+`TranslateTransform` is a thin marker. `ScaleTransform` carries `{kind, initialDelta, clickOffset}` (gesture-frame constants for `rawScaleFactorsInto`). `EndpointDragTransform` carries `{kind, connectorId, slot: Slot, currentPosition, currentSnap}` — renderer/UI only; route buffer + bbox snapshots + `RouteContext` live in the engine. The store orchestrates the whole gesture via `import * as tf`; SelectTool never touches the engine directly except `tf.beginEndpointDrag(...)`/`tf.updateEndpointDrag(...)` at gesture start/move (the engine needs the live handle/coords).
 
 | Action | Effect |
 |---|---|
 | `setSelection(ids)` | Compose, reset transform/marquee, bump boundsVersion, refreshStyles |
 | `clearSelection()` | Reset to defaults |
-| `beginTranslate()` | `computeSelectionBounds()` → `ctrl.beginTranslate(selectedIdSet, selBounds)` + `{kind:'translate'}`. Bails early on null union. |
-| `updateTranslate(dx, dy)` | `ctrl.updateTranslate` |
-| `beginScale(handleId, downWorld)` | bounds → origin/handlePos → gesture math → `ctrl.beginScale` + `{kind:'scale', ...}` |
-| `updateScale(worldX, worldY)` | `rawScaleFactors` → `ctrl.updateScale` |
-| `endTransform()` | Routes by `transform.kind`: endpointDrag → `ctrl.commitEndpointDrag(currentSnap)`; translate/scale → `ctrl.hasChange() ? commit() : clear()`. Then `{kind:'none'}`. |
-| `cancelTransform()` | `ctrl.cancel()` (handles all gesture modes) + `{kind:'none'}` |
-| `beginEndpointDrag(connectorId, slot)` | Set endpointDrag transform discriminant. Controller is begun separately via `getController().beginEndpointDrag(connectorId, slot, handle)`. |
-| `updateEndpointDrag(currentPosition, currentSnap)` | Patch the discriminant — overlay reads it for snap feedback + dragged dot. Controller is updated separately via `getController().updateEndpointDrag(worldX, worldY, snap)`. |
+| `beginTranslate()` | `computeSelectionBounds()` → `tf.beginTranslate(selectedIdSet, selBounds)` + `{kind:'translate'}`. Bails early on null union. |
+| `updateTranslate(dx, dy)` | `tf.updateTranslate` |
+| `beginScale(handleId, downWorld)` | bounds → origin/handlePos → gesture math → `tf.beginScale` + `{kind:'scale', ...}` |
+| `updateScale(worldX, worldY)` | `rawScaleFactorsInto(_rsf, …)` → `tf.updateScale(_rsf[0], _rsf[1])` |
+| `endTransform()` | Routes by `transform.kind`: endpointDrag → `tf.commitEndpointDrag(currentSnap)`; else `tf.transformHasChange() ? tf.commitTransform() : tf.clearTransform()`. Then `{kind:'none'}`, release locks. |
+| `cancelTransform()` | `tf.cancelTransform()` (all gesture modes) + `{kind:'none'}`, release locks |
+| `beginEndpointDrag(connectorId, slot)` | Set endpointDrag transform discriminant (engine already begun by SelectTool); acquire locks. |
+| `updateEndpointDrag(currentPosition, currentSnap)` | Patch the discriminant — overlay reads it for snap feedback + dragged dot. |
 | `begin/endTextEditing`, `begin/endCodeEditing`, `refreshStyles` | Editing state + style snapshot upkeep |
 
-`computeSelectionBounds()` (zero-arg) serves triple duty: idle overlay bounds, scale gesture bounds, translate-frozen union. Reads `selectedIds → textEditingId → codeEditingId` fallback chain. Returns `null` on empty selection (causes both begin-fns to bail). Text uses `frameToBbox(getTextFrame())`; all others use `handle.bbox`.
+`computeSelectionBounds()` (zero-arg) serves triple duty: idle overlay bounds, scale gesture bounds, translate-frozen union. Reads `selectedIds → textEditingId → codeEditingId` fallback chain. Returns `null` on empty selection (causes both begin-fns to bail). Text uses `frameToBbox(getTextFrame())`; all others use `handle.bbox`. The engine COPIES origin/selBounds at begin, so the single-selection live-bbox alias can no longer drift the gesture baseline.
+
+Lock choreography: `acquireTransformLocks` reads `tf.getTransformInjectIds()`; `_lockPrunePending`/`_persistLockPending` defer selection prunes to `releaseTransformLocks` (mutating the selection mid-gesture would desync the renderer). `onObjectsDeleted`'s partial-delete clear-without-cancel is now benign: the renderer keys off module mode, so survivors keep previewing and commit at pointerup (the selection overlay vanishes early — accepted).
 
 ---
 
 ## Endpoint Drag
 
-Only in connector mode (single connector selected). **Owned by `TransformController`** as a third gesture mode alongside scale and translate. SelectTool delegates lifecycle; the controller's synthetic `EndpointDragEntry` (`mode: 'reroute'`, `pointsBuf`, `validCount`, `currBbox`) flows through `drawConnectorEntry` — same dispatch the topology reroute entries use. The renderer cannot tell endpoint drag from a single-connector reroute and shouldn't have to.
+Only in connector mode (single connector selected). **Owned by the transform engine** as the third gesture mode. SelectTool delegates lifecycle; the engine's synthetic `EndpointDragEntry` (`mode: 'reroute'`, mutable `id`/`slot`, `currBbox`, `pointsBuf`, `validCount` — one reused scratch) flows through `drawConnectorEntry` via the `EPDRAG_TAG` sparse-map registration — same dispatch as topology reroute entries. The renderer cannot tell endpoint drag from a single-connector reroute and shouldn't have to.
 
-**Controller state** (`TransformController.endpointDrag`, logical only):
-- `entry: EndpointDragEntry` — alias to `epDragEntryScratch` (controller-owned scratch allocated once at construction). Renderer reads directly via `getEndpointDragEntry()`.
-- `routeCtx: RouteContext` — `buildRouteContext(connectorId, handle.y)` once at begin; gesture-stable.
-- `slot: Slot` — which endpoint moves (0 = start, 1 = end).
-- `prevBbox: BBoxTuple` — alias to `epDragPrevBbox` (controller-owned scratch).
+Engine state: `_epSlot` (object slot; −1 idle), `_epDragSlotArg: Slot` (which endpoint), `_epRouteCtx` (built once at begin; gesture-stable), `_epDragPrevBbox` scratch. Lifecycle §Transform Engine above. Bbox seeds read the COLUMN; teardown clears the sparse slot on every exit (commit, failed commit, cancel, evict).
 
-**Controller scratches** (allocated once at construction, mutated per gesture):
-- `epDragEntryScratch: EndpointDragEntry` — `id` reset per begin; `currBbox` slots and `pointsBuf` mutated per frame; `validCount` reset per begin and updated per frame.
-- `epDragPrevBbox: BBoxTuple` — slots mutated per frame.
-- `injectIds: string[]` — shared with scale/translate; reset to length 0 then pushed `connectorId` (single element) per `beginEndpointDrag`.
+**Commit rule.** Free Point xor `StoredAnchor` via `slotKey(slot)`. The deep observer reroutes canonically post-tx, populating the local route cache.
 
-**No wrapper collections.** No `Map<string, ConnectorEntry>` and no `injectIds: readonly string[]` allocations per gesture — the renderer dispatches off the controller's accessor (`getEndpointDragEntry()`) directly.
-
-**Lifecycle (controller methods):**
-1. `beginEndpointDrag(connectorId, slot, handle): boolean` — clears state, builds RouteContext (returns `false` on a partially-built connector), mutates the scratches (`id`, `currBbox`, `pointsBuf.length=0`, `validCount=0`, `prevBbox`), pushes the id into `injectIds`, sets `mode = 'endpointDrag'`. Per-gesture allocation: zero.
-2. `updateEndpointDrag(worldX, worldY, snap)` — snapshots `entry.currBbox → prevBbox` BEFORE the reroute, invalidates OLD, calls `rerouteEndpointDragInto(routeCtx, slot, snap ?? [x, y], entry.currBbox, entry.pointsBuf)`, invalidates NEW. The snapshot order is load-bearing.
-3. `commitEndpointDrag(snap): boolean` — invalidates dirty rects, writes `anchorRecordFromSnap(snap)` xor a free `Point` cloned from `pointsBuf[slotPointIndex(slot, validCount)]` to Y.Map (inside `transact()`), tears down state. Returns `false` on `validCount < 2` (no commit). Scratches are left as-is for the next gesture.
-4. `cancel()` — when `endpointDrag` is non-null, invalidates the precise dirty rects and clears (no full repaint).
-
-**SelectTool** at gesture begin: `getController().beginEndpointDrag(connectorId, slot, handle)`; `useSelectionStore.getState().beginEndpointDrag(connectorId, slot)` for the store discriminant. Per move: read `connectorType` from the live handle, compute snap via `findBestSnapTarget`, call `getController().updateEndpointDrag(...)` + `useSelectionStore.getState().updateEndpointDrag(currentPosition, snap)`. End/cancel route through `endTransform()` / `cancelTransform()` like other gestures.
-
-**Commit rule.** Free Point xor `StoredAnchor`. The deep observer reroutes canonically post-tx, populating the local route cache.
-
-**Slot naming.** `Slot = 0 | 1` (`SLOT_START`/`SLOT_END`) lives in `core/connectors/reroute-connector.ts`. Helpers there: `slotKey(s)` (Y.Map field name at the storage boundary), `slotOther(s)` (1 - s), `slotPointIndex(s, count)` (branchless: `s * (count - 1)`).
+**Slot naming.** `Slot = 0 | 1` (`SLOT_START`/`SLOT_END`) lives in `core/connectors/reroute-connector.ts`. Helpers there: `slotKey(s)`, `slotOther(s)`, `slotPointIndex(s, count)` (branchless: `s * (count - 1)`). Distinct from the object-slot fabric (`handle.slot`).
 
 ---
 
@@ -569,7 +422,7 @@ interface Aggregate<V> { value: V | null; mixed: boolean; second: V | null }
 
 **Source-of-ids selection** (`getSelectedIds()` / `getTextSelectionIds()` / `getCodeIds()`) lives at the action layer in `selection-actions.ts`. It's "who's calling," not "what the field is." Trying to model it on the descriptor adds the wrong axis.
 
-**Correlated-union cast** at the dispatch boundary (`(f as AnyDescriptor).write[h.kind]`) — one cast per loop with `// biome-ignore`, mirroring the `APPLY_SCALE[kind][behavior]` cast in `transform.ts`. The mapped table proves correctness at definition. (Spatial hit dispatch moved away from this pattern in `core/spatial/hit-dispatch.ts` — see its switch-based dispatchers.)
+**Correlated-union cast** at the dispatch boundary (`(f as AnyDescriptor).write[h.kind]`) — one cast per loop with `// biome-ignore`; the mapped table proves correctness at definition. (Spatial hit dispatch and the transform engine both moved to switch/LUT dispatch — this is the canonical remaining example.)
 
 **Adding a property** is four mechanical edits, no control-flow change:
 1. Append one `FieldDescriptor` entry to `selection-field-table.ts`.

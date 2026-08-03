@@ -3,7 +3,7 @@ import { subscribeWithSelector } from 'zustand/middleware';
 import type { Slot } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
 import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
-import { rawScaleFactors } from '@/core/geometry/scale-system';
+import { rawScaleFactorsInto } from '@/core/geometry/scale-system';
 import {
   acquireLocalLock,
   acquireLocalLocks,
@@ -32,7 +32,7 @@ import {
   inlineStylesEqual,
   stylesEqual,
 } from '@/tools/selection/selection-utils';
-import { getController, getTransformInjectIds } from '@/tools/selection/transform';
+import * as tf from '@/tools/selection/transform';
 import type { InlineStyles, KindCounts, SelectedStyles, SelectionKind, SelectionMode, TransformState } from '@/tools/selection/types';
 import { EMPTY_INLINE_STYLES, EMPTY_KIND_COUNTS, EMPTY_STYLES } from '@/tools/selection/types';
 import type { HandleId } from '@/tools/types';
@@ -128,6 +128,9 @@ let _lockPrunePending = false;
 // mid-gesture; reconcile defers to endTransform/cancelTransform for the same reasons.
 let _persistLockPending = false;
 
+// Per-pointermove scale-factor scratch (rawScaleFactorsInto output).
+const _rsf: Point = [0, 0];
+
 /**
  * Re-derive the selection against the durable-lock column. All-locked or none-locked →
  * recompose in place (selectionLocked flips; the menu collapses/expands, handles
@@ -159,9 +162,9 @@ function reconcileLockedSelection(): void {
 }
 
 /** Ephemeral-lock arm of the transform-gesture lock: acquire the full inject set
- *  (selection ∪ attached connectors, post-filter) right after the controller begin. */
+ *  (selection ∪ attached connectors, post-filter) right after the engine begin. */
 function acquireTransformLocks(): void {
-  const inject = getTransformInjectIds();
+  const inject = tf.getTransformInjectIds();
   if (inject !== null) acquireLocalLocks(LOCK_SRC_TRANSFORM, inject);
 }
 
@@ -237,13 +240,13 @@ export const useSelectionStore = create<SelectionStore>()(
     beginTranslate: () => {
       const selBounds = computeSelectionBounds();
       if (!selBounds) return;
-      getController().beginTranslate(get().selectedIdSet, selBounds);
+      tf.beginTranslate(get().selectedIdSet, selBounds);
       acquireTransformLocks();
       set({ transform: { kind: 'translate' } });
     },
 
     updateTranslate: (dx, dy) => {
-      getController().updateTranslate(dx, dy);
+      tf.updateTranslate(dx, dy);
     },
 
     beginScale: (handleId, downWorld) => {
@@ -254,7 +257,7 @@ export const useSelectionStore = create<SelectionStore>()(
       const initialDelta: Point = [handlePos[0] - origin[0], handlePos[1] - origin[1]];
       const clickOffset: Point = [downWorld[0] - handlePos[0], downWorld[1] - handlePos[1]];
       const { selectedIdSet } = get();
-      getController().beginScale(selectedIdSet, handleId, origin, selBounds);
+      tf.beginScale(selectedIdSet, handleId, origin, selBounds);
       acquireTransformLocks();
       set({ transform: { kind: 'scale', initialDelta, clickOffset } });
     },
@@ -262,30 +265,29 @@ export const useSelectionStore = create<SelectionStore>()(
     updateScale: (worldX, worldY) => {
       const t = get().transform;
       if (t.kind !== 'scale') return;
-      const sCtx = getController().getScaleCtx();
+      const sCtx = tf.getTransformScaleCtx();
       if (!sCtx) return;
-      const [sx, sy] = rawScaleFactors(worldX - t.clickOffset[0], worldY - t.clickOffset[1], sCtx.origin, t.initialDelta, sCtx.handleId);
-      getController().updateScale(sx, sy);
+      rawScaleFactorsInto(_rsf, worldX - t.clickOffset[0], worldY - t.clickOffset[1], sCtx.origin, t.initialDelta, sCtx.handleId);
+      tf.updateScale(_rsf[0], _rsf[1]);
     },
 
     endTransform: () => {
       const t = get().transform;
-      const ctrl = getController();
       if (t.kind === 'endpointDrag') {
-        // Controller owns the route buffer + bbox snapshots; the snap target lives
+        // The engine owns the route buffer + bbox snapshots; the snap target lives
         // on the store discriminant (drives commit's anchor-vs-free choice).
-        ctrl.commitEndpointDrag(t.currentSnap);
-      } else if (ctrl.hasChange()) {
-        ctrl.commit();
+        tf.commitEndpointDrag(t.currentSnap);
+      } else if (tf.transformHasChange()) {
+        tf.commitTransform();
       } else {
-        ctrl.clear();
+        tf.clearTransform();
       }
       set({ transform: { kind: 'none' } });
       releaseTransformLocks();
     },
 
     cancelTransform: () => {
-      getController().cancel();
+      tf.cancelTransform();
       set({ transform: { kind: 'none' } });
       releaseTransformLocks();
     },
@@ -293,8 +295,8 @@ export const useSelectionStore = create<SelectionStore>()(
     // === Endpoint Drag Actions ===
 
     beginEndpointDrag: (connectorId, slot) => {
-      // SelectTool already ran getController().beginEndpointDrag (and bailed on false),
-      // so the controller's injectIds holds the dragged connector.
+      // SelectTool already ran tf.beginEndpointDrag (and bailed on false),
+      // so the engine's injectIds holds the dragged connector.
       acquireTransformLocks();
       set({
         transform: {
@@ -454,8 +456,10 @@ export const useSelectionStore = create<SelectionStore>()(
       }
       if (inSelection) {
         // Cancel BEFORE setSelection — setSelection resets the discriminant
-        // without getController().cancel(), stranding frozen old-kind entries
-        // that a later pointerup would commit as old-kind fields.
+        // without tf.cancelTransform(), stranding frozen old-kind entries
+        // that a later pointerup would commit as old-kind fields. (The
+        // engine's eviction hook already DEAD-flags the converted entry, so
+        // both paths are safe in either order.)
         if (get().transform.kind !== 'none') get().cancelTransform();
         get().setSelection(get().selectedIds);
       } else if (textEditingId !== null && kindChangedIds.has(textEditingId)) {

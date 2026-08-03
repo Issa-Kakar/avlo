@@ -93,7 +93,9 @@ All paths relative to `web/src/` unless noted.
 |------|-------|
 | `types.ts` | `PointerTool` interface + `PreviewData` union |
 | `selection/SelectTool.ts` | Selection state machine, translate, scale, connector endpoints, code/text editing entry |
-| `selection/transform.ts` | `TransformController` (scale/translate/endpoint drag), entry system, per-kind dispatch tables |
+| `selection/transform.ts` | Module-level SoA gesture engine (scale/translate/endpoint drag) — interleaved Float64 lane buffer, op-partitioned kernel ranges, sparse slot→gesture map, batched damage, RDM eviction hook |
+| `selection/transform-kernels.ts` | Pure lane math (LEAF): op/behavior LUTs, straight-line apply kernels, `UniformPack` hoist — oracle-proven by its selftest |
+| `selection/transform-damage.ts` | Shared damage accumulator (LEAF): `pushDamage`/`flushDamage` → one `invalidateWorldRects` per pointermove |
 | `selection/types.ts` | Shared selection types (`TransformState`, entry/dispatch helpers) |
 | `selection/selection-utils.ts` | Composition, bounds, declarative `foldField` over the field table |
 | `selection/selection-actions.ts` | Mutation wrappers — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` |
@@ -131,7 +133,7 @@ All paths relative to `web/src/` unless noted.
 | `sab/` | Worker-agnostic SharedArrayBuffer control-plane toolkit (`Futex`, `SpmcRing`, `SlotTable`, `allocControlSab`/`assertCrossOriginIsolated`). First consumer: image decode (`image-sab.ts`). See CLAUDE.md |
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
 | `clipboard/` | Nonce-based clipboard + serializer. Entry: `clipboard-actions.ts`, `clipboard-serializer.ts`. See CLAUDE.md |
-| `slots/` | App-wide dense slot fabric (LEAF) — allocator (`acquireSlot`/`releaseSlot`, LIFO), slot→handle reverse map, global interleaved bbox column (`slot * 4`). RDM writes; z-order ranks, lock columns, veil, renderer/pickers consume. Entry: `slot-table.ts`. See CLAUDE.md |
+| `slots/` | App-wide dense slot fabric (LEAF) — allocator (`acquireSlot`/`releaseSlot`, LIFO), slot→handle reverse map, global interleaved bbox column (`slot * 4`), numeric kind column (`getKindCodes`, `K_*` at `slot`). RDM writes; z-order ranks, lock columns, veil, renderer/pickers, transform engine consume. Entry: `slot-table.ts`. See CLAUDE.md |
 | `z-order/` | `ZRankTable` (SoA Uint32 ranks + `slotsByRank` inverse permutation over the slot fabric; zero-arg `ensureRanksValid`, self-healing maxZ/minZ) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
 | `locks/` | Ephemeral conflict-resolution grabs — `lockOwner: Uint32Array` keyed by `handle.slot` (0=unlocked, 1=mine, ≥2=peer key; every guard is ONE `lo[slot] > 1` compare), binary `MSG_LOCK` frames on the Yjs WS (never awareness), DO-arbitrated first-wins, worker-rendered grey veil — PLUS the durable `locked: 1` object property mirrored into `_locked: Uint8Array` (observer-written; marquee/eraser/edit-inert but click-solo-selectable, lock-only context menu, undo writes through). Entry: `lock-table.ts`, `lock-protocol.ts` (+ `@avlo/shared/lock-protocol`, `workers/sync/src/room.ts`, `renderer/lock-veil/`). See CLAUDE.md |
 | `ai/` | Client side of the AI assistant — `short-ids.ts` (per-conversation `sN`↔ULID map + chat-origin int coords; reset on room change), `context-serializer.ts` (three-tier `CanvasContext`: selection full / viewport blurry / offscreen clusters), `apply-actions.ts` (the `canvas` tool executor — shared-Zod re-parse, unknown-id drops, ONE `transact()` per tool call = one undo step, `stopCapturing()` isolation). Wire schemas in `@avlo/shared/src/ai/`; transport in `components/ai/useAiChat.ts` (Agents SDK `useAgent`+`useAgentChat`). See `docs/ai/protocol.md` |
@@ -260,7 +262,7 @@ Prefer `getHandle(id)` over `getObjectsById().get(id)`. Prefer `transact(fn)` ov
 ## Invalidation — Singleton Render Loops
 
 Module-level singletons, safe no-ops before `start()`. Tools and observers import directly.
-- **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldSlot(slot)` (rect read off the global bbox column at `slot * 4`; live slots only; the only variant that gates its rAF schedule on real damage — offscreen publishes stay idle), `invalidateWorldAll()`
+- **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldSlot(slot)` (rect read off the global bbox column at `slot * 4`; live slots only), `invalidateWorldRects(rects, count)` (batched — 4 lanes per rect, one camera hoist; the transform engine's per-pointermove flush), `invalidateWorldAll()`. Slot + Rects variants gate their rAF schedule on real damage — offscreen publishes stay idle.
 - **OverlayRenderLoop:** `invalidateOverlay()`
 
 ---
@@ -318,7 +320,7 @@ interface ObjectHandle {
   slot: number;              // immutable Uint32 index into the slot-table columns (core/slots/)
 }
 ```
-**Mutation invariants** (violate → spatial tree desyncs): RoomDocManager `upsertHandle`'s tripartite write — `copyBbox` into the tuple, `writeSlotBBox` into the column, `spatialTree.update` into the tree, always together — is the ONLY legal post-creation bbox writer path; never `handle.bbox[N]=…` / a lone `copyBbox(_, handle.bbox)` anywhere else. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`, `core/slots/slot-table.ts`), reusable after delete but never reassigned on a live handle. The tuple persists for the id's lifetime — consumers needing a snapshot across fires clone at read time (`[...handle.bbox]`; transform/topology/image-manager do).
+**Mutation invariants** (violate → spatial tree desyncs): RoomDocManager `upsertHandle`'s tripartite write — `copyBbox` into the tuple, `writeSlotBBox` into the column, `spatialTree.update` into the tree, always together — is the ONLY legal post-creation bbox writer path; never `handle.bbox[N]=…` / a lone `copyBbox(_, handle.bbox)` anywhere else. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind; mirrors into the slot kind column via `writeSlotKind`). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`, `core/slots/slot-table.ts`), reusable after delete but never reassigned on a live handle. The tuple persists for the id's lifetime — consumers needing a snapshot across fires copy at read time (the transform engine freezes lanes off the column at begin; image-manager clones).
 
 ### Stored vs derived geometry
 
@@ -353,12 +355,12 @@ Public fields (non-null from construction): `objectsById`, `connectorRouter`. Sy
 
 **Two passes per fire.** First, **inline routing** — per event, route the edit to its subsystem hook so that state is fresh BEFORE the bulk phase reads it. This ordering is **load-bearing**: `compute*BBox` then reads already-fresh caches and Phase C can drain reroutes in the same fire (no second pass).
 - top-level add/delete → `router.onConnectorAdded` / `onObjectDeleted`
-- `kind` keychange (in-place conversion) → `removeObjectCaches(id, OLD kind)` → set `handle.kind` → `kindChanged+=id` + `router.onBindableChanged` (→shape eager-layouts so `getInlineStyles` is warm)
+- `kind` keychange (in-place conversion) → `removeObjectCaches(id, OLD kind)` → set `handle.kind` + `writeSlotKind` (kind column mirror) + `transformEvictSlot` (mid-gesture conversion: draws canonically, commit skips) → `kindChanged+=id` + `router.onBindableChanged` (→shape eager-layouts so `getInlineStyles` is warm)
 - connector `start|end|connectorType` → `router.onConnectorEdited`; `startCap|endCap` → `evictGeometry` (cap bakes into Path2D); shape `shapeType` → `router.onBindableChanged`
 - nested `'content'` → code `codeSystem.handleContentChange` / text·label·note `textLayoutCache.invalidateContent`
 
 Then **`applyObjectChanges`** over accumulated `touched`/`deleted` (`_newBBoxScratch` reused):
-- **A · deletions** — `spatialTree.remove(slot)` → `lockSlotReleased` → `zOrder.noteRemove` → `releaseSlot` (last slot-keyed op — every slot consumer finalized before the slot can recycle in Phase B; a late tree remove would delete the recycled entry) → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
+- **A · deletions** — `spatialTree.remove(slot)` → `lockSlotReleased` → `zOrder.noteRemove` → `transformEvictSlot` (gesture map + DEAD flag) → `releaseSlot` (last slot-keyed op — every slot consumer finalized before the slot can recycle in Phase B; a late tree remove would delete the recycled entry) → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
 - **B · touched** — skip ids queued for reroute (→C); connectors get style-only `router.computeBBox`, else `computeBBoxForInto` (★ **populates subsystem caches**) → `upsertHandle`; a bbox-changed bindable calls `router.onBindableChanged` (queues a reroute).
 - **C · drain reroute queue** — `router.rerouteCanonical` (route + bbox) → `upsertHandle(…, alwaysEvict=true)`. Then `selection.onObjectsKindChanged` (re-derive composition BEFORE refreshStyles) + `onObjectsChanged`.
 
@@ -418,7 +420,7 @@ computeBBoxForInto(id, kind, y, out) {
 - `SelectTool` renders transformed objects on the base canvas for correct Z-order during translate/scale.
 
 ### Object dispatch (`renderer/layers/objects.ts`)
-`drawObjects` paints viewport candidates (from the spatial index) in z-order, dispatching each leaf `draw*` on `handle.kind`: stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()`, bookmark via `drawBookmark()`. Under transform, selected/attached handles are re-injected by their preview bbox and scaled per-kind in `renderScaleEntry` (`getScaleBehavior` → reflow / uniform / else translated) — the scale-behavior model lives in `tools/selection/CLAUDE.md`. Per-frame state (editing ids, topology entries, translate delta, viewport) is hoisted once and leaf draws use module scratches for zero alloc; the file is self-contained on the specifics.
+`drawObjects` paints viewport candidates (from the spatial index) in z-order, dispatching each leaf `draw*` on the slot kind column (`K_*` int jump table): stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()` at its column rect, bookmark via `drawBookmark()`. Under transform, gestured slots are skipped in the pack loop (one sparse-map load + sign test), re-injected by their preview bbox via the slot-keyed cull, and painted per meta-op in `renderScaleEntryLanes` off the gesture lane buffer — the op model lives in `tools/selection/CLAUDE.md`. Per-frame state (editing ids, gesture buffers, translate delta, viewport) is hoisted once and leaf draws use module scratches for zero alloc; the file is self-contained on the specifics.
 
 ### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
 Each leaf `draw*` calls one `readXxxRender(y)` that reads only the keys it paints straight off Yjs's `_map` (~10 ns/key vs ~109 for `y.get()`) into a per-kind module scratch. The mechanism — `readPrim`/`readY` split by Content subclass, the `!deleted` tombstone guard, the `arr[0]` length-1 invariant, scratch-consumed-before-the-next-reader — is documented in the file.
@@ -456,7 +458,7 @@ Server-projection reads (`/me` identity, `GET /rooms` dashboard) + offline mutat
 
 ## Selection System
 
-Detailed in `tools/selection/CLAUDE.md` (state machine, per-kind transform, connector topology, hit testing, text/code reflow, dirty-rect, commit paths). Entry points: `SelectTool` (state machine + commits + marquee), `transform.ts` (TransformController + dispatch tables + built topology), `core/geometry/scale-system.ts`, `selection-store.ts`.
+Detailed in `tools/selection/CLAUDE.md` (state machine, SoA gesture engine, connector topology, hit testing, text/code reflow, batched damage, commit paths). Entry points: `SelectTool` (state machine + marquee), `transform.ts` (the module-level engine: lane buffer + sparse slot routing + op kernels + built topology), `transform-kernels.ts` (oracle-proven lane math), `core/geometry/scale-system.ts` (scalar atoms), `selection-store.ts`.
 
 ---
 

@@ -202,6 +202,32 @@ export class RenderLoop {
     }
   }
 
+  /** Batched world-space dirty rects (4 lanes per rect, [0,count)). One camera hoist, one gated
+   *  markDirty for the whole batch — the transform engine's per-pointermove flush. Rects must
+   *  already carry their paint padding (stroke/shadow/italic). Off-canvas rects clamp to no-ops,
+   *  so a fully-offscreen batch never schedules a rAF (invalidateWorldSlot precedent). */
+  invalidateWorldRects(rects: Float64Array, count: number): void {
+    if (!this.started || this.fullClear || count === 0) return;
+    const s = this.camScale * this.camDpr;
+    const px = this.camPanX,
+      py = this.camPanY;
+    let damaged = false;
+    for (let i = 0; i < count; i++) {
+      const o = i * 4;
+      if (
+        this.mark(
+          Math.floor((rects[o] - px) * s - AA_MARGIN),
+          Math.floor((rects[o + 1] - py) * s - AA_MARGIN),
+          Math.ceil((rects[o + 2] - px) * s + AA_MARGIN),
+          Math.ceil((rects[o + 3] - py) * s + AA_MARGIN),
+        )
+      )
+        damaged = true;
+      if (this.fullClear) break; // area-ratio promotion — rest of batch is moot
+    }
+    if (damaged) this.markDirty();
+  }
+
   /** Force full clear on next frame. */
   invalidateAll(): void {
     this.fullClear = true;
@@ -748,6 +774,11 @@ export function invalidateWorldBBox(bbox: BBoxTuple): void {
 /** Invalidate a live slot's rect straight off the global bbox column. Safe no-op before start(). */
 export function invalidateWorldSlot(slot: number): void {
   renderLoop.invalidateWorldSlot(slot);
+}
+
+/** Invalidate a batch of world-space dirty rects (4 lanes per rect). Safe no-op before start(). */
+export function invalidateWorldRects(rects: Float64Array, count: number): void {
+  renderLoop.invalidateWorldRects(rects, count);
 }
 
 /** Force full base-canvas clear on next frame. Safe no-op before start(). */

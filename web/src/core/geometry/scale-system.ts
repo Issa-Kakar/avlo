@@ -1,15 +1,19 @@
 /**
- * Scale System — pure math atoms for transform computation.
+ * Scale System — pure scalar math atoms for transform computation.
  *
- * Every function here is a pure math primitive. No types, no factories, no state.
- * Transform orchestration lives in tools/selection/transform.ts.
+ * Every function here is a pure math primitive. No types, no factories, no
+ * state. The lane-based apply loops live in
+ * `tools/selection/transform-kernels.ts` (which imports these atoms); gesture
+ * orchestration in `tools/selection/transform.ts`. The old tuple-allocating
+ * bbox composites (scaleBBoxUniform/Edges, edgePinDelta, derivePaddedFrame,
+ * computeReflowWidth, roundProp, preservePosition) were folded into the
+ * kernels as straight-line lane math — their originals survive verbatim as
+ * the oracle inside `transform-kernels.selftest.ts`.
  */
 
-import type { ScaleCtx } from '@/tools/selection/types';
-import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
+import type { BBoxTuple, Point } from '../types/geometry';
 import type { HandleId } from '../types/handles';
 import { isHorzSide, isVertSide } from '../types/handles';
-import { bboxCenter, setBBoxXYWH } from './bounds';
 
 // ============================================================================
 // Number Primitives
@@ -20,27 +24,30 @@ export const scaleAround = (v: number, origin: number, factor: number): number =
 
 export const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
-/** Round a numeric property by factor. Returns [rounded, effectiveFactor]. */
-export function roundProp(prop: number, af: number): [rounded: number, ef: number] {
-  const r = round3(prop * af);
-  return [r, r / prop];
-}
-
 // ============================================================================
 // Scale Computation
 // ============================================================================
 
-/** Raw factors from cursor position. Uses initialDelta, not bounds width. */
-export function rawScaleFactors(wx: number, wy: number, origin: Point, delta: Point, h: HandleId): [sx: number, sy: number] {
+/** Raw factors from cursor position into `out`. Uses initialDelta, not bounds width. */
+export function rawScaleFactorsInto(out: Point, wx: number, wy: number, origin: Point, delta: Point, h: HandleId): void {
   const dx = wx - origin[0];
   const dy = wy - origin[1];
   const MIN = 0.001;
   const safeDx = Math.abs(delta[0]) > MIN ? delta[0] : delta[0] >= 0 ? MIN : -MIN;
   const safeDy = Math.abs(delta[1]) > MIN ? delta[1] : delta[1] >= 0 ? MIN : -MIN;
 
-  if (isHorzSide(h)) return [dx / safeDx, 1];
-  if (isVertSide(h)) return [1, dy / safeDy];
-  return [dx / safeDx, dy / safeDy];
+  if (isHorzSide(h)) {
+    out[0] = dx / safeDx;
+    out[1] = 1;
+    return;
+  }
+  if (isVertSide(h)) {
+    out[0] = 1;
+    out[1] = dy / safeDy;
+    return;
+  }
+  out[0] = dx / safeDx;
+  out[1] = dy / safeDy;
 }
 
 /** Collapse 2 axes to 1 signed magnitude. Handle-aware to avoid corner flicker. */
@@ -51,7 +58,7 @@ export function uniformFactor(sx: number, sy: number, h: HandleId): number {
 
   if (sx < 0 && sy < 0) return -Math.max(ax, ay, MIN);
 
-  // Side handles: extract the single active axis (the other is hardcoded 1 by rawScaleFactors)
+  // Side handles: extract the single active axis (the other is hardcoded 1 by rawScaleFactorsInto)
   if (isHorzSide(h)) {
     const m = Math.max(ax, MIN);
     return sx < 0 ? -m : m;
@@ -88,13 +95,6 @@ export function preservePositionMut(out: Point, cx: number, cy: number, sel: BBo
   out[1] = nMinY + ty * nH;
 }
 
-/** Allocating variant — convenience wrapper over `preservePositionMut`. */
-export function preservePosition(cx: number, cy: number, sel: BBoxTuple, origin: Point, factor: number): Point {
-  const out: Point = [0, 0];
-  preservePositionMut(out, cx, cy, sel, origin, factor);
-  return out;
-}
-
 /**
  * 1D edge-pin position. Spans-full-axis fast-path (objMin ≤ selLo AND objMax ≥ selHi):
  * translate via scaleAround on the object center, since pinning to an edge it owns would freeze it.
@@ -117,85 +117,5 @@ export function edgePinPosition1D(objMin: number, objMax: number, originV: numbe
   return Math.abs(left - originV) >= Math.abs(right - originV) ? left : right - size;
 }
 
-// ============================================================================
-// Non-Uniform Scale
-// ============================================================================
-
-// ============================================================================
-// Reflow Atom
-// ============================================================================
-
-/** Shared edge-scaling + min-width clamping for text/code reflow. */
-export function computeReflowWidth(
-  fx: number,
-  fw: number,
-  originX: number,
-  sx: number,
-  minW: number,
-): [newLeft: number, targetWidth: number] {
-  const l = scaleAround(fx, originX, sx);
-  const r = scaleAround(fx + fw, originX, sx);
-  const left = Math.min(l, r),
-    right = Math.max(l, r);
-  const raw = right - left;
-  const target = Math.max(minW, raw);
-  if (target <= raw) return [left, target];
-  return [Math.abs(left - originX) <= Math.abs(right - originX) ? left : right - target, target];
-}
-
-// ============================================================================
-// BBox-Aware Scale Atoms (compose primitives above; consumed by transform.ts)
-// ============================================================================
-
-/** Uniform scale a bbox around ctx origin. Writes out. Returns abs factor (for prop rounding). */
-export function scaleBBoxUniform(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx): number {
-  const [cx, cy] = bboxCenter(src);
-  const uf = uniformFactor(ctx.sx, ctx.sy, ctx.handleId);
-  const [ncx, ncy] = preservePosition(cx, cy, ctx.selBounds, ctx.origin, uf);
-  const af = Math.abs(uf);
-  const w = (src[2] - src[0]) * af;
-  const h = (src[3] - src[1]) * af;
-  setBBoxXYWH(out, ncx - w / 2, ncy - h / 2, w, h);
-  return af;
-}
-
 /** Minimum shape frame width/height during non-uniform scale (world units). Small enough that the cross-origin snap reads as smooth; large enough to keep connectors anchored to a collapsing shape well-defined. */
 export const MIN_SHAPE_FRAME_DIM = 5.0;
-
-/**
- * Non-uniform scale a bbox: per-axis edges scaled around ctx origin via `computeReflowWidth`,
- * clamped at `minW`/`minH` (pass 0 to disable; clamp pins the bbox edge nearer the origin and
- * sizes the opposite to the minimum).
- */
-export function scaleBBoxEdges(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx, minW: number, minH: number): void {
-  const [newX, newW] = computeReflowWidth(src[0], src[2] - src[0], ctx.origin[0], ctx.sx, minW);
-  const [newY, newH] = computeReflowWidth(src[1], src[3] - src[1], ctx.origin[1], ctx.sy, minH);
-  setBBoxXYWH(out, newX, newY, newW, newH);
-}
-
-/** Edge-pin [dx, dy] delta for a bbox under ctx. */
-export function edgePinDelta(src: BBoxTuple, ctx: ScaleCtx): Point {
-  const sel = ctx.selBounds;
-  return [
-    edgePinPosition1D(src[0], src[2], ctx.origin[0], ctx.sx, sel[0], sel[2]) - src[0],
-    edgePinPosition1D(src[1], src[3], ctx.origin[1], ctx.sy, sel[1], sel[3]) - src[1],
-  ];
-}
-
-/**
- * Derive shape/image frame from a scaled bbox with constant stroke-width padding.
- * Overwrites outBbox at the end so outBbox = outFrame + constant pad — stroke width
- * doesn't scale with the transform.
- */
-export function derivePaddedFrame(outFrame: FrameTuple, outBbox: BBoxTuple, srcFrame: FrameTuple, srcBbox: BBoxTuple): void {
-  const padL = srcFrame[0] - srcBbox[0];
-  const padT = srcFrame[1] - srcBbox[1];
-  outFrame[0] = outBbox[0] + padL;
-  outFrame[1] = outBbox[1] + padT;
-  outFrame[2] = Math.max(0, outBbox[2] - outBbox[0] - 2 * padL);
-  outFrame[3] = Math.max(0, outBbox[3] - outBbox[1] - 2 * padT);
-  outBbox[0] = outFrame[0] - padL;
-  outBbox[1] = outFrame[1] - padT;
-  outBbox[2] = outFrame[0] + outFrame[2] + padL;
-  outBbox[3] = outFrame[1] + outFrame[3] + padT;
-}

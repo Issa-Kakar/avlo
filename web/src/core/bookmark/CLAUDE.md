@@ -238,7 +238,7 @@ Hover state and paint both live on the **base canvas**. Overlay never paints it.
 
 **Gesture handoff (openButton press → translate).** When the pointer drifts past `MOVE_THRESHOLD_PX` mid-press, phase promotes to `translate` **without clearing hover**. The renderer's translate path wraps `drawObject(ctx, handle)` in `ctx.translate(tdx, tdy)`, which re-dispatches into `case 'bookmark'` with `hoveredOpen = true` — hover rides the translate naturally. On `end()`, `rehoverFromLastCursor()` re-evaluates against the post-commit frame.
 
-**Scale gestures clear hover** at `SelectTool.begin()` before phase classification. Scale previews route through `renderScaleEntry` → recursive `drawObject` with `hoveredOpen = false`.
+**Scale gestures clear hover** at `SelectTool.begin()` before phase classification. Scale previews route through `renderScaleEntryLanes` → recursive `drawObject` with `hoveredOpen = false`.
 
 **Edge cases:**
 - Deletion mid-hover → `getOpenButtonWorldBBox` returns `null`, invalidate bails; the deletion's own bbox invalidation cleans up the full bookmark paint
@@ -334,7 +334,7 @@ Origin + uniform scale, same pattern as sticky notes.
 | `'mixed'`, corner | Uniform scale |
 | `'mixed'`, side | Edge-pin translate (`edgePinOffset` + `commitOrigin`) |
 
-`OutOf<'bookmark'> = HasOrigin & HasScale & HasBBox`. Scale preview routes through `renderScaleEntry` → `case 'bookmark'`: `ctx.scale(ratio)` around `out.origin` + recursive `drawObject` (no dedicated preview fn).
+Bookmark gesture lanes: aux = `[originX, originY, scale, 0]`. Scale preview routes through `renderScaleEntryLanes`' origin-uniform arm: `ctx.scale(ratio)` (aux lanes 14/6) around the out-origin lanes + recursive `drawObject` (no dedicated preview fn).
 
 ### Connector Topology — `tools/selection/connector-topology.ts`
 `fillFrameFromBind` for bookmark bind sides: `[origin.x, origin.y, frozen.w × ratio, frozen.h × ratio]` where `ratio = out.scale / frozen.scale`. Frame caches are populated during hydrate and only become `null` post-delete — see `connector-topology.ts:382`.

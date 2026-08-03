@@ -31,11 +31,12 @@ import {
   resetSlotTable,
   slotHighWater,
   writeSlotBBox,
+  writeSlotKind,
 } from '@/core/slots/slot-table';
 import { spatialTree } from '@/core/spatial/spatial-tree';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
-import { createHandle, isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
+import { createHandle, isUnbindableKind, KIND_CODE, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { ZRankTable } from '@/core/z-order/z-rank-table';
 import { queryClient } from '@/query/client';
 import { ROOMS_QUERY_KEY, type RoomsQueryData } from '@/query/rooms';
@@ -50,6 +51,7 @@ import { bindUndoManagerToHistoryStore } from '@/stores/history-store';
 import { removeRoom, setRoomOwnerFact, setRoomPermissionFact } from '@/stores/room-list-store';
 import { resetRoomSession, setRoomAccess, setRoomIsOwner, setRoomMode, setRoomPermission, setRoomTitle } from '@/stores/room-session-store';
 import { useSelectionStore } from '@/stores/selection-store';
+import { transformEvictSlot } from '@/tools/selection/transform';
 import { dispose } from '@/utils/dispose';
 import { ROOM_DOC_DB_PREFIX } from '@/utils/room-local-data';
 import { attach, detach } from './presence/presence';
@@ -353,6 +355,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             if (handle && kind && handle.kind !== kind) {
               removeObjectCaches(id, handle.kind);
               handle.kind = kind;
+              writeSlotKind(handle.slot, KIND_CODE[kind]); // kind column mirrors the handle mirror
+              // Mid-gesture conversion: the frozen old-kind lanes are garbage for
+              // the new kind — evict (draws canonically, commit skips via DEAD).
+              transformEvictSlot(handle.slot);
               this._kindChangedIds.add(id);
               // Effective outline changed even when the bbox doesn't — Phase B's
               // bbox-gated propagation can't cover that case. Set-deduped otherwise.
@@ -455,6 +461,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       spatialTree.remove(handle.slot); // slot-keyed consumer — must finalize before releaseSlot below
       lockSlotReleased(handle.slot); // lock columns + peer prune (+ veil poke)
       this.zOrder.noteRemove(handle.z);
+      transformEvictSlot(handle.slot); // gesture map + DEAD flag — slot-keyed consumer, finalize before release
       // releaseSlot LAST among the slot-keyed ops: a slot is freed only after every slot-keyed
       // consumer has finalized — Phase B of this same fire can recycle it (LIFO), and a late
       // spatialTree.remove(slot) would delete the RECYCLED entry.

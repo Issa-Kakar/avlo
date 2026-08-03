@@ -31,7 +31,7 @@ import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getHandle, hasActiveRoom } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { getScaleEntry, getTransformMode } from '@/tools/selection/transform';
+import { getTransformModeCode, readGestureOutBBox } from '@/tools/selection/transform';
 import { repositionAllPlaceholders } from '../bookmark/bookmark-placeholder';
 import { bookmarkCache } from '../bookmark/bookmark-render';
 import { handleUnfurlFailed, handleUnfurlResult } from '../bookmark/bookmark-unfurl';
@@ -247,6 +247,8 @@ const inflightIngests = new Map<string, { resolve: (result: IngestResult) => voi
 // Scratch tuple — overwritten each call. Safe because spatialTree.query reads
 // the four scalars synchronously and doesn't retain them.
 const _paddedScratch: BBoxTuple = [0, 0, 0, 0];
+// Gesture out-bbox copy target for the transform mark phase (readGestureOutBBox).
+const _gestureBBoxScratch: BBoxTuple = [0, 0, 0, 0];
 function padViewport(vb: Readonly<[number, number, number, number]>): BBoxTuple {
   const vw = vb[2] - vb[0];
   const vh = vb[3] - vb[1];
@@ -553,21 +555,22 @@ export function manageImageViewport(): void {
 
   // === MARK PHASE B: transform overlay ===
   // During translate/scale, the stored spatial-index bbox can lag the live transform
-  // output bbox. Re-mark selected images using their transform-output bbox, but only
+  // output bbox. Re-mark selected images using their gesture out-bbox lanes, but only
   // if it still intersects the padded viewport (Ctrl+A → scale must respect viewport).
-  const mode = getTransformMode();
-  if (mode === 'scale' || mode === 'translate') {
+  const mc = getTransformModeCode();
+  if (mc === 1 || mc === 2) {
     const { selectedIdSet, kindCounts } = useSelectionStore.getState();
     if (kindCounts.image > 0) {
       for (const id of selectedIdSet) {
         const meta = getImageMeta(id);
         if (!meta) continue;
-        const tEntry = getScaleEntry('image', id);
-        if (!tEntry) continue;
-        const b = tEntry.out.bbox;
+        const h = getHandle(id);
+        if (!h || h.kind !== 'image') continue;
+        if (!readGestureOutBBox(h.slot, _gestureBBoxScratch)) continue;
+        const b = _gestureBBoxScratch;
         if (!bboxIntersects(b, padded)) continue;
         const w = b[2] - b[0];
-        const ppsp = mode === 'scale' ? Infinity : (w * scale * dpr) / meta.nw;
+        const ppsp = mc === 1 ? Infinity : (w * scale * dpr) / meta.nw;
         markAsset(meta.assetId, ppsp, meta.nw, meta.nh, b[0], b[1], b[2], b[3]);
       }
     }

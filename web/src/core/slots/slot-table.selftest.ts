@@ -33,18 +33,20 @@ import type * as Y from 'yjs';
 import { sortU32Range } from '../../utils/sort-u32';
 import { copyBbox } from '../geometry/bounds';
 import type { BBoxTuple } from '../types/geometry';
-import { createHandle, type ObjectHandle } from '../types/objects';
+import { createHandle, KIND_CODE, type ObjectHandle, type ObjectKind } from '../types/objects';
 import { ZRankTable } from '../z-order/z-rank-table';
 import {
   acquireSlot,
   getBBoxColumn,
   getHandlesBySlot,
+  getKindCodes,
   registerHandle,
   releaseSlot,
   resetSlotTable,
   slotCapacity,
   slotHighWater,
   writeSlotBBox,
+  writeSlotKind,
 } from './slot-table';
 
 // ───────────────────────────────────────────────────────────────── utilities ──
@@ -72,9 +74,9 @@ function check(cond: boolean, msg: string): void {
 
 let idSeq = 0;
 /** Fake handle — `y` is never touched by anything under test (type-only stand-in). */
-function mkHandle(z: string, bbox: BBoxTuple = [0, 0, 1, 1]): ObjectHandle {
+function mkHandle(z: string, bbox: BBoxTuple = [0, 0, 1, 1], kind: ObjectKind = 'shape'): ObjectHandle {
   const id = `id${String(idSeq++).padStart(8, '0')}`;
-  const h = createHandle(id, 'shape', null as unknown as Y.Map<unknown>, bbox, z as ZKey, acquireSlot());
+  const h = createHandle(id, kind, null as unknown as Y.Map<unknown>, bbox, z as ZKey, acquireSlot());
   registerHandle(h);
   return h;
 }
@@ -117,23 +119,28 @@ function testAllocator(): void {
   releaseSlot(hd.slot);
   check(getHandlesBySlot()[hd.slot] === null, 'release nulls the reverse map entry');
 
-  // Growth past INITIAL_CAP preserves live boxes + handle refs.
+  // Growth past INITIAL_CAP preserves live boxes + handle refs + kind codes.
   resetSlotTable();
+  const KINDS: readonly ObjectKind[] = ['stroke', 'shape', 'text', 'connector', 'code', 'image', 'note', 'bookmark'];
   const many: ObjectHandle[] = [];
-  for (let i = 0; i < 600; i++) many.push(mkHandle(`z${i}`, [i, i + 1, i + 2, i + 3]));
+  for (let i = 0; i < 600; i++) many.push(mkHandle(`z${i}`, [i, i + 1, i + 2, i + 3], KINDS[i % KINDS.length]));
   check(slotCapacity() >= 600, 'capacity doubled past 256');
   check(slotHighWater() === 600, 'high water 600');
   {
     const col = getBBoxColumn(); // refetch AFTER growth — live-ref contract
     const bySlot = getHandlesBySlot();
+    const kinds = getKindCodes();
     let boxesOk = true;
     let refsOk = true;
+    let kindsOk = true;
     for (const h of many) {
       if (!boxEq(col, h.slot, h.bbox)) boxesOk = false;
       if (bySlot[h.slot] !== h) refsOk = false;
+      if (kinds[h.slot] !== KIND_CODE[h.kind]) kindsOk = false;
     }
     check(boxesOk, 'growth preserved every live box');
     check(refsOk, 'growth preserved every handle ref');
+    check(kindsOk, 'growth preserved every kind code');
   }
 
   // Reset restores initial state.
@@ -145,6 +152,11 @@ function testAllocator(): void {
     'reset → reverse map all null',
   );
   check(getBBoxColumn().length === 256 * 4, 'reset → column back to initial length');
+  check(getKindCodes().length === 256, 'reset → kind column back to initial length');
+  check(
+    getKindCodes().every((c) => c === 0),
+    'reset → kind column all zero',
+  );
   check(acquireSlot() === 0, 'first acquire after reset is 0');
 }
 
@@ -155,8 +167,9 @@ function testColumnSync(): void {
   resetSlotTable();
   idSeq = 0;
 
-  const h = mkHandle('m', [1, 2, 3, 4]);
+  const h = mkHandle('m', [1, 2, 3, 4], 'note');
   check(boxEq(getBBoxColumn(), h.slot, [1, 2, 3, 4]), 'registerHandle seeds column === bbox');
+  check(getKindCodes()[h.slot] === KIND_CODE.note, 'registerHandle seeds the kind code');
 
   // The upsertHandle write pair (minus the tree): copyBbox then writeSlotBBox.
   const next: BBoxTuple = [10, 20, 30, 40];
@@ -164,6 +177,11 @@ function testColumnSync(): void {
   writeSlotBBox(h.slot, next);
   check(h.bbox[0] === 10 && h.bbox[1] === 20 && h.bbox[2] === 30 && h.bbox[3] === 40, 'copyBbox wrote the tuple');
   check(boxEq(getBBoxColumn(), h.slot, next), 'writeSlotBBox wrote the column lane');
+
+  // The kind-keychange write pair (RDM conversion branch): handle.kind mirror + writeSlotKind.
+  h.kind = 'shape';
+  writeSlotKind(h.slot, KIND_CODE.shape);
+  check(getKindCodes()[h.slot] === KIND_CODE.shape, 'writeSlotKind wrote the kind lane');
 }
 
 // ─────────────────────────────────────────────────────────── 3. ZRankTable ──

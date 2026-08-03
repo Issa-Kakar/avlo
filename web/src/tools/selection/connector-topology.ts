@@ -1,9 +1,13 @@
 /**
  * Connector Topology — begin-phase classifier + per-frame apply/commit/cancel.
  *
- * Tightly coupled to `transform.ts` (imports `Entry<K>` + `ScaleCtx` type-only).
- * Every classification decision is made at begin; per-frame apply is pure dispatch
- * over pre-built variant rows with zero per-frame allocation.
+ * Tightly coupled to `transform.ts` (bind sides hold a gesture-entry index
+ * `gi` into the engine's lane buffer; the buffer itself is THREADED into the
+ * apply fns as a parameter so no topology→transform import exists). Every
+ * classification decision is made at begin; per-frame apply is pure dispatch
+ * over pre-built variant rows with zero per-frame allocation. Dirty rects go
+ * through the shared damage accumulator (`transform-damage.ts`) — the gesture
+ * update fns flush once per pointermove.
  *
  * Variants (discriminated by `mode`):
  *   static    — both endpoints canonical; no apply, no commit; renderer draws in-place
@@ -43,16 +47,18 @@ import {
   type StraightEndpoint,
 } from '@/core/connectors/reroute-connector';
 import { computeConnectorBBoxFromPointsInto } from '@/core/geometry/bbox';
-import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
+import { copyBbox, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
 import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
+import { getBBoxColumn } from '@/core/slots/slot-table';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { isCorner } from '@/core/types/handles';
 import type { BindableKind, ConnectorEndpoint, ObjectHandle, StoredAnchor, StoredStraightAnchor } from '@/core/types/objects';
-import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getAttachedConnectors, getHandle, getObjects, getObjectsById } from '@/runtime/room-runtime';
-import type { Entry } from './transform';
+import { pushDamage } from './transform-damage';
+import { G_STRIDE } from './transform-kernels';
 import type { ScaleCtx } from './types';
 
 // ============================================================================
@@ -77,7 +83,8 @@ type ElbowBindSide = {
   readonly kind: 'bind';
   readonly endpoint: ElbowEndpoint;
   readonly bindKind: BindableKind;
-  readonly entry: Entry<BindableKind>;
+  /** Gesture-entry index into the engine's lane buffer (lanes threaded per frame). */
+  readonly gi: number;
   /** Non-null only for note/bookmark (fillFrameFromBind needs the frozen dims). */
   readonly frozenFrame: FrameTuple | null;
   // AnchorSource fields — inlined so the side satisfies AnchorSource structurally.
@@ -103,7 +110,7 @@ type StraightBindSide = {
   readonly kind: 'bind';
   readonly endpoint: StraightEndpoint;
   readonly bindKind: BindableKind;
-  readonly entry: Entry<BindableKind>;
+  readonly gi: number;
   readonly frozenFrame: FrameTuple | null;
   readonly anchor: Point;
   readonly shapeId: string;
@@ -122,6 +129,9 @@ type StraightSide = StraightStaticSide | StraightFreeSide | StraightBindSide;
 interface BaseEntry {
   readonly mode: 'static' | 'translate' | 'reroute';
   readonly id: string;
+  /** The connector's slot — the engine registers it as `TOPO_TAG | entryIndex`
+   *  in the sparse slot map at begin and clears it at derender. */
+  readonly slot: number;
   readonly currBbox: BBoxTuple;
 }
 
@@ -157,16 +167,18 @@ export type ElbowRerouteEntry = RerouteEntryBase<ElbowSide>;
 export type StraightRerouteEntry = RerouteEntryBase<StraightSide>;
 
 /**
- * Endpoint-drag synthetic entry. Allocated ONCE as a scratch on
- * `TransformController` and reused across gestures — `id`, `currBbox` slots,
- * `pointsBuf`, and `validCount` are reset per `beginEndpointDrag`. Renderer
- * reads it via `getEndpointDragEntry()`; same `mode: 'reroute'` shape as
- * topology reroute entries so the per-frame draw dispatch is identical.
+ * Endpoint-drag synthetic entry. Allocated ONCE as an engine-owned scratch
+ * and reused across gestures — `id`, `slot`, `currBbox` slots, `pointsBuf`,
+ * and `validCount` are reset per `beginEndpointDrag`. Renderer reads it via
+ * `getEndpointDragEntry()`; same `mode: 'reroute'` shape as topology reroute
+ * entries so the per-frame draw dispatch is identical.
  */
 export interface EndpointDragEntry {
   readonly mode: 'reroute';
-  /** Mutable: written by the controller on each `beginEndpointDrag`. */
+  /** Mutable: written by the engine on each `beginEndpointDrag`. */
   id: string;
+  /** Mutable, like `id` — the dragged connector's object slot. */
+  slot: number;
   readonly currBbox: BBoxTuple;
   readonly pointsBuf: Point[];
   validCount: number;
@@ -175,14 +187,17 @@ export interface EndpointDragEntry {
 export type ConnectorEntry = StaticEntry | TranslateEntry | ElbowRerouteEntry | StraightRerouteEntry | EndpointDragEntry;
 
 export type ConnectorTopology = {
-  readonly byId: ReadonlyMap<string, ConnectorEntry>;
+  /** All entries in registration order (selected first, then attached) — the
+   *  engine registers entry i as `TOPO_TAG | i` in the sparse slot map; the
+   *  renderer routes through that, so no id-keyed lookup exists. */
+  readonly entries: readonly ConnectorEntry[];
   readonly translates: readonly TranslateEntry[];
   readonly elbowReroutes: readonly ElbowRerouteEntry[];
   readonly straightReroutes: readonly StraightRerouteEntry[];
   /** Non-selected connectors whose endpoints bind to a selected bindable.
-   *  Drives the spatial-loop skip predicate. The full inject set
-   *  (selected ∪ attached) is composed by the controller — `injectIds`
-   *  is no longer a topology concern. */
+   *  Exactly ONE consumer: the engine's injectIds push for LOCK acquisition —
+   *  it must be the FULL attached set (an attached connector whose entry
+   *  construction bailed is still lock-acquired). The renderer never sees it. */
   readonly attachedConnectorIds: ReadonlySet<string>;
 };
 
@@ -194,7 +209,8 @@ type EndpointState = 'canonical' | 'frame-bound' | 'free-moving';
 
 type SelectedBindable = {
   readonly kind: BindableKind;
-  readonly entry: Entry<BindableKind>;
+  /** Gesture-entry index into the engine's lane buffer. */
+  readonly gi: number;
   readonly frozenFrame: FrameTuple | null;
 };
 
@@ -214,33 +230,40 @@ const ZERO_POINT: Readonly<Point> = [0, 0];
 // ============================================================================
 
 /**
- * Fill `scratch` with the current anchor frame of `side.entry`.
- * Reads only `entry.out.*` (+ optionally `entry.frozen.*` + `side.frozenFrame`).
- * Mode-agnostic: whatever apply just wrote is what we read.
+ * Fill `scratch` with the current anchor frame of the bind target, read off
+ * the engine's lane buffer at `side.gi` (lanes threaded per frame — no
+ * topology→transform import). Mode-agnostic: whatever the kernels just wrote
+ * is what we read.
+ *   shape/image → oAux IS the live frame
+ *   text/code   → oBBox read as a frame (out bboxes are tight for these kinds)
+ *   note/bkmk   → ratio = oAux2/fAux2 (OFFSET's aux-copy gives ratio=1 under
+ *                 translate/edgePin), dims = frozenFrame × ratio
  */
-function fillFrameFromBind(scratch: FrameTuple, side: ElbowBindSide | StraightBindSide): void {
-  const e = side.entry;
+function fillFrameFromBind(scratch: FrameTuple, side: ElbowBindSide | StraightBindSide, lanes: Float64Array): void {
+  const b = side.gi * G_STRIDE;
   switch (side.bindKind) {
     case 'shape':
     case 'image': {
-      const f = (e.out as { frame: FrameTuple }).frame;
-      copyFrame(scratch, f);
+      scratch[0] = lanes[b + 12];
+      scratch[1] = lanes[b + 13];
+      scratch[2] = lanes[b + 14];
+      scratch[3] = lanes[b + 15];
       return;
     }
     case 'text':
     case 'code': {
-      bboxToFrameMut(e.out.bbox, scratch);
+      scratch[0] = lanes[b + 8];
+      scratch[1] = lanes[b + 9];
+      scratch[2] = lanes[b + 10] - lanes[b + 8];
+      scratch[3] = lanes[b + 11] - lanes[b + 9];
       return;
     }
     case 'note':
     case 'bookmark': {
-      const frozenScale = (e.frozen as { scale: number }).scale;
-      const outScale = (e.out as { scale: number }).scale;
-      const outOrigin = (e.out as { origin: Point }).origin;
-      const ratio = outScale / frozenScale;
+      const ratio = lanes[b + 14] / lanes[b + 6];
       const fz = side.frozenFrame!;
-      scratch[0] = outOrigin[0];
-      scratch[1] = outOrigin[1];
+      scratch[0] = lanes[b + 12];
+      scratch[1] = lanes[b + 13];
       scratch[2] = fz[2] * ratio;
       scratch[3] = fz[3] * ratio;
       return;
@@ -282,7 +305,7 @@ function buildElbowSide(
       kind: 'bind',
       endpoint: ep,
       bindKind: sb.kind,
-      entry: sb.entry,
+      gi: sb.gi,
       frozenFrame: sb.frozenFrame,
       anchor: src.anchor,
       shapeId: src.shapeId,
@@ -333,7 +356,7 @@ function buildStraightSide(
       kind: 'bind',
       endpoint: ep,
       bindKind: sb.kind,
-      entry: sb.entry,
+      gi: sb.gi,
       frozenFrame: sb.frozenFrame,
       anchor: src.anchor,
       shapeId: src.shapeId,
@@ -359,7 +382,7 @@ function buildStraightSide(
 
 export interface TopologyBuilder {
   onSelectedConnector(id: string, handle: ObjectHandle): void;
-  onSelectedBindable(id: string, kind: BindableKind, entry: Entry<BindableKind>, handle: ObjectHandle): void;
+  onSelectedBindable(id: string, kind: BindableKind, gi: number, handle: ObjectHandle): void;
   finalize(): ConnectorTopology | null;
 }
 
@@ -374,7 +397,7 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
       selectedConnectors.push(handle);
     },
 
-    onSelectedBindable(id, kind, entry, handle) {
+    onSelectedBindable(id, kind, gi, handle) {
       // Check connectors first — `selectedBindables` is only consulted when a connector
       // endpoint's anchor.id lands here, and that can only happen for connectors in this
       // shape's attached set. No attached → the frame freeze + map entry are unreachable.
@@ -385,10 +408,11 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
       if (kind === 'note' || kind === 'bookmark') {
         // note/bookmark frames are populated during hydrate and only become null after delete,
         // which can't happen for a selected handle mid-begin. Non-null assertion is sound here.
+        // (Bookmark height isn't in the lanes — the frozen clone stays load-bearing.)
         const f = frameOf(handle)!;
         frozenFrame = [f[0], f[1], f[2], f[3]];
       }
-      selectedBindables.set(id, { kind, entry, frozenFrame });
+      selectedBindables.set(id, { kind, gi, frozenFrame });
 
       for (const cid of attached) {
         if (selectedIdSet.has(cid)) continue;
@@ -402,23 +426,23 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
     },
 
     finalize() {
-      const byId = new Map<string, ConnectorEntry>();
+      const entries: ConnectorEntry[] = [];
       const translates: TranslateEntry[] = [];
       const elbowReroutes: ElbowRerouteEntry[] = [];
       const straightReroutes: StraightRerouteEntry[] = [];
 
       for (const handle of selectedConnectors) {
-        processConnector(handle, true, mode, selectedBindables, translates, elbowReroutes, straightReroutes, byId);
+        processConnector(handle, true, mode, selectedBindables, translates, elbowReroutes, straightReroutes, entries);
       }
       for (const cid of attachedIds) {
         const h = getHandle(cid);
         if (h?.kind !== 'connector') continue;
-        processConnector(h, false, mode, selectedBindables, translates, elbowReroutes, straightReroutes, byId);
+        processConnector(h, false, mode, selectedBindables, translates, elbowReroutes, straightReroutes, entries);
       }
 
-      if (byId.size === 0) return null;
+      if (entries.length === 0) return null;
 
-      return { byId, translates, elbowReroutes, straightReroutes, attachedConnectorIds: attachedIds };
+      return { entries, translates, elbowReroutes, straightReroutes, attachedConnectorIds: attachedIds };
     },
   };
 }
@@ -431,7 +455,7 @@ function processConnector(
   translates: TranslateEntry[],
   elbowReroutes: ElbowRerouteEntry[],
   straightReroutes: StraightRerouteEntry[],
-  byId: Map<string, ConnectorEntry>,
+  entries: ConnectorEntry[],
 ): void {
   const start = conn.y.get('start') as ConnectorEndpoint | undefined;
   const end = conn.y.get('end') as ConnectorEndpoint | undefined;
@@ -439,35 +463,37 @@ function processConnector(
   const endAnchor = end && !Array.isArray(end) ? end : undefined;
   const startState = classifyEndpoint(startAnchor, isSelected, selectedBindables);
   const endState = classifyEndpoint(endAnchor, isSelected, selectedBindables);
+  const col = getBBoxColumn();
+  const o4 = conn.slot * 4;
 
   // STATIC — both endpoints canonical. Only selected connectors enter topology.
   if (startState === 'canonical' && endState === 'canonical') {
     if (!isSelected) return;
-    byId.set(conn.id, { mode: 'static', id: conn.id, currBbox: [...conn.bbox] as BBoxTuple });
+    entries.push({ mode: 'static', id: conn.id, slot: conn.slot, currBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]] });
     return;
   }
 
   // TRANSLATE-ONLY — both endpoints move rigidly under translate gesture.
   if (mode === 'translate' && startState !== 'canonical' && endState !== 'canonical') {
-    const ob = conn.bbox;
     const frozenStart = start && Array.isArray(start) ? ([start[0], start[1]] as Point) : null;
     const frozenEnd = end && Array.isArray(end) ? ([end[0], end[1]] as Point) : null;
-    // originalBbox is CLONED, never aliased to the live handle.bbox: a peer moving a
-    // non-selected anchor shape mid-gesture reroutes this connector (reroute is
-    // lock-agnostic) and upsertHandle mutates handle.bbox in place — an alias would
-    // corrupt the frozen begin-time baseline the per-frame translate and cancel
-    // restore read.
+    // originalBbox is CLONED from the column, never aliased to live geometry:
+    // a peer moving a non-selected anchor shape mid-gesture reroutes this
+    // connector (reroute is lock-agnostic) and upsertHandle rewrites the lane
+    // in place — an alias would corrupt the frozen begin-time baseline the
+    // per-frame translate and cancel restore read.
     const e: TranslateEntry = {
       mode: 'translate',
       id: conn.id,
-      originalBbox: [ob[0], ob[1], ob[2], ob[3]],
-      currBbox: [ob[0], ob[1], ob[2], ob[3]],
-      prevBbox: [ob[0], ob[1], ob[2], ob[3]],
+      slot: conn.slot,
+      originalBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]],
+      currBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]],
+      prevBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]],
       frozenStart,
       frozenEnd,
     };
     translates.push(e);
-    byId.set(conn.id, e);
+    entries.push(e);
     return;
   }
 
@@ -475,7 +501,6 @@ function processConnector(
   const routeCtx = buildRouteContext(conn.id, conn.y);
   if (!routeCtx) return; // partially-built connector — observer will reroute on next write
 
-  const ob = conn.bbox;
   if (routeCtx.connectorType === 'straight') {
     const startSide = buildStraightSide(start, startAnchor, startState, selectedBindables, routeCtx.cachedRoute, 'start');
     const endSide = buildStraightSide(end, endAnchor, endState, selectedBindables, routeCtx.cachedRoute, 'end');
@@ -483,17 +508,18 @@ function processConnector(
     const e: StraightRerouteEntry = {
       mode: 'reroute',
       id: conn.id,
+      slot: conn.slot,
       start: startSide,
       end: endSide,
-      originalBbox: [ob[0], ob[1], ob[2], ob[3]], // cloned — see TranslateEntry note
-      currBbox: [ob[0], ob[1], ob[2], ob[3]],
-      prevBbox: [ob[0], ob[1], ob[2], ob[3]],
+      originalBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]], // cloned — see TranslateEntry note
+      currBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]],
+      prevBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]],
       routeCtx,
       pointsBuf: [],
       validCount: 0,
     };
     straightReroutes.push(e);
-    byId.set(conn.id, e);
+    entries.push(e);
   } else {
     const startSide = buildElbowSide(start, startAnchor, startState, selectedBindables, routeCtx.cachedRoute, 'start');
     const endSide = buildElbowSide(end, endAnchor, endState, selectedBindables, routeCtx.cachedRoute, 'end');
@@ -501,17 +527,18 @@ function processConnector(
     const e: ElbowRerouteEntry = {
       mode: 'reroute',
       id: conn.id,
+      slot: conn.slot,
       start: startSide,
       end: endSide,
-      originalBbox: [ob[0], ob[1], ob[2], ob[3]], // cloned — see TranslateEntry note
-      currBbox: [ob[0], ob[1], ob[2], ob[3]],
-      prevBbox: [ob[0], ob[1], ob[2], ob[3]],
+      originalBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]], // cloned — see TranslateEntry note
+      currBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]],
+      prevBbox: [col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]],
       routeCtx,
       pointsBuf: [],
       validCount: 0,
     };
     elbowReroutes.push(e);
-    byId.set(conn.id, e);
+    entries.push(e);
   }
 }
 
@@ -519,52 +546,52 @@ function processConnector(
 // Per-frame apply — monomorphic per pipeline
 // ============================================================================
 
-export function runTopologyTranslate(topology: ConnectorTopology, dx: number, dy: number): void {
+export function runTopologyTranslate(topology: ConnectorTopology, dx: number, dy: number, lanes: Float64Array): void {
   applyTranslates(topology.translates, dx, dy);
-  applyElbowReroutesTranslate(topology.elbowReroutes, dx, dy);
-  applyStraightReroutesTranslate(topology.straightReroutes, dx, dy);
+  applyElbowReroutesTranslate(topology.elbowReroutes, dx, dy, lanes);
+  applyStraightReroutesTranslate(topology.straightReroutes, dx, dy, lanes);
 }
 
-export function runTopologyScale(topology: ConnectorTopology, ctx: ScaleCtx): void {
+export function runTopologyScale(topology: ConnectorTopology, ctx: ScaleCtx, lanes: Float64Array): void {
   // `corner`/`uf` depend only on `ctx.handleId`/`sx`/`sy` — same value for every
   // entry this frame; hoist once across both pipelines.
   const corner = isCorner(ctx.handleId);
   const uf = corner ? uniformFactor(ctx.sx, ctx.sy, ctx.handleId) : 0;
-  applyElbowReroutesScale(topology.elbowReroutes, ctx, corner, uf);
-  applyStraightReroutesScale(topology.straightReroutes, ctx, corner, uf);
+  applyElbowReroutesScale(topology.elbowReroutes, ctx, corner, uf, lanes);
+  applyStraightReroutesScale(topology.straightReroutes, ctx, corner, uf, lanes);
 }
 
 function applyTranslates(arr: readonly TranslateEntry[], dx: number, dy: number): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    invalidateWorldBBox(e.prevBbox);
+    pushDamage(e.prevBbox[0], e.prevBbox[1], e.prevBbox[2], e.prevBbox[3]);
     offsetBBox(e.currBbox, e.originalBbox, dx, dy);
-    invalidateWorldBBox(e.currBbox);
+    pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
     copyBbox(e.currBbox, e.prevBbox);
   }
 }
 
 // ---- Elbow loops ----
 
-function applyElbowReroutesTranslate(arr: readonly ElbowRerouteEntry[], dx: number, dy: number): void {
+function applyElbowReroutesTranslate(arr: readonly ElbowRerouteEntry[], dx: number, dy: number, lanes: Float64Array): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    rebakeElbowSideTranslate(e.start, dx, dy);
-    rebakeElbowSideTranslate(e.end, dx, dy);
+    rebakeElbowSideTranslate(e.start, dx, dy, lanes);
+    rebakeElbowSideTranslate(e.end, dx, dy, lanes);
     publishElbowRoute(e);
   }
 }
 
-function applyElbowReroutesScale(arr: readonly ElbowRerouteEntry[], ctx: ScaleCtx, corner: boolean, uf: number): void {
+function applyElbowReroutesScale(arr: readonly ElbowRerouteEntry[], ctx: ScaleCtx, corner: boolean, uf: number, lanes: Float64Array): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    rebakeElbowSideScale(e.start, ctx, corner, uf);
-    rebakeElbowSideScale(e.end, ctx, corner, uf);
+    rebakeElbowSideScale(e.start, ctx, corner, uf, lanes);
+    rebakeElbowSideScale(e.end, ctx, corner, uf, lanes);
     publishElbowRoute(e);
   }
 }
 
-function rebakeElbowSideTranslate(s: ElbowSide, dx: number, dy: number): void {
+function rebakeElbowSideTranslate(s: ElbowSide, dx: number, dy: number, lanes: Float64Array): void {
   switch (s.kind) {
     case 'static':
       return;
@@ -574,7 +601,7 @@ function rebakeElbowSideTranslate(s: ElbowSide, dx: number, dy: number): void {
       return;
     case 'bind':
       // s.frame === s.endpoint.frame (alias); fillFrameFromBind writes both at once.
-      fillFrameFromBind(s.frame, s);
+      fillFrameFromBind(s.frame, s, lanes);
       // configAnchored re-derives endpoint.dir + endpoint.pos in place; frame slots are
       // self-writes (alias).
       ELBOW.configAnchored(s.endpoint, s.frame, s.shapeType, s);
@@ -582,7 +609,7 @@ function rebakeElbowSideTranslate(s: ElbowSide, dx: number, dy: number): void {
   }
 }
 
-function rebakeElbowSideScale(s: ElbowSide, ctx: ScaleCtx, corner: boolean, uf: number): void {
+function rebakeElbowSideScale(s: ElbowSide, ctx: ScaleCtx, corner: boolean, uf: number, lanes: Float64Array): void {
   switch (s.kind) {
     case 'static':
       return;
@@ -597,41 +624,47 @@ function rebakeElbowSideScale(s: ElbowSide, ctx: ScaleCtx, corner: boolean, uf: 
       }
       return;
     case 'bind':
-      fillFrameFromBind(s.frame, s);
+      fillFrameFromBind(s.frame, s, lanes);
       ELBOW.configAnchored(s.endpoint, s.frame, s.shapeType, s);
       return;
   }
 }
 
 function publishElbowRoute(e: ElbowRerouteEntry): void {
-  invalidateWorldBBox(e.prevBbox);
+  pushDamage(e.prevBbox[0], e.prevBbox[1], e.prevBbox[2], e.prevBbox[3]);
   const count = ELBOW.routeInto(e.start.endpoint, e.end.endpoint, e.routeCtx.strokeWidth, e.pointsBuf);
   publishCount(e, count);
-  invalidateWorldBBox(e.currBbox);
+  pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
   copyBbox(e.currBbox, e.prevBbox);
 }
 
 // ---- Straight loops ----
 
-function applyStraightReroutesTranslate(arr: readonly StraightRerouteEntry[], dx: number, dy: number): void {
+function applyStraightReroutesTranslate(arr: readonly StraightRerouteEntry[], dx: number, dy: number, lanes: Float64Array): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    rebakeStraightSideTranslate(e.start, dx, dy);
-    rebakeStraightSideTranslate(e.end, dx, dy);
+    rebakeStraightSideTranslate(e.start, dx, dy, lanes);
+    rebakeStraightSideTranslate(e.end, dx, dy, lanes);
     publishStraightRoute(e);
   }
 }
 
-function applyStraightReroutesScale(arr: readonly StraightRerouteEntry[], ctx: ScaleCtx, corner: boolean, uf: number): void {
+function applyStraightReroutesScale(
+  arr: readonly StraightRerouteEntry[],
+  ctx: ScaleCtx,
+  corner: boolean,
+  uf: number,
+  lanes: Float64Array,
+): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    rebakeStraightSideScale(e.start, ctx, corner, uf);
-    rebakeStraightSideScale(e.end, ctx, corner, uf);
+    rebakeStraightSideScale(e.start, ctx, corner, uf, lanes);
+    rebakeStraightSideScale(e.end, ctx, corner, uf, lanes);
     publishStraightRoute(e);
   }
 }
 
-function rebakeStraightSideTranslate(s: StraightSide, dx: number, dy: number): void {
+function rebakeStraightSideTranslate(s: StraightSide, dx: number, dy: number, lanes: Float64Array): void {
   switch (s.kind) {
     case 'static':
       return;
@@ -641,13 +674,13 @@ function rebakeStraightSideTranslate(s: StraightSide, dx: number, dy: number): v
     case 'bind':
       // Interior: s.frame === s.endpoint.frame (alias). Edge: s.frame is standalone scratch
       // fed into STRAIGHT.configAnchored which writes endpoint.pos via fillAnchorPoint.
-      fillFrameFromBind(s.frame, s);
+      fillFrameFromBind(s.frame, s, lanes);
       STRAIGHT.configAnchored(s.endpoint, s.frame, '', s);
       return;
   }
 }
 
-function rebakeStraightSideScale(s: StraightSide, ctx: ScaleCtx, corner: boolean, uf: number): void {
+function rebakeStraightSideScale(s: StraightSide, ctx: ScaleCtx, corner: boolean, uf: number, lanes: Float64Array): void {
   switch (s.kind) {
     case 'static':
       return;
@@ -660,17 +693,17 @@ function rebakeStraightSideScale(s: StraightSide, ctx: ScaleCtx, corner: boolean
       }
       return;
     case 'bind':
-      fillFrameFromBind(s.frame, s);
+      fillFrameFromBind(s.frame, s, lanes);
       STRAIGHT.configAnchored(s.endpoint, s.frame, '', s);
       return;
   }
 }
 
 function publishStraightRoute(e: StraightRerouteEntry): void {
-  invalidateWorldBBox(e.prevBbox);
+  pushDamage(e.prevBbox[0], e.prevBbox[1], e.prevBbox[2], e.prevBbox[3]);
   const count = STRAIGHT.routeInto(e.start.endpoint, e.end.endpoint, e.routeCtx.strokeWidth, e.pointsBuf);
   publishCount(e, count);
-  invalidateWorldBBox(e.currBbox);
+  pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
   copyBbox(e.currBbox, e.prevBbox);
 }
 

@@ -718,7 +718,7 @@ yMap.set('origin', [newOriginX, newOriginY]);
 yMap.set('scale', roundedScale);
 ```
 
-**Preview:** `renderScaleEntry`'s note branch nests `ctx.scale(out.scale / frozen.scale)` around `out.origin` before `drawObject` (which applies its own `ctx.scale(noteScale)`). No re-layout per frame.
+**Preview:** `renderScaleEntryLanes`' note arm nests `ctx.scale(outScale / frozenScale)` (aux lanes 14/6) around the out-origin lanes before `drawObject` (which applies its own `ctx.scale(noteScale)`). No re-layout per frame.
 
 Mixed + side handle -> edge-pin translate (only origin, no scale change).
 
@@ -747,7 +747,7 @@ Mixed + side handle -> edge-pin translate (only origin, no scale change).
 Full transform behavior matrix in `tools/selection/CLAUDE.md`. Text/note-specific details:
 
 - **Text uniform (corner + textOnly N/S):** fontSize rounded to 3dp, origin recomputed from frame center via `anchorFactor(align)` + `baselineToTopRatio`. Preview via `ctx.scale()` on cached layout — no per-frame re-layout
-- **Text E/W reflow:** reflow entry on `TransformController` (`Entry<'text'>.out.layout` buffer reused per pointermove). Uses `layoutMeasuredContent(cached measured, targetWidth, fontSize)` — skips tokenize + measure. Commit writes `width = layout.boxWidth` + `origin`. Converts auto→fixed
+- **Text E/W reflow:** reflow sidecar on the transform engine (pooled `TextLayout` buffer reused per pointermove; measured-content ref + minW + anchor frozen at begin). Uses `layoutMeasuredContent(cached measured, targetWidth, fontSize)` — skips tokenize + measure. Commit writes `width = layout.boxWidth` + `origin`. Converts auto→fixed
 - **Note uniform:** Quantizes `scale` to 3dp (not fontSize). Bbox-center position preservation. Nested `ctx.scale` composition — no re-layout
 - **Mixed N/S:** Edge-pin translate (origin offset only, no scale change)
 - **Labels:** Follow shape frame transform

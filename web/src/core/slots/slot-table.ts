@@ -1,5 +1,5 @@
 import type { BBoxTuple } from '../types/geometry';
-import type { ObjectHandle } from '../types/objects';
+import { KIND_CODE, type ObjectHandle } from '../types/objects';
 
 /**
  * Slot table — the app-wide dense-id fabric. Every live object owns one u32
@@ -12,6 +12,8 @@ import type { ObjectHandle } from '../types/objects';
  *               tight-framed hit fns; the spatial tree's hydrate bulk load —
  *               FlatRTree's item-indexed `load()` layout coincides with this
  *               column exactly while slots are dense, i.e. post-hydrate)
+ *   `_kinds`    numeric kind code (KIND_CODE / K_*) at `slot` — int dispatch
+ *               for the renderer's draw switch + transform kernels
  *
  * Consumers with their own slot-keyed columns (ZRankTable ranks, lock-table
  * owner/locked columns) size off `slotHighWater()` / `slotCapacity()`.
@@ -26,6 +28,8 @@ import type { ObjectHandle } from '../types/objects';
  * - `writeSlotBBox`: RoomDocManager `upsertHandle` only — the middle leg of
  *   the sole post-creation bbox writer path (tuple via `copyBbox`, column
  *   here, tree via `spatialTree.update`), so all three always move together.
+ * - `writeSlotKind`: RoomDocManager's kind-keychange branch only (in-place
+ *   cross-kind conversion) — moves together with the `handle.kind` mirror.
  *
  * LIFECYCLE
  * - Release nulls the reverse-map entry (a retained ref would root a deleted
@@ -43,9 +47,11 @@ import type { ObjectHandle } from '../types/objects';
  * int32 slot smuggled into a shift wraps to a huge index and the typed-array
  * store/read silently misses; the multiply keeps it a visible negative.
  *
- * LEAF MODULE — type-only imports. Fellow leaves (lock-table) and hot
- * consumers (renderer, pickers) import module getters directly; getters return
- * live refs under the fetch-per-frame/loop contract (`getLockOwners` idiom:
+ * LEAF MODULE — type-only imports + the KIND_CODE const (a frozen record from
+ * `core/types/objects`, itself a leaf already upstream via the ObjectHandle
+ * type import — no cycle). Fellow leaves (lock-table) and hot consumers
+ * (renderer, pickers) import module getters directly; getters return live
+ * refs under the fetch-per-frame/loop contract (`getLockOwners` idiom:
  * refetch after any acquire — growth replaces the arrays).
  */
 
@@ -58,6 +64,7 @@ let _free = new Int32Array(INITIAL_CAP);
 let _freeCount = 0;
 let _handles: (ObjectHandle | null)[] = new Array(INITIAL_CAP).fill(null);
 let _bboxes = new Float64Array(INITIAL_CAP * 4);
+let _kinds = new Uint8Array(INITIAL_CAP);
 
 /**
  * Hand out a dense slot — LIFO-recycled else fresh. Grows every column
@@ -75,6 +82,9 @@ export function acquireSlot(): number {
     const boxes = new Float64Array(cap * 4);
     boxes.set(_bboxes);
     _bboxes = boxes;
+    const kinds = new Uint8Array(cap);
+    kinds.set(_kinds);
+    _kinds = kinds;
     for (let i = _cap; i < cap; i++) _handles.push(null);
     _cap = cap;
   }
@@ -91,6 +101,7 @@ export function releaseSlot(slot: number): void {
  *  immediately after every `createHandle`. */
 export function registerHandle(h: ObjectHandle): void {
   _handles[h.slot] = h;
+  _kinds[h.slot] = KIND_CODE[h.kind];
   const b = h.bbox;
   const o = h.slot * 4;
   _bboxes[o] = b[0];
@@ -109,9 +120,21 @@ export function writeSlotBBox(slot: number, b: Readonly<BBoxTuple>): void {
   _bboxes[o + 3] = b[3];
 }
 
+/** Mirror a live handle's new kind code into the column. Called ONLY by
+ *  RoomDocManager's kind-keychange branch (in-place cross-kind conversion),
+ *  together with the `handle.kind` mirror write. */
+export function writeSlotKind(slot: number, code: number): void {
+  _kinds[slot] = code;
+}
+
 /** Live ref — fetch per frame/loop; refetch after any acquire. `null` = freed slot. */
 export function getHandlesBySlot(): readonly (ObjectHandle | null)[] {
   return _handles;
+}
+
+/** Live ref — same fetch-per-frame/loop contract. Kind code (K_*) at `slot`. */
+export function getKindCodes(): Uint8Array {
+  return _kinds;
 }
 
 /** Live ref — same fetch-per-frame/loop contract. Stride 4 at `slot * 4`. */
@@ -136,4 +159,5 @@ export function resetSlotTable(): void {
   _freeCount = 0;
   _handles = new Array(INITIAL_CAP).fill(null);
   _bboxes = new Float64Array(INITIAL_CAP * 4);
+  _kinds = new Uint8Array(INITIAL_CAP);
 }
