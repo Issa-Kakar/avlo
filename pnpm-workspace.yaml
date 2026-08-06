@@ -7,18 +7,26 @@ allowBuilds:
   esbuild: true
   workerd: true
   sharp: true
+  msw: false # postinstall only prints a sponsorship note — nothing functional
+
+# partyserver/y-partyserver/hono-party/@hono-rate-limiter peer on workers-types ^4;
+# v5 is type-compatible for everything this repo exercises (typecheck-verified).
+peerDependencyRules:
+  allowedVersions:
+    '@cloudflare/workers-types': '5'
 
 minimumReleaseAgeExclude:
-  - '@cloudflare/workerd-darwin-64@1.20260630.1'
-  - '@cloudflare/workerd-darwin-arm64@1.20260630.1'
-  - '@cloudflare/workerd-linux-64@1.20260630.1'
-  - '@cloudflare/workerd-linux-arm64@1.20260630.1'
-  - '@cloudflare/workerd-windows-64@1.20260630.1'
-  - miniflare@4.20260630.0
-  - workerd@1.20260630.1
-  - wrangler@4.106.0
+  - '@cloudflare/workerd-darwin-64@1.20260801.1'
+  - '@cloudflare/workerd-darwin-arm64@1.20260801.1'
+  - '@cloudflare/workerd-linux-64@1.20260801.1'
+  - '@cloudflare/workerd-linux-arm64@1.20260801.1'
+  - '@cloudflare/workerd-windows-64@1.20260801.1'
+  - miniflare@5.20260801.0-alpha
+  - workerd@1.20260801.1
+  - wrangler@4.119.0
   - vite@8.1.3
   - vitest@4.1.10
   - '@vitest/runner@4.1.10'
   - '@vitest/snapshot@4.1.10'
-  - '@cloudflare/vitest-pool-workers@0.18.4'
+  - '@cloudflare/vitest-pool-workers@0.20.2'
+  - '@cloudflare/workers-types@5.20260801.1'

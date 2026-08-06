@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { chunk, getSessionDB, rooms, upsertRoomsFromMeta, users, visitCopyStmt, withRetry } from '@avlo/db';
+import { chunk, errorChainMatches, getSessionDB, rooms, upsertRoomsFromMeta, users, visitCopyStmt, withRetry } from '@avlo/db';
 import { generateUserId, type Permission, type RoomId, type UserId } from '@avlo/shared';
-import { devDrizzleLogger, type MetaEvent, type MigrateEvent, traceRpc, type UsersRpcSurface } from '@avlo/worker-shared';
+import { devDrizzleLogger, type MetaEvent, type MigrateEvent, RPC_FORBIDDEN, traceRpc, type UsersRpcSurface } from '@avlo/worker-shared';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { z } from 'zod/v4';
 import type { UsersEnv } from './env';
@@ -11,8 +11,9 @@ import type { UsersEnv } from './env';
 // already a row linked to a DIFFERENT Google account (second account on one browser), so
 // the retry promotes a fresh id instead. Everything else rethrows → the callback fails closed.
 function isUserIdPkConflict(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /UNIQUE constraint failed:.*users\.user_id/i.test(msg);
+  // Chain-walk, not message-only: drizzle wraps the D1 error ("Failed query: …") and the
+  // constraint marker lives on the cause — a message-only test made this path fail closed.
+  return errorChainMatches(err, /UNIQUE constraint failed:.*users\.user_id/i);
 }
 
 // Adopt-migration tunables. The bound is the ~+2s sign-in budget, NOT subrequests — most
@@ -158,7 +159,7 @@ export class UsersRpc extends WorkerEntrypoint<UsersEnv['Bindings']> implements 
       try {
         snapshots.push(await withRetry(() => this.env.rooms.getByName(r.roomId).migrateOwner(from, to)));
       } catch (err) {
-        if (err instanceof Error && err.message === 'forbidden') return; // terminal skip
+        if (err instanceof Error && err.message === RPC_FORBIDDEN) return; // terminal skip
         failed.push(r.roomId); // transient → re-queue
       }
     });

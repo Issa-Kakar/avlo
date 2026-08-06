@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "avlo-auth",
   "main": "src/index.ts",
-  "compatibility_date": "2026-06-30", // pinned per-worker; bump uniformly when needed
+  "compatibility_date": "2026-07-30", // pinned per-worker; bump uniformly when needed
   "compatibility_flags": ["nodejs_compat"],
 
   // Secrets (workers/auth/.dev.vars locally; `wrangler secret put` in prod — deploy-gated):

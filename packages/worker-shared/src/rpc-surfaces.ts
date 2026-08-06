@@ -96,10 +96,19 @@ export interface ImagesRpcSurface {
  *
  * All three return the post-mutation `MetaEvent` snapshot so the users worker can mirror the
  * DO's queue projection with a direct rev-guarded D1 upsert + a read-your-writes bookmark.
- * Thrown `Error.message`s are the wire contract: `'forbidden'` (caller isn't the owner — or,
- * for `migrateOwner`, the meta is absent OR owned by neither `from` nor `to`) | `'invalid-title'`
+ * Thrown `Error.message`s are the wire contract — `RPC_FORBIDDEN` (caller isn't the owner — or,
+ * for `migrateOwner`, the meta is absent OR owned by neither `from` nor `to`) | `RPC_INVALID_TITLE`
  * (failed the shared normalize). The users worker maps them to 403 / 400.
  */
+/**
+ * The meta-RPC thrown-message wire contract, defined ONCE. Producer (`AvloDO`), every
+ * consumer verdict check (users queue/rpc/handlers), and both test suites reference these —
+ * a bare literal on either side would let a producer rename break prod while the suites
+ * keep passing on their own copies.
+ */
+export const RPC_FORBIDDEN = 'forbidden';
+export const RPC_INVALID_TITLE = 'invalid-title';
+
 export interface RoomDoRpc extends Rpc.DurableObjectBranded {
   setPermission(caller: UserId, next: Permission): Promise<MetaEvent>;
   setTitle(caller: UserId, title: string): Promise<MetaEvent>;

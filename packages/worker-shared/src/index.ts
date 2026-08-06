@@ -3,16 +3,18 @@ export { ANON_COOKIE, type AuthCtx, cookieOpts, mintAnonToken, parseCookieHeader
 export { type CorsOptions, createCors, isAllowedOrigin, isDevHost } from './cors';
 export { applyCsp, type CspProfile, cspError, cspHeaders } from './csp';
 export { devDrizzleLogger, devRequestLogger, isDevLogs, traceRpc } from './dev-logs';
-export { fetchBytesCapped, sha256Hex } from './fetch-bytes';
+export { fetchBytesCapped, fetchGuarded, sha256Hex } from './fetch-bytes';
 export { ipRateLimiter, userRateLimiter } from './rate-limit';
 export { requireAuth } from './require-auth';
 export { retryTransient } from './retry';
-export type {
-  AuthRpcSurface,
-  ImagesRpcSurface,
-  RefineBindings,
-  RoomDoRpc,
-  UsersRpcSurface,
+export {
+  type AuthRpcSurface,
+  type ImagesRpcSurface,
+  type RefineBindings,
+  type RoomDoRpc,
+  RPC_FORBIDDEN,
+  RPC_INVALID_TITLE,
+  type UsersRpcSurface,
 } from './rpc-surfaces';
 export { isPrivateHost } from './ssrf';
 export { type AssertEqual, assertSurfaceMatch, type HonoRouteSurface } from './surface-drift';

@@ -1,0 +1,73 @@
+/**
+ * Static RSA-2048 test keys — TEST FIXTURES ONLY, never used outside this suite.
+ * Checked in so token signing is fully deterministic: no per-file keygen (rejection-
+ * sampled prime search has an unbounded tail), a byte-stable JWKS, and any file can
+ * sign without the "one keypair per module instance" constraint runtime generation
+ * forced. `WRONG_KEY` signs tokens the published JWKS can never verify.
+ */
+
+/** Signs verifiable ID tokens; `GOOD_JWK` is its public half, served as the JWKS. */
+export const GOOD_KEY_PKCS8 = `-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQC/YGvriSMw/DqR
+LD4HXyUUZN1tKVbNdRzCMMOY/pSlczkEEygCi/hE3wRQ5RZz/cdsUZYZCOR9N95c
+4R7dG/xGaA2YZ67LzZtvr5KcIzgIYHqGeiK7ndZ2vxBlCuo5dsSeirSUMVAtlkKf
+4pBtm/B5gmjhBkxcNAbc8E4rg7tVZwhgHgpi4yzRdZecXY+DIeP9WMLC22IR2lMU
+u7J5CkR19MdIzeXvSvkYQ+bfG83PO9YrevbjlhVCyBYUZWyFmu/V83i6xBm0Q3oP
++/ptOlmIzexvBB0J6CLs0lAc7GkKDcE1itXZWXRb2uiXsCckVyTys1OdjKBsIFtG
+dr67+WI1AgMBAAECggEACirba57pvY4A/I/UVybrvOV49XY8ntt0ejAGDEhQ6b4G
+jvFc7vm0aHr4FeYokblaEXv/f01Uz6mas5DgR2YCZVPc47Z1Im3GLs0DUIP3KPbF
+5llxzp7y8x8b21+/lEBQ741golOWYL2lb4IleIqlitxt/wU1zwY9QRq2mc2SCSuW
+7bK0ELuU+11WSBT2L6/4im+jNL/KOUdEMVSUn/5PF54K05GFpbl/sv1kLe40nShz
+xdCjlDSaE/xhyqYpgldAHyFIIcHD93aNhigD2KGB/y40yZN5b9mweNty+kwuanx0
+hjoSroJhABg4eIWaXdiuroz00gcuiKZlsW4UzsSyQQKBgQD908j30nxdQ1Thj35K
+qQ3oUWRWjXhPm3W6YGDhw29RqT4kWFelH8h/8JHTVKAJ9iLA7doKXZHnnpIpRkOA
+ghwVnryA4Y438FA0WofTpG4eenoyy7VYFCKyv1BXCEJPTji5I1YvpoCEmKr+T68u
+Zjx0l0AXbDCsF21FMwL+NWrAFQKBgQDBA8mjcuIIxf7E0ol+xBUqzsevUfnfcZcP
+mUcTxUIytcnUm/ToYRbzBdGU1aiQDD3c0Mg34qGyJo9rsaUp68oO9032ShP+xCtf
+V1oM1O2EAL8yH7EeotOLHv4Ow7oQa6nGGzSLr98QGlixIomjKe/CwgscA8YbYn2P
+SBNU69yBoQKBgQDewf2OGChShOO6LH8uMJzm9H81QmSCoLE6BpkfqK9KIFhL90e7
+v1/rgAnKSGtHMr6fSF5hWGrStaQaGvLklcrl4nAWP1zblMgemhC32YdWsjAJ4iLd
+EJa+/g0YxEPFa6V2PR/HI72IIJ94HiBkfQ6zV4XEyIsSjGC2KSWISQLNXQKBgQCx
+r3b1DVGgmgVL1DXXiVOjMPELKQBK/xr9tTGFtdaXMFs5askvFBI4b2bdCURAN8TL
+fziSmgQZKP5nOga+bN56oJgY32FA6/6xqoyvu2VcXAOndR1tAqCUNlfT58NmUnbc
+dTcOUT2caWS0zQLAPl8Gf/QSOjcqBqVoPgXt66P3gQKBgQDsg2B8blKEVQNqeLaB
+OZPUL+kLkbanp7CuJFEK2+jyM10LcsqjPJEtbshYoVUxMgfQw5glS0Dnmq+TOmTh
+1GSitLDCF8cNn8PZcCP/2/BIda1pfOz1GpIXb0+o7wReRLzzA188+xIsploOPC/2
+ZGvdQ9LDod61EgfiPD8SuMLLnQ==
+-----END PRIVATE KEY-----`;
+
+export const GOOD_JWK = {
+  kty: 'RSA',
+  n: 'v2Br64kjMPw6kSw-B18lFGTdbSlWzXUcwjDDmP6UpXM5BBMoAov4RN8EUOUWc_3HbFGWGQjkfTfeXOEe3Rv8RmgNmGeuy82bb6-SnCM4CGB6hnoiu53Wdr8QZQrqOXbEnoq0lDFQLZZCn-KQbZvweYJo4QZMXDQG3PBOK4O7VWcIYB4KYuMs0XWXnF2PgyHj_VjCwttiEdpTFLuyeQpEdfTHSM3l70r5GEPm3xvNzzvWK3r245YVQsgWFGVshZrv1fN4usQZtEN6D_v6bTpZiM3sbwQdCegi7NJQHOxpCg3BNYrV2Vl0W9rol7AnJFck8rNTnYygbCBbRna-u_liNQ',
+  e: 'AQAB',
+} as const;
+
+/** Signs tokens the JWKS cannot verify (the wrong-key rejection path). */
+export const WRONG_KEY_PKCS8 = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC1Y+GypZO4u/dT
+3/cKSH6VhJYoDpLF4k7oTOhkFochsYY+WI4IxWZeRbnoGcqA+cLkKIYC6LkJXyiC
+9nqMsaA/7Yph9qDGinRRzmmxFM+J6oCgw19I2VTiDSW2quJDOcyS/Hzepats/D5b
+XUZufJwPtuZ62yPrJ3aPGY59oWIN837A/VwqleiNQYaspNCDLMni6gtCNdslmXAw
+q4PJn7atSXIA50LhLu4BSFGaYgx4m/OybDuQxwNdRRMNHM2dqjWP70nobC3tXHuy
+DHdDb383e3SriRQhqKL5f3QXX6OPf4rFqOCvLU5OVkzTMEy0xN680lQGUJ6mNPpc
+QUqfvR3PAgMBAAECggEAGF2r7kb+snSRczNlKHz3gBc44nWesrVFO0BFgVhjW5vQ
+uCRGJBh8OVKtd+erA6tJSkPFSLPBU2h0dS8t5CNiLuQ2UBWEoFbt7CVJnk9414Jo
+N/A2pv8Gv3zboY+P6E7l06LWFUR05CV4LOa5NNNJVXUQvdUdHJQHAY8BzI92r//Y
+XieTqxyryNbXAfp0d5hzaJoXrlQX9Eu4tf4gUB4jEMgUSklGxNMay1m43/uLpTHq
+lOTDKEWbkDqjs3u49qN8s+tF3wStoT0toz5PchYGCaXHfgwXy3AfuZkt56ijV+dP
+qyVTLDhfo0MJ5LhV3JZod11S9K7EWNeqPgDlt/cwFQKBgQD8EqCU1IOO4OBgV1wj
+T9wQYOjQVzd8jLE6TRmsWfojg+St1/rWfMcXCNbFYEHP6lHzueWbj/9OpgwFDI8X
+0G7FCo2znwnd6Vv6eDgmWI/tXOsIBvCjHm/6o/W2HDgRZ+Vfilymg+MS6BeM1z5O
+qNyLdcWAikPYPOBF43nfUikePQKBgQC4N1efSdk2XuiTohVh1wFd8zI0wWM8z3C1
+cHMF6ZA5rCFQi1czfttiDuvgxPBAfTQCAwrnzIgG5hBUw19yTEu6hCGph1nGAenx
+W63h2hhuSOWBqGcC2+//ge4yVQ1XXp2oAykILi6Yo2xE5fgcdztFxtwjUluyDX96
+bK2L7x3Y+wKBgQDD3/2kaRbpudjhREE2t2G74HJJItzdDb7SHQNsKGb1nhHe/MvQ
+TBmwzo+FxGyfkeeoyrWfEmBDz0fbzIyM5syMlMzT3Sufoyx0D2MieQMuYVvJWws2
+1foR+8J9hqQS8ncMrMmeIzIaiPtz1/Z0zUbDn/qfDdH2gCeOZ1tWq9ODyQKBgCwV
+8n5Iahc892P9ciiMD+OwA9/kOB+hdVO2qZBMqRtkOkTQU/oa7d21vHV6LBUC4aNp
+nv6CUDt2a4odh4YPBECKxpOPtMhSRO5iBmb6jsY149b3uk9Q20rGiX66JAs4tXoz
+52nxw2z8Dzkd4BbP4ft878n0N8WQvWVLBO1sODRpAoGBANXUJOpyy4VCuawkskY/
+OjYBH/gbjLBfXgwyZrvSWnLAaBmBD97/drc2a2bYEk0Ne5YTE9ivQaBdlBaHhxQS
+gv40eMF4ZfR8RESESiN2+1i/VviFEZs6cfzKcNSLlVl9ZIkJ/qRymwUza1HXcgWh
+4sI+Fe74T1p0UrKNjHEmOGGB
+-----END PRIVATE KEY-----`;

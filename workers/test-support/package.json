@@ -1,0 +1,22 @@
+{
+  "name": "@avlo/test-support",
+  "private": true,
+  "type": "module",
+  "description": "Shared plumbing for the vitest worker suites — aux-worker esbuild, RPC stubs, cookie mint, MSW wiring, byte builders. Test-graph only, never shipped.",
+  "exports": {
+    "./*": "./*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "esbuild": "0.27.3",
+    "msw": "^2.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

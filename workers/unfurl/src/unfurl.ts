@@ -1,5 +1,5 @@
 import { extractDomain, isSvg, parseImageDimensions, validateImage } from '@avlo/shared';
-import { fetchBytesCapped, sha256Hex, syntheticCacheUrl } from '@avlo/worker-shared';
+import { fetchBytesCapped, fetchGuarded, sha256Hex, syntheticCacheUrl } from '@avlo/worker-shared';
 import type { Context } from 'hono';
 import type { UnfurlResponseBody } from './app-type';
 import type { UnfurlEnv } from './env';
@@ -8,12 +8,16 @@ import type { UnfurlEnv } from './env';
 
 const OG_IMAGE_MAX = 5 * 1024 * 1024; // 5 MB
 const FAVICON_MAX = 500 * 1024; // 500 KB
+const PAGE_MAX = 2 * 1024 * 1024; // 2 MiB of (decompressed) HTML fed to HTMLRewriter — metadata lives in <head>
 const FETCH_TIMEOUT = 5000;
 const UA = 'AvloBot/1.0 (+https://avlo.io/bot)';
 
 // --- Helpers ---
-// sha256Hex / fetchBytesCapped come from @avlo/worker-shared (silent — H10); the
-// grandfathered `[unfurl]` URL warns live at the call sites below.
+// sha256Hex / fetchBytesCapped / fetchGuarded come from @avlo/worker-shared (silent —
+// H10); the grandfathered `[unfurl]` URL warns live at the call sites below. Every
+// egress fetch below is SSRF-guarded per hop by fetchGuarded (H9's second half): the
+// Zod refine only vets the user-supplied page URL — og:image/favicon URLs are
+// attacker-authored page content, and redirects can land anywhere.
 
 const fetchCapped = (url: string, maxBytes: number) => fetchBytesCapped(url, maxBytes, { timeoutMs: FETCH_TIMEOUT, userAgent: UA });
 
@@ -130,23 +134,23 @@ export const handleUnfurl = async (c: Context<UnfurlEnv>, url: string) => {
     /* cache miss or unavailable */
   }
 
-  // --- Fetch page ---
-  let pageRes: Response;
+  // --- Fetch page (per-hop SSRF guard — a redirect to private space returns null) ---
+  let pageRes: Response | null;
   try {
-    pageRes = await fetch(url, {
+    pageRes = await fetchGuarded(url, {
+      timeoutMs: FETCH_TIMEOUT,
       headers: {
         'User-Agent': UA,
         Accept: 'text/html, application/xhtml+xml, application/xml;q=0.9, image/*;q=0.8',
       },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT),
     });
   } catch (err) {
     console.warn('[unfurl] page fetch error:', url, err);
     return emptyApiResponse(502);
   }
 
-  if (!pageRes.ok) {
-    console.warn('[unfurl] page fetch non-OK:', url, pageRes.status);
+  if (!pageRes || !pageRes.ok) {
+    console.warn('[unfurl] page fetch refused or non-OK:', url, pageRes?.status ?? 'blocked');
     return emptyApiResponse(502);
   }
 
@@ -244,12 +248,28 @@ export const handleUnfurl = async (c: Context<UnfurlEnv>, url: string) => {
     })
     .transform(pageRes);
 
-  // Consume the stream to run all handlers
-  await rewritten.blob();
+  // Consume the stream to run all handlers — capped, so a hostile page can't hold the
+  // isolate buffering unbounded HTML for the whole timeout window. Truncation just means
+  // later tags go unseen; the metadata tags live in <head>, well inside the cap.
+  if (rewritten.body) {
+    const reader = rewritten.body.getReader();
+    let drained = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      drained += value.byteLength;
+      if (drained > PAGE_MAX) {
+        await reader.cancel();
+        break;
+      }
+    }
+  }
 
   // --- Resolve metadata ---
   const title = ogTitle ?? twitterTitle ?? (titleText.trim() || null);
   const description = ogDescription ?? twitterDescription ?? metaDescription;
+  // Attacker-authored URLs: never Zod-refined. fetchCapped's per-hop guard (fetchGuarded)
+  // refuses private hosts and non-http(s) schemes before any bytes move.
   const rawOgImage = resolveUrl(ogImageSecure ?? ogImage ?? twitterImage ?? imageSrcHref, url);
   const rawFavicon = resolveUrl(appleTouchIconHref ?? faviconHref, url);
 

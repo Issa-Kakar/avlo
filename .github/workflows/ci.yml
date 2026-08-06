@@ -37,6 +37,9 @@ jobs:
       - name: Biome check
         run: pnpm check
 
+      - name: Test (vitest — node + pool-workers + integration suites)
+        run: pnpm test
+
       - name: Build web
         run: pnpm build
 

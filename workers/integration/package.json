@@ -1,0 +1,21 @@
+{
+  "name": "@avlo/integration",
+  "private": true,
+  "type": "module",
+  "description": "Cross-worker integration suite over wrangler's createTestHarness — real queues, real WS, real cross-script DO, from the real wrangler.jsonc files. No worker of its own.",
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:tsc": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@avlo/db": "workspace:*",
+    "@avlo/shared": "workspace:*",
+    "@avlo/test-support": "workspace:*",
+    "@avlo/worker-shared": "workspace:*",
+    "lib0": "^0.2.99",
+    "typescript": "^6.0.3",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.27"
+  }
+}

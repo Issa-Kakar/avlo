@@ -41,12 +41,16 @@ export const handleGetAsset = factory.createHandlers(zValidator('param', assetKe
   // a Range that happens to cover the whole object (e.g., `bytes=0-`).
   let contentRange: string | undefined;
   if (hasRange && object.range) {
-    if ('suffix' in object.range) {
-      const start = object.size - object.range.suffix;
+    // Value check, not a bare `in` — workerd (prod AND dev: fastJsgStruct, compat ≥ 2025-12-03)
+    // sets absent optional struct fields to undefined, so an offset/length range carries
+    // `suffix` as an undefined-valued key and an `in`-discriminated branch emits `bytes NaN-…`.
+    const range = object.range as { offset?: number; length?: number; suffix?: number };
+    if (range.suffix !== undefined) {
+      const start = object.size - range.suffix;
       contentRange = `bytes ${start}-${object.size - 1}/${object.size}`;
     } else {
-      const start = object.range.offset ?? 0;
-      const end = object.range.length ? start + object.range.length - 1 : object.size - 1;
+      const start = range.offset ?? 0;
+      const end = range.length ? start + range.length - 1 : object.size - 1;
       if (start !== 0 || end !== object.size - 1) {
         contentRange = `bytes ${start}-${end}/${object.size}`;
       }

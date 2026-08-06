@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "avlo-users",
   "main": "src/index.ts",
-  "compatibility_date": "2026-06-30", // pinned per-worker; bump uniformly when needed
+  "compatibility_date": "2026-07-30", // pinned per-worker; bump uniformly when needed
   "compatibility_flags": ["nodejs_compat"],
 
   // step 4 — D1 (sole schema owner) + drizzle migrations; service AUTH; tier-1 RL_ROOMS.

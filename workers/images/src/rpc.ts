@@ -47,7 +47,12 @@ export class ImagesRpc extends WorkerEntrypoint<Env> implements ImagesRpcSurface
       }
       url.pathname = url.pathname.replace(/=s\d+(?:-c)?$/, '=s256-c');
 
-      const fetched = await fetchBytesCapped(url.toString(), AVATAR_MAX_BYTES, { timeoutMs: AVATAR_FETCH_TIMEOUT_MS });
+      // hostAllowed re-runs the allowlist on every redirect hop — a googleusercontent
+      // 302 can't walk the fetch off Google's CDN (fetchGuarded layers the SSRF guard too).
+      const fetched = await fetchBytesCapped(url.toString(), AVATAR_MAX_BYTES, {
+        timeoutMs: AVATAR_FETCH_TIMEOUT_MS,
+        hostAllowed: isAllowedAvatarHost,
+      });
       if (!fetched) {
         console.warn('[images] avatar ingest failed: fetch non-OK or oversize');
         return null;

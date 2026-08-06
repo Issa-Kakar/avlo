@@ -1,5 +1,5 @@
 import type { RoomId, UserId } from '@avlo/shared';
-import { type Logger, sql } from 'drizzle-orm';
+import { and, eq, inArray, type Logger, sql } from 'drizzle-orm';
 import { type DrizzleD1Database, drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema-d1';
 
@@ -62,23 +62,28 @@ export function upsertRoomsFromMeta(db: DrizzleD1Database<typeof schema>, rows: 
 /**
  * Copy a set of `room_visits` rows from one user id to another, collision-safe — the OAuth
  * adopt migration's visit fan-out, so a migrated room's recency follows the user onto every
- * device (the whole point of accounts). Raw `INSERT … SELECT … ON CONFLICT` because the
- * conflict expression is a `max()` and the source `user_id` is a literal param; identifiers
- * are written literally (they mirror schema-d1's `room_visits` table/columns and are stable).
- * Old `from` rows are left as harmless orphans (the anon id was rotated; never queried again).
- * A `SQLiteRaw` — awaitable standalone OR batchable (it implements `RunnableQuery`). Bound
- * params = 2 (`to`/`from`) + `roomIds.length`, so the caller chunks `roomIds` under D1's 100.
+ * device (the whole point of accounts). Query-builder `INSERT … SELECT … ON CONFLICT` (the
+ * conflict expression is a `max()`, the source `user_id` a literal param) — a real prepared
+ * statement, awaitable standalone OR batchable inside `db.batch` (a `db.run(sql…)` raw is
+ * NOT: drizzle 0.45's d1 batch driver has no prepared stmt for a `SQLiteRaw` — TypeError,
+ * verified by the users suite). Old `from` rows are left as harmless orphans (the anon id
+ * was rotated; never queried again). Bound params = 2 (`to`/`from`) + `roomIds.length`, so
+ * the caller chunks `roomIds` under D1's 100.
  */
 export function visitCopyStmt(db: DrizzleD1Database<typeof schema>, from: UserId, to: UserId, roomIds: readonly RoomId[]) {
-  return db.run(sql`
-    insert into room_visits (user_id, room_id, last_visited_at)
-    select ${to}, room_id, last_visited_at from room_visits
-    where user_id = ${from} and room_id in (${sql.join(
-      roomIds.map((id) => sql`${id}`),
-      sql`, `,
-    )})
-    on conflict (user_id, room_id) do update set last_visited_at = max(excluded.last_visited_at, room_visits.last_visited_at)
-  `);
+  const v = schema.roomVisits;
+  return db
+    .insert(v)
+    .select(
+      db
+        .select({ userId: sql<UserId>`${to}`.as('user_id'), roomId: v.roomId, lastVisitedAt: v.lastVisitedAt })
+        .from(v)
+        .where(and(eq(v.userId, from), inArray(v.roomId, roomIds))),
+    )
+    .onConflictDoUpdate({
+      target: [v.userId, v.roomId],
+      set: { lastVisitedAt: sql`max(excluded.last_visited_at, ${v.lastVisitedAt})` },
+    });
 }
 
 /** Param-bound chunker — split rows so each multi-row D1 statement stays under the 100-param
@@ -113,7 +118,22 @@ export async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promi
   throw lastErr;
 }
 
+/**
+ * Match `re` against an error's message AND its `cause` chain. Load-bearing: drizzle
+ * wraps every D1 failure in a `DrizzleQueryError` whose own message is just
+ * `Failed query: …` — the D1 marker (`UNIQUE constraint failed`, `Network connection
+ * lost`, …) only appears on the nested cause. A message-only test silently never
+ * matches, which turned "retry transient" into "fail immediately" and "detect PK
+ * conflict" into "fail closed" until the suites caught it.
+ */
+export function errorChainMatches(err: unknown, re: RegExp): boolean {
+  if (!(err instanceof Error)) return re.test(String(err));
+  for (let e: Error | undefined = err; e; e = e.cause instanceof Error ? e.cause : undefined) {
+    if (re.test(e.message)) return true;
+  }
+  return false;
+}
+
 function isTransient(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /network connection lost|storage operation failed|overloaded|reset|internal error|\b5\d\d\b/i.test(msg);
+  return errorChainMatches(err, /network connection lost|storage operation failed|overloaded|reset|internal error|\b5\d\d\b/i);
 }

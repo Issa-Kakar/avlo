@@ -9,7 +9,9 @@ const ALLOWED_PROD = new Set<string>(['https://avlo.io', 'https://www.avlo.io'])
  * defense in depth, not a live hole).
  */
 export const isDevHost = (host: string | undefined | null): boolean =>
-  !!host && (host.includes('localhost') || host.startsWith('127.0.0.1'));
+  // Exact boundary, same discipline as isAllowedOrigin below: bare dev host + optional
+  // numeric port ONLY (`localhost:3000.evil.com` passed the old startsWith check).
+  !!host && /^(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(host);
 
 /**
  * The single allowed-origin predicate, shared by CORS reflection and the csrf guard — one source
@@ -19,7 +21,10 @@ export const isDevHost = (host: string | undefined | null): boolean =>
  */
 export const isAllowedOrigin = (origin: string | undefined | null, isDev: boolean): string | null => {
   if (!origin) return null;
-  if (isDev && origin.startsWith('http://localhost:')) return origin;
+  // Exact origin shape, not a prefix — `http://localhost:3000.evil.com` passes a
+  // startsWith check and would be reflected with credentials. Same boundary discipline
+  // as isDevHost above; a browser Origin is scheme://host[:port], nothing more.
+  if (isDev && /^http:\/\/localhost:\d{1,5}$/.test(origin)) return origin;
   if (ALLOWED_PROD.has(origin)) return origin;
   return null;
 };

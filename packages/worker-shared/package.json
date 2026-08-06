@@ -14,7 +14,8 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "typecheck:tsc": "tsc --noEmit"
+    "typecheck:tsc": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@avlo/shared": "workspace:*",
@@ -24,7 +25,9 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20251106.1",
+    "@avlo/test-support": "workspace:*",
+    "@cloudflare/workers-types": "^5.20260801.1",
+    "fast-check": "^4.5.0",
     "typescript": "^6.0.3"
   }
 }

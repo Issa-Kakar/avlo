@@ -36,6 +36,8 @@ dist/
 test-results/
 playwright-report/
 coverage/
+# Pre-built auxiliary workers for pool-workers suites (workers/test-support/aux-build.ts)
+workers/test-support/.build/
 
 # Editor / IDE
 .vscode/

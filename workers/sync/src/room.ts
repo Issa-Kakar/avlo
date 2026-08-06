@@ -10,7 +10,16 @@ import {
   Z_RENORM_MAX_KEY_LEN,
   Z_RENORM_ORIGIN,
 } from '@avlo/shared';
-import { devDrizzleLogger, isDevLogs, type MetaEvent, type RoomDoRpc, traceRpc, type VisitEvent } from '@avlo/worker-shared';
+import {
+  devDrizzleLogger,
+  isDevLogs,
+  type MetaEvent,
+  type RoomDoRpc,
+  RPC_FORBIDDEN,
+  RPC_INVALID_TITLE,
+  traceRpc,
+  type VisitEvent,
+} from '@avlo/worker-shared';
 import { eq } from 'drizzle-orm';
 import { type DrizzleSqliteDODatabase, drizzle } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
@@ -144,7 +153,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       await this.#projectMeta(this.meta);
     }
     if (this.meta.permission === 'private' && this.meta.ownerId !== userId) {
-      conn.close(4403, 'forbidden');
+      conn.close(4403, RPC_FORBIDDEN);
       return;
     }
 
@@ -219,7 +228,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
    * SQLite write alone leaves isReadOnly stale on the live connections that matter), then
    * one pass over live connections (`perm:` to the caller's tabs; evict-or-re-push for
    * non-owners) + projects, returning the snapshot for the users worker's read-your-writes
-   * D1 write. Thrown message is the wire contract (`RoomDoRpc`): 'forbidden'.
+   * D1 write. Thrown message is the wire contract (`RoomDoRpc`): RPC_FORBIDDEN.
    */
   async setPermission(caller: UserId, next: Permission): Promise<MetaEvent> {
     return traceRpc(
@@ -236,7 +245,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       // dashboard before its first connect. The mint IS rev 1 — no extra bump.
       this.meta = this.#mintMeta(caller, 'Untitled', next);
     } else {
-      if (this.meta.ownerId !== caller) throw new Error('forbidden');
+      if (this.meta.ownerId !== caller) throw new Error(RPC_FORBIDDEN);
       const rev = this.meta.rev + 1;
       this.db.update(roomMeta).set({ permission: next, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
       this.meta = { ...this.meta, permission: next, rev };
@@ -250,7 +259,7 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
       if (c.state?.userId === caller) {
         this.sendCustomMessage(c, `perm:${next}`);
       } else if (next === 'private') {
-        c.close(4403, 'forbidden'); // evict — a viewer state can't express "gone"
+        c.close(4403, RPC_FORBIDDEN); // evict — a viewer state can't express "gone"
       } else {
         this.sendCustomMessage(c, `mode:${this.isReadOnly(c) ? 'viewer' : 'editor'}`); // re-push, no reconnect
         this.sendCustomMessage(c, `perm:${next}`);
@@ -280,11 +289,11 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
 
   async #setTitle(caller: UserId, raw: string): Promise<MetaEvent> {
     const title = normalizeRoomTitle(raw);
-    if (title === null) throw new Error('invalid-title'); // authority-boundary guard (§14a)
+    if (title === null) throw new Error(RPC_INVALID_TITLE); // authority-boundary guard (§14a)
     if (!this.meta) {
       this.meta = this.#mintMeta(caller, title);
     } else {
-      if (this.meta.ownerId !== caller) throw new Error('forbidden');
+      if (this.meta.ownerId !== caller) throw new Error(RPC_FORBIDDEN);
       const rev = this.meta.rev + 1;
       this.db.update(roomMeta).set({ title, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
       this.meta = { ...this.meta, title, rev };
@@ -320,9 +329,9 @@ export class AvloDO extends YServer<Env> implements RoomDoRpc {
   }
 
   async #migrateOwner(from: UserId, to: UserId): Promise<MetaEvent> {
-    if (!this.meta) throw new Error('forbidden'); // no room to migrate
+    if (!this.meta) throw new Error(RPC_FORBIDDEN); // no room to migrate
     if (this.meta.ownerId === to) return this.meta; // ★ idempotent: already migrated — NO rev bump, NO project
-    if (this.meta.ownerId !== from) throw new Error('forbidden'); // owned by a third party — skip, never force
+    if (this.meta.ownerId !== from) throw new Error(RPC_FORBIDDEN); // owned by a third party — skip, never force
     const rev = this.meta.rev + 1;
     this.db.update(roomMeta).set({ ownerId: to, rev }).where(eq(roomMeta.roomId, this.meta.roomId)).run();
     this.meta = { ...this.meta, ownerId: to, rev };

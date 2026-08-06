@@ -1,7 +1,9 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "stream",
-  "globalDependencies": ["tsconfig.base.json"],
+  // workers/sync/wrangler.jsonc: the compat-date source of truth for every test worker
+  // (@avlo/test-support/aux-build reads it; all seven wrangler files bump in lockstep).
+  "globalDependencies": ["tsconfig.base.json", "workers/sync/wrangler.jsonc"],
   "tasks": {
     "typecheck": {
       "dependsOn": ["^typecheck"],
@@ -16,8 +18,43 @@
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
       "outputs": ["dist/**"]
     },
+    // Cached. Cross-package test inputs are covered by the dependency graph:
+    // `dependsOn ^typecheck` folds every workspace dependency's file hash (incl.
+    // @avlo/test-support and, transitively, shared/worker-shared/db) into this task's
+    // hash. The two suites that esbuild ANOTHER worker's src as an aux worker declare
+    // that extra edge explicitly below via $TURBO_ROOT$ inputs.
     "test": {
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"]
+      "dependsOn": ["^typecheck"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": []
+    },
+    "@avlo/sync#test": {
+      "dependsOn": ["^typecheck"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/workers/auth/src/**"],
+      "outputs": []
+    },
+    "@avlo/users#test": {
+      "dependsOn": ["^typecheck"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/workers/sync/src/**", "$TURBO_ROOT$/workers/sync/drizzle/**"],
+      "outputs": []
+    },
+    // Runs sync/auth/users/images from SOURCE via their real wrangler.jsonc files.
+    "@avlo/integration#test": {
+      "dependsOn": ["^typecheck"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "$TURBO_ROOT$/workers/sync/src/**",
+        "$TURBO_ROOT$/workers/sync/drizzle/**",
+        "$TURBO_ROOT$/workers/auth/src/**",
+        "$TURBO_ROOT$/workers/users/src/**",
+        "$TURBO_ROOT$/workers/users/drizzle/**",
+        "$TURBO_ROOT$/workers/images/src/**",
+        "$TURBO_ROOT$/workers/auth/wrangler.jsonc",
+        "$TURBO_ROOT$/workers/users/wrangler.jsonc",
+        "$TURBO_ROOT$/workers/images/wrangler.jsonc"
+      ],
+      "outputs": []
     }
   }
 }

@@ -1,5 +1,5 @@
 import { getSessionDB, rooms, roomVisits, upsertRoomsFromMeta, users, withRetry } from '@avlo/db';
-import { devDrizzleLogger, type MetaEvent } from '@avlo/worker-shared';
+import { devDrizzleLogger, type MetaEvent, RPC_FORBIDDEN, RPC_INVALID_TITLE } from '@avlo/worker-shared';
 import { zValidator } from '@hono/zod-validator';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { createFactory } from 'hono/factory';
@@ -91,8 +91,8 @@ async function projectMetaRYW(env: UsersEnv['Bindings'], snapshot: MetaEvent): P
  */
 function metaRpcFailure(err: unknown): { error: 'forbidden' | 'invalid-title' | 'internal'; status: 400 | 403 | 500 } {
   const msg = err instanceof Error ? err.message : '';
-  if (msg === 'forbidden') return { error: 'forbidden', status: 403 };
-  if (msg === 'invalid-title') return { error: 'invalid-title', status: 400 };
+  if (msg === RPC_FORBIDDEN) return { error: 'forbidden', status: 403 };
+  if (msg === RPC_INVALID_TITLE) return { error: 'invalid-title', status: 400 };
   console.error('room meta RPC failed', err);
   return { error: 'internal', status: 500 };
 }

@@ -1,5 +1,5 @@
 import { chunk, getSessionDB, roomVisits, upsertRoomsFromMeta, visitCopyStmt } from '@avlo/db';
-import { MetaEvent, MigrateEvent, VisitEvent } from '@avlo/worker-shared';
+import { MetaEvent, MigrateEvent, RPC_FORBIDDEN, VisitEvent } from '@avlo/worker-shared';
 import { sql } from 'drizzle-orm';
 import type { UsersEnv } from './env';
 
@@ -46,12 +46,14 @@ function readChanges(results: unknown): number | null {
 }
 
 export async function consume(batch: MessageBatch, env: UsersEnv['Bindings']): Promise<void> {
-  const { db } = getSessionDB(env.DB); // writer session → primary
   const t0 = Date.now();
   let coalesced = 0; // unique rows after in-batch coalescing (migrate: rooms successfully processed)
   let dropped = 0; // poison messages ack-discarded
   let applied: number | null = null; // rows D1 actually wrote (the rest superseded by the rev guard)
   try {
+    // Inside the try: "a thrown error → retryAll" must hold for a session-open failure too,
+    // not just statement execution — outside it, a sync throw escapes the consumer contract.
+    const { db } = getSessionDB(env.DB); // writer session → primary
     switch (batch.queue) {
       case 'avlo-room-visits': {
         const visits = new Map<string, VisitEvent>();
@@ -131,7 +133,7 @@ export async function consume(batch: MessageBatch, env: UsersEnv['Bindings']): P
             m.ack();
             processed++;
           } catch (err) {
-            if (err instanceof Error && err.message === 'forbidden') {
+            if (err instanceof Error && err.message === RPC_FORBIDDEN) {
               m.ack(); // terminal skip — never our migration's room
               continue;
             }
