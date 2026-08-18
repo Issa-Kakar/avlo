@@ -73,8 +73,7 @@ export class ZRankTable {
 
     const bySlot = getHandlesBySlot();
     const hw = slotHighWater();
-    const sorted = this._sortedHandles;
-    sorted.length = 0;
+    const sorted = this._sortedHandles; // empty: cleared at the end of every rebuild + by clear()
     for (let s = 0; s < hw; s++) {
       const h = bySlot[s];
       if (h !== null) sorted.push(h);
@@ -100,6 +99,10 @@ export class ZRankTable {
       this._minZ = n > 0 ? sorted[0].z : null;
       this._minZInvalid = false;
     }
+    // Release handle refs NOW — retaining them until the next rebuild roots
+    // deleted Y.Maps (an idle client with offscreen remote deletes may not
+    // re-sort for a long time). Regrows amortized on the next rebuild.
+    sorted.length = 0;
     this._dirty = false;
   }
 

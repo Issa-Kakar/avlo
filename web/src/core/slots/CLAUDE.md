@@ -48,8 +48,10 @@ columns) is a consumer that sizes off `slotHighWater()` / `slotCapacity()`.
 - **Fetch-per-frame/loop refs.** `getHandlesBySlot`/`getBBoxColumn` return
   live refs; growth (doubling, in `acquireSlot`) replaces the arrays — refetch
   after any acquire (`getLockOwners` idiom).
-- **`slot * 4` indexing, never `slot << 2`** — a negative int32 index wraps
-  under shift and silently misses the typed array.
+- **`slot * 4` indexing, never `slot << 2`** — ToInt32 wrapping under shift
+  turns a slot ≥ 2^30 into a small VALID index (`2**30 << 2 === 0`), silently
+  corrupting another slot's lanes; the multiply stays exact and degrades to an
+  inert out-of-bounds miss. (Negatives miss under both forms.)
 - The acquire→register null window is synchronous inside one observer fire /
   hydrate pass — unobservable.
 

@@ -590,8 +590,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // above is the sole writer.
     invalidateWorldSlot(handle.slot);
 
-    // Remote-locked ink changed (the lock holder moved/restyled it) → re-raster the veil.
-    if (getLockOwners()[handle.slot] > 1) markLockVeilDirty();
+    // Remote-locked GEOMETRY changed (the lock holder moved/resized it) → re-raster
+    // the veil. Gated on bboxChanged: the veil paints only bboxes, so a content/style
+    // edit with an identical bbox (peer typing in a locked code block) can't change
+    // its output — skipping avoids an alloc + transfer + full worker redraw per keystroke.
+    if (bboxChanged && getLockOwners()[handle.slot] > 1) markLockVeilDirty();
 
     return bboxChanged;
   }

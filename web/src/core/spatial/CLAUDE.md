@@ -81,11 +81,14 @@ The singleton's header is the authority; summary:
 4. **`remove(slot)` before `releaseSlot(slot)`** — Phase B of the same
    observer fire can recycle the slot (LIFO); a late remove would delete the
    recycled entry.
-5. **Twin rule** — `query()` for viewport-derived envelopes (renderer cull,
-   image-manager padded viewport, z-actions, context-serializer);
-   `queryPrecise()` for everything else (radius probes, marquee + eraser via
-   `queryHandleIds`, clipboard probe, connector-flow). Marquee is the boundary
-   case — precise chosen because marquees are usually small.
+5. **Twin rule — pick by RECT SIZE, not site category.** `query()` for
+   viewport-scale / unbounded rects (renderer cull, image-manager padded
+   viewport, z-actions, context-serializer, marquee rects via
+   `queryHandleIds`, clipboard's selection-sized probe); `queryPrecise()` for
+   bounded-small probes (radius picks, eraser circles via `queryHandleIds`'
+   point branch, connector-flow slideClear). Rect size predicts the leaf hit
+   rate — wide rects favor the branchless compaction, narrow probes the
+   mask+branch.
 6. **Live slots only.** Query results are always live ⇒ `bySlot[res[i]]!` is
    non-null by contract; freed slots' column lanes are stale — never index.
 7. **`slot * 4`, never `slot << 2`** for column offsets.
@@ -111,9 +114,9 @@ repacked on WS first sync via `rebuild()`.
 ```
 Call site → object-query.ts facade
               ├─ resolveRadius        ({px} ÷ scale | {world} passthrough)
-              ├─ spatialTree.queryPrecise(x0,y0,x1,y1)   (4 scalars, inline per branch)
+              ├─ spatialTree query — twin by rect size   (4 scalars, inline per branch)
               ├─ collectHits          (consumes results slots: slot lock checks →
-              │                        bySlot recovery → kind prefilter → hitPointFor —
+              │                        slot kind-mask → bySlot recovery → hitPointFor —
               │                        packs u32 keys `rank * 4 + paintCode`)
               ├─ sortU32Range         (packed keys, ascending, in-place — utils/sort-u32)
               └─ picker walk          (DESCENDING over keys = top-first; recover
@@ -194,7 +197,8 @@ They own their own kind filtering / dedup and consume slots directly
 - `core/ai/context-serializer.ts` — viewport tier membership (`query`; slot
   `Set`), `readCanvas` area query (cold — materializes handles)
 - `core/clipboard/clipboard-actions.ts` — smart-duplicate collision probe
-  (`queryPrecise` per direction; refetches `results` per iteration)
+  (wide `query` per direction — selection-sized rects; refetches `results`
+  per iteration)
 - `tools/selection/connector-flow.ts` — flow-candidate prefilter + slideClear
   clear-spot search (`queryPrecise`; blocker edges off the column, `results`
   refetched per slide iteration)
@@ -281,9 +285,10 @@ tool, not here.
 
 ### Bindable kind set
 
-`BINDABLE_KINDS` is exported from `core/types/objects.ts` and wrapped into a
-module-private `BINDABLE_KINDS_SET` by `object-query.ts` **once at module
-import** — never per-call `new Set`.
+`BINDABLE_KIND_MASK` (bit per kind code, derived from `BINDABLE_KINDS` +
+`KIND_CODE` in `core/types/objects.ts`) feeds `collectHits`' slot-column kind
+prefilter — one shift+mask on the raw slot, before handle recovery. No Set,
+no string compares.
 
 ---
 

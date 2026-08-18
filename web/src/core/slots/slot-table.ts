@@ -43,9 +43,12 @@ import { KIND_CODE, type ObjectHandle } from '../types/objects';
  * - `_free` is sized in lockstep with `_cap`, so release NEVER grows
  *   (`_freeCount ≤ _next ≤ _cap` structurally).
  *
- * INDEXING RULE: column offsets are `slot * 4`, never `slot << 2` — a negative
- * int32 slot smuggled into a shift wraps to a huge index and the typed-array
- * store/read silently misses; the multiply keeps it a visible negative.
+ * INDEXING RULE: column offsets are `slot * 4`, never `slot << 2`. ToInt32
+ * wrapping under shift turns a slot ≥ 2^30 into a SMALL VALID index
+ * (`2**30 << 2 === 0` — slot 0's lanes) — silent cross-slot corruption; the
+ * multiply stays exact, so a broken slot degrades to an out-of-bounds miss
+ * (inert no-op). Negative slots miss silently under BOTH forms — the rule
+ * buys nothing there. Perf-identical: TurboFan strength-reduces the multiply.
  *
  * LEAF MODULE — type-only imports + the KIND_CODE const (a frozen record from
  * `core/types/objects`, itself a leaf already upstream via the ObjectHandle
@@ -62,6 +65,10 @@ let _cap = INITIAL_CAP;
 let _next = 0;
 let _free = new Int32Array(INITIAL_CAP);
 let _freeCount = 0;
+// PACKED_ELEMENTS by construction: V8's Array#fill fast path makes a FULL-range
+// fill over `new Array(n)` packed (verified via %DebugPrint); growth appends
+// sequentially and all stores are in-bounds non-hole values. Don't "simplify"
+// to a bare `new Array(n)` without the fill — that one stays HOLEY forever.
 let _handles: (ObjectHandle | null)[] = new Array(INITIAL_CAP).fill(null);
 let _bboxes = new Float64Array(INITIAL_CAP * 4);
 let _kinds = new Uint8Array(INITIAL_CAP);

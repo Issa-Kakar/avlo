@@ -2,7 +2,7 @@
  * Renderer-only fast Y.Map readers.
  *
  * Each leaf `draw*` fn in `layers/objects.ts` (and the matching scale-entry
- * branches in `renderScaleEntry`) calls one reader here that pulls only the
+ * branches in `renderScaleEntryLanes`) calls one reader here that pulls only the
  * keys that draw fn actually paints. Reads use Yjs's internal `_map` directly
  * via two Content-subclass-specific helpers (~10ns/key) — see `readPrim` /
  * `readY`. The public `y.get()` is ~109ns/key.

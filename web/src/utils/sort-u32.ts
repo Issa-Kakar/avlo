@@ -6,10 +6,12 @@
  *
  * Iterative quicksort: median-of-3 pivot + insertion-sort cutoff (≤16) +
  * smaller-partition-first (bounds the explicit stack at one pair per halving).
- * Median-of-3 is load-bearing, not stylistic — the renderer feeds
- * frame-coherent, near-sorted input every frame, the classic O(n²) trap for a
- * naive-pivot quicksort (500 near-sorted candidates at O(n²) ≈ 125k compares
- * per frame).
+ * Median-of-3 is load-bearing twice over: the Sedgewick parked-pivot
+ * partition's UNGUARDED inner scans rely on arr[lo] / arr[hi-1] as sentinels
+ * (see the partition comment below), and it is cheap insurance against
+ * partially ordered inputs. (Renderer input arrives in spatial-tree traversal
+ * order, re-packed from scratch each frame — frame-coherent while the
+ * viewport is static, but NOT near-sorted by rank.)
  *
  * U32 reads surface as non-negative JS numbers, so plain `<`/`>` covers the
  * full range including keys ≥ 2^31. No comparator, no per-call allocation.

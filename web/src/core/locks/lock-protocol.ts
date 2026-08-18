@@ -85,6 +85,10 @@ export function attachLocks(provider: YProvider): void {
       }
       dirty = false;
       clearAllRemote();
+      // Re-arm buffering from the drop itself — don't rely on the provider
+      // emitting sync(false) (an undocumented cross-package contract). The
+      // reconnect snapshot must never apply before ids can intern.
+      pending = new Map();
     }
   };
   provider.on('status', statusHandler);

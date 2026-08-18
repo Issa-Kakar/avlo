@@ -291,7 +291,7 @@ All objects share `{ id (ULID), kind, ownerId, createdAt, z: ZKey }`. `id` is cr
 
 ### Creating an object
 
-One pattern for every kind: inside a single `transact()`, build a `Y.Map`, set the shared + per-kind fields, then `getObjects().set(id, m)`. The deep observer does everything downstream — handle, spatial index, caches, dirty rect — so never touch those by hand.
+One pattern for every kind: inside a single `transact()`, build a `Y.Map`, set the shared + per-kind fields, then `getObjects().set(id, m)`. The deep observer does everything downstream — handle, spatial index, caches, dirty rect — so never touch those by hand. **Never overwrite an existing top-level id in place** (`objects.set(existingId, newMap)`): the observer routes non-delete actions to `touched` only, so the live handle would keep pointing at the tombstoned old map. Always mint a fresh ULID.
 
 ```ts
 const id = ulid();

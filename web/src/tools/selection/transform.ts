@@ -20,10 +20,10 @@
  * AND double-pack).
  *
  * EVICTION — `transformEvictSlot(slot)` (RoomDocManager: Phase A pre-
- * releaseSlot + the kind-keychange branch) clears the slot's map cell and
- * flags gesture entries DEAD (meta bit; commit-skip only — hot loops never
- * test it, and `pushAllDamage` keeps reading dead lanes so the last preview
- * pixels get erased).
+ * releaseSlot + the kind-keychange branch) clears the slot's map cell, flags
+ * gesture entries DEAD (meta bit; commit-skip only — hot loops never test
+ * it), and pushes the evicted preview rect + flushes — the release-without-
+ * another-move path has no later pushAllDamage to erase those pixels.
  *
  * LIFECYCLE — commit derenders FIRST (mode→0 + map reset) so the renderer
  * sees idle state before the observer repaints (the old clear-visual-state-
@@ -105,6 +105,7 @@ import {
   EPDRAG_TAG,
   fillUniformPack,
   G_STRIDE,
+  GIDX_MASK,
   META_CODE_HEADER_VISIBLE,
   META_CODE_LINE_NUMBERS,
   META_CODE_OUTPUT_VISIBLE,
@@ -624,8 +625,12 @@ export function beginScale(selectedIds: ReadonlySet<string>, handleId: HandleId,
 
 /** OLD + NEW damage: every entry's current oBBox, text padded by the italic
  *  overhang (±2 vertical). Called before AND after the kernels each frame —
- *  two rects per entry per frame, parity with the old per-entry publishes.
- *  Dead entries' stale lanes are pushed too (erases their last preview). */
+ *  two rects per entry per frame (union rejected: it inflates repaint on fast
+ *  drags). Dead entries' stale lanes are pushed too (erases their last
+ *  preview). Known divergence, accepted: under translate these rects are
+ *  frozen+delta while paint/cull track live+delta — they differ only when a
+ *  peer edit lands in the lock-race window, and the loser's commit heal
+ *  repaints both rects at pointerup. */
 function pushAllDamage(): void {
   const lanes = _lanes;
   const meta = _meta;
@@ -638,6 +643,29 @@ function pushAllDamage(): void {
       pushDamage(lanes[b + 8], lanes[b + 9], lanes[b + 10], lanes[b + 11]);
     }
   }
+}
+
+/** Commit-skip / evict damage: one entry rect at lane offset `o` (0 = frozen
+ *  fBBox, 8 = current oBBox), text-padded like pushAllDamage — the fontSize
+ *  lane rides at `o + 6` in both banks. Cold paths only. */
+function pushEntryRect(gi: number, o: number): void {
+  const lanes = _lanes;
+  const b = gi * G_STRIDE + o;
+  if ((_meta[gi] & META_KIND_MASK) === K_TEXT) {
+    const padH = getItalicOverhangPad(lanes[b + 6]);
+    pushDamage(lanes[b] - padH, lanes[b + 1] - 2, lanes[b + 2] + padH, lanes[b + 3] + 2);
+  } else {
+    pushDamage(lanes[b], lanes[b + 1], lanes[b + 2], lanes[b + 3]);
+  }
+}
+
+/** Canonical column rect for `slot` — the no-write epDrag exits (lock heal,
+ *  failed route, cancel) must repaint the route the gesture's first move
+ *  erased; a successful commit gets this from the observer instead. */
+function pushSlotCanonicalRect(slot: number): void {
+  const col = getBBoxColumn();
+  const o4 = slot * 4;
+  pushDamage(col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]);
 }
 
 function applyReflowTextRange(start: number, end: number, ox: number, sx: number): void {
@@ -796,7 +824,9 @@ export function beginEndpointDrag(connectorId: string, slot: Slot, handle: Objec
   e.currBbox[1] = col[o4 + 1];
   e.currBbox[2] = col[o4 + 2];
   e.currBbox[3] = col[o4 + 3];
-  e.pointsBuf.length = 0;
+  // validCount = 0 alone resets visible state — pointsBuf keeps its high-water
+  // tuples (buffer-length contract: consumers iterate by count, the reroute
+  // reuses tuples find-or-push; truncating would just re-allocate them).
   e.validCount = 0;
   copyBbox(e.currBbox, _epDragPrevBbox);
   _epRouteCtx = routeCtx;
@@ -840,6 +870,8 @@ export function commitEndpointDrag(snap: SnapTarget | null): boolean {
   if (e.validCount >= 2) pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
   flushDamage();
   if (e.validCount < 2) {
+    pushSlotCanonicalRect(e.slot); // no write coming — repaint the canonical route
+    flushDamage();
     derender();
     disposeGesture();
     return false;
@@ -851,6 +883,8 @@ export function commitEndpointDrag(snap: SnapTarget | null): boolean {
   // claim) — heal by dropping the commit. Id-keyed recheck: slots recycle, ids don't.
   const h = getHandle(id);
   if (h && (getLockOwners()[h.slot] > 1 || isLockedObject(h))) {
+    pushSlotCanonicalRect(h.slot); // dropped commit — same canonical repaint as the failed-route exit
+    flushDamage();
     derender();
     disposeGesture();
     return false;
@@ -952,15 +986,25 @@ export function commitTransform(): void {
   transact(() => {
     for (let gi = 0; gi < n; gi++) {
       const m = _meta[gi];
-      if (m & META_DEAD) continue; // dead FIRST — a recycled slot's lock lanes belong to someone else
+      // Dead FIRST — a recycled slot's lock lanes belong to someone else.
+      // No damage here: transformEvictSlot already erased the dead preview.
+      if (m & META_DEAD) continue;
       const slot = _gslot[gi];
-      if (lo[slot] > 1 || lf[slot] === 1) continue; // loser's heal — peer won first-wins mid-gesture
+      if (lo[slot] > 1 || lf[slot] === 1) {
+        // Loser's heal — peer won first-wins mid-gesture. The skip means no
+        // write, so no observer repaint: erase the preview (oBBox) and restore
+        // the canonical rect (fBBox) that the first pushAllDamage erased.
+        pushEntryRect(gi, 8);
+        pushEntryRect(gi, 0);
+        continue;
+      }
       commitEntry(gi, m);
     }
     if (topology && (mode === MODE_SCALE || mode === MODE_TRANSLATE)) {
       commitTopology(topology, mode === MODE_SCALE ? 'scale' : 'translate', dx, dy);
     }
   });
+  flushDamage(); // skip-path rects (ours + commitTopology's lockedElsewhere) — no-op when none pushed
   disposeGesture();
 }
 
@@ -977,6 +1021,7 @@ export function cancelTransform(): void {
     const e = _epDragEntryScratch;
     pushDamage(_epDragPrevBbox[0], _epDragPrevBbox[1], _epDragPrevBbox[2], _epDragPrevBbox[3]);
     if (e.validCount >= 2) pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+    pushSlotCanonicalRect(e.slot); // no write on cancel — repaint the canonical route
     flushDamage();
     derender();
     disposeGesture();
@@ -1003,8 +1048,11 @@ export function transformHasChange(): boolean {
  * A slot died (Phase A delete) or converted kind mid-gesture: clear its map
  * cell; gesture entries also get the DEAD meta bit (commit-skip). Lanes/meta
  * are otherwise untouched — `pushAllDamage` keeps erasing the dead entry's
- * last preview pixels. Fires inside the synchronous observer, never between
- * the renderer's `ensureRanksValid()` and its pack loop.
+ * lanes while moves continue. The push+flush here covers the other path:
+ * release (or kind-converted canonical redraw) WITHOUT another pointermove,
+ * where nothing else would ever erase the last preview pixels. Fires inside
+ * the synchronous observer (where invalidation is already legal), never
+ * between the renderer's `ensureRanksValid()` and its pack loop.
  */
 export function transformEvictSlot(slot: number): void {
   if (_mode === MODE_NONE) return;
@@ -1012,7 +1060,17 @@ export function transformEvictSlot(slot: number): void {
   const g = _slotGesture[slot];
   if (g < 0) return;
   _slotGesture[slot] = -1;
-  if ((g & (TOPO_TAG | EPDRAG_TAG)) === 0) _meta[g] |= META_DEAD;
+  if ((g & (TOPO_TAG | EPDRAG_TAG)) === 0) {
+    _meta[g] |= META_DEAD;
+    pushEntryRect(g, 8);
+  } else if (g & TOPO_TAG) {
+    const e = _topology!.entries[g & GIDX_MASK]; // TOPO tags exist ⇒ topology non-null until dispose
+    pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+  } else {
+    const e = _epDragEntryScratch;
+    pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+  }
+  flushDamage();
 }
 
 // ============================================================================
@@ -1037,10 +1095,6 @@ export function getGestureLanes(): Float64Array {
 
 export function getGestureMeta(): Uint32Array {
   return _meta;
-}
-
-export function getGestureCount(): number {
-  return _count;
 }
 
 export function getInjectSlots(): Uint32Array {

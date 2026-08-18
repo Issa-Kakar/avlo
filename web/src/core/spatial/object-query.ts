@@ -2,16 +2,18 @@
  * Object Query — the single entry point for spatial hit testing.
  *
  * Three point-pickers and one region-membership query. Each owns its full
- * pipeline (`spatialTree.queryPrecise` envelope → slot-keyed lock/kind
- * prefilter → hit dispatch → packed-key sort → inline picker walk) and
+ * pipeline (spatialTree envelope query → slot-keyed lock/kind prefilter →
+ * hit dispatch → packed-key sort → inline picker walk) and
  * returns the single result its caller actually wants. No call site
  * materializes an intermediate hit array, no call site passes option-bag
  * knobs, no per-call allocation.
  *
  * Queries fill `spatialTree.results` with dense u32 slots — `collectHits`
  * consumes it immediately (fetched fresh after the query; see the
- * results-lifetime contract in `spatial-tree.ts`). Precise twin throughout:
- * every probe here is narrow (radius probes, marquee, eraser).
+ * results-lifetime contract in `spatial-tree.ts`). Twin by rect size: point
+ * probes (radius picks, eraser circles) run `queryPrecise`; rect regions
+ * (marquee) run the wide `query` — marquees routinely grow to viewport scale,
+ * where the branchless leaf compaction wins.
  *
  * Hits pack into u32 keys `rank * 4 + paintCode` (module scratch), sorted
  * ascending by `sortU32Range` and walked DESCENDING — higher key ⇔ higher
@@ -26,9 +28,9 @@
 
 import { getFrame } from '@/core/accessors';
 import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
-import { getHandlesBySlot } from '@/core/slots/slot-table';
+import { getHandlesBySlot, getKindCodes } from '@/core/slots/slot-table';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
-import { BINDABLE_KINDS, type BindableHandle, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
+import { BINDABLE_KIND_MASK, type BindableHandle, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { getZOrder } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
 import { sortU32Range } from '@/utils/sort-u32';
@@ -57,12 +59,6 @@ export const atPoint = (p: Point, radius: Radius): Region => ({ kind: 'point', p
 export const inBBox = (bbox: BBoxTuple): Region => ({ kind: 'rect', bbox });
 
 // ============================================================================
-// Bindable kind set — built once at import
-// ============================================================================
-
-const BINDABLE_KINDS_SET: ReadonlySet<ObjectKind> = new Set<ObjectKind>(BINDABLE_KINDS);
-
-// ============================================================================
 // Internal scratch — never leaks to callers
 // ============================================================================
 
@@ -71,6 +67,10 @@ const BINDABLE_KINDS_SET: ReadonlySet<ObjectKind> = new Set<ObjectKind>(BINDABLE
 const PAINT_INK = 0;
 const PAINT_FILL = 1;
 const PAINT_SEETHROUGH = 2;
+
+// Kind-mask for collectHits' slot-column prefilter: bit i ⇔ kind code i passes.
+// All 8 codes fit in a u8, so 0xff = unfiltered.
+const KIND_MASK_ALL = 0xff;
 
 // Packed hit keys, reused across the three pickers; never retained past one
 // picker call (single-threaded JS). Pow2 growth.
@@ -96,7 +96,7 @@ function collectHits(
   n: number,
   p: Point,
   r: number,
-  kindFilter: ReadonlySet<ObjectKind> | null,
+  kindMask: number, // bit per kind code; KIND_MASK_ALL = unfiltered
   lo: Uint32Array | null,
   lf: Uint8Array | null,
 ): number {
@@ -105,6 +105,7 @@ function collectHits(
   const ranks = zOrder.getRanks();
   const res = spatialTree.results;
   const bySlot = getHandlesBySlot();
+  const kinds = getKindCodes();
   if (n > _hitKeys.length) {
     // Sized from n, not res.length — the results buffer is a high-water alias.
     let cap = _hitKeys.length;
@@ -116,8 +117,8 @@ function collectHits(
     const slot = res[i];
     if (lo !== null && lo[slot] > 1) continue;
     if (lf !== null && lf[slot] === 1) continue;
+    if (((kindMask >>> kinds[slot]) & 1) === 0) continue; // slot-decidable — before handle recovery
     const e = bySlot[slot]!; // live by query contract
-    if (kindFilter && !kindFilter.has(e.kind)) continue;
     const paint = hitPointFor(e, p, r);
     if (paint === null) continue;
     const code = paint === 'ink' ? PAINT_INK : paint === 'fill' ? PAINT_FILL : PAINT_SEETHROUGH;
@@ -132,7 +133,8 @@ function collectHits(
 
 /**
  * IDs of objects whose geometry actually intersects `region`. Envelope
- * prefilter via the tree's precise twin (marquees are usually small), then
+ * prefilter picks the twin by rect size — wide `query` for rect regions
+ * (marquees grow to viewport scale), `queryPrecise` for point probes — then
  * per-kind precise intersect (`hitRectFor` for rect regions, `hitCircleFor`
  * for point regions). Returns `string[]` so consumers don't `.map(h => h.id)`
  * afterward (slot-keyed selection is a deferred slice).
@@ -148,7 +150,7 @@ export function queryHandleIds(region: Region): string[] {
   let n: number;
   if (region.kind === 'rect') {
     const b = region.bbox;
-    n = spatialTree.queryPrecise(b[0], b[1], b[2], b[3]);
+    n = spatialTree.query(b[0], b[1], b[2], b[3]);
   } else {
     const x = region.p[0];
     const y = region.p[1];
@@ -184,7 +186,7 @@ export function queryHandleIds(region: Region): string[] {
 export function pickTopmostPaint(at: Point, radius: Radius): ObjectHandle | null {
   const r = resolveRadius(radius);
   const n0 = spatialTree.queryPrecise(at[0] - r, at[1] - r, at[0] + r, at[1] + r);
-  const n = collectHits(n0, at, r, null, getLockOwners(), null); // lf null — locked objects stay click-selectable
+  const n = collectHits(n0, at, r, KIND_MASK_ALL, getLockOwners(), null); // lf null — locked objects stay click-selectable
   if (n === 0) return null;
   const slotsByRank = getZOrder().getSlotsByRank();
   const bySlot = getHandlesBySlot();
@@ -243,7 +245,7 @@ export function pickTopmostPaint(at: Point, radius: Radius): ObjectHandle | null
 export function pickTopmostOfKind(at: Point, radius: Radius, kind: ObjectKind): string | null {
   const r = resolveRadius(radius);
   const n0 = spatialTree.queryPrecise(at[0] - r, at[1] - r, at[0] + r, at[1] + r);
-  const n = collectHits(n0, at, r, null, getLockOwners(), getLockedFlags()); // locked → create-over, never edit-into
+  const n = collectHits(n0, at, r, KIND_MASK_ALL, getLockOwners(), getLockedFlags()); // locked → create-over, never edit-into
   if (n === 0) return null;
   sortU32Range(_hitKeys, 0, n);
   const slotsByRank = getZOrder().getSlotsByRank();
@@ -271,7 +273,7 @@ export function pickTopmostOfKind(at: Point, radius: Radius, kind: ObjectKind): 
 export function pickTopmostBindable<T>(at: Point, radius: Radius, accept: (h: BindableHandle) => T | null): T | null {
   const r = resolveRadius(radius);
   const n0 = spatialTree.queryPrecise(at[0] - r, at[1] - r, at[0] + r, at[1] + r);
-  const n = collectHits(n0, at, r, BINDABLE_KINDS_SET, null, null);
+  const n = collectHits(n0, at, r, BINDABLE_KIND_MASK, null, null);
   if (n === 0) return null;
   sortU32Range(_hitKeys, 0, n);
   const slotsByRank = getZOrder().getSlotsByRank();

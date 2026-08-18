@@ -113,7 +113,9 @@ early-return in `handleBareKey`) plus a `selectAll` filter.
 - Editor force-close runs `commitAndClose`, whose empty-label cleanup may touch the
   just-locked object — the force-close IS the sanctioned heal.
 - Reconnect while the old socket lingers: re-announce is denied until the old conn's close
-  releases (≤ lease window); commit guards cover it.
+  releases. Real bound: our own 15s lease resend triggers the DO's lazy sweep before
+  arbitration (~LOCK_LEASE_MS + RTT in practice); worst case LOCK_STALE_MS = 45s if the
+  client released locally and stopped resending. Commit guards cover it.
 - Race-loss window (~RTT): loser's preview renders undimmed until gesture end; commit skips
   the lost entries.
 - A crashed holder's grey lingers on fully-idle clients until the next room event triggers

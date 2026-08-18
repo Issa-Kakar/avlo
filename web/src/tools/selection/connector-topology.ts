@@ -725,6 +725,14 @@ function publishCount<S>(e: RerouteEntryBase<S>, count: number): void {
 // Commit
 // ============================================================================
 
+/** A locked-elsewhere skip gets no write ⇒ no observer repaint: erase its
+ *  preview (currBbox) + restore its canonical rect (originalBbox). Flushed by
+ *  commitTransform's post-transact flushDamage. */
+function pushSkippedCommitDamage(e: TranslateEntry | ElbowRerouteEntry | StraightRerouteEntry): void {
+  pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+  pushDamage(e.originalBbox[0], e.originalBbox[1], e.originalBbox[2], e.originalBbox[3]);
+}
+
 export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 'scale', dx: number, dy: number): void {
   // Same loser-heal as transform.commit(): skip entries a peer locked mid-gesture,
   // plus durably-locked connectors (lock landed in the same race window).
@@ -737,16 +745,25 @@ export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 
   };
   if (mode === 'translate') {
     for (const e of topology.translates) {
-      if (lockedElsewhere(e.id)) continue;
+      if (lockedElsewhere(e.id)) {
+        pushSkippedCommitDamage(e);
+        continue;
+      }
       commitTranslate(e, dx, dy);
     }
   }
   for (const e of topology.elbowReroutes) {
-    if (lockedElsewhere(e.id)) continue;
+    if (lockedElsewhere(e.id)) {
+      pushSkippedCommitDamage(e);
+      continue;
+    }
     commitReroute(e);
   }
   for (const e of topology.straightReroutes) {
-    if (lockedElsewhere(e.id)) continue;
+    if (lockedElsewhere(e.id)) {
+      pushSkippedCommitDamage(e);
+      continue;
+    }
     commitReroute(e);
   }
 }

@@ -45,11 +45,10 @@ import { K_BOOKMARK, K_CODE, K_IMAGE, K_NOTE, K_SHAPE, K_STROKE, K_TEXT } from '
 // Lane / op / meta constants
 // ============================================================================
 
+// Lane banks per entry (base = gi * G_STRIDE): +0..3 fBBox · +4..7 fAux ·
+// +8..11 oBBox · +12..15 oAux. Consumers index with raw literals (b + 8 etc.)
+// — no per-bank consts; the bank tables in the header + CLAUDE.md are the map.
 export const G_STRIDE = 16;
-export const GF_BBOX = 0;
-export const GF_AUX = 4;
-export const GO_BBOX = 8;
-export const GO_AUX = 12;
 
 // Ops — behavior × kind resolved once at begin; entries are counting-sorted
 // into contiguous [opStart[op], opStart[op] + opCount[op]) ranges.
@@ -86,6 +85,10 @@ export const META_CODE_OUTPUT_VISIBLE = 1 << 9;
 // Sparse slot-map encodings (`_slotGesture` in transform.ts): -1 = not in
 // gesture · plain gi = gesture entry · TOPO_TAG|ti = topology connector entry
 // · EPDRAG_TAG = the endpoint-drag connector.
+// BOUND: gesture/topology indices (gi, ti) must stay < 2^29 (GIDX_MASK width)
+// — one bit TIGHTER than the slot fabric's 2^30 ceiling. A gi or ti with bit
+// 29 set would false-positive the `g & EPDRAG_TAG` test / corrupt the
+// `g & GIDX_MASK` decode.
 export const TOPO_TAG = 1 << 30;
 export const EPDRAG_TAG = 1 << 29;
 export const GIDX_MASK = (1 << 29) - 1;

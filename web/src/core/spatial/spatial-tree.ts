@@ -35,12 +35,15 @@ import { FlatRTree } from './flat-rtree';
  *    RECYCLED entry. The tree is just another slot-keyed consumer under the
  *    existing "finalize all slot consumers before releaseSlot" invariant.
  *
- * 5. TWIN RULE (caller picks by construction): `query()` for viewport-derived
- *    envelopes (renderer cull, image-manager padded viewport, z-actions,
- *    context-serializer); `queryPrecise()` for everything else (radius
- *    probes, marquee + eraser via queryHandleIds, clipboard probe,
- *    connector-flow). Marquee is the boundary case — precise chosen because
- *    marquees are usually small.
+ * 5. TWIN RULE (caller picks by construction, by RECT SIZE): `query()` for
+ *    viewport-scale / unbounded rects (renderer cull, image-manager padded
+ *    viewport, z-actions, context-serializer, marquee rects via
+ *    queryHandleIds, clipboard's selection-sized probe); `queryPrecise()`
+ *    for bounded-small probes (radius picks, eraser circles via
+ *    queryHandleIds' point branch, connector-flow slideClear). The wide
+ *    twin's branchless leaf compaction wins at ~50% hit rates; the precise
+ *    twin's mask+branch wins at near-zero hit rates — rect size predicts
+ *    the hit rate, site category doesn't.
  *
  * 6. LIVE SLOTS ONLY. Query results are always live ⇒ `bySlot[res[i]]!` is
  *    non-null by contract. Column lanes of freed slots are stale — never

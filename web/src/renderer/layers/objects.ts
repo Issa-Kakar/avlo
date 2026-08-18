@@ -401,22 +401,60 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   renderTextLayout(ctx, layout, r.originX, r.originY, r.color, r.align, r.fillColor);
 }
 
-function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const { id, y } = handle;
+// Code-block chrome — the spans/source/origin/title/output/outputCache
+// derivation shared by the three code draw sites (idle draw, ORIGIN_UNIFORM
+// preview, REFLOW preview). Module scratch, filled once per code object per
+// frame and consumed immediately by the renderCodeLayout call at the site.
+interface CodeChrome {
+  spans: NonNullable<ReturnType<typeof codeSystem.getSpans>>;
+  source: NonNullable<ReturnType<typeof codeSystem.getSource>>;
+  originX: number;
+  originY: number;
+  fontSize: number;
+  title: string | undefined;
+  output: string | undefined;
+  outputCache: NonNullable<ReturnType<typeof codeSystem.getOutputCache>> | undefined;
+}
+const _codeChrome: CodeChrome = {
+  spans: null as unknown as CodeChrome['spans'],
+  source: null as unknown as CodeChrome['source'],
+  originX: 0,
+  originY: 0,
+  fontSize: 0,
+  title: undefined,
+  output: undefined,
+  outputCache: undefined,
+};
 
-  // Skip rendering if currently being edited (DOM overlay handles it)
-  if (_codeEditingId === id) return;
-
-  const layout = codeSystem.getLayoutById(id);
-  if (!layout) return; // cold-miss race — observer fills the cache before render
+/** Null when spans/source are missing (cold-miss race — caller bails). */
+function fillCodeChrome(handle: ObjectHandle): CodeChrome | null {
+  const id = handle.id;
   const spans = codeSystem.getSpans(id);
   const source = codeSystem.getSource(id);
-  if (!spans || !source) return;
-  const r = readCodeRender(y);
-  const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
+  if (!spans || !source) return null;
+  const r = readCodeRender(handle.y);
+  const c = _codeChrome;
+  c.spans = spans;
+  c.source = source;
+  c.originX = r.originX;
+  c.originY = r.originY;
+  c.fontSize = r.fontSize;
+  c.title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
   const output = r.outputVisible ? (r.output ?? '') : undefined;
-  const outputCache = output !== undefined ? (codeSystem.getOutputCache(id, output) ?? undefined) : undefined;
-  renderCodeLayout(ctx, layout, r.originX, r.originY, r.fontSize, spans, source, title, output, outputCache);
+  c.output = output;
+  c.outputCache = output !== undefined ? (codeSystem.getOutputCache(id, output) ?? undefined) : undefined;
+  return c;
+}
+
+function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+  // Skip rendering if currently being edited (DOM overlay handles it)
+  if (_codeEditingId === handle.id) return;
+
+  const layout = codeSystem.getLayoutById(handle.id);
+  if (!layout) return; // cold-miss race — observer fills the cache before render
+  const c = fillCodeChrome(handle);
+  if (!c) return;
+  renderCodeLayout(ctx, layout, c.originX, c.originY, c.fontSize, c.spans, c.source, c.title, c.output, c.outputCache);
 }
 
 /**
@@ -557,18 +595,13 @@ function renderScaleEntryLanes(ctx: CanvasRenderingContext2D, handle: ObjectHand
         case K_CODE: {
           const layout = codeSystem.getLayoutById(handle.id);
           if (!layout) break;
-          const spans = codeSystem.getSpans(handle.id);
-          const source = codeSystem.getSource(handle.id);
-          if (!spans || !source) break;
+          const c = fillCodeChrome(handle);
+          if (!c) break;
           const ratio = lanes[b + 14] / lanes[b + 6];
-          const r = readCodeRender(handle.y);
-          const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
-          const output = r.outputVisible ? (r.output ?? '') : undefined;
-          const outputCache = output !== undefined ? (codeSystem.getOutputCache(handle.id, output) ?? undefined) : undefined;
           ctx.save();
           ctx.translate(lanes[b + 8], lanes[b + 9]);
           ctx.scale(ratio, ratio);
-          renderCodeLayout(ctx, layout, 0, 0, r.fontSize, spans, source, title, output, outputCache);
+          renderCodeLayout(ctx, layout, 0, 0, c.fontSize, c.spans, c.source, c.title, c.output, c.outputCache);
           ctx.restore();
           break;
         }
@@ -589,22 +622,25 @@ function renderScaleEntryLanes(ctx: CanvasRenderingContext2D, handle: ObjectHand
 
     case OP_REFLOW_TEXT: {
       const layout = getReflowLayout(gi) as TextLayout;
-      const r = readTextRender(handle.y);
-      renderTextLayout(ctx, layout, lanes[b + 12], lanes[b + 13], r.color, r.align, r.fillColor);
+      if (layout.lineCount > 0) {
+        const r = readTextRender(handle.y);
+        renderTextLayout(ctx, layout, lanes[b + 12], lanes[b + 13], r.color, r.align, r.fillColor);
+      } else {
+        // Begin→first-move window (pooled layout zeroed at freeze): draw in
+        // place — seeded oBBox = fBBox makes the offset draw exact (delta 0).
+        // Same fallback as the code arm below; a blank frame is strictly worse.
+        renderOffsetLanes(ctx, handle, lanes, b);
+      }
       break;
     }
 
     case OP_REFLOW_CODE: {
       const layout = getReflowLayout(gi) as CodeLayout;
       if (layout.visualLineCount > 0) {
-        const spans = codeSystem.getSpans(handle.id);
-        const source = codeSystem.getSource(handle.id);
-        if (!spans || !source) break;
-        const r = readCodeRender(handle.y);
-        const title = r.headerVisible ? (r.title ?? 'Untitled') : undefined;
-        const output = r.outputVisible ? (r.output ?? '') : undefined;
-        const outputCache = output !== undefined ? (codeSystem.getOutputCache(handle.id, output) ?? undefined) : undefined;
-        renderCodeLayout(ctx, layout, lanes[b + 12], lanes[b + 13], r.fontSize, spans, source, title, output, outputCache);
+        const c = fillCodeChrome(handle);
+        if (!c) break;
+        // Live fontSize (not the frozen lane) — exact port of the pre-SoA arm.
+        renderCodeLayout(ctx, layout, lanes[b + 12], lanes[b + 13], c.fontSize, c.spans, c.source, c.title, c.output, c.outputCache);
       } else {
         // Begin→first-move window (empty pooled layout): draw in place — the
         // old else-chain fell through to the translated draw with delta 0.

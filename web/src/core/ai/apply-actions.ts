@@ -297,6 +297,10 @@ export function executeCanvasActions(rawInput: unknown): { results: AiActionResu
             results.push({ i, status: 'dropped', reason: 'unknown id' });
             return;
           }
+          // KNOWN GAP (deferred): durable lock only — ephemeral peer grabs
+          // (isRemoteLocked*) are unchecked, so an AI action can mutate an object
+          // a peer is actively transforming. This executor is a stub integration;
+          // add the lo-guards (here + the delete branch) when the real AI wiring lands.
           if (isLockedObject(handle)) {
             results.push({ i, status: 'dropped', reason: 'object is locked' });
             return;
@@ -315,6 +319,7 @@ export function executeCanvasActions(rawInput: unknown): { results: AiActionResu
           let removed = 0;
           for (const sid of action.ids) {
             const target = ulidFor(sid);
+            // Same deferred gap as the update branch: no ephemeral-lock check.
             if (target && objects.has(target) && !isLockedId(target)) {
               objects.delete(target);
               removed++;

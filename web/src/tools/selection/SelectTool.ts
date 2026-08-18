@@ -322,9 +322,14 @@ export class SelectTool implements PointerTool {
             if (epStore.selectedIds.length > 1) epStore.setSelection([connectorId]);
 
             const connHandle = getHandle(connectorId);
-            if (!connHandle) break;
             // The engine owns RouteContext + buffer + bbox snapshots for the gesture.
-            if (!tf.beginEndpointDrag(connectorId, slot, connHandle)) break;
+            // One failed attempt (locked / partially-built connector) → idle, like the
+            // 'handle' branch — staying pendingClick would re-run the whole begin
+            // (lock check + RouteContext alloc) on every subsequent pointermove.
+            if (!connHandle || !tf.beginEndpointDrag(connectorId, slot, connHandle)) {
+              this.phase = 'idle';
+              break;
+            }
             this.phase = 'endpointDrag';
             useSelectionStore.getState().beginEndpointDrag(connectorId, slot);
             setCursorOverride('grabbing');

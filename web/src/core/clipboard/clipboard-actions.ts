@@ -586,7 +586,8 @@ function computeSmartOffset(bounds: BBoxTuple, excludeIds: Set<string>): [number
   ];
 
   for (const [dx, dy] of directions) {
-    const n = spatialTree.queryPrecise(bounds[0] + dx - eps, bounds[1] + dy - eps, bounds[2] + dx + eps, bounds[3] + dy + eps);
+    // Wide twin — the probe rect is the full selection bbox (arbitrary size).
+    const n = spatialTree.query(bounds[0] + dx - eps, bounds[1] + dy - eps, bounds[2] + dx + eps, bounds[3] + dy + eps);
     const res = spatialTree.results; // refetch per direction — growth swaps the buffer
     let occupied = false;
     for (let i = 0; i < n; i++) {

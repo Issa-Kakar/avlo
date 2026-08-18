@@ -25,13 +25,13 @@
 
 import { hexToBytesInto } from '@avlo/shared';
 import { assertCrossOriginIsolated } from '@/core/sab';
-import { getBBoxColumn, getHandlesBySlot } from '@/core/slots/slot-table';
+import { getBBoxColumn, getHandlesBySlot, getKindCodes } from '@/core/slots/slot-table';
 import { spatialTree } from '@/core/spatial/spatial-tree';
+import { K_BOOKMARK, K_IMAGE } from '@/core/types/objects';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getHandle, hasActiveRoom } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
-import { useSelectionStore } from '@/stores/selection-store';
-import { getTransformModeCode, readGestureOutBBox } from '@/tools/selection/transform';
+import { getInjectSlotCount, getInjectSlots, getTransformModeCode, readGestureOutBBox } from '@/tools/selection/transform';
 import { repositionAllPlaceholders } from '../bookmark/bookmark-placeholder';
 import { bookmarkCache } from '../bookmark/bookmark-render';
 import { handleUnfurlFailed, handleUnfurlResult } from '../bookmark/bookmark-unfurl';
@@ -533,17 +533,22 @@ export function manageImageViewport(): void {
   const res = spatialTree.results;
   const bySlot = getHandlesBySlot();
   const col = getBBoxColumn();
+  const kinds = getKindCodes();
   for (let i = 0; i < n; i++) {
     const slot = res[i];
+    // Kind-code prefilter on the raw slot — the reverse-map deref (scattered
+    // heap load) only pays for the image/bookmark minority of a padded query.
+    const k = kinds[slot];
+    if (k !== K_IMAGE && k !== K_BOOKMARK) continue;
     const entry = bySlot[slot]!;
-    if (entry.kind === 'image') {
+    if (k === K_IMAGE) {
       const meta = getImageMeta(entry.id);
       if (!meta) continue;
       const b = slot * 4;
       const w = col[b + 2] - col[b];
       const ppsp = (w * scale * dpr) / meta.nw;
       markAsset(meta.assetId, ppsp, meta.nw, meta.nh, col[b], col[b + 1], col[b + 2], col[b + 3]);
-    } else if (entry.kind === 'bookmark') {
+    } else {
       const layout = bookmarkCache.getLayoutById(entry.id);
       if (!layout) continue;
       const b = slot * 4;
@@ -555,24 +560,27 @@ export function manageImageViewport(): void {
 
   // === MARK PHASE B: transform overlay ===
   // During translate/scale, the stored spatial-index bbox can lag the live transform
-  // output bbox. Re-mark selected images using their gesture out-bbox lanes, but only
-  // if it still intersects the padded viewport (Ctrl+A → scale must respect viewport).
+  // output bbox. Re-mark gestured images at their out-bbox lanes, but only while they
+  // still intersect the padded viewport (Ctrl+A → scale must respect viewport).
+  // Iteration derives from ENGINE state (inject slots + kind column), not the store
+  // selection — the store can clear mid-gesture (partial remote delete) while
+  // survivors keep painting, and module mode is the single render truth.
   const mc = getTransformModeCode();
   if (mc === 1 || mc === 2) {
-    const { selectedIdSet, kindCounts } = useSelectionStore.getState();
-    if (kindCounts.image > 0) {
-      for (const id of selectedIdSet) {
-        const meta = getImageMeta(id);
-        if (!meta) continue;
-        const h = getHandle(id);
-        if (!h || h.kind !== 'image') continue;
-        if (!readGestureOutBBox(h.slot, _gestureBBoxScratch)) continue;
-        const b = _gestureBBoxScratch;
-        if (!bboxIntersects(b, padded)) continue;
-        const w = b[2] - b[0];
-        const ppsp = mc === 1 ? Infinity : (w * scale * dpr) / meta.nw;
-        markAsset(meta.assetId, ppsp, meta.nw, meta.nh, b[0], b[1], b[2], b[3]);
-      }
+    const injectSlots = getInjectSlots();
+    const injectCount = getInjectSlotCount();
+    for (let i = 0; i < injectCount; i++) {
+      const slot = injectSlots[i];
+      if (kinds[slot] !== K_IMAGE) continue; // stale lane for a dead slot is fine — next check catches it
+      if (!readGestureOutBBox(slot, _gestureBBoxScratch)) continue; // evicted / tagged — not a live gesture image
+      const entry = bySlot[slot]!; // live: readGestureOutBBox ⇒ un-evicted gesture entry
+      const meta = getImageMeta(entry.id);
+      if (!meta) continue;
+      const b = _gestureBBoxScratch;
+      if (!bboxIntersects(b, padded)) continue;
+      const w = b[2] - b[0];
+      const ppsp = mc === 1 ? Infinity : (w * scale * dpr) / meta.nw;
+      markAsset(meta.assetId, ppsp, meta.nw, meta.nh, b[0], b[1], b[2], b[3]);
     }
   }
 

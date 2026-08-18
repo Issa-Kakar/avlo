@@ -38,7 +38,8 @@ let _objectsById: ReadonlyMap<string, ObjectHandle> | null = null;
 let _veilNotify: (() => void) | null = null;
 
 /** Called once per RoomDocManager construction. Bindings survive resetLockTable() —
- *  the map identity is stable for the manager's lifetime and is cleared at destroy. */
+ *  the map identity is stable for the manager's lifetime; destroy clears the map's
+ *  CONTENTS (the binding itself is simply replaced by the next manager's bind). */
 export function bindLockTable(objectsById: ReadonlyMap<string, ObjectHandle>, veilNotify: () => void): void {
   _objectsById = objectsById;
   _veilNotify = veilNotify;

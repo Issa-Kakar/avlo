@@ -16,12 +16,14 @@ export type ObjectKind = (typeof OBJECT_KINDS)[number];
 // cold writers (slot-table registration, RDM kind-keychange). The kernels
 // selftest asserts `K_X === KIND_CODE[OBJECT_KINDS[i]]` for all 8 — drift
 // between the two is caught there without runtime cost.
-export const KIND_CODE: Readonly<Record<ObjectKind, number>> = OBJECT_KINDS.reduce(
-  (acc, k, i) => {
-    acc[k] = i;
-    return acc;
-  },
-  {} as Record<ObjectKind, number>,
+export const KIND_CODE: Readonly<Record<ObjectKind, number>> = Object.freeze(
+  OBJECT_KINDS.reduce(
+    (acc, k, i) => {
+      acc[k] = i;
+      return acc;
+    },
+    {} as Record<ObjectKind, number>,
+  ),
 );
 export const K_STROKE = 0,
   K_SHAPE = 1,
@@ -80,6 +82,11 @@ export type BindableKind = Extract<ObjectKind, 'shape' | 'text' | 'code' | 'imag
 export type UnbindableKind = Exclude<ObjectKind, BindableKind>;
 
 export const BINDABLE_KINDS: readonly BindableKind[] = ['shape', 'text', 'code', 'image', 'note', 'bookmark'] as const;
+
+/** Bit `i` set ⇔ kind code `i` is bindable — one-load kind filters over slot
+ *  columns: `(BINDABLE_KIND_MASK >>> kinds[slot]) & 1`. Derived from
+ *  BINDABLE_KINDS + KIND_CODE so drift is impossible. */
+export const BINDABLE_KIND_MASK: number = BINDABLE_KINDS.reduce((m, k) => m | (1 << KIND_CODE[k]), 0);
 
 const BINDABLE_SET: ReadonlySet<ObjectKind> = new Set(BINDABLE_KINDS);
 export const isBindableKind = (k: ObjectKind): k is BindableKind => BINDABLE_SET.has(k);
