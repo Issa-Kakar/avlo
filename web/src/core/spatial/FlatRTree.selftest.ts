@@ -3,7 +3,7 @@
  * FlatRTree self-test + A/B benchmark runner.
  *
  * Not part of the app bundle — executed standalone via esbuild+node:
- *   pnpm exec esbuild web/src/core/spatial/flat-rtree.selftest.ts \
+ *   pnpm exec esbuild web/src/core/spatial/FlatRTree.selftest.ts \
  *     --bundle --platform=node --format=esm --outfile=<scratch>/selftest.mjs
  *   node <scratch>/selftest.mjs [--bench]        # --expose-gc adds the rbush memory figure
  *
@@ -21,20 +21,21 @@
  *      ordering, count bounds, EXACT internal MBR equality, pool accounting.
  * Suites cover degenerate/duplicate/adversarial geometry (incl. equal-key
  * bulk load through the Floyd–Rivest selector), trust-boundary guards,
- * load-merge in all three height relations, rebuild mid-churn, and
- * maxEntries ∈ {4, 8, 32, 64}.
+ * load-merge in all three height relations, and rebuild mid-churn — all at
+ * M = 16, the engine's only configuration (source-literal strides; the old
+ * {4, 8, 32, 64} ctor sweep died with the maxEntries knob).
  *
  * Bench: A/B vs rbush on load / insert / search / update / remove / churn at
  * 10k / 100k / clustered 100k / 1M, reported as p50 (min) over warmed rounds;
  * stateful benches rebuild their input per round OUTSIDE the timed window.
- * Each structure runs its own configuration: FlatRTree(16) vs rbush(9) —
+ * Each structure runs its own configuration: FlatRTree (M = 16, fixed) vs rbush(9) —
  * rbush's default and avlo's production ObjectSpatialIndex config (16-vs-16,
  * the algorithm-isolation framing, was the config of record through e5eb38a;
  * measured rbush(9)-vs-(16) differences are ±5-11%, row-dependent, an order
  * of magnitude below the flat-vs-rbush gap).
  */
 import RBush from 'rbush';
-import { FlatRTree } from './flat-rtree';
+import { FlatRTree } from './FlatRTree';
 
 // ───────────────────────────────────────────────────────────────── utilities ──
 
@@ -830,7 +831,7 @@ function benchDataset(d: Dataset, perOp = true): void {
   // ── bulk load
   const loadFlat = measureS(
     () => {
-      const t = new FlatRTree(16);
+      const t = new FlatRTree();
       t.load(d.n, d.ids, d.boxes);
       sink += t.size;
     },
@@ -850,7 +851,7 @@ function benchDataset(d: Dataset, perOp = true): void {
   if (perOp) {
     // ── one-by-one insert
     const insFlat = measureS(() => {
-      const t = new FlatRTree(16);
+      const t = new FlatRTree();
       for (let i = 0; i < d.n; i++) {
         const j = i << 2;
         t.insert(d.ids[i], d.boxes[j], d.boxes[j + 1], d.boxes[j + 2], d.boxes[j + 3]);
@@ -867,7 +868,7 @@ function benchDataset(d: Dataset, perOp = true): void {
   }
 
   // steady trees for query/update benches
-  const T = new FlatRTree(16);
+  const T = new FlatRTree();
   T.load(d.n, d.ids, d.boxes);
   const R = new RBush<RItem>(9);
   const rItems = makeItems(d);
@@ -963,7 +964,7 @@ function benchDataset(d: Dataset, perOp = true): void {
     row('update: jitter ALL ±δ', updFlat, updRbush, `(${(2 * d.n) / 1000}k updates)`);
 
     // ── remove all — fresh tree per round via setup (outside the timed window)
-    let T2 = new FlatRTree(16);
+    let T2 = new FlatRTree();
     const remFlat = measureS(
       () => {
         for (let i = 0; i < d.n; i++) T2.remove(d.ids[i]);
@@ -972,7 +973,7 @@ function benchDataset(d: Dataset, perOp = true): void {
       3,
       1,
       () => {
-        T2 = new FlatRTree(16);
+        T2 = new FlatRTree();
         T2.load(d.n, d.ids, d.boxes);
       },
     );
@@ -994,7 +995,7 @@ function benchDataset(d: Dataset, perOp = true): void {
     row('remove ALL one-by-one', remFlat, remRbush, `(${d.n / 1000}k removes)`);
   }
 
-  const st = new FlatRTree(16);
+  const st = new FlatRTree();
   st.load(d.n, d.ids, d.boxes);
   const s = st.stats();
   const rbKiB = rbushRetainedKiB(d);
@@ -1021,12 +1022,12 @@ function benchChurn(): void {
 
   let flatSamples: number[];
   {
-    let t = new FlatRTree(16);
+    let t = new FlatRTree();
     let nextId = 0;
     let live: number[] = [];
     let rng: () => number = mulberry32(31337);
     const setup = () => {
-      t = new FlatRTree(16);
+      t = new FlatRTree();
       nextId = 0;
       live = [];
       rng = mulberry32(31337);
@@ -1155,10 +1156,12 @@ tRebuildAndClear(11);
 for (const seed of [21, 22, 23]) tChurn(seed, 8000);
 for (const seed of [31, 32]) tRBushParity(seed, 6000);
 
-// maxEntries variants exercise different stride/split configurations (incl. the 64 cap)
-for (const M of [4, 8, 32, 64]) {
-  const rng = mulberry32(100 + M);
-  const t = new FlatRTree(M);
+// Dense-then-holed churn (was the {4,8,32,64} maxEntries sweep; M is a fixed
+// source literal now, so the pattern runs once at 16 — same seed as the old
+// M=16 slot would have used).
+{
+  const rng = mulberry32(116);
+  const t = new FlatRTree();
   const mirror = new Map<number, Box>();
   for (let i = 0; i < 1200; i++) {
     const b = randBox(rng, 1000, 60, 60);
@@ -1169,8 +1172,8 @@ for (const M of [4, 8, 32, 64]) {
     t.remove(i);
     mirror.delete(i);
   }
-  audit(t, `M=${M}`);
-  diffQueries(t, mirror, rng, 60, `M=${M}`);
+  audit(t, 'dense-holed');
+  diffQueries(t, mirror, rng, 60, 'dense-holed');
 }
 
 const elapsed = performance.now() - t0;
@@ -1179,7 +1182,7 @@ if (failures > 0) process.exit(1);
 
 if (process.argv.includes('--bench')) {
   console.log(
-    `\nA/B benchmark: FlatRTree(16) vs rbush@4(9 — its default; avlo production config) — p50 (min) over warmed rounds, ${process.version}`,
+    `\nA/B benchmark: FlatRTree (M=16) vs rbush@4(9 — its default; avlo's pre-FlatRTree production config) — p50 (min) over warmed rounds, ${process.version}`,
   );
   benchDataset(genUniform(10000, 51));
   benchDataset(genUniform(100000, 52));

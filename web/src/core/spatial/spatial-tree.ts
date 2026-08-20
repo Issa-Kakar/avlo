@@ -1,4 +1,4 @@
-import { FlatRTree } from './flat-rtree';
+import { FlatRTree } from './FlatRTree';
 
 /**
  * `spatialTree` — THE live spatial index, a module-level FlatRTree singleton
@@ -10,10 +10,13 @@ import { FlatRTree } from './flat-rtree';
  * CONTRACTS (load-bearing — violating any of these corrupts queries):
  *
  * 1. RESULTS LIFETIME. Queries fill `spatialTree.results` and return the
- *    count; fetch `results` AFTER each call (growth swaps the buffer), valid
- *    `[0, n)`, consume fully before the next query/mutation. In multi-query
- *    loops (connector-flow slideClear, clipboard probe) REFETCH inside the
- *    loop — a hoisted ref goes stale on growth. `getBBoxColumn()` /
+ *    count; fetch `results` AFTER each call, valid `[0, n)`, consume fully
+ *    before the next query/mutation. The buffer's identity changes only at
+ *    MUTATION time (capacity ≥ size is a tree invariant; queries never grow
+ *    it), so refs are hoistable across back-to-back queries — multi-query
+ *    loops (connector-flow slideClear, clipboard probe) keep the
+ *    refetch-inside-the-loop idiom anyway: free, and mutation-proof.
+ *    `getBBoxColumn()` /
  *    `getHandlesBySlot()` refs ARE hoistable across queries (they only swap
  *    on `acquireSlot` growth, and queries never mutate) — but never across
  *    anything that can create objects.
@@ -56,15 +59,17 @@ import { FlatRTree } from './flat-rtree';
  *    double clear (RDM destroy + hydrate top): silent-empty, never
  *    silent-stale.
  *
- * 9. The singleton survives room switches; buffers are retained at
- *    high-water (deliberate — no realloc on room switch; memory bounded by
- *    the largest room seen this session).
+ * 9. The singleton survives room switches; `clear()` RELEASES every growable
+ *    buffer to newborn sizes — no high-water retention across rooms. Release
+ *    is free here: RDM clears at destroy + hydrate top, and the hydrate
+ *    `load()` exact-reserves the pool in a single grow.
  *
  * `search()` / `all()` are OFF-LIMITS for avlo consumers — hardwire one twin
  * and alias `results` instead.
  *
- * maxEntries stays the FlatRTree default 16 — the documented sweep vs
- * rbush(9) showed 8 edges probes ~5–10% while 32 wins drag-storm updates
- * 25–30%; 16 is the compromise, and this ctor arg is the knob.
+ * maxEntries is FIXED at 16 inside FlatRTree (source-literal strides — the
+ * documented sweep showed 8 edges probes ~5–10% while 32 wins drag-storm
+ * updates 25–30%; 16 is the compromise). Chasing another M means
+ * regenerating the literals in `FlatRTree.ts`, not passing a ctor arg.
  */
 export const spatialTree = new FlatRTree();

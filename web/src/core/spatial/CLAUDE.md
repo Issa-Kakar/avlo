@@ -18,39 +18,46 @@ shims — call sites pass 4 scalars straight to the tree's twin query methods.
 ```
 web/src/core/spatial/
 ├── spatial-tree.ts          — the FlatRTree singleton + contracts header  (~70 LOC)
-├── flat-rtree.ts            — FlatRTree: mutable SoA R-tree              (~1420 LOC)
+├── FlatRTree.ts             — FlatRTree: mutable SoA R-tree              (~1680 LOC)
 ├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers      (~270 LOC)
 ├── object-query.ts          — Picker facade: 4 exports, no options       (~290 LOC)
 ├── handle-hit.ts            — Resize handles + endpoint dots             (~140 LOC)
 ├── index.ts                 — Barrel; re-exports `spatialTree` only
-└── flat-rtree.selftest.ts   — Standalone test+bench runner               (~1140 LOC)
+└── FlatRTree.selftest.ts    — Standalone test+bench runner               (~1190 LOC)
 ```
 
-**`flat-rtree.ts` is the WIRED index engine** — a mutable Structure-of-Arrays
-R-tree (typed-array node pool with parent-embedded entry boxes, id→leaf
-reverse map keyed by dense u32 ids = `handle.slot` < 2^30, tiered in-place
-`update()`, exact-MBR invariant licensing O(1) update/remove fast tiers, OMT
-bulk load over a Floyd–Rivest co-swapping selector). Design rationale lives in
-its file header and introducing commit (`feat(spatial): FlatRTree …`). All
-three review passes are DONE — trust-boundary hardening + O(1) fast tiers;
-profiler-verified HeapNumber argument-boxing elimination (doubles never cross
-a call boundary — Smi/ref args only, boxes travel via instance `Float64Array`
-channels; steady-state data paths are genuinely allocation-free); twin query
-bodies — **`queryPrecise()` for narrow probes (hit tests), `query()` for
-viewport-scale rects (culls); callers pick by construction**. Proof: 21.6k-
-check suite — three de-correlated oracles (brute-mirror queries through BOTH
-query bodies + rbush parity, per-item readBBox sweep, structural validate())
-across adversarial/degenerate/guard suites, maxEntries {4,8,32,64};
-V8-verified: all hot methods TurboFanned, no recurring deopts, 0 GCs over
-isolated 200k-op steady phases. A/B vs rbush@4 at rbush's default
-maxEntries 9 (p50, within-run): 1.75–11.4× across ops at 10k–100k, mixed
-churn 3.1×; at 1M — load 7.9× (~373 ms), queries 3.8–13.3×, 79 MB vs ~167 MB
-retained. Production maxEntries stays the FlatRTree default 16 — a sweep vs
-rbush(9) showed 8 edges probes ~5–10% while 32 wins jitter updates 25–30%
-(bigger leaves raise the O(1)-tier hit rate); 16 is the compromise, and the
-knob is the ctor arg in `spatial-tree.ts`. The selftest runs via esbuild+node
-(command in its header), not in the app bundle; rbush remains a devDependency
-solely as its A/B oracle.
+**`FlatRTree.ts` is the WIRED index engine** — a mutable Structure-of-Arrays
+R-tree keyed by dense u32 ids = `handle.slot` < 2^30 (third-generation "v3":
+typed-array node pool with parent-embedded entry boxes; `cell = node<<4 | pos`
+addressing with stored positions — `_cellOf[id]` / `_parentCell[node]` — so
+`readBBox` is O(1) and no mutation ever re-scans for a position; annotated
+ref words carry child+count+leaf, so queries load zero per-node metadata;
+sentinel node 0 holds the root's parent entry + MBR — uniform up-walks, O(1)
+update/remove tiers at the root, 4-compare whole-tree reject; exact-MBR
+invariant licensing those tiers; OMT bulk load over a Floyd–Rivest
+co-swapping selector with an exact node-count dry-run reserve — no pow2 pool
+rounding; growth-free query bodies — results capacity ≥ size maintained at
+mutation time, fixed 1024-word stack; doubles never cross a call boundary —
+Smi/ref args only, boxes travel via instance `Float64Array` channels;
+steady-state data paths are genuinely allocation-free). M is FIXED at 16 as
+source literals (module consts don't constant-fold — measured; chasing
+another M means regenerating the literals, the ctor knob is gone). Design
+rationale lives in its file header + the landing commit; the measurement
+study behind it (a rejected quantized-mirror v2, per-mechanism adjudication,
+rbush consumption-parity benches) is retired from the repo — do NOT re-add
+measured-out mechanisms (quantized u16 mirror, condense-on-delete,
+ArrayBuffer.transfer growth) without new numbers. Twin query bodies — **`queryPrecise()` for narrow probes (hit
+tests), `query()` for viewport-scale rects (culls); callers pick by
+construction**. Proof: 21.1k-check selftest — three de-correlated oracles
+(brute-mirror queries through BOTH query bodies + rbush parity, per-item
+readBBox sweep, structural validate()) across adversarial/degenerate/guard
+suites, 0 failures; V8-verified: hot methods TurboFanned, no recurring
+deopts. Measured vs the v1 engine it replaced (p50, min of 2 interleaved
+passes): updates ×0.60–0.76, removes ×0.68–0.72, queries ×0.82–0.95, memory
+×0.61–0.65 (19.25 → 11.91 MB @200k, 77 → 50 MB @1M); vs rbush@4(16) at
+strict consumption parity ≥ ×1.4 worst-case, ×2–×4.5 typical. The selftest
+runs via esbuild+node at fixed M=16 (command in its header), not in the app
+bundle; rbush remains a devDependency solely as its A/B oracle.
 
 `hit-dispatch.ts` exposes three switch dispatchers (`hitPointFor` /
 `hitRectFor` / `hitCircleFor`) over eight named, monomorphic per-kind
@@ -66,11 +73,13 @@ note / bookmark close over their frame resolver via small inline helpers.
 The singleton's header is the authority; summary:
 
 1. **Results lifetime.** Queries fill `spatialTree.results` and return the
-   count; fetch `results` AFTER each call (growth swaps the buffer), valid
-   `[0, n)`, consume before the next query/mutation. Multi-query loops
-   (slideClear, clipboard probe) refetch inside the loop. `getBBoxColumn()` /
-   `getHandlesBySlot()` refs ARE hoistable across queries — but never across
-   anything that can create objects.
+   count; fetch `results` AFTER each call, valid `[0, n)`, consume before the
+   next query/mutation. Buffer identity changes only at MUTATION time
+   (queries never grow it), so hoisting across back-to-back queries is legal;
+   multi-query loops (slideClear, clipboard probe) keep the refetch-inside-
+   the-loop idiom anyway. `getBBoxColumn()` / `getHandlesBySlot()` refs ARE
+   hoistable across queries — but never across anything that can create
+   objects.
 2. **No nested queries (transitive).** Nothing reachable from hit fns, frame
    resolvers, or picker `accept` callbacks may query or mutate the tree —
    callers are mid-consume of the shared results buffer. (rbush's fresh-array-
@@ -95,7 +104,9 @@ The singleton's header is the authority; summary:
 8. **No-room semantics.** The singleton silently answers 0 over a cleared
    tree (the old `getSpatialIndex()` threw). Safe: RDM's destroy + hydrate-top
    double clear makes it silent-empty, never silent-stale.
-9. Singleton survives room switches; buffers retained at high-water.
+9. Singleton survives room switches; `clear()` releases buffers to newborn
+   sizes (no high-water retention — hydrate's exact-reserve `load()` makes
+   release free).
 
 `search()` / `all()` are **off-limits** for avlo consumers — hardwire one
 twin and alias `results`.
