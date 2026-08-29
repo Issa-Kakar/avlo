@@ -18,7 +18,7 @@ shims — call sites pass 4 scalars straight to the tree's twin query methods.
 ```
 web/src/core/spatial/
 ├── spatial-tree.ts          — the FlatRTree singleton + contracts header  (~70 LOC)
-├── FlatRTree.ts             — FlatRTree: mutable SoA R-tree              (~1680 LOC)
+├── FlatRTree.ts             — FlatRTree: mutable SoA R-tree              (~2030 LOC)
 ├── hit-dispatch.ts          — Per-kind hit fns + switch dispatchers      (~270 LOC)
 ├── object-query.ts          — Picker facade: 4 exports, no options       (~290 LOC)
 ├── handle-hit.ts            — Resize handles + endpoint dots             (~140 LOC)
@@ -27,37 +27,53 @@ web/src/core/spatial/
 ```
 
 **`FlatRTree.ts` is the WIRED index engine** — a mutable Structure-of-Arrays
-R-tree keyed by dense u32 ids = `handle.slot` < 2^30 (third-generation "v3":
+R-tree keyed by dense u32 ids = `handle.slot` < 2^30 (fourth-generation "v4":
 typed-array node pool with parent-embedded entry boxes; `cell = node<<4 | pos`
 addressing with stored positions — `_cellOf[id]` / `_parentCell[node]` — so
 `readBBox` is O(1) and no mutation ever re-scans for a position; annotated
 ref words carry child+count+leaf, so queries load zero per-node metadata;
 sentinel node 0 holds the root's parent entry + MBR — uniform up-walks, O(1)
 update/remove tiers at the root, 4-compare whole-tree reject; exact-MBR
-invariant licensing those tiers; OMT bulk load over a Floyd–Rivest
-co-swapping selector with an exact node-count dry-run reserve — no pow2 pool
-rounding; growth-free query bodies — results capacity ≥ size maintained at
-mutation time, fixed 1024-word stack; doubles never cross a call boundary —
-Smi/ref args only, boxes travel via instance `Float64Array` channels;
-steady-state data paths are genuinely allocation-free). M is FIXED at 16 as
+invariant licensing those tiers; EIGHT-candidate split — k ∈ [7,10] × {min,
+max order of the winning axis} over an arena-scratched reduced-table scorer,
+placing elongated items by mass instead of left end; OMT bulk load over an
+MSD-radix multi-partition of (signed-int32 center-key, index) proxy LANES —
+payload never moves, leaves gather by original index, so typed load inputs
+are read IN PLACE (no defensive copy, never mutated or retained) — with the
+same exact node-count dry-run reserve, no pow2 pool rounding. The load path
+is shaped for the low tiers it actually runs in (hydrate is commonly the
+first call in a fresh context): per-element passes are tiny parameter-fed
+leaf functions, copy-backs are native copyWithin, keys stay int32 (the u32
+transform was a measured per-context Maglev deopt), and engine scratch is
+build-transient instance state — nothing module-scoped, nothing retained
+after load returns. Growth-free query bodies — results capacity ≥ size
+maintained at mutation time, fixed 1024-word stack; doubles never cross a
+call boundary — Smi/ref args only, boxes travel via instance `Float64Array`
+channels (the loader passes derived Smi shifts, never key values);
+steady-state data paths are genuinely allocation-free; `dispose()` exists
+for embedders — avlo's singleton never calls it). M is FIXED at 16 as
 source literals (module consts don't constant-fold — measured; chasing
 another M means regenerating the literals, the ctor knob is gone). Design
 rationale lives in its file header + the landing commit; the measurement
-study behind it (a rejected quantized-mirror v2, per-mechanism adjudication,
-rbush consumption-parity benches) is retired from the repo — do NOT re-add
-measured-out mechanisms (quantized u16 mirror, condense-on-delete,
-ArrayBuffer.transfer growth) without new numbers. Twin query bodies — **`queryPrecise()` for narrow probes (hit
+studies behind it are retired from the repo — do NOT re-add measured-out
+mechanisms (quantized u16 mirror, condense-on-delete, ArrayBuffer.transfer
+growth, R*-overlap subtree refinement, pooled module load-scratch, unsigned
+sort keys) without new numbers. Twin query bodies — **`queryPrecise()` for narrow probes (hit
 tests), `query()` for viewport-scale rects (culls); callers pick by
 construction**. Proof: 21.1k-check selftest — three de-correlated oracles
 (brute-mirror queries through BOTH query bodies + rbush parity, per-item
 readBBox sweep, structural validate()) across adversarial/degenerate/guard
 suites, 0 failures; V8-verified: hot methods TurboFanned, no recurring
-deopts. Measured vs the v1 engine it replaced (p50, min of 2 interleaved
-passes): updates ×0.60–0.76, removes ×0.68–0.72, queries ×0.82–0.95, memory
-×0.61–0.65 (19.25 → 11.91 MB @200k, 77 → 50 MB @1M); vs rbush@4(16) at
-strict consumption parity ≥ ×1.4 worst-case, ×2–×4.5 typical. The selftest
-runs via esbuild+node at fixed M=16 (command in its header), not in the app
-bundle; rbush remains a devDependency solely as its A/B oracle.
+deopts (cold-load deopts are one-shot feedback learning in per-call
+epilogues, none in per-element loops). Measured vs the v3 engine it
+replaced (board-shaped data, fresh-process colds, Node 24+26): cold first
+load ×0.82 @30k / ×0.94 @50k, warm loads ×0.71–1.01 (par @30k, −29% @100k),
+fresh-tree queries ×0.80–0.94 and organic ×0.74–0.88 (center keys + the
+split), paste ×0.87, inserts/removes/wiggle-updates par; medium-travel drag
+updates ×1.1–1.5 — structure-caused (tighter leaves relocate travelling
+boxes sooner), absolute ~0.1–0.2 ms per second of continuous drag. The
+selftest runs via esbuild+node at fixed M=16 (command in its header), not
+in the app bundle; rbush remains a devDependency solely as its A/B oracle.
 
 `hit-dispatch.ts` exposes three switch dispatchers (`hitPointFor` /
 `hitRectFor` / `hitCircleFor`) over eight named, monomorphic per-kind
@@ -113,7 +129,9 @@ twin and alias `results`.
 
 **Lifecycle.** Cleared by RDM `destroy()` and at hydrate top; bulk-loaded at
 hydrate tail straight off the global bbox column (dense slots ⇒ item-index
-=== slot); maintained per-object via `insert(slot, …)` / `remove(slot)` /
+=== slot; v4's `load` reads typed inputs in place — no defensive copy, the
+column is neither mutated nor retained); maintained per-object via
+`insert(slot, …)` / `remove(slot)` /
 `update(slot, …)` in the deep observer (`upsertHandle`'s tripartite write:
 `copyBbox` tuple → `writeSlotBBox` column → `spatialTree.update` tree);
 repacked on WS first sync via `rebuild()`.

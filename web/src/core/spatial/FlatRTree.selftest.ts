@@ -20,7 +20,7 @@
  *   3. FlatRTree.validate() — structure: linkage bidirectionality, level
  *      ordering, count bounds, EXACT internal MBR equality, pool accounting.
  * Suites cover degenerate/duplicate/adversarial geometry (incl. equal-key
- * bulk load through the Floyd–Rivest selector), trust-boundary guards,
+ * bulk load through the radix multi-partitioner), trust-boundary guards,
  * load-merge in all three height relations, and rebuild mid-churn — all at
  * M = 16, the engine's only configuration (source-literal strides; the old
  * {4, 8, 32, 64} ctor sweep died with the maxEntries knob).
@@ -575,8 +575,8 @@ function tDuplicateBoxStress(): void {
   check(t.size === 0, 'dup boxes: emptied');
   audit(t, 'dup boxes emptied');
 
-  // bulk load of identical boxes — equal-key partition edge in the
-  // Floyd–Rivest selector (range > its 600-element sampling threshold)
+  // bulk load of identical boxes — the radix engine's all-equal-key edge
+  // (min ^ max === 0 ⇒ every partition phase is skipped outright)
   const t2 = new FlatRTree();
   const n2 = 2000;
   const ids2 = new Uint32Array(n2);
