@@ -1,0 +1,202 @@
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/SpatialIndexManager.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/SpatialIndexManager.ts
+index 2d1dcde5..b8f17d7c 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/SpatialIndexManager.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/SpatialIndexManager.ts
+@@ -11,12 +11,12 @@ import type { TLRecord } from '@tldraw/tlschema'
+ import { objectMapValues } from '@tldraw/utils'
+ import { Box } from '../../../primitives/Box'
+ import type { Editor } from '../../Editor'
+-import { RBushIndex, type SpatialElement } from './RBushIndex'
++import { ShapeSpatialIndex } from './ShapeSpatialIndex'
+ 
+ /**
+  * Manages spatial indexing for efficient shape location queries.
+  *
+- * Uses an R-tree (via RBush) to enable O(log n) spatial queries instead of O(n) iteration.
++ * Uses an R-tree to enable O(log n) spatial queries instead of O(n) iteration.
+  * Derived-bounds changes (arrows following bound shapes, groups resizing with children) are
+  * tracked structurally: each record diff is expanded into a dirty set covering the changed
+  * shapes' descendants, ancestors, and binding partners, and only those shapes' bounds are
+@@ -38,17 +38,17 @@ import { RBushIndex, type SpatialElement } from './RBushIndex'
+  * @internal
+  */
+ export class SpatialIndexManager {
+-	private rbush: RBushIndex
++	private index: ShapeSpatialIndex
+ 	private spatialIndexComputed: Computed<number>
+ 	private lastPageId: TLPageId | null = null
+ 
+-	// Bumps only when the rbush content may have changed. Consumers subscribe
++	// Bumps only when the index content may have changed. Consumers subscribe
+ 	// via the computed; a stable epoch lets prop-only diffs skip downstream
+ 	// invalidations.
+ 	private _boundsEpoch = 0
+ 
+ 	constructor(public readonly editor: Editor) {
+-		this.rbush = new RBushIndex()
++		this.index = new ShapeSpatialIndex()
+ 		this.spatialIndexComputed = this.createSpatialIndexComputed()
+ 	}
+ 
+@@ -95,35 +95,32 @@ export class SpatialIndexManager {
+ 	}
+ 
+ 	private buildFromScratch(): void {
+-		this.rbush.clear()
+ 		this.lastPageId = this.editor.getCurrentPageId()
+ 
+-		const elements: SpatialElement[] = []
+-		for (const shape of this.editor.getCurrentPageShapes()) {
+-			const bounds = this.editor.getShapePageBounds(shape.id)
+-			if (bounds && bounds.isValid()) {
+-				elements.push({
+-					minX: bounds.minX,
+-					minY: bounds.minY,
+-					maxX: bounds.maxX,
+-					maxY: bounds.maxY,
+-					id: shape.id,
+-				})
++		// Staged straight into the index's own typed buffers, so a page rebuild
++		// allocates nothing per shape and the packed bulk load reads them in
++		// place. Rebuilds are not rare: a hundred store transactions without a
++		// read of this computed overflow the diff buffer and force one.
++		const shapeIds = this.editor.getCurrentPageShapeIds()
++		this.index.rebuildFrom(shapeIds.size, (add) => {
++			for (const id of shapeIds) {
++				const bounds = this.editor.getShapePageBounds(id)
++				if (bounds && bounds.isValid()) {
++					add(id, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)
++				}
+ 			}
+-		}
+-
+-		// Bulk load for efficiency
+-		this.rbush.bulkLoad(elements)
++		})
+ 	}
+ 
+ 	private processIncrementalUpdate(
+ 		shapeDiff: RecordsDiff<TLRecord>[],
+ 		bindingDiff: RecordsDiff<TLRecord>[]
+ 	): boolean {
+-		// Rbush mutations are collected and applied as one batch at the end so
+-		// large updates can use a bulk rebuild instead of per-item tree ops.
++		// Removals are collected and applied at the end; upserts are applied as
++		// they are decided, since the index takes bounds directly and there is
++		// no per-item object to batch up.
+ 		const pendingRemoves = new Set<TLShapeId>()
+-		const pendingUpserts: SpatialElement[] = []
++		let upserted = false
+ 
+ 		// Shapes whose page transform may have moved (their record was added or
+ 		// updated). Their descendants' transforms move with them.
+@@ -150,7 +147,7 @@ export class SpatialIndexManager {
+ 
+ 			for (const shape of objectMapValues(changes.removed) as TLShape[]) {
+ 				if (!isShape(shape)) continue
+-				if (this.rbush.has(shape.id)) {
++				if (this.index.has(shape.id)) {
+ 					pendingRemoves.add(shape.id)
+ 				}
+ 				// The old parent's derived bounds (groups) may shrink. Bindings
+@@ -235,7 +232,6 @@ export class SpatialIndexManager {
+ 			// A shape removed in an earlier diff entry may have been re-added in
+ 			// a later one; its pending removal means the indexed bounds no
+ 			// longer count.
+-			const indexedElement = pendingRemoves.has(id) ? undefined : this.rbush.getElement(id)
+ 			const record = this.editor.store.unsafeGetWithoutCapture(id)
+ 
+ 			if (
+@@ -243,7 +239,7 @@ export class SpatialIndexManager {
+ 				!isShape(record) ||
+ 				this.editor.getAncestorPageId(record) !== this.lastPageId
+ 			) {
+-				if (this.rbush.has(id)) {
++				if (this.index.has(id)) {
+ 					pendingRemoves.add(id)
+ 				}
+ 				continue
+@@ -251,34 +247,28 @@ export class SpatialIndexManager {
+ 
+ 			const bounds = this.editor.getShapePageBounds(id)
+ 			if (bounds && bounds.isValid()) {
+-				if (!this.areBoundsEqualToSpatialElement(bounds, indexedElement)) {
++				// A shape removed in an earlier diff entry may have been re-added
++				// in a later one; its pending removal means the indexed bounds no
++				// longer count, so the unchanged-bounds check has to be skipped.
++				const unchanged =
++					!pendingRemoves.has(id) &&
++					this.index.matchesBounds(id, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)
++				if (!unchanged) {
+ 					pendingRemoves.delete(id)
+-					pendingUpserts.push({
+-						minX: bounds.minX,
+-						minY: bounds.minY,
+-						maxX: bounds.maxX,
+-						maxY: bounds.maxY,
+-						id,
+-					})
++					if (this.index.upsert(id, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY)) {
++						upserted = true
++					}
+ 				}
+-			} else if (this.rbush.has(id)) {
++			} else if (this.index.has(id)) {
+ 				pendingRemoves.add(id)
+ 			}
+ 		}
+ 
+-		if (pendingRemoves.size === 0 && pendingUpserts.length === 0) return false
+-
+-		this.rbush.applyBatch(pendingRemoves, pendingUpserts)
+-		return true
+-	}
+-
+-	private areBoundsEqualToSpatialElement(
+-		a: Box | undefined,
+-		b: SpatialElement | undefined
+-	): boolean {
+-		if (!a && !b) return true
+-		if (!a || !b) return false
+-		return a.minX === b.minX && a.minY === b.minY && a.maxX === b.maxX && a.maxY === b.maxY
++		let removed = false
++		for (const id of pendingRemoves) {
++			if (this.index.remove(id)) removed = true
++		}
++		return upserted || removed
+ 	}
+ 
+ 	/**
+@@ -298,7 +288,7 @@ export class SpatialIndexManager {
+ 	 */
+ 	getShapeIdsInsideBounds(bounds: Box): Set<TLShapeId> {
+ 		this.spatialIndexComputed.get()
+-		return this.rbush.search(bounds)
++		return this.index.search(bounds.minX, bounds.minY, bounds.maxX, bounds.maxY, false)
+ 	}
+ 
+ 	/**
+@@ -319,7 +309,13 @@ export class SpatialIndexManager {
+ 	 */
+ 	getShapeIdsAtPoint(point: { x: number; y: number }, margin = 0): Set<TLShapeId> {
+ 		this.spatialIndexComputed.get()
+-		return this.rbush.search(new Box(point.x - margin, point.y - margin, margin * 2, margin * 2))
++		return this.index.search(
++			point.x - margin,
++			point.y - margin,
++			point.x + margin,
++			point.y + margin,
++			true
++		)
+ 	}
+ 
+ 	/**
+@@ -329,7 +325,7 @@ export class SpatialIndexManager {
+ 	 * @public
+ 	 */
+ 	dispose(): void {
+-		this.rbush.dispose()
++		this.index.dispose()
+ 		this.lastPageId = null
+ 	}
+ }

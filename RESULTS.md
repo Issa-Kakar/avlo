@@ -1,345 +1,213 @@
-> ## ⚠️ The numbers below are superseded — do not quote them
->
-> A later measurement pass invalidated most of this file. Two classes of error:
->
-> - **Speedups inflated by workload choice.** The drag figure ("240×") parked
->   every update in the O(1) fast tier by nudging shapes 3% of their width; the
->   honest figure is 39×. The remove figure ("63×") drains the whole tree, which
->   is rbush's worst case; on uniform data it is 3.7×. Load was quoted at the
->   adapter level (2.1×) where the tree-level number is 3.4×.
-> - **The GC comparison measured process setup, not the loop.** "71 → 31
->   scavenges" counted every collection in the process, including building 100k
->   objects and `rbush.load`, at a semi-space size where the measured loop
->   produced roughly one scavenge of real signal.
->
-> The replacement measurement — a marker-bracketed, per-mode, heap-delta
-> decomposition that separates the index from the mandatory `Set` — is in
-> **`RECAP.md` §5.2**, along with the query-per-frame counts in §5.3. That method
-> is self-validating (its parts sum to the whole within 0.2%) and its headline is
-> stronger than anything here: **~520× less garbage on the index-attributable
-> path, 684× on mutation alone.**
->
-> The design in this branch is also wrong in a way no number fixes — see
-> `RECAP.md` §0.
+# Replacing rbush in tldraw's spatial index: measurements
 
-# Replacing rbush in the spatial index: measurements
+rbush 3.0.1 (the version `@tldraw/editor` depends on) against FlatRTree, a
+mutable structure-of-arrays R-tree. Method, and the four ways an earlier round
+of this got fooled, are in `METHOD.md`. Every allocation figure below is an
+exact byte count taken in a window proven collection-free, reported as the
+slope of allocation against window size so a fixed cost cannot masquerade as a
+per-operation one.
 
-A flat, structure-of-arrays R-tree behind `SpatialIndexManager`, in place of
-rbush. This file is the evidence: what was measured, on what data, and what it
-did and did not change.
+Three datasets are reported throughout — **uniform** (rbush's best case),
+**clustered** (what a board looks like), **board** (clustered plus frames and
+arrows) — because the ratio moves several-fold with data shape, and choosing
+the flattering one is how the previous attempt at this went wrong.
 
-Everything below was produced on one machine — 4 vCPU Intel Xeon @ 2.10 GHz,
-Node 22.22.2, `NODE_ENV=test`, rbush 3.0.1 (the version `@tldraw/editor`
-depends on). The speedups are ratios on that machine; the absolute numbers are
-not interesting. Timings are the minimum of repeated runs, which on a shared
-machine is the least-perturbed sample.
+Correctness is a gate, not a footnote: brute force, rbush and the tree's own
+structural `validate()` agree across 3 datasets × 3 seeds × 60 rounds of mixed
+move / resize / remove / reinsert with id reuse.
 
-## What changed
+---
 
-Three files, and a rule about which shape a search result should take.
+## 1. Raw engine — the headline
 
-| File                     | What it is                                                                                                                                                                                                        |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FlatRTree.ts`           | The storage engine. rbush's algorithm skeleton — OMT bulk load, R\*-flavoured split, least-enlargement subtree choice — over flat typed arrays, with a rebuilt split and bulk loader. Knows nothing about shapes. |
-| `ShapeSpatialIndex.ts`   | The `TLShapeId` ↔ slot mapping, bounds validation, and the two result shapes. Replaces `RBushIndex`.                                                                                                              |
-| `SpatialIndexManager.ts` | Same reactive shell. Applies upserts as it decides them rather than batching objects, and stages page rebuilds straight into typed buffers.                                                                       |
+No wrapper, no `Set`, no id mapping. rbush is given its best case: element
+objects minted outside the measured window and mutated in place, query object
+reused, so nothing here charges it for the layer above.
 
-The tree stores every box in one `Float64Array` and every node link in one
-`Uint32Array`. Items are dense integers ("slots") minted by
-`ShapeSpatialIndex`, so `_cellOf[slot]` is a flat array rather than a Map and
-a search can write its results into a reused `Uint32Array`. Nothing on the
-insert / update / remove / search paths allocates.
+**Allocation per operation, board data, n = 20,000:**
 
-Three things differ from rbush algorithmically, and each is there for a reason
-that shows up on whiteboard data:
+| operation | rbush | FlatRTree | |
+|---|---:|---:|---|
+| search (192 hits) | 5,231 B | **0.00 B** | — |
+| update | 728 B | **0.70 B** | >1000× |
+| remove | 430 B | **5.9 B** | 73× |
+| insert | 936 B | 222 B | 4.2× |
 
-- **Entry boxes live in the parent**, B-tree style, and a child's entry count
-  and leafness ride in the parent's reference word. A search never loads
-  per-node metadata, and a fully-covered subtree is dumped by walking
-  references only, never touching a box.
-- **The split scores eight candidates** — four split points × {sorted by lower
-  coordinate, sorted by upper coordinate} — instead of rbush's lower-coordinate
-  orders only. A slice by `minX` files a long arrow under wherever its left end
-  happens to be; a slice by `maxX` can put it where its mass is.
-- **The bulk load partitions (key, index) proxies with an MSD radix
-  multi-partition** instead of quickselecting co-swapped box records. Payload
-  never moves, so typed inputs are read in place, and every rank boundary at a
-  level resolves in the same histogram and scatter passes. Keys are the box
-  _centre_, not its lower corner.
+Flat's search slope is **exactly zero** — the same figure the no-allocation
+control measures. Insert is the one place it pays, and 214 of those 222 bytes
+are the tree's own typed arrays growing from empty (off-heap), only 6.5 bytes
+are managed heap.
 
-## Correctness
+The other two datasets agree within a few percent: update 615 B / 622 B for
+rbush on uniform / clustered against 0.69 B for flat; remove 430 B against
+5.91 B on all three.
 
-`ShapeSpatialIndex.test.ts` runs 4,000 random operations — inserts, moves,
-removals and searches over a mix of tiny, huge, zero-area and extremely
-elongated boxes — and after every search checks the answer three ways:
+**Time per operation, board data, n = 20,000** (minimum of 7 runs):
 
-- against a brute-force scan of a plain model map,
-- against rbush fed the identical sequence,
-- and through both result shapes (`searchToSet` and a `SpatialQuery`), asking
-  membership for every id, not just the matched ones.
+| operation | rbush | FlatRTree | faster |
+|---|---:|---:|---:|
+| update | 2,950 ns | 192 ns | **15.4×** |
+| remove | 1,780 ns | 138 ns | **12.9×** |
+| search (192 hits) | 8,893 ns | 1,862 ns | 4.8× |
+| insert | 2,047 ns | 781 ns | 2.6× |
 
-`validate()` runs alongside. It is stricter than the answers: it proves every
-internal box is the _exact_ union of its children, so a tree that returned the
-right shapes through slack bounds would still fail.
+At n = 100,000 the mutation gap widens (update **20.3×**, 4,890 ns → 241 ns)
+and search reaches 6.1×.
 
-The suite also covers slot recycling, a search running while another query's
-results are being read, the 16-bit generation wrap, page-sized clear and
-reload, and the small/large result crossover.
+**Search cost against result size** (board, n = 20,000). rbush's allocation
+tracks the number of hits; flat's does not move:
 
-The existing suites pass. On this branch:
+| hits | rbush alloc | flat alloc | rbush time | flat time | faster |
+|---:|---:|---:|---:|---:|---:|
+| 3 | 328 B | 0.01 B | 1,305 ns | 354 ns | 3.7× |
+| 22 | 633 B | 0.00 B | 2,913 ns | 642 ns | 4.5× |
+| 192 | 5,231 B | 0.00 B | 8,893 ns | 1,862 ns | 4.8× |
+| 1,927 | 62,327 B | 0.00 B | 43,228 ns | 8,634 ns | 5.0× |
 
-- `packages/editor` — 1,202 tests across 56 files.
-- `packages/tldraw` — the full suite, 213 files.
-- The parity fuzz above — 9 tests.
+**Bulk load, n = 20,000:** rbush 11.14 MB and 11.27 ms; flat 1.635 MB and
+3.34 ms — **3.4× faster, 6.8× less allocated**, and none of flat's 1.6 MB is
+managed heap, so none of it is GC-visible.
 
-One existing test changed: it spied on `RBushIndex.applyBatch` by name to assert
-that a prop-only diff does not touch the index. It now spies on `upsert` and
-`remove` — the same guarantee, checked one level closer.
+**Memory held by the index**, after a full collection, counting everything each
+engine needs in order to answer. For rbush that includes the element objects:
+it stores references, not boxes, so one live object per shape is not optional.
+Flat's typed arrays are counted too, which a heap-only measurement would have
+missed entirely.
 
-## Index-level measurements
+| n | rbush | flat | leaner |
+|---:|---:|---:|---:|
+| 2,000 | 187 B/item | 73 B/item | 2.6× |
+| 20,000 | 179 B/item | 53 B/item | **3.4×** |
+| 100,000 | 175 B/item | 62 B/item | 2.8× |
 
-One implementation per process (two behind one interface would make every call
-site polymorphic and measure the dispatch). Both are driven exactly the way
-`SpatialIndexManager` drives them, so the rbush side pays for the
-`SpatialElement` object it has to mint per upsert — rbush removes by reference,
-so it cannot be reused in place without invalidating the tree's boxes.
+A `SpatialElement` costs ~129 bytes retained rather than the 64 an all-integer
+probe suggests, because V8 boxes the four float coordinates.
 
-Two datasets. `uniform` is rbush's own benchmark shape: independent boxes of
-one size over a square. `board` is whiteboard-shaped: shapes bunched into
-working areas with empty space between them, 13% arrows and connectors whose
-bounding boxes are long and thin, and a few large frames.
+---
 
-### board, 10,000 shapes
+## 2. Gestures
 
-|                                    | rbush    | flat    |          |
-| ---------------------------------- | -------- | ------- | -------- |
-| bulk load (warm)                   | 6.13 ms  | 2.84 ms | **2.2×** |
-| heap held by the index             | 2.67 MB  | 1.16 MB | **2.3×** |
-| search: 100% viewport (31 hits)    | 6.17 µs  | 2.27 µs | **2.7×** |
-| search: zoomed out ~10× (176 hits) | 14.3 µs  | 4.2 µs  | **3.4×** |
-| search: fit to page (1,290 hits)   | 38.4 µs  | 10.6 µs | **3.6×** |
-| hit test at a point                | 8.98 µs  | 3.68 µs | **2.4×** |
-| drag 1 shape, per frame            | 8.25 µs  | 1.81 µs | **4.6×** |
-| drag 200 shapes, per frame         | 1,134 µs | 25.2 µs | **45×**  |
-| relocate a shape across the page   | 6.40 µs  | 1.00 µs | **6.4×** |
-| insert one shape                   | 1.65 µs  | 0.87 µs | **1.9×** |
-| remove one shape                   | 4.36 µs  | 0.28 µs | **15×**  |
+A tick is: upsert every selected shape, then run the frame's single viewport
+query. One query per frame is measured, not assumed — shipped tldraw does
+0.97–1.00 index queries per frame across pan, drag, hover and marquee.
 
-### board, 100,000 shapes
+Motion is sustained and directional, reversing every 60 ticks. Board data.
 
-|                                             | rbush    | flat     |          |
-| ------------------------------------------- | -------- | -------- | -------- |
-| bulk load (cold, first call in the process) | 155.8 ms | 86.7 ms  | **1.8×** |
-| bulk load (warm)                            | 91.3 ms  | 43.6 ms  | **2.1×** |
-| heap held by the index                      | 36.9 MB  | 8.98 MB  | **4.1×** |
-| search: 100% viewport (392 hits)            | 134.7 µs | 28.7 µs  | **4.7×** |
-| search: zoomed out ~10× (1,716 hits)        | 269.1 µs | 49.0 µs  | **5.5×** |
-| search: fit to page (11,732 hits)           | 673.3 µs | 124.9 µs | **5.4×** |
-| hit test at a point                         | 134.8 µs | 32.5 µs  | **4.1×** |
-| drag 1 shape, per frame                     | 57.4 µs  | 0.74 µs  | **78×**  |
-| drag 200 shapes, per frame                  | 6,472 µs | 26.9 µs  | **240×** |
-| relocate a shape across the page            | 37.7 µs  | 1.32 µs  | **29×**  |
-| remove one shape                            | 35.5 µs  | 0.56 µs  | **63×**  |
+| gesture | rbush alloc/frame | flat | rbush time | flat time | faster |
+|---|---:|---:|---:|---:|---:|
+| drag 1 of 2,500 | 1.31 KB | ~0 | 0.002 ms | 0.001 ms | 2.4× |
+| **drag 2,000 of 2,000** | **1,318 KB** | **~0** | 2.519 ms | 0.217 ms | **11.6×** |
+| drag 200 of 20,000 | 122.5 KB | ~0 | 0.275 ms | 0.015 ms | 18.0× |
+| **resize 2,000 of 2,000** | **1,329 KB** | **~0** | 2.667 ms | 0.310 ms | 8.6× |
+| resize 200 of 20,000 | 126.8 KB | ~0 | 0.331 ms | 0.095 ms | 3.5× |
 
-### uniform, 10,000 shapes — rbush's own benchmark shape
+At 60 fps the 2,000-shape drag has rbush producing **81 MB/s of garbage**, and
+takes **15% of a 16.67 ms frame budget** for the index alone. Resize is the
+worse case for rbush and the harder one for flat, because scaling changes both
+position and extent and breaks the update fast path more often.
 
-|                                  | rbush    | flat    |          |
-| -------------------------------- | -------- | ------- | -------- |
-| bulk load (warm)                 | 6.24 ms  | 2.77 ms | **2.3×** |
-| heap held by the index           | 4.01 MB  | 2.61 MB | **1.5×** |
-| search: fit to page (1,049 hits) | 20.7 µs  | 5.94 µs | **3.5×** |
-| hit test at a point              | 0.73 µs  | 0.30 µs | **2.4×** |
-| drag 200 shapes, per frame       | 267.7 µs | 26.7 µs | **10×**  |
-| remove one shape                 | 1.12 µs  | 0.30 µs | **3.7×** |
+### Garbage collection, at production heap settings
 
-Two places it is not faster:
+Same gesture, three repeat runs, Node's default young generation:
 
-- **Cold first load on a small page.** At 1,000 shapes the first bulk load in a
-  fresh process is about 2× slower: the radix loader is more code for the
-  interpreter to get through before anything is optimised. It is at parity by
-  10,000 and 1.8× faster by 100,000. (The loader is written to tier up in small
-  independent pieces for exactly this reason; this is what is left after that.)
-- **Membership probing at page scale.** Asking "is this shape in the last
-  search" for every shape on a 100,000-shape page is _slower_ through a
-  slot-keyed index than through a `Set` of the matches — a page-sized
-  `Map<TLShapeId, number>` is a bigger table to hit repeatedly than a small
-  Set. This decided how the result is returned; see below.
+| | rbush | flat |
+|---|---:|---:|
+| collections | 1,078 – 1,085 (**all scavenges, zero major**) | 14 – 15 |
+| total GC time | 331 – 348 ms | 2.0 – 2.1 ms |
+| worst single pause | **2.77 / 20.79 / 27.32 ms** | 0.22 / 0.26 / 0.26 ms |
 
-## The result shape, and what measuring the consumers changed
+**76× fewer collections and 168× less GC time** are the stable claims. The
+worst-pause row is reported as a range on purpose: rbush's tail is long *and
+unstable* — the same workload produced 2.8 ms on one run and 27.3 ms on
+another, and a fourth run produced a 199 ms scavenge. Flat's tail is tight and
+never approaches a third of a millisecond. A scavenge costs in proportion to
+what survives it, and rbush's per-frame churn is what it has to copy.
 
-Every consumer of the index does the same thing: it takes a search result, asks
-its `size`, then asks `has()` for each shape it is already walking, then throws
-the result away. A `Set` is one allocation plus one entry per hit for something
-with that lifetime, which is what the allocation-free `SpatialQuery` path is
-for — membership as a generation stamp per slot, or, for a small result, a
-short list scanned directly.
+### How much of this is the update fast path
 
-Measuring it moved one consumer back. Which representation wins depends on the
-ratio the caller works at:
+Reported rather than asserted, from a counting build of the engine. A shape in
+this dataset is ~220 units wide:
 
-- **Probes in the same range as matches** — hit tests, brushing, the eraser's
-  line segment. The query wins. A hit test matching two shapes answers `has()`
-  in a couple of pointer compares, and an empty result answers it with no work.
-- **Probing the whole page for a few hundred matches** — the viewport cull, and
-  only the viewport cull. The `Set` wins, because the cost is then all lookups
-  and a 300-entry Set is a smaller table than a 20,000-entry map.
+| travel per tick | O(1) path | recalc | relocate | resulting speedup |
+|---:|---:|---:|---:|---:|
+| 1 unit | 77.5% | 18.0% | 4.5% | 20.2× |
+| 4 units | 77.0% | 18.5% | 4.5% | 19.2× |
+| 12 units | 75.5% | 17.6% | 6.9% | 18.0× |
+| 32 units | 70.1% | 19.2% | 10.7% | 11.7× |
+| 96 units | 60.5% | 19.1% | 20.4% | 8.3× |
 
-The first version put the cull on the query path and made `getShapeAtPoint` 25%
-_slower_; both are fixed above. `notVisibleShapes` uses
-`getShapeIdsInsideBounds` as before.
+Three quarters of a realistic drag takes the O(1) path and a quarter does not;
+the speedup degrades smoothly as travel grows. It does not depend on parking
+every update in the fast tier — which is exactly what a jitter-around-a-point
+benchmark does, and why the earlier round of this work reported 240× for a drag
+that is really 8–20× depending on how fast the pointer moves.
 
-## In-app measurements
+---
 
-Through the public `Editor` API only, so the same file runs against either
-index (`spatialIndexPerf.test.ts`). Board-shaped page, camera parked on working
-areas. Time is the minimum of three runs — on a shared machine the minimum is
-the least-perturbed sample. The noise floor is about ±5%: rows that are
-identical code on both sides (`createShapes`) move by that much.
+## 3. The wrapper, as the manager drives it
 
-### 20,000 shapes
+Both sides return a real `Set<TLShapeId>`; the public API does not change.
+This tier adds back what tier 1 deliberately excluded: the Set, the id
+bookkeeping, and on the rbush side the `SpatialElement` the manager must mint
+per upsert because `applyBatch` takes objects.
 
-|                                            | rbush    | this     |           | allocation     |
-| ------------------------------------------ | -------- | -------- | --------- | -------------- |
-| `getShapeIdsInsideBounds`                  | 14.4 µs  | 7.9 µs   | **1.82×** | **1.66× less** |
-| page switch round trip (two full rebuilds) | 178.2 ms | 147.4 ms | **1.21×** |                |
-| `getShapeAtPoint`                          | 1.63 ms  | 1.44 ms  | **1.14×** | 1.01×          |
-| cull per camera move, 100% zoom            | 11.77 ms | 11.29 ms | 1.04×     |                |
-| cull per camera move, 10% zoom             | 10.38 ms | 9.95 ms  | 1.04×     | 1.02×          |
-| drag 20 shapes, per frame                  | 14.48 ms | 14.01 ms | 1.03×     | 0.99×          |
-| drag 200 shapes, per frame                 | 18.70 ms | 17.53 ms | 1.07×     | 1.06×          |
-| first cull (index built from scratch)      | 803.2 ms | 812.0 ms | 0.99×     |                |
+| scenario | rbush | flat | |
+|---|---:|---:|---:|
+| drag 2,000 of 2,000 | 1,555,505 B/frame | 169 B | 9,204× |
+| drag 200 of 20,000 | 186,104 B/frame | 423 B | 440× |
+| search, 1% area | 19,151 B | 12,206 B | 1.6× |
+| search, 10% area | 205,294 B | 119,331 B | 1.7× |
+| bulk load 20,000 | 16.28 MB | 5.05 MB | 3.2× |
 
-### 5,000 shapes
+Time: the 2,000-shape drag is **10.8×** (1.518 ms → 0.141 ms), the 200-of-20,000
+drag **14.4×**, bulk load **2.2×**. GC over the same drag: 609 collections and
+328.8 ms against 6 and 1.2 ms.
 
-|                                       | rbush    | this     |                                   |
-| ------------------------------------- | -------- | -------- | --------------------------------- |
-| `getShapeIdsInsideBounds`             | 9.0 µs   | 6.6 µs   | **1.36×** (1.66× less allocation) |
-| page switch round trip                | 26.2 ms  | 21.6 ms  | **1.21×**                         |
-| first cull (index built from scratch) | 286.2 ms | 239.2 ms | **1.20×**                         |
-| `getShapeAtPoint`                     | 0.34 ms  | 0.28 ms  | **1.18×**                         |
-| cull per camera move, 100% zoom       | 2.52 ms  | 2.56 ms  | 0.98×                             |
-| drag 200 shapes, per frame            | 6.90 ms  | 7.16 ms  | 0.96×                             |
+**The search rows are the honest caveat.** At this tier search improves only
+1.6×, and at 10% area the times are level, because the `Set` both sides must
+build dominates everything else — an empty `Set` is 152 bytes and each entry
+adds to it. The engine underneath is 4.8× faster and allocates nothing; the
+result shape mandated by the API is what hides that. The mutation path has no
+such ceiling, which is why it carries the result.
 
-The noise floor is about ±5%: `setup: createShapes` is identical code on both
-sides and moves by 1–2% between runs, and the drag and cull rows sit inside
-that band in both directions.
+The three tiers are additively consistent — tier 2 equals tier 1 plus the Set
+plus the id map, to within a few percent — which is the check that says the
+decomposition is real.
 
-**The index gets 2–240× faster and the app barely notices.** That is the most
-useful thing here, and it is worth stating plainly rather than burying: on a
-20,000-shape page a viewport cull costs about 11 ms per camera move, and
-_0.008 ms of that is the spatial search_. Making the search five times faster
-moves a number that was already three orders of magnitude below the thing it
-sits inside.
+---
 
-The rest of the 11 ms is three page-sized traversals and two page-sized `Set`s
-per camera move:
+## 4. What the change costs to review
 
-1. `notVisibleShapes` walks every shape id on the page. For each one not in the
-   viewport it does a store lookup, a shape-util lookup and a `Set` insert —
-   four string-keyed hash lookups per off-screen shape.
-2. `getCulledShapes` copies that whole Set unconditionally, then re-checks
-   membership against the previous one to decide whether it can return the
-   cached identity.
-3. `getCurrentPageRenderingShapesSorted` filters the sorted array against it
-   into a fresh array.
+Five files. Three new, two modified, one deleted:
 
-None of that is the index's doing, and none of it gets faster by replacing the
-index.
+| file | |
+|---|---|
+| `FlatRTree.ts` | new — the engine. Knows nothing about shapes: items are dense ints. |
+| `ShapeSpatialIndex.ts` | new — 231 lines. The `TLShapeId` ↔ slot mapping and bounds validation. Replaces `RBushIndex`. |
+| `ShapeSpatialIndex.test.ts` | new — parity against brute force and rbush under mixed mutation, plus regressions for slot recycling, id reuse, zero-area probes, and reuse after dispose. |
+| `SpatialIndexManager.ts` | modified — same reactive shell. Applies upserts as it decides them rather than batching objects, and repopulates through one callback rather than three staging calls. |
+| `spatialIndex.test.ts` | modified — one test spies on a private field that was renamed. |
+| `RBushIndex.ts` | deleted. |
 
-So the case for this change is not "culling gets faster today". It is:
+**No consumer changes.** `getShapeIdsInsideBounds` and `getShapeIdsAtPoint`
+keep their signatures and keep returning `Set<TLShapeId>`; `Editor`, the select
+and eraser tools, and the culling derivation are untouched, and the public API
+report does not move.
 
-1. **Index operations stop being a cost anyone has to think about**, including
-   the ones that scale worst today — dragging a large selection is 45× to 240×
-   cheaper, and a drag of 200 shapes on a 100,000-shape page goes from 6.5 ms
-   of index work per frame (a dropped frame on its own) to 27 µs.
-2. **The index holds a third to a quarter of the memory**, and none of it as
-   objects the collector has to trace.
-3. **It makes the O(visible) reformulation of culling reachable.** Culling is
-   O(page) today partly because the index can only answer in shape ids, so the
-   complement has to be built in shape ids too. A slot-keyed index can hand a
-   dense integer set to the renderer. That is a separate and bigger change, but
-   it is the change that would move the 11 ms.
+`rbush` moves from `dependencies` to `devDependencies` — the editor no longer
+ships it, and it stays only as an oracle the parity test checks against.
 
-## Reproducing
+### Behaviour differences worth knowing
 
-```bash
-# index-level, both implementations, one process each
-yarn tsx internal/scripts/spatial-bench/index.ts --sizes 10000,100000 --datasets board,uniform
-
-# in-app, through the public Editor API
-cd packages/tldraw
-NODE_OPTIONS="--max-semi-space-size=512" SPATIAL_PERF=1 SPATIAL_PERF_N=20000 \
-  yarn vitest run src/test/spatialIndexPerf.test.ts
-
-# correctness
-cd packages/editor
-yarn vitest run src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
-```
-
-`RBushIndex.ts` is kept for now so the A/B has a baseline to run against. It
-would go with the change.
-
-## Behaviour changes and open questions
-
-The full `packages/tldraw` suite caught one real bug that the targeted suites and
-the fuzz both missed, and it is worth recording because it is the kind of thing
-that separates the two structures rather than a slip.
-
-`resizing.test.ts` hung. The editor registers the index's `dispose` as a
-disposable but does not tear down the index computed with it, so a read after
-disposal schedules a rebuild against an index that has just been disposed. rbush
-tolerated that — `clear()` plus `bulkLoad` on a fresh tree. The flat engine did
-not: `dispose()` released the `Float64Array` that box arguments travel through
-(the channel that keeps doubles off call boundaries), every coordinate then read
-as `undefined`, and the ancestor-extension walk — whose exit condition is a
-containment test — never terminated against NaN.
-
-The fix was to delete `FlatRTree.dispose()` rather than guard it. `clear()`
-already returns every growable buffer to newborn size; all a terminal teardown
-bought was a few KB of fixed scratch, in exchange for a structure that can be
-made unusable while something still holds a reference to it.
-`ShapeSpatialIndex.dispose()` is now `clear()` plus dropping the pooled queries
-and staging — which is exactly what `RBushIndex.dispose()` always was.
-
-Three other things behave differently, all deliberately:
-
-- **Invalid bounds are defined rather than undefined.** The old gate was
-  `Box.isValid()`, which checks finiteness only and therefore accepts an
-  inverted box (negative width or height). The index now also requires
-  `minX <= maxX`, so an inverted box means "not indexable" and the shape is
-  dropped rather than indexed as something that would match everything. Page
-  bounds come from `Box.FromPoints`, which cannot produce one, so this is
-  unreachable through the normal path — but the guard now lives inside the
-  index, where the NaN-blackout bugs this subsystem has had before cannot get
-  past it.
-- **A removed shape leaves a live query's result.** A `Set` snapshot kept the
-  removed id; a query drops it, because the slot it held can be recycled onto a
-  different shape immediately. Every consumer uses the result only to filter a
-  freshly-read shape list, so the difference is not observable, but it is a
-  real semantic change.
-- **The engine throws where rbush would not** — duplicate insert, out-of-range
-  id, node-pool overflow. These are corruption tripwires: they can only fire if
-  the slot bookkeeping is already broken, and they would surface as an
-  exception from inside a signals computed. rbush's failure mode for the same
-  class of bug is a silently wrong answer. I think the tripwire is the better
-  trade, but it is a trade.
-
-Open:
-
-- **Cold load on small pages.** 2× slower at 1,000 shapes, parity at 10,000. If
-  opening small documents matters more than large ones, the loader could fall
-  back to a simple sort below some size.
-- **`maxShapesPerPage` defaults to 4,000.** The interesting numbers here are
-  above that. If pages are not expected to grow, most of this is headroom
-  rather than a fix for something.
-- **The api-report changes.** `SpatialIndexManager` gains `acquireQuery`,
-  `searchBounds`, `searchAtPoint` and `validate`, and `ShapeSpatialIndex` and
-  `SpatialQuery` are exported from the package entry (api-extractor needs them
-  exported, since the manager's signatures reference them). All `@internal`,
-  but internal declarations do appear in the checked-in report.
-- **`getShapeIdsInsideBounds` stays `Set<TLShapeId>`.** It is public API — and
-  the one template that consumes it round-trips the ids through
-  `editor.getShape`, so slot integers must not reach userland.
-- **`SpatialIndexManager.getShapeIdsAtPoint` now has no caller in the repo.**
-  It is `@public` on an exported class, so it stays, but it is untested by
-  anything other than its own parity.
+- Boxes that are inverted (`minX > maxX`) are rejected rather than indexed.
+  `Box.isValid()` checks finiteness only, so this is marginally stricter, but
+  `Box.FromPoints` derives width and height as max − min and cannot produce one.
+- Zero-area boxes still hit on all four edges. rbush's intersection test is
+  inclusive and `getShapeIdsAtPoint(point, 0)` builds a literal 0×0 box, so this
+  had to be preserved exactly; there is a test for it.
+- `dispose()` is deliberately the same thing as `clear()` rather than a terminal
+  teardown. The editor registers it as a disposable but does not tear down the
+  computed that repopulates the index, so a read after disposal refills it — a
+  structure that could be made permanently unusable would turn that into a hang.
+  This was a real hang, found by the resizing test suite, and there is now a
+  test for it.

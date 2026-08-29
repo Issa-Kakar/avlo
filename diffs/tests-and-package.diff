@@ -1,0 +1,56 @@
+diff --git a/packages/editor/package.json b/packages/editor/package.json
+index b0f3ef2a..0dfcd957 100644
+--- a/packages/editor/package.json
++++ b/packages/editor/package.json
+@@ -65,8 +65,7 @@
+ 		"classnames": "^2.5.1",
+ 		"eventemitter3": "^4.0.7",
+ 		"idb": "^7.1.1",
+-		"is-plain-object": "^5.0.0",
+-		"rbush": "^3.0.1"
++		"is-plain-object": "^5.0.0"
+ 	},
+ 	"peerDependencies": {
+ 		"react": "^18.2.0 || ^19.2.1",
+@@ -84,6 +83,7 @@
+ 		"benchmark": "^2.1.4",
+ 		"fake-indexeddb": "^4.0.2",
+ 		"lazyrepo": "0.0.0-alpha.27",
++		"rbush": "^3.0.1",
+ 		"react": "^19.2.1",
+ 		"react-dom": "^19.2.1",
+ 		"resize-observer-polyfill": "^1.5.1",
+diff --git a/packages/tldraw/src/test/spatialIndex.test.ts b/packages/tldraw/src/test/spatialIndex.test.ts
+index fd290b4d..a04d0186 100644
+--- a/packages/tldraw/src/test/spatialIndex.test.ts
++++ b/packages/tldraw/src/test/spatialIndex.test.ts
+@@ -62,23 +62,23 @@ describe('SpatialIndexManager - bounds epoch', () => {
+ 		tracker.stop()
+ 	})
+ 
+-	it('skips the rbush mutation batch on a prop-only diff', () => {
+-		// Direct check on the headline optimization: `RBushIndex.applyBatch`
+-		// must not be called when only props change.
++	it('skips the index mutation on a prop-only diff', () => {
++		// Direct check on the headline optimization: the index must not be
++		// written to when only props change.
+ 		const id = createShapeId('upsert-spy')
+ 		editor.createShapes([{ id, type: 'geo', x: 100, y: 100 }])
+ 		// Initialize the computed before spying so buildFromScratch's
+ 		// bulkLoad runs outside the spy window.
+ 		editor.getShapeIdsInsideBounds(editor.getViewportPageBounds())
+ 
+-		const rbush = (editor as any)._spatialIndex.rbush
+-		const spy = vi.spyOn(rbush, 'applyBatch')
++		const index = (editor as any)._spatialIndex.index
++		const spy = vi.spyOn(index, 'upsert')
+ 
+ 		editor.updateShapes([{ id, type: 'geo', props: { color: 'red' } }])
+ 		editor.getShapeIdsInsideBounds(editor.getViewportPageBounds())
+ 		expect(spy).not.toHaveBeenCalled()
+ 
+-		// Sanity: a real bounds change does apply a batch.
++		// Sanity: a real bounds change does write to the index.
+ 		editor.updateShapes([{ id, type: 'geo', x: 200, y: 200 }])
+ 		editor.getShapeIdsInsideBounds(editor.getViewportPageBounds())
+ 		expect(spy).toHaveBeenCalled()

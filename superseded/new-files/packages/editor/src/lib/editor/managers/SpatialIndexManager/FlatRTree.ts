@@ -219,9 +219,11 @@ const ID_CAP0 = 256 // _cellOf entries
 const RESULTS_CAP0 = 256
 const STACK_CAP = 1024 // fixed forever — bound proof in the header
 
-// Immutable zero-length sentinel: what the transient engine field holds
+// Immutable zero-length sentinels: what the transient engine fields hold
 // between builds. Never written.
+const EMPTY_U32 = new Uint32Array(0)
 const EMPTY_I32 = new Int32Array(0)
+const EMPTY_F64 = new Float64Array(0)
 
 // Growth is fresh-alloc + copy, NOT ArrayBuffer.transfer. Measured (1M/200k
 // wide searches): a transfer-grown pool ran 15–30% slower than a fresh one —

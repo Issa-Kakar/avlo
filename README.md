@@ -1,106 +1,70 @@
-> ## ⚠️ Read `RECAP.md` first
->
-> This branch is a **proof of concept whose design and numbers were both later
-> found wrong**. The engine (`FlatRTree.ts`) is sound; the wrapper around it
-> (`ShapeSpatialIndex.ts`, `SpatialQuery`, the pooled-query API) should not be
-> built on, and the speedups in `RESULTS.md` and `ISSUE-DRAFT.md` are inflated.
->
-> `RECAP.md` is the handoff document: §0 says what is wrong, §3 is a verified
-> map of tldraw's spatial-index architecture, §5 has the measurements that
-> replaced the ones here, and §6 records a real hang bug. `harness/` holds the
-> scripts that produced §5.
+# Replacing rbush in tldraw's spatial index
 
-# FlatRTree in tldraw — proof of concept
-
-A slot-keyed, structure-of-arrays R-tree dropped into tldraw's
-`SpatialIndexManager` in place of rbush, with the benchmarks and the correctness
-oracle that go with it.
+A flat, structure-of-arrays R-tree behind `SpatialIndexManager` in place of
+rbush, with the measurements and the correctness oracle that go with it.
 
 This branch shares no history with anything else in this repository and touches
 none of its code. It exists because the work was done in a remote container
 against a clone of `tldraw/tldraw`, and the container does not survive.
 
-## What is here
+## Read in this order
 
 | | |
 |---|---|
-| `RECAP.md` | **Start here.** What is wrong with this branch, a verified map of tldraw's spatial-index architecture, and the measurements that replaced `RESULTS.md`. |
-| `patches/` | The eight commits, as a `git am` series against `tldraw/tldraw` at `cbbcf35`. This is the whole change. |
-| `new-files/` | The files that did not exist before, at their tldraw paths — easier to read than a patch. |
-| `diffs/` | The changes to files that already existed, which is the part a reviewer actually reads. |
-| `RESULTS.md` | Method and measurements. |
-| `ISSUE-DRAFT.md` | A draft of the tldraw issue, for adapting rather than sending as-is. |
-| `raw/` | Unedited benchmark output (superseded — see `RECAP.md` §5). |
-| `harness/` | The measurement scripts behind `RECAP.md` §5.2 and §5.3, plus esbuild bundles so plain `node` can run them. |
+| **`RESULTS.md`** | The numbers. Three tiers — raw engine, gestures, and the wrapper as the manager drives it — across three datasets. |
+| **`METHOD.md`** | How they were measured, and the four ways an earlier attempt produced confident wrong ones. Read this if you intend to disbelieve anything in RESULTS. |
+| `patches/` | The change as a `git am` series against `tldraw/tldraw` at `cbbcf357`. One commit. |
+| `new-files/` | The three new files, at their tldraw paths. |
+| `diffs/` | The two modified files plus the `package.json` change. |
+| `bench/` | The benchmark harness and every raw measurement. |
+| `superseded/` | An earlier attempt, kept only so nobody re-derives its numbers. See below. |
+| `RECAP.md` | Handoff notes from the session that produced `superseded/`, including a verified map of tldraw's spatial-index architecture that is still accurate. |
 
-Ten commits. `packages/editor` passes 1,202 tests, `packages/tldraw` passes
-2,912 across the full 213-file suite, and the parity fuzz passes 10.
+## The change
+
+Three new files, two modified, one deleted. **No consumer changes**:
+`getShapeIdsInsideBounds` and `getShapeIdsAtPoint` keep their signatures and
+keep returning `Set<TLShapeId>`, and the public API report does not move.
+`rbush` moves from `dependencies` to `devDependencies`, where it remains as the
+oracle the parity test checks against.
+
+Headline, from a 2000-shape 60-tick drag at production heap settings:
+
+| | rbush | this |
+|---|---:|---:|
+| allocation per frame | 1,318 KB | ~0 |
+| at 60 fps | 81 MB/s | ~0 |
+| collections | 1,078–1,085 | 14–15 |
+| total GC time | 331–348 ms | 2.0–2.1 ms |
+| worst single pause | 2.8–27.3 ms | 0.22–0.26 ms |
+| index time per frame | 2.52 ms | 0.22 ms |
+
+Verified: `packages/editor` 1,202 tests pass, `packages/tldraw` 2,912 pass,
+types build, oxlint clean.
 
 ## Applying it
 
 ```bash
-git clone https://github.com/tldraw/tldraw
-cd tldraw
-git checkout -b flat-rtree-spatial-index cbbcf35
+git clone https://github.com/tldraw/tldraw && cd tldraw
+git checkout cbbcf357
 git am /path/to/patches/*.patch
-corepack enable && yarn
+yarn && yarn build-types
+cd packages/editor && yarn run -T vitest run
 ```
 
-Then, from the repo root:
+## About `superseded/`
 
-```bash
-# index-level A/B, one process per implementation
-yarn tsx internal/scripts/spatial-bench/index.ts --sizes 10000,100000 --datasets board,uniform
+An earlier round of this work reached the same engine through a worse design
+and measured it badly. Both problems were structural, and both are fixed here:
 
-# in-app, through the public Editor API
-cd packages/tldraw
-NODE_OPTIONS="--max-semi-space-size=512" SPATIAL_PERF=1 SPATIAL_PERF_N=20000 \
-  yarn vitest run src/test/spatialIndexPerf.test.ts
+- **The design exposed machinery it never should have** — a pooled query
+  object, generation stamps, acquire/release, and four new package exports,
+  pushed onto consumers. None of it was necessary. The index returns a plain
+  `Set` and everything else is private.
+- **The numbers were inflated by workload choice**, and a GC comparison counted
+  process setup rather than the measured loop. A drag reported at 240× is
+  8–20× depending on how fast the pointer moves; that whole curve is now
+  reported rather than one point on it.
 
-# correctness: 4,000 random ops against a brute-force scan and against rbush
-cd packages/editor
-yarn vitest run src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
-```
-
-The in-app A/B runs the same file against either index by checking the six
-touched sources back to `cbbcf35` between runs — see `RESULTS.md` for the exact
-list.
-
-## Headline
-
-The index gets 2–240× faster and holds a quarter of the memory. The viewport
-cull does not get faster, because on a 20,000-shape page the cull costs ~11 ms
-per camera move and 0.008 ms of that is the spatial search. `RESULTS.md` has
-the accounting for the other 11 ms.
-
-## The bug worth knowing about
-
-The full tldraw suite caught a hang the targeted suites and the fuzz both
-missed, and it is the clearest example of where these two structures differ.
-
-The editor registers the index's `dispose` as a disposable but does not tear
-down the index computed with it, so a read after disposal schedules a rebuild
-against an index that has just been disposed. rbush tolerated that. The flat
-engine did not: `dispose()` released the `Float64Array` that box arguments
-travel through, every coordinate then read as `undefined`, and the
-ancestor-extension walk — whose exit condition is a containment test — never
-terminated against NaN.
-
-The fix was to delete `FlatRTree.dispose()` rather than guard it. `clear()`
-already returns every growable buffer to newborn size, so all a terminal
-teardown bought was a few KB of fixed scratch, in exchange for a structure that
-can be made unusable while something still holds it. Worth carrying back into
-the avlo copy: the same `dispose()` is there, and the same walk is what would
-spin.
-
-## Before sending anything to tldraw
-
-- Pull requests are turned off on `tldraw/tldraw` as a repository setting. The
-  sanctioned route is an issue with a link to a fork branch, which is what
-  `ISSUE-DRAFT.md` is written for.
-- The `FlatRTree.ts` header is dense with V8 vocabulary — Smi, boxing, tiering,
-  monomorphism. That vocabulary is essentially absent from tldraw's own code.
-  It is accurate but it will read as alien there; worth trimming to the claims
-  that are measured rather than the mechanisms that explain them.
-- `RBushIndex.ts` is still present so the A/B harness has a baseline to run
-  against. It would go with the change.
+`superseded/` is kept so those numbers can be recognised and discarded if they
+turn up somewhere. Do not quote them.
