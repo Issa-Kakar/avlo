@@ -1,0 +1,523 @@
+From 4ccd1e3784264e07fcbe169c1bd28e360aabe279 Mon Sep 17 00:00:00 2001
+From: issakakar <Issakakar@icloud.com>
+Date: Sat, 29 Aug 2026 10:20:27 +0000
+Subject: [PATCH 4/8] perf(editor): keep the viewport cull on the Set path, and
+ trim dead engine API
+
+The cull is the one consumer that probes every shape on the page for a result
+of a few hundred, so the cost is all lookups and a small Set is a smaller table
+to hit repeatedly than a page-sized id-to-slot map. The index-level benchmark
+puts the query path 10-30% behind there; in the editor the two are within the
+noise floor. Set wins on the measurement that can tell them apart, so the cull
+goes back to getShapeIdsInsideBounds and the query path is left to the
+consumers whose probes are proportional to what the search matched.
+
+Also drops readBBox, searchAll and the maxEntries/minEntries fields from
+FlatRTree: nothing calls them, and the fields read as if M were configurable
+when every stride below is a source literal.
+---
+ internal/scripts/spatial-bench/ISSUE-DRAFT.md | 119 +++++++++
+ internal/scripts/spatial-bench/RESULTS.md     | 249 ++++++++++++++++++
+ packages/editor/src/lib/editor/Editor.ts      |  10 +-
+ .../editor/derivations/notVisibleShapes.ts    |  18 +-
+ .../managers/SpatialIndexManager/FlatRTree.ts |  28 +-
+ 5 files changed, 381 insertions(+), 43 deletions(-)
+ create mode 100644 internal/scripts/spatial-bench/ISSUE-DRAFT.md
+ create mode 100644 internal/scripts/spatial-bench/RESULTS.md
+
+diff --git a/internal/scripts/spatial-bench/ISSUE-DRAFT.md b/internal/scripts/spatial-bench/ISSUE-DRAFT.md
+new file mode 100644
+index 00000000..31585517
+--- /dev/null
++++ b/internal/scripts/spatial-bench/ISSUE-DRAFT.md
+@@ -0,0 +1,119 @@
++# Proposal: replace rbush in `SpatialIndexManager` with a flat typed-array R-tree
++
++I have a spatial index I wrote for my own canvas app and I think it is a good
++fit for `SpatialIndexManager`. Before doing anything else I want to check
++whether you'd want it, and to share one measurement that seems useful to you
++either way.
++
++Branch: <FORK_BRANCH_URL>
++Numbers, method, and the raw output: `internal/scripts/spatial-bench/RESULTS.md`
++
++## The measurement you may care about most
++
++On a 20,000-shape page a viewport cull costs about **11 ms per camera move**,
++and **0.01 ms of that is the spatial search**. The rest is `notVisibleShapes`
++building the complement: a walk of every shape on the page, a store lookup and
++a shape-util lookup per off-screen shape, and a page-sized `Set`; then
++`getCulledShapes` copies that Set, and `getCurrentPageRenderingShapesSorted`
++filters the sorted array against it. Three page-sized traversals and two
++page-sized Sets per camera move.
++
++So swapping the index does *not* make culling faster today, and I would rather
++say that up front than bury it.
++
++## What the change does do
++
++The index itself, measured at the same boundary `SpatialIndexManager` drives
++it through (so rbush still pays for the `SpatialElement` it has to mint per
++upsert, since it removes by reference). Whiteboard-shaped data — shapes bunched
++into working areas, 13% long thin arrows, a few large frames:
++
++| board, 100,000 shapes | rbush 3.0.1 | this | |
++|---|---|---|---|
++| heap held by the index | 36.9 MB | 8.98 MB | **4.1× smaller** |
++| bulk load (a page switch) | 91.3 ms | 43.6 ms | **2.1×** |
++| search: 100% viewport | 134.7 µs | 28.7 µs | **4.7×** |
++| hit test at a point | 134.8 µs | 32.5 µs | **4.1×** |
++| drag 200 shapes, per frame | 6,472 µs | 26.9 µs | **240×** |
++| remove one shape | 35.5 µs | 0.56 µs | **63×** |
++
++At 10,000 shapes it is 2–45× depending on the operation, and it also wins on
++`uniform` — rbush's own benchmark distribution — by 1.5–10×.
++
++The one that seems most worth having is the drag row. tldraw re-upserts every
++moved shape on every store update, and rbush has to remove and reinsert each
++one; this resolves a move in place, usually as a single overwrite. On a large
++page a drag of a big selection currently costs several milliseconds of index
++work *per frame* before any rendering happens.
++
++Through the public `Editor` API on a 20,000-shape page, the parts that are
++actually index work move and the rest doesn't:
++
++| | rbush | this | |
++|---|---|---|---|
++| `getShapeIdsInsideBounds` | 13.8 µs | 9.6 µs | 1.44×, 1.6× less allocation |
++| page switch (two rebuilds) | 176 ms | 145 ms | 1.22× |
++| `getShapeAtPoint` | 1.63 ms | 1.52 ms | 1.07× |
++| cull per camera move | 11.55 ms | 11.58 ms | 1.00× |
++| drag 200 shapes, per frame | 18.25 ms | 18.67 ms | 0.98× |
++
++(±5% is the noise floor on that machine — rows that are identical code on both
++sides move by that much.)
++
++## How it works, briefly
++
++rbush's algorithm skeleton — OMT bulk load, R\*-flavoured split,
++least-enlargement subtree choice — over flat typed arrays. Every box lives in
++one `Float64Array`, every node link in one `Uint32Array`, and items are keyed
++by dense integers so a search writes its results into a reused `Uint32Array`.
++Nothing on insert / update / remove / search allocates.
++
++Three things differ algorithmically, each for a reason that shows up on
++whiteboard data rather than on uniform boxes:
++
++- Entry boxes live in the parent, B-tree style, with the child's entry count
++  and leafness in the parent's reference word — so a search loads no per-node
++  metadata, and a fully-covered subtree is dumped without touching a box.
++- The split scores eight candidates (four split points × sorted-by-lower and
++  sorted-by-upper coordinate) rather than lower-coordinate orders only. Sorting
++  a split by `minX` files a long arrow under wherever its left end happens to
++  be; sorting by `maxX` can put it where its mass is.
++- The bulk load partitions `(key, index)` proxies with an MSD radix
++  multi-partition instead of quickselecting co-swapped box records, keyed on
++  the box centre rather than its lower corner. Payload never moves, so typed
++  inputs are read in place.
++
++## Correctness
++
++The branch adds a test that runs 4,000 random operations over a deliberate mix
++of tiny, huge, zero-area and extremely elongated boxes, and checks every search
++three ways: against a brute-force scan, against rbush fed the identical
++sequence, and through both result shapes with membership asked for every id.
++A structural `validate()` runs alongside, which is stricter than the answers —
++it proves every internal box is the exact union of its children.
++
++The existing suites pass. One test changed: it spied on `RBushIndex.applyBatch`
++by name to assert a prop-only diff doesn't touch the index; it now spies on
++`upsert`/`remove`, which is the same guarantee one level closer.
++
++## What I'd want your read on
++
++1. **Is this a direction you want at all?** It is a real replacement, not a
++   tweak, and I would rather find out now than after polishing it.
++2. **Does the page-size range make it worth it?** `maxShapesPerPage` defaults
++   to 4,000. Most of what this buys is above that, so if pages are not expected
++   to grow, this is headroom rather than a fix.
++3. **The cull.** The index can't make that 11 ms smaller, but a slot-keyed
++   index is what would make an O(visible) reformulation possible — the
++   complement has to be built in shape ids today only because the index can
++   only answer in shape ids. That is a separate and bigger change; I'd be
++   interested in whether it is one you'd consider.
++
++Two things I know are not finished: `RBushIndex` is still in the branch because
++the A/B harness runs against it, and the cold first bulk load on a small page
++is about 2× slower than rbush (the loader is more code to get through the
++interpreter; it reaches parity around 10,000 shapes and is 1.8× faster at
++100,000).
++
++Happy to cut this down to just the engine swap with no consumer changes if
++that's an easier thing to look at.
+diff --git a/internal/scripts/spatial-bench/RESULTS.md b/internal/scripts/spatial-bench/RESULTS.md
+new file mode 100644
+index 00000000..95efe5d4
+--- /dev/null
++++ b/internal/scripts/spatial-bench/RESULTS.md
+@@ -0,0 +1,249 @@
++# Replacing rbush in the spatial index: measurements
++
++A flat, structure-of-arrays R-tree behind `SpatialIndexManager`, in place of
++rbush. This file is the evidence: what was measured, on what data, and what it
++did and did not change.
++
++Everything below was produced on one machine — 4 vCPU Intel Xeon @ 2.10 GHz,
++Node 22.22.2, rbush 3.0.1 (the version `@tldraw/editor` depends on). The
++speedups are ratios on that machine; the absolute numbers are not interesting.
++
++## What changed
++
++Three files, and a rule about which shape a search result should take.
++
++| File | What it is |
++|---|---|
++| `FlatRTree.ts` | The storage engine. rbush's algorithm skeleton — OMT bulk load, R\*-flavoured split, least-enlargement subtree choice — over flat typed arrays, with a rebuilt split and bulk loader. Knows nothing about shapes. |
++| `ShapeSpatialIndex.ts` | The `TLShapeId` ↔ slot mapping, bounds validation, and the two result shapes. Replaces `RBushIndex`. |
++| `SpatialIndexManager.ts` | Same reactive shell. Applies upserts as it decides them rather than batching objects, and stages page rebuilds straight into typed buffers. |
++
++The tree stores every box in one `Float64Array` and every node link in one
++`Uint32Array`. Items are dense integers ("slots") minted by
++`ShapeSpatialIndex`, so `_cellOf[slot]` is a flat array rather than a Map and
++a search can write its results into a reused `Uint32Array`. Nothing on the
++insert / update / remove / search paths allocates.
++
++Three things differ from rbush algorithmically, and each is there for a reason
++that shows up on whiteboard data:
++
++- **Entry boxes live in the parent**, B-tree style, and a child's entry count
++  and leafness ride in the parent's reference word. A search never loads
++  per-node metadata, and a fully-covered subtree is dumped by walking
++  references only, never touching a box.
++- **The split scores eight candidates** — four split points × {sorted by lower
++  coordinate, sorted by upper coordinate} — instead of rbush's lower-coordinate
++  orders only. A slice by `minX` files a long arrow under wherever its left end
++  happens to be; a slice by `maxX` can put it where its mass is.
++- **The bulk load partitions (key, index) proxies with an MSD radix
++  multi-partition** instead of quickselecting co-swapped box records. Payload
++  never moves, so typed inputs are read in place, and every rank boundary at a
++  level resolves in the same histogram and scatter passes. Keys are the box
++  *centre*, not its lower corner.
++
++## Correctness
++
++`ShapeSpatialIndex.test.ts` runs 4,000 random operations — inserts, moves,
++removals and searches over a mix of tiny, huge, zero-area and extremely
++elongated boxes — and after every search checks the answer three ways:
++
++- against a brute-force scan of a plain model map,
++- against rbush fed the identical sequence,
++- and through both result shapes (`searchToSet` and a `SpatialQuery`), asking
++  membership for every id, not just the matched ones.
++
++`validate()` runs alongside. It is stricter than the answers: it proves every
++internal box is the *exact* union of its children, so a tree that returned the
++right shapes through slack bounds would still fail.
++
++The suite also covers slot recycling, a search running while another query's
++results are being read, the 16-bit generation wrap, page-sized clear and
++reload, and the small/large result crossover.
++
++The existing suites pass unchanged except for one test, which spied on
++`RBushIndex.applyBatch` by name to assert that a prop-only diff does not touch
++the index. It now spies on `upsert` and `remove` — the same guarantee, checked
++one level closer.
++
++## Index-level measurements
++
++One implementation per process (two behind one interface would make every call
++site polymorphic and measure the dispatch). Both are driven exactly the way
++`SpatialIndexManager` drives them, so the rbush side pays for the
++`SpatialElement` object it has to mint per upsert — rbush removes by reference,
++so it cannot be reused in place without invalidating the tree's boxes.
++
++Two datasets. `uniform` is rbush's own benchmark shape: independent boxes of
++one size over a square. `board` is whiteboard-shaped: shapes bunched into
++working areas with empty space between them, 13% arrows and connectors whose
++bounding boxes are long and thin, and a few large frames.
++
++### board, 10,000 shapes
++
++| | rbush | flat | |
++|---|---|---|---|
++| bulk load (warm) | 6.13 ms | 2.84 ms | **2.2×** |
++| heap held by the index | 2.67 MB | 1.16 MB | **2.3×** |
++| search: 100% viewport (31 hits) | 6.17 µs | 2.27 µs | **2.7×** |
++| search: zoomed out ~10× (176 hits) | 14.3 µs | 4.2 µs | **3.4×** |
++| search: fit to page (1,290 hits) | 38.4 µs | 10.6 µs | **3.6×** |
++| hit test at a point | 8.98 µs | 3.68 µs | **2.4×** |
++| drag 1 shape, per frame | 8.25 µs | 1.81 µs | **4.6×** |
++| drag 200 shapes, per frame | 1,134 µs | 25.2 µs | **45×** |
++| relocate a shape across the page | 6.40 µs | 1.00 µs | **6.4×** |
++| insert one shape | 1.65 µs | 0.87 µs | **1.9×** |
++| remove one shape | 4.36 µs | 0.28 µs | **15×** |
++
++### board, 100,000 shapes
++
++| | rbush | flat | |
++|---|---|---|---|
++| bulk load (cold, first call in the process) | 155.8 ms | 86.7 ms | **1.8×** |
++| bulk load (warm) | 91.3 ms | 43.6 ms | **2.1×** |
++| heap held by the index | 36.9 MB | 8.98 MB | **4.1×** |
++| search: 100% viewport (392 hits) | 134.7 µs | 28.7 µs | **4.7×** |
++| search: zoomed out ~10× (1,716 hits) | 269.1 µs | 49.0 µs | **5.5×** |
++| search: fit to page (11,732 hits) | 673.3 µs | 124.9 µs | **5.4×** |
++| hit test at a point | 134.8 µs | 32.5 µs | **4.1×** |
++| drag 1 shape, per frame | 57.4 µs | 0.74 µs | **78×** |
++| drag 200 shapes, per frame | 6,472 µs | 26.9 µs | **240×** |
++| relocate a shape across the page | 37.7 µs | 1.32 µs | **29×** |
++| remove one shape | 35.5 µs | 0.56 µs | **63×** |
++
++### uniform, 10,000 shapes — rbush's own benchmark shape
++
++| | rbush | flat | |
++|---|---|---|---|
++| bulk load (warm) | 6.24 ms | 2.77 ms | **2.3×** |
++| heap held by the index | 4.01 MB | 2.61 MB | **1.5×** |
++| search: fit to page (1,049 hits) | 20.7 µs | 5.94 µs | **3.5×** |
++| hit test at a point | 0.73 µs | 0.30 µs | **2.4×** |
++| drag 200 shapes, per frame | 267.7 µs | 26.7 µs | **10×** |
++| remove one shape | 1.12 µs | 0.30 µs | **3.7×** |
++
++Two places it is not faster:
++
++- **Cold first load on a small page.** At 1,000 shapes the first bulk load in a
++  fresh process is about 2× slower: the radix loader is more code for the
++  interpreter to get through before anything is optimised. It is at parity by
++  10,000 and 1.8× faster by 100,000. (The loader is written to tier up in small
++  independent pieces for exactly this reason; this is what is left after that.)
++- **Membership probing at page scale.** Asking "is this shape in the last
++  search" for every shape on a 100,000-shape page is *slower* through a
++  slot-keyed index than through a `Set` of the matches — a page-sized
++  `Map<TLShapeId, number>` is a bigger table to hit repeatedly than a small
++  Set. This decided how the result is returned; see below.
++
++## The result shape, and what measuring the consumers changed
++
++Every consumer of the index does the same thing: it takes a search result, asks
++its `size`, then asks `has()` for each shape it is already walking, then throws
++the result away. A `Set` is one allocation plus one entry per hit for something
++with that lifetime, which is what the allocation-free `SpatialQuery` path is
++for — membership as a generation stamp per slot, or, for a small result, a
++short list scanned directly.
++
++Measuring it moved one consumer back. Which representation wins depends on the
++ratio the caller works at:
++
++- **Probes in the same range as matches** — hit tests, brushing, the eraser's
++  line segment. The query wins. A hit test matching two shapes answers `has()`
++  in a couple of pointer compares, and an empty result answers it with no work.
++- **Probing the whole page for a few hundred matches** — the viewport cull, and
++  only the viewport cull. The `Set` wins, because the cost is then all lookups
++  and a 300-entry Set is a smaller table than a 20,000-entry map.
++
++The first version put the cull on the query path and made `getShapeAtPoint` 25%
++*slower*; both are fixed above. `notVisibleShapes` uses
++`getShapeIdsInsideBounds` as before.
++
++## In-app measurements
++
++Through the public `Editor` API only, so the same file runs against either
++index (`spatialIndexPerf.test.ts`). Board-shaped page, camera parked on working
++areas. Time is the minimum of three runs — on a shared machine the minimum is
++the least-perturbed sample. The noise floor is about ±5%: rows that are
++identical code on both sides (`createShapes`) move by that much.
++
++### 20,000 shapes
++
++| | rbush | flat | | allocation |
++|---|---|---|---|---|
++| `getShapeIdsInsideBounds` | 13.8 µs | 9.6 µs | **1.44×** | **1.62× less** |
++| page switch round trip (two full rebuilds) | 176.1 ms | 144.9 ms | **1.22×** | |
++| `getShapeAtPoint` | 1.63 ms | 1.52 ms | 1.07× | 1.06× less |
++| cull per camera move, 100% zoom | 11.55 ms | 11.58 ms | 1.00× | |
++| cull per camera move, 10% zoom | 10.39 ms | 10.40 ms | 1.00× | |
++| drag 20 shapes, per frame | 14.13 ms | 14.38 ms | 0.98× | |
++| drag 200 shapes, per frame | 18.25 ms | 18.67 ms | 0.98× | |
++
++### 5,000 shapes
++
++| | rbush | flat | |
++|---|---|---|---|
++| `getShapeIdsInsideBounds` | 9.0 µs | 7.3 µs | **1.23×** |
++| first cull (index built from scratch) | 292.3 ms | 243.3 ms | **1.20×** |
++| page switch round trip | 25.4 ms | 21.5 ms | **1.18×** |
++| `getShapeAtPoint` | 0.34 ms | 0.29 ms | **1.18×** |
++| cull per camera move | 2.56 ms | 2.49 ms | 1.03× |
++
++**The index gets 2–240× faster and the app barely notices.** That is the most
++useful thing here, and it is worth stating plainly rather than burying: on a
++20,000-shape page a viewport cull costs about 11 ms per camera move, and
++*0.01 ms of that is the spatial search*. Making the search five times faster
++moves a number that was already three orders of magnitude below the thing it
++sits inside.
++
++The rest of the 11 ms is `notVisibleShapes` building the complement: it walks
++every shape on the page and, for each one not in the viewport, does a store
++lookup, a shape-util lookup, and a `Set` insert — then `getCulledShapes` copies
++that Set, and `getCurrentPageRenderingShapesSorted` filters the sorted array
++against it. That is three page-sized traversals and two page-sized Sets per
++camera move, and none of it is the index's doing.
++
++So the case for this change is not "culling gets faster today". It is:
++
++1. **Index operations stop being a cost anyone has to think about**, including
++   the ones that scale worst today — dragging a large selection is 45× to 240×
++   cheaper, and a drag of 200 shapes on a 100,000-shape page goes from 6.5 ms
++   of index work per frame (a dropped frame on its own) to 27 µs.
++2. **The index holds a third to a quarter of the memory**, and none of it as
++   objects the collector has to trace.
++3. **It makes the O(visible) reformulation of culling reachable.** Culling is
++   O(page) today because the index can only answer in shape ids, so the
++   complement has to be built in shape ids too. A slot-keyed index can hand a
++   dense integer set straight to the renderer. That is a separate change, and a
++   bigger one, but it is the change that would move the 11 ms.
++
++## Reproducing
++
++```bash
++# index-level, both implementations, one process each
++yarn tsx internal/scripts/spatial-bench/index.ts --sizes 10000,100000 --datasets board,uniform
++
++# in-app, through the public Editor API
++cd packages/tldraw
++NODE_OPTIONS="--max-semi-space-size=512" SPATIAL_PERF=1 SPATIAL_PERF_N=20000 \
++  yarn vitest run src/test/spatialIndexPerf.test.ts
++
++# correctness
++cd packages/editor
++yarn vitest run src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
++```
++
++`RBushIndex.ts` is kept for now so the A/B has a baseline to run against. It
++would go with the change.
++
++## Open questions
++
++- **Cold load on small pages.** 2× slower at 1,000 shapes, parity at 10,000. If
++  opening small documents matters more than large ones, the loader could fall
++  back to a simple sort below some size.
++- **`maxShapesPerPage` defaults to 4,000.** The interesting numbers here are
++  above that. If pages are not expected to grow, most of this is headroom
++  rather than a fix for something.
++- **`SpatialIndexManager`'s public surface grows** by `acquireQuery`,
++  `searchBounds`, `searchAtPoint` and `validate`, all `@internal`. The
++  api-report needs regenerating.
++- **`getShapeIdsInsideBounds` stays `Set<TLShapeId>`.** It is public API and
++  SDK users may do anything with the result.
+diff --git a/packages/editor/src/lib/editor/Editor.ts b/packages/editor/src/lib/editor/Editor.ts
+index 2f887927..dc459420 100644
+--- a/packages/editor/src/lib/editor/Editor.ts
++++ b/packages/editor/src/lib/editor/Editor.ts
+@@ -1127,11 +1127,11 @@ export class Editor extends EventEmitter<TLEventMap> {
+ 	 * The spatial index.
+ 	 *
+ 	 * Reach for {@link SpatialIndexManager.acquireQuery} here rather than
+-	 * {@link Editor.getShapeIdsInsideBounds} whenever the result is only going to
+-	 * be asked for its size and then `has()`-ed against the page's shapes, which
+-	 * is what every consumer inside the SDK does with it. The `Set<TLShapeId>`
+-	 * those public methods return costs one entry per hit and is thrown away
+-	 * immediately; a query answers the same questions with nothing allocated.
++	 * {@link Editor.getShapeIdsInsideBounds} when the number of shapes the search
++	 * will match is in the same range as the number you are going to `has()` —
++	 * hit tests, brushes, the eraser. A query answers with nothing allocated. A
++	 * `Set` is still right for a caller that probes the whole page for a handful
++	 * of matches, which is what the viewport cull does.
+ 	 *
+ 	 * @internal
+ 	 */
+diff --git a/packages/editor/src/lib/editor/derivations/notVisibleShapes.ts b/packages/editor/src/lib/editor/derivations/notVisibleShapes.ts
+index a1f39782..16c3184e 100644
+--- a/packages/editor/src/lib/editor/derivations/notVisibleShapes.ts
++++ b/packages/editor/src/lib/editor/derivations/notVisibleShapes.ts
+@@ -1,7 +1,6 @@
+ import { computed, isUninitialized } from '@tldraw/state'
+ import { TLShapeId } from '@tldraw/tlschema'
+ import type { Editor } from '../Editor'
+-import type { SpatialQuery } from '../managers/SpatialIndexManager/ShapeSpatialIndex'
+ import { ShapeUtil } from '../shapes/ShapeUtil'
+ 
+ /**
+@@ -13,19 +12,16 @@ import { ShapeUtil } from '../shapes/ShapeUtil'
+ export function notVisibleShapes(editor: Editor) {
+ 	const emptySet = new Set<TLShapeId>()
+ 	const defaultCanCull = ShapeUtil.prototype.canCull
+-	// This derivation runs on every camera move and asks the search result only
+-	// for its size and then `has()`. Kept rather than acquired per run: the
+-	// membership stamps it holds are the whole reason it beats building a Set of
+-	// everything in the viewport, several thousand entries at a time. Acquired
+-	// lazily because the editor's spatial index does not exist yet when its field
+-	// initializers run.
+-	let visibleQuery: SpatialQuery | null = null
+-
+ 	return computed<Set<TLShapeId>>('notVisibleShapes', function (prevValue) {
+ 		const allShapeIds = editor.getCurrentPageShapeIds()
+ 		const viewportPageBounds = editor.getViewportPageBounds()
+-		visibleQuery ??= editor.spatialIndex.acquireQuery()
+-		const visibleIds = editor.spatialIndex.searchBounds(visibleQuery, viewportPageBounds)
++		// A Set is the right shape here, and this is the one place in the SDK
++		// where it is: the loop below probes every shape on the page for a result
++		// that is usually a few hundred, so a small Set is a smaller table to hit
++		// repeatedly than a page-sized id-to-slot map. The index's
++		// allocation-free query path is for the other consumers, whose probes are
++		// proportional to what the search matched.
++		const visibleIds = editor.getShapeIdsInsideBounds(viewportPageBounds)
+ 
+ 		// Fast path: if all shapes are visible, return empty set
+ 		if (visibleIds.size === allShapeIds.size) {
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
+index 7ad03acf..d39c7426 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
+@@ -262,12 +262,7 @@ export interface FlatRTreeStats {
+  * @internal
+  */
+ export class FlatRTree {
+-	/** Max entries per node. Fixed — every stride and mask below is a literal. */
+-	readonly maxEntries = 16
+-	/** Min entries per group in split distributions (rbush's 40% rule). */
+-	readonly minEntries = 7
+-
+-	/** Query results — valid slots are [0, n) after search()/searchPrecise()/searchAll().
++	/** Query results — valid slots are [0, n) after search() or searchPrecise().
+ 	 *  Identity changes only at mutation time (capacity ≥ size invariant). */
+ 	results!: Uint32Array
+ 
+@@ -333,21 +328,6 @@ export class FlatRTree {
+ 		return id < cellOf.length && cellOf[id] !== 0
+ 	}
+ 
+-	/** Copy the stored box of `id` into out[0..3]. O(1) — direct cell addressing. */
+-	readBBox(id: number, out: Float64Array): boolean {
+-		const cellOf = this._cellOf
+-		if (id >= cellOf.length) return false
+-		const cell = cellOf[id]
+-		if (cell === 0) return false
+-		const b = cell << 2
+-		const boxes = this._boxes
+-		out[0] = boxes[b]
+-		out[1] = boxes[b + 1]
+-		out[2] = boxes[b + 2]
+-		out[3] = boxes[b + 3]
+-		return true
+-	}
+-
+ 	/** True when `id` is present and its stored box equals the given one exactly.
+ 	 *  The incremental-update path uses this to drop no-op upserts without
+ 	 *  materializing the stored box (O(1) — direct cell addressing). */
+@@ -753,12 +733,6 @@ export class FlatRTree {
+ 		return n
+ 	}
+ 
+-	/** Fill `results` with every item id; returns the count (=== size). */
+-	searchAll(): number {
+-		if (this._size === 0) return 0
+-		return this._allInto(this._refs[0], 0, 0)
+-	}
+-
+ 	// ────────────────────────────────────────────────────────────── bulk load ──
+ 
+ 	/**
+-- 
+2.43.0
+

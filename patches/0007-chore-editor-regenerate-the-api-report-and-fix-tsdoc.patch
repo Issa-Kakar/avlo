@@ -1,0 +1,288 @@
+From 4bab6c5e8348dc37c97dd4a881e3359fc04d8348 Mon Sep 17 00:00:00 2001
+From: issakakar <Issakakar@icloud.com>
+Date: Sat, 29 Aug 2026 11:03:12 +0000
+Subject: [PATCH 7/8] chore(editor): regenerate the api report and fix tsdoc in
+ the new files
+
+api-extractor needs the types a public signature mentions to be exported, so
+FlatRTree, FlatRTreeStats, ShapeSpatialIndex and SpatialQuery are exported from
+the package entry, all @internal. The report grows by 87 lines and loses
+nothing.
+
+Also escapes the angle brackets and braces api-extractor's tsdoc parser
+objected to, and qualifies the bare {@link member} references.
+---
+ packages/editor/api-report.api.md             | 87 +++++++++++++++++++
+ packages/editor/src/index.ts                  |  1 +
+ .../managers/SpatialIndexManager/FlatRTree.ts | 10 +--
+ .../SpatialIndexManager/ShapeSpatialIndex.ts  | 18 ++--
+ 4 files changed, 102 insertions(+), 14 deletions(-)
+
+diff --git a/packages/editor/api-report.api.md b/packages/editor/api-report.api.md
+index 9c5dcc91..6c32d78c 100644
+--- a/packages/editor/api-report.api.md
++++ b/packages/editor/api-report.api.md
+@@ -1422,6 +1422,8 @@ export class Editor extends EventEmitter<TLEventMap> {
+     // (undocumented)
+     getSnapshot(): TLEditorSnapshot;
+     getSortedChildIdsForParent(parent: TLPage | TLParentId | TLShape): TLShapeId[];
++    // @internal
++    getSpatialIndex(): SpatialIndexManager;
+     getStateDescendant<T extends StateNode>(path: string): T | undefined;
+     getStyleForNextShape<T>(style: StyleProp<T>): T;
+     getSvgElement(shapes: TLShape[] | TLShapeId[], opts?: TLSvgExportOptions): Promise<{
+@@ -1812,6 +1814,46 @@ export function extractSessionStateFromLegacySnapshot(store: Record<string, Unkn
+ // @internal (undocumented)
+ export const featureFlags: Record<string, DebugFlag<boolean>>;
+ 
++// @internal
++export class FlatRTree {
++    constructor();
++    clear(): void;
++    dispose(): void;
++    // (undocumented)
++    getSize(): number;
++    // (undocumented)
++    has(id: number): boolean;
++    // (undocumented)
++    insert(id: number, minX: number, minY: number, maxX: number, maxY: number): void;
++    load(count: number, ids: ArrayLike<number>, boxes: ArrayLike<number>): void;
++    matchesBBox(id: number, minX: number, minY: number, maxX: number, maxY: number): boolean;
++    rebuild(): void;
++    remove(id: number): boolean;
++    results: Uint32Array;
++    search(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number;
++    searchPrecise(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number;
++    // (undocumented)
++    stats(): FlatRTreeStats;
++    update(id: number, minX: number, minY: number, maxX: number, maxY: number): void;
++    validate(): void;
++}
++
++// @internal (undocumented)
++export interface FlatRTreeStats {
++    // (undocumented)
++    avgLeafFill: number;
++    // (undocumented)
++    bytes: number;
++    // (undocumented)
++    freeNodes: number;
++    // (undocumented)
++    height: number;
++    // (undocumented)
++    nodes: number;
++    // (undocumented)
++    size: number;
++}
++
+ // @public (undocumented)
+ export class FontManager {
+     constructor(editor: Editor, assetUrls?: {
+@@ -3046,6 +3088,30 @@ export function setRuntimeOverrides(input: Partial<typeof runtime>): void;
+ // @public (undocumented)
+ export function setUserPreferences(user: TLUserPreferences): void;
+ 
++// @internal
++export class ShapeSpatialIndex {
++    acquireQuery(): SpatialQuery;
++    beginLoad(sizeHint: number): void;
++    clear(): void;
++    commitLoad(): void;
++    dispose(): void;
++    // (undocumented)
++    getSize(): number;
++    // (undocumented)
++    has(id: TLShapeId): boolean;
++    matchesBounds(id: TLShapeId, minX: number, minY: number, maxX: number, maxY: number): boolean;
++    rebuild(): void;
++    // (undocumented)
++    recycleQuery(query: SpatialQuery): void;
++    remove(id: TLShapeId): boolean;
++    searchToSet(minX: number, minY: number, maxX: number, maxY: number, precise: boolean): Set<TLShapeId>;
++    slotCapacity(): number;
++    stage(id: TLShapeId, minX: number, minY: number, maxX: number, maxY: number): void;
++    stats(): FlatRTreeStats;
++    upsert(id: TLShapeId, minX: number, minY: number, maxX: number, maxY: number): boolean;
++    validate(): void;
++}
++
+ // @public (undocumented)
+ export abstract class ShapeUtil<Shape extends TLShape = TLShape> {
+     constructor(editor: Editor);
+@@ -3210,6 +3276,7 @@ export class SnapManager {
+ // @internal
+ export class SpatialIndexManager {
+     constructor(editor: Editor);
++    acquireQuery(): SpatialQuery;
+     // @public
+     dispose(): void;
+     // (undocumented)
+@@ -3221,6 +3288,26 @@ export class SpatialIndexManager {
+     }, margin?: number): Set<TLShapeId>;
+     // @public
+     getShapeIdsInsideBounds(bounds: Box): Set<TLShapeId>;
++    searchAtPoint(query: SpatialQuery, point: {
++        x: number;
++        y: number;
++    }, margin?: number): SpatialQuery;
++    searchBounds(query: SpatialQuery, bounds: Box): SpatialQuery;
++    validate(): void;
++}
++
++// @internal
++export class SpatialQuery {
++    constructor(index: ShapeSpatialIndex, tree: FlatRTree, slotOf: Map<TLShapeId, number>, idBySlot: (TLShapeId | undefined)[]);
++    forEach(visit: (id: TLShapeId) => void): void;
++    forgetSlot(slot: number): void;
++    has(id: TLShapeId): boolean;
++    release(): void;
++    reset(): void;
++    searchBounds(minX: number, minY: number, maxX: number, maxY: number): this;
++    searchPoint(x: number, y: number, margin: number): this;
++    size: number;
++    stampBytes(): number;
+ }
+ 
+ // @public (undocumented)
+diff --git a/packages/editor/src/index.ts b/packages/editor/src/index.ts
+index a0a5a8a9..7034c619 100644
+--- a/packages/editor/src/index.ts
++++ b/packages/editor/src/index.ts
+@@ -131,6 +131,7 @@ export {
+ 	type SnapData,
+ 	type SnapIndicator,
+ } from './lib/editor/managers/SnapManager/SnapManager'
++export { FlatRTree, type FlatRTreeStats } from './lib/editor/managers/SpatialIndexManager/FlatRTree'
+ export {
+ 	ShapeSpatialIndex,
+ 	SpatialQuery,
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
+index d39c7426..7a2bfd0f 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
+@@ -1085,7 +1085,7 @@ export class FlatRTree {
+ 	/**
+ 	 * Descend by least area enlargement (tie: least area) until reaching
+ 	 * `targetLevel`; the entry box is read from `_argBox`. For node-entry
+-	 * inserts (targetLevel > 0) the descent also stops early if the chosen
++	 * inserts (`targetLevel > 0`) the descent also stops early if the chosen
+ 	 * child sits below the target level — legal in an OMT-mixed-level tree; the
+ 	 * entry then lands in the current node. Returns the annotated word of the
+ 	 * landing node.
+@@ -1140,8 +1140,8 @@ export class FlatRTree {
+ 	 * Split `node` (full, 16 entries) plus one extra entry (box in `_argBox`,
+ 	 * word `exWord`) into two groups. Axis by minimum total distribution margin
+ 	 * of the min-coordinate orders (rbush's metric over the reduced tables);
+-	 * index over EIGHT candidates — k ∈ [7,10] × {min order, max order of the
+-	 * winning axis} — by minimum overlap, tie minimum combined area. The
++	 * index over EIGHT candidates — `k` in [7,10] times the min and max orders
++	 * of the winning axis — by minimum overlap, tie minimum combined area. The
+ 	 * snapshot pass fans coordinates into contiguous key streams; the max
+ 	 * order is seeded from the min order so its sort pays only for inversions
+ 	 * (containment pairs). Group 1 rewrites `node`, group 2 fills a fresh
+@@ -1893,7 +1893,7 @@ function fillReducedTable17(sF: Float64Array, sU: Uint32Array, ob: number, tb: n
+ /** Fused seed pass: center-key transform for BOTH axes + identity permutation
+  *  + root X range, one read of each input coordinate. The key is the signed
+  *  high word of min+max (same order as the center), sign-folded branchlessly:
+- *  h ^ ((h >> 31) & 0x7fffffff) reverses the magnitude order of negatives
++ *  `h ^ ((h >> 31) & 0x7fffffff)` reverses the magnitude order of negatives
+  *  while keeping them below positives. Returns the root X phase's start
+  *  shift, or -1 when every X key is equal (nothing to partition). */
+ function seedKeys(
+@@ -2025,7 +2025,7 @@ function insSort2(lk: Int32Array, li: Int32Array, lo: number, hiEx: number): voi
+  * slice boundaries resolve in the same histogram+scatter passes, and buckets
+  * containing no boundary are never touched again (the entire point of
+  * multi-select). `nb` is the first boundary STRICTLY above lo — the caller
+- * guarantees nb < hiEx (both call sites test it) — and steps bucket to
++ * guarantees `nb < hiEx` (both call sites test it) — and steps bucket to
+  * bucket by g, so no boundary is ever derived by division. `hist` is 4 banks
+  * of 256 keyed by shift: a parent keeps reading its own bank's bucket ends
+  * while children (at shift−8) fill theirs. Equal keys make any cut a valid
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
+index 98e21fbb..61d7c1e4 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
+@@ -26,7 +26,7 @@ function isIndexableBox(minX: number, minY: number, maxX: number, maxY: number):
+ }
+ 
+ /**
+- * The shape-facing spatial index: a `FlatRTree` plus the `TLShapeId` <-> slot
++ * The shape-facing spatial index: a `FlatRTree` plus the `TLShapeId`-to-slot
+  * mapping it needs.
+  *
+  * The tree underneath is keyed by dense unsigned ints ("slots"), not by shape
+@@ -54,7 +54,7 @@ function isIndexableBox(minX: number, minY: number, maxX: number, maxY: number):
+ export class ShapeSpatialIndex {
+ 	private readonly tree = new FlatRTree()
+ 
+-	/** slot -> shape id. Freed slots hold `undefined` and are never read: every
++	/** Shape id per slot. Freed slots hold `undefined` and are never read: every
+ 	 *  slot a search returns is live by construction. */
+ 	private readonly idBySlot: (TLShapeId | undefined)[] = []
+ 	private readonly slotOf = new Map<TLShapeId, number>()
+@@ -69,7 +69,7 @@ export class ShapeSpatialIndex {
+ 	 *  as a hit from a search that never saw it. */
+ 	private readonly liveQueries: SpatialQuery[] = []
+ 
+-	/** Staging for {@link beginLoad} / {@link stage} / {@link commitLoad}.
++	/** Staging for {@link ShapeSpatialIndex.beginLoad} / {@link ShapeSpatialIndex.stage} / {@link ShapeSpatialIndex.commitLoad}.
+ 	 *  Released again at commit: a page's worth of staging is not worth holding
+ 	 *  between rebuilds. */
+ 	private stagedIds: Uint32Array = EMPTY_U32
+@@ -93,7 +93,7 @@ export class ShapeSpatialIndex {
+ 	 *
+ 	 * Returns whether the index changed, which is what drives the manager's
+ 	 * epoch. Callers that might be re-upserting identical bounds should gate on
+-	 * {@link matchesBounds} first — this reports a change either way.
++	 * {@link ShapeSpatialIndex.matchesBounds} first — this reports a change either way.
+ 	 *
+ 	 * The move path is the one that matters: dragging a shape re-upserts it on
+ 	 * every store update, and the tree resolves that in place. An O(1) overwrite
+@@ -141,7 +141,7 @@ export class ShapeSpatialIndex {
+ 
+ 	/**
+ 	 * Start a packed rebuild. Drops the current contents; stage every shape with
+-	 * {@link stage}, then {@link commitLoad}.
++	 * {@link ShapeSpatialIndex.stage}, then {@link ShapeSpatialIndex.commitLoad}.
+ 	 *
+ 	 * The three-call shape exists so the caller never builds an array of
+ 	 * per-shape objects: staged boxes go straight into a `Float64Array` that the
+@@ -153,7 +153,7 @@ export class ShapeSpatialIndex {
+ 		if (sizeHint > 0) this.growStaging(sizeHint)
+ 	}
+ 
+-	/** Stage one shape for the in-progress {@link beginLoad}. Shapes with
++	/** Stage one shape for the in-progress {@link ShapeSpatialIndex.beginLoad}. Shapes with
+ 	 *  non-indexable bounds are skipped, as are repeats of an already-staged id. */
+ 	stage(id: TLShapeId, minX: number, minY: number, maxX: number, maxY: number): void {
+ 		if (!isIndexableBox(minX, minY, maxX, maxY)) return
+@@ -169,7 +169,7 @@ export class ShapeSpatialIndex {
+ 		this.stagedCount = n + 1
+ 	}
+ 
+-	/** Build the tree from everything staged since {@link beginLoad}. */
++	/** Build the tree from everything staged since {@link ShapeSpatialIndex.beginLoad}. */
+ 	commitLoad(): void {
+ 		const n = this.stagedCount
+ 		this.stagedCount = 0
+@@ -188,7 +188,7 @@ export class ShapeSpatialIndex {
+ 	/**
+ 	 * Shape ids whose bounds intersect the rect, as a `Set`.
+ 	 *
+-	 * Allocates the Set and one entry per hit. Prefer {@link acquireQuery}
++	 * Allocates the Set and one entry per hit. Prefer {@link ShapeSpatialIndex.acquireQuery}
+ 	 * wherever the caller only needs `size` and `has()`; this exists for the
+ 	 * public `Editor` methods, whose `Set<TLShapeId>` return type is SDK surface.
+ 	 *
+@@ -386,7 +386,7 @@ export class SpatialQuery {
+ 	}
+ 
+ 	/** Visit every matched shape id. Allocation-free. Shapes removed since the
+-	 *  search are skipped, matching {@link has}. */
++	 *  search are skipped, matching {@link SpatialQuery.has}. */
+ 	forEach(visit: (id: TLShapeId) => void): void {
+ 		const listed = this.listed
+ 		if (listed >= 0) {
+-- 
+2.43.0
+

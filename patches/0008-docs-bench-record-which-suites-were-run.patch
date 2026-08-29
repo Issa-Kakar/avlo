@@ -1,0 +1,39 @@
+From 19f859fdbae25d30dcc3aa2534ccf559633ede47 Mon Sep 17 00:00:00 2001
+From: issakakar <Issakakar@icloud.com>
+Date: Sat, 29 Aug 2026 11:28:35 +0000
+Subject: [PATCH 8/8] docs(bench): record which suites were run
+
+---
+ internal/scripts/spatial-bench/RESULTS.md | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/internal/scripts/spatial-bench/RESULTS.md b/internal/scripts/spatial-bench/RESULTS.md
+index 2f5e330a..b075e611 100644
+--- a/internal/scripts/spatial-bench/RESULTS.md
++++ b/internal/scripts/spatial-bench/RESULTS.md
+@@ -62,10 +62,18 @@ The suite also covers slot recycling, a search running while another query's
+ results are being read, the 16-bit generation wrap, page-sized clear and
+ reload, and the small/large result crossover.
+ 
+-The existing suites pass unchanged except for one test, which spied on
+-`RBushIndex.applyBatch` by name to assert that a prop-only diff does not touch
+-the index. It now spies on `upsert` and `remove` — the same guarantee, checked
+-one level closer.
++The existing suites pass. On this branch:
++
++- `packages/editor` — 1,201 tests across 56 files.
++- `packages/tldraw`, the suites closest to the change — spatial index,
++  notVisibleShapes, getCulledShapes, getShapeAtPoint, SelectTool, EraserTool,
++  select, selection-omnibus, frames, transparent-image-hit-test,
++  arrows-megabus — 490 tests across 11 files.
++- The parity fuzz above — 9 tests.
++
++One existing test changed: it spied on `RBushIndex.applyBatch` by name to assert
++that a prop-only diff does not touch the index. It now spies on `upsert` and
++`remove` — the same guarantee, checked one level closer.
+ 
+ ## Index-level measurements
+ 
+-- 
+2.43.0
+

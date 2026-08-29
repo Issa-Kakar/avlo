@@ -1,0 +1,126 @@
+diff --git a/packages/editor/api-report.api.md b/packages/editor/api-report.api.md
+index 9c5dcc91..6c32d78c 100644
+--- a/packages/editor/api-report.api.md
++++ b/packages/editor/api-report.api.md
+@@ -1422,6 +1422,8 @@ export class Editor extends EventEmitter<TLEventMap> {
+     // (undocumented)
+     getSnapshot(): TLEditorSnapshot;
+     getSortedChildIdsForParent(parent: TLPage | TLParentId | TLShape): TLShapeId[];
++    // @internal
++    getSpatialIndex(): SpatialIndexManager;
+     getStateDescendant<T extends StateNode>(path: string): T | undefined;
+     getStyleForNextShape<T>(style: StyleProp<T>): T;
+     getSvgElement(shapes: TLShape[] | TLShapeId[], opts?: TLSvgExportOptions): Promise<{
+@@ -1812,6 +1814,46 @@ export function extractSessionStateFromLegacySnapshot(store: Record<string, Unkn
+ // @internal (undocumented)
+ export const featureFlags: Record<string, DebugFlag<boolean>>;
+ 
++// @internal
++export class FlatRTree {
++    constructor();
++    clear(): void;
++    dispose(): void;
++    // (undocumented)
++    getSize(): number;
++    // (undocumented)
++    has(id: number): boolean;
++    // (undocumented)
++    insert(id: number, minX: number, minY: number, maxX: number, maxY: number): void;
++    load(count: number, ids: ArrayLike<number>, boxes: ArrayLike<number>): void;
++    matchesBBox(id: number, minX: number, minY: number, maxX: number, maxY: number): boolean;
++    rebuild(): void;
++    remove(id: number): boolean;
++    results: Uint32Array;
++    search(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number;
++    searchPrecise(qMinX: number, qMinY: number, qMaxX: number, qMaxY: number): number;
++    // (undocumented)
++    stats(): FlatRTreeStats;
++    update(id: number, minX: number, minY: number, maxX: number, maxY: number): void;
++    validate(): void;
++}
++
++// @internal (undocumented)
++export interface FlatRTreeStats {
++    // (undocumented)
++    avgLeafFill: number;
++    // (undocumented)
++    bytes: number;
++    // (undocumented)
++    freeNodes: number;
++    // (undocumented)
++    height: number;
++    // (undocumented)
++    nodes: number;
++    // (undocumented)
++    size: number;
++}
++
+ // @public (undocumented)
+ export class FontManager {
+     constructor(editor: Editor, assetUrls?: {
+@@ -3046,6 +3088,30 @@ export function setRuntimeOverrides(input: Partial<typeof runtime>): void;
+ // @public (undocumented)
+ export function setUserPreferences(user: TLUserPreferences): void;
+ 
++// @internal
++export class ShapeSpatialIndex {
++    acquireQuery(): SpatialQuery;
++    beginLoad(sizeHint: number): void;
++    clear(): void;
++    commitLoad(): void;
++    dispose(): void;
++    // (undocumented)
++    getSize(): number;
++    // (undocumented)
++    has(id: TLShapeId): boolean;
++    matchesBounds(id: TLShapeId, minX: number, minY: number, maxX: number, maxY: number): boolean;
++    rebuild(): void;
++    // (undocumented)
++    recycleQuery(query: SpatialQuery): void;
++    remove(id: TLShapeId): boolean;
++    searchToSet(minX: number, minY: number, maxX: number, maxY: number, precise: boolean): Set<TLShapeId>;
++    slotCapacity(): number;
++    stage(id: TLShapeId, minX: number, minY: number, maxX: number, maxY: number): void;
++    stats(): FlatRTreeStats;
++    upsert(id: TLShapeId, minX: number, minY: number, maxX: number, maxY: number): boolean;
++    validate(): void;
++}
++
+ // @public (undocumented)
+ export abstract class ShapeUtil<Shape extends TLShape = TLShape> {
+     constructor(editor: Editor);
+@@ -3210,6 +3276,7 @@ export class SnapManager {
+ // @internal
+ export class SpatialIndexManager {
+     constructor(editor: Editor);
++    acquireQuery(): SpatialQuery;
+     // @public
+     dispose(): void;
+     // (undocumented)
+@@ -3221,6 +3288,26 @@ export class SpatialIndexManager {
+     }, margin?: number): Set<TLShapeId>;
+     // @public
+     getShapeIdsInsideBounds(bounds: Box): Set<TLShapeId>;
++    searchAtPoint(query: SpatialQuery, point: {
++        x: number;
++        y: number;
++    }, margin?: number): SpatialQuery;
++    searchBounds(query: SpatialQuery, bounds: Box): SpatialQuery;
++    validate(): void;
++}
++
++// @internal
++export class SpatialQuery {
++    constructor(index: ShapeSpatialIndex, tree: FlatRTree, slotOf: Map<TLShapeId, number>, idBySlot: (TLShapeId | undefined)[]);
++    forEach(visit: (id: TLShapeId) => void): void;
++    forgetSlot(slot: number): void;
++    has(id: TLShapeId): boolean;
++    release(): void;
++    reset(): void;
++    searchBounds(minX: number, minY: number, maxX: number, maxY: number): this;
++    searchPoint(x: number, y: number, margin: number): this;
++    size: number;
++    stampBytes(): number;
+ }
+ 
+ // @public (undocumented)

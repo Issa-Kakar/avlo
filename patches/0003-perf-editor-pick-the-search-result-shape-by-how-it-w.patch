@@ -1,0 +1,329 @@
+From 464df673f1d084f7c3d69993e13f4af7b3486e48 Mon Sep 17 00:00:00 2001
+From: issakakar <Issakakar@icloud.com>
+Date: Sat, 29 Aug 2026 10:14:14 +0000
+Subject: [PATCH 3/8] perf(editor): pick the search result shape by how it will
+ be read
+
+Measuring the consumers rather than the index changed the answer for one of
+them. A query's membership stamps beat a Set when the number of probes is in
+the same range as the number of matches, which is every hit test, brush and
+eraser sweep. The viewport cull is the opposite: it probes every shape on the
+page for a few hundred matches, so a small Set is a smaller table to hit
+repeatedly than a page-sized id-to-slot map, and it goes back to
+getShapeIdsInsideBounds.
+
+SpatialQuery now also keeps a small result as a scannable list instead of
+stamps. At the two or three matches a hit test returns that is a couple of
+pointer compares, and an empty result answers has() with no work at all --
+which is what closed a 25% regression in getShapeAtPoint.
+---
+ .../ShapeSpatialIndex.test.ts                 | 35 +++++++++
+ .../SpatialIndexManager/ShapeSpatialIndex.ts  | 75 +++++++++++++++++--
+ .../tldraw/src/test/spatialIndexPerf.test.ts  | 62 ++++++++++-----
+ 3 files changed, 147 insertions(+), 25 deletions(-)
+
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
+index 48db7aea..d631b6dc 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
+@@ -290,6 +290,41 @@ describe('ShapeSpatialIndex', () => {
+ 		expect(query.has(id)).toBe(false)
+ 	})
+ 
++	it('answers the same either side of the small-result crossover', () => {
++		// The query keeps a small result as a list and a large one as stamps.
++		// Both representations have to answer identically, including at the
++		// boundary and when a search shrinks back across it.
++		const index = new ShapeSpatialIndex()
++		const query = index.acquireQuery()
++		const ids: TLShapeId[] = []
++		for (let i = 0; i < 64; i++) {
++			const id = `shape:c${i}` as TLShapeId
++			ids.push(id)
++			index.upsert(id, i * 10, 0, i * 10 + 5, 5)
++		}
++
++		for (const count of [0, 1, 15, 16, 17, 40, 64, 3, 0]) {
++			query.searchBounds(-1, 0, count * 10 - 5, 5)
++			expect(query.size, `size for ${count}`).toBe(count)
++			const seen: TLShapeId[] = []
++			query.forEach((id) => seen.push(id))
++			expect(seen.length).toBe(count)
++			for (let i = 0; i < 64; i++) {
++				expect(query.has(ids[i]), `has(${i}) with ${count} matched`).toBe(i < count)
++			}
++		}
++
++		// A removal has to reach both representations.
++		for (const count of [8, 40]) {
++			query.searchBounds(-1, 0, count * 10 - 5, 5)
++			expect(query.has(ids[0])).toBe(true)
++			index.remove(ids[0])
++			expect(query.has(ids[0])).toBe(false)
++			index.upsert(ids[0], 0, 0, 5, 5)
++		}
++		index.validate()
++	})
++
+ 	it('reports no-op bounds so the manager can skip prop-only updates', () => {
+ 		const index = new ShapeSpatialIndex()
+ 		const id = 'shape:m' as TLShapeId
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
+index 5c432213..96f9129b 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
+@@ -1,6 +1,11 @@
+ import type { TLShapeId } from '@tldraw/tlschema'
+ import { FlatRTree } from './FlatRTree'
+ 
++/** Results at or below this are kept as a scannable list rather than as stamps.
++ *  A linear scan of a handful of ids beats a hash lookup, and the crossover is
++ *  broad — anything from about 8 to 32 measures the same. */
++const LIST_LIMIT = 16
++
+ const EMPTY_U16 = new Uint16Array(0)
+ const EMPTY_U32 = new Uint32Array(0)
+ const EMPTY_F64 = new Float64Array(0)
+@@ -312,15 +317,21 @@ export class ShapeSpatialIndex {
+ /**
+  * One search's results, held without allocating.
+  *
+- * `has()` is a Map lookup plus one typed-array compare — the same order of work
+- * as `Set.has`, but reaching it costs nothing, where building the Set costs one
+- * entry per hit. On a viewport cull of a few thousand shapes that is the whole
+- * difference.
++ * Every consumer walks the page's sorted shapes and asks `has()` for each one,
++ * so the probe count is always about the page size and the only variable is how
++ * many shapes the search matched. That decides the representation, and the
++ * query picks it per search:
++ *
++ * - A handful of matches — a hit test, an eraser's line segment — is kept as a
++ *   list and scanned. At two or three entries that is a couple of pointer
++ *   compares, cheaper than any hash lookup, and a miss on an empty result costs
++ *   nothing at all.
++ * - A large result — a viewport cull — is kept as a generation stamp per slot.
++ *   Nothing is built per hit, and a search only touches the slots it matched.
+  *
+- * Membership is a generation stamp per slot rather than a cleared bitmap, so a
+- * search never touches a slot it did not hit. The matched slots are copied out
+- * of the tree's shared results buffer in the same pass, so a search run while
+- * these results are still being read cannot disturb them.
++ * Either way nothing is allocated, and the matched slots are copied out of the
++ * tree's shared results buffer during the search, so a search run while these
++ * results are still being read cannot disturb them.
+  *
+  * @internal
+  */
+@@ -328,6 +339,10 @@ export class SpatialQuery {
+ 	/** How many shapes the last search matched. Read only — the index writes it. */
+ 	size = 0
+ 
++	/** Matched ids, when the result was small enough to scan. `-1` means the
++	 *  stamps below hold the membership instead. */
++	private listed = -1
++	private list: (TLShapeId | undefined)[] = []
+ 	private stamp: Uint16Array = EMPTY_U16
+ 	private slots: Uint32Array = EMPTY_U32
+ 	private generation = 0
+@@ -359,6 +374,12 @@ export class SpatialQuery {
+ 	 *  search are not reflected — the same as a `Set` taken at that moment —
+ 	 *  and shapes removed since read as absent. */
+ 	has(id: TLShapeId): boolean {
++		const listed = this.listed
++		if (listed >= 0) {
++			const list = this.list
++			for (let i = 0; i < listed; i++) if (list[i] === id) return true
++			return false
++		}
+ 		const slot = this.slotOf.get(id)
+ 		if (slot === undefined) return false
+ 		return this.stamp[slot] === this.generation
+@@ -367,6 +388,15 @@ export class SpatialQuery {
+ 	/** Visit every matched shape id. Allocation-free. Shapes removed since the
+ 	 *  search are skipped, matching {@link has}. */
+ 	forEach(visit: (id: TLShapeId) => void): void {
++		const listed = this.listed
++		if (listed >= 0) {
++			const list = this.list
++			for (let i = 0; i < listed; i++) {
++				const id = list[i]
++				if (id !== undefined) visit(id)
++			}
++			return
++		}
+ 		const slots = this.slots
+ 		const stamp = this.stamp
+ 		const idBySlot = this.idBySlot
+@@ -387,6 +417,17 @@ export class SpatialQuery {
+ 	/** Drop a slot's membership, because the shape holding it was removed and
+ 	 *  the slot is about to be handed to a different shape. @internal */
+ 	forgetSlot(slot: number): void {
++		const listed = this.listed
++		if (listed >= 0) {
++			const slots = this.slots
++			for (let i = 0; i < listed; i++) {
++				if (slots[i] === slot) {
++					this.list[i] = undefined
++					return
++				}
++			}
++			return
++		}
+ 		if (slot < this.stamp.length) this.stamp[slot] = 0
+ 	}
+ 
+@@ -395,6 +436,7 @@ export class SpatialQuery {
+ 		this.stamp.fill(0)
+ 		this.generation = 0
+ 		this.size = 0
++		this.listed = 0
+ 	}
+ 
+ 	/** Membership is a generation stamp per slot: this many bytes are held for
+@@ -412,6 +454,23 @@ export class SpatialQuery {
+ 	 *  amortised to nothing. */
+ 	private run(n: number): this {
+ 		this.size = n
++		if (n <= LIST_LIMIT) {
++			// Small result: keep the ids and scan them. `listed = 0` on an empty
++			// result answers every `has()` with no work whatsoever.
++			const results = this.tree.results
++			const slots =
++				this.slots.length >= LIST_LIMIT ? this.slots : (this.slots = new Uint32Array(LIST_LIMIT))
++			const list = this.list
++			const idBySlot = this.idBySlot
++			for (let i = 0; i < n; i++) {
++				const slot = results[i]
++				slots[i] = slot
++				list[i] = idBySlot[slot]
++			}
++			this.listed = n
++			return this
++		}
++		this.listed = -1
+ 		// A generation is taken even for an empty result: a stamp left from this
+ 		// query's previous search must never read as a hit.
+ 		let generation = this.generation + 1
+diff --git a/packages/tldraw/src/test/spatialIndexPerf.test.ts b/packages/tldraw/src/test/spatialIndexPerf.test.ts
+index 49d2f835..1956229e 100644
+--- a/packages/tldraw/src/test/spatialIndexPerf.test.ts
++++ b/packages/tldraw/src/test/spatialIndexPerf.test.ts
+@@ -32,18 +32,45 @@ function makeRandom(seed: number): () => number {
+ 	}
+ }
+ 
+-const rows: { label: string; total: number; count: number; note?: string }[] = []
++const rows: {
++	label: string
++	total: number
++	count: number
++	note?: string
++	bytes?: number
++}[] = []
+ 
++// Bytes allocated during a measured block.
++//
++// Wall time on a shared machine hides allocation churn behind noise, and
++// allocation is what turns into a dropped frame rather than a slower average.
++// Run the suite with a young generation big enough that nothing is collected
++// mid-measurement and the heap delta is exactly what the block allocated:
++//
++//   NODE_OPTIONS="--max-semi-space-size=512" SPATIAL_PERF=1 yarn vitest run ...
++//
++// Without that flag the numbers still compare like for like, they are just
++// lower bounds — a scavenge inside the window gives some of the bytes back.
+ function record(label: string, totalNs: number, count: number, note?: string) {
+ 	rows.push({ label, total: totalNs, count, note })
+ }
+ 
++/** Time `fn` and report what it allocated. */
++function timeWithAlloc(label: string, count: number, fn: () => void, note?: string) {
++	const before = process.memoryUsage().heapUsed
++	const total = time(fn)
++	const bytes = process.memoryUsage().heapUsed - before
++	rows.push({ label, total, count, note, bytes })
++}
++
+ function report() {
+ 	const lines = [`=== in-app spatial timings, ${SHAPE_COUNT.toLocaleString()} shapes ===`]
+ 	for (const r of rows) {
+ 		const per = r.total / r.count / 1e6
++		const alloc =
++			r.bytes === undefined ? '' : `  ${(r.bytes / r.count / 1024).toFixed(1).padStart(8)} KB/op`
+ 		lines.push(
+-			`${r.label.padEnd(42)}${per.toFixed(4).padStart(10)} ms/op  ${(r.total / 1e6)
++			`${r.label.padEnd(42)}${per.toFixed(4).padStart(10)} ms/op${alloc}  ${(r.total / 1e6)
+ 				.toFixed(1)
+ 				.padStart(8)} ms total${r.note ? `   (${r.note})` : ''}`
+ 		)
+@@ -134,16 +161,19 @@ describe.runIf(ENABLED)('spatial index, in the editor', () => {
+ 				place()
+ 				editor.getCulledShapes()
+ 			}
+-			let visible = 0
+ 			let sum = 0
+-			const ns = time(() => {
+-				for (let f = 0; f < FRAMES; f++) {
+-					place()
+-					sum += editor.getCulledShapes().size
+-				}
+-			})
+-			visible = SHAPE_COUNT - Math.round(sum / FRAMES)
+-			record(label, ns, FRAMES, `~${visible} shapes on screen`)
++			timeWithAlloc(
++				label,
++				FRAMES,
++				() => {
++					for (let f = 0; f < FRAMES; f++) {
++						place()
++						sum += editor.getCulledShapes().size
++					}
++				},
++				`~${SHAPE_COUNT - Math.round(sum / FRAMES)} shapes on screen`
++			)
++			rows[rows.length - 1].note = `~${SHAPE_COUNT - Math.round(sum / FRAMES)} shapes on screen`
+ 		}
+ 
+ 		// ── dragging ────────────────────────────────────────────────────────
+@@ -171,10 +201,9 @@ describe.runIf(ENABLED)('spatial index, in the editor', () => {
+ 				editor.getCulledShapes()
+ 			}
+ 			for (let f = 0; f < 10; f++) move(1, 1)
+-			const ns = time(() => {
++			timeWithAlloc(`drag ${selection} shape(s), per frame`, FRAMES, () => {
+ 				for (let f = 0; f < FRAMES; f++) move(2.5, 1.75)
+ 			})
+-			record(`drag ${selection} shape(s), per frame`, ns, FRAMES)
+ 		}
+ 
+ 		// ── hit testing ─────────────────────────────────────────────────────
+@@ -186,12 +215,11 @@ describe.runIf(ENABLED)('spatial index, in the editor', () => {
+ 				pts.push(s.x + random() * 100, s.y + random() * 80)
+ 			}
+ 			for (let i = 0; i < 200; i++) editor.getShapeAtPoint({ x: pts[i * 2], y: pts[i * 2 + 1] })
+-			const ns = time(() => {
++			timeWithAlloc('getShapeAtPoint', PROBES, () => {
+ 				for (let i = 0; i < PROBES; i++) {
+ 					editor.getShapeAtPoint({ x: pts[i * 2], y: pts[i * 2 + 1] })
+ 				}
+ 			})
+-			record('getShapeAtPoint', ns, PROBES)
+ 		}
+ 
+ 		// ── the public Set-returning API ────────────────────────────────────
+@@ -203,10 +231,10 @@ describe.runIf(ENABLED)('spatial index, in the editor', () => {
+ 			}
+ 			for (let i = 0; i < 50; i++) editor.getShapeIdsInsideBounds(boxes[i])
+ 			let hits = 0
+-			const ns = time(() => {
++			timeWithAlloc('getShapeIdsInsideBounds (Set)', SEARCHES, () => {
+ 				for (let i = 0; i < SEARCHES; i++) hits += editor.getShapeIdsInsideBounds(boxes[i]).size
+ 			})
+-			record('getShapeIdsInsideBounds (Set)', ns, SEARCHES, `${(hits / SEARCHES) | 0} hits avg`)
++			rows[rows.length - 1].note = `${(hits / SEARCHES) | 0} hits avg`
+ 		}
+ 
+ 		// ── page switching: a full index rebuild each way ────────────────────
+-- 
+2.43.0
+
