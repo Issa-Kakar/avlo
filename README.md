@@ -1,3 +1,15 @@
+> ## ⚠️ Read `RECAP.md` first
+>
+> This branch is a **proof of concept whose design and numbers were both later
+> found wrong**. The engine (`FlatRTree.ts`) is sound; the wrapper around it
+> (`ShapeSpatialIndex.ts`, `SpatialQuery`, the pooled-query API) should not be
+> built on, and the speedups in `RESULTS.md` and `ISSUE-DRAFT.md` are inflated.
+>
+> `RECAP.md` is the handoff document: §0 says what is wrong, §3 is a verified
+> map of tldraw's spatial-index architecture, §5 has the measurements that
+> replaced the ones here, and §6 records a real hang bug. `harness/` holds the
+> scripts that produced §5.
+
 # FlatRTree in tldraw — proof of concept
 
 A slot-keyed, structure-of-arrays R-tree dropped into tldraw's
@@ -12,12 +24,14 @@ against a clone of `tldraw/tldraw`, and the container does not survive.
 
 | | |
 |---|---|
+| `RECAP.md` | **Start here.** What is wrong with this branch, a verified map of tldraw's spatial-index architecture, and the measurements that replaced `RESULTS.md`. |
 | `patches/` | The eight commits, as a `git am` series against `tldraw/tldraw` at `cbbcf35`. This is the whole change. |
 | `new-files/` | The files that did not exist before, at their tldraw paths — easier to read than a patch. |
 | `diffs/` | The changes to files that already existed, which is the part a reviewer actually reads. |
 | `RESULTS.md` | Method and measurements. |
 | `ISSUE-DRAFT.md` | A draft of the tldraw issue, for adapting rather than sending as-is. |
-| `raw/` | Unedited benchmark output. |
+| `raw/` | Unedited benchmark output (superseded — see `RECAP.md` §5). |
+| `harness/` | The measurement scripts behind `RECAP.md` §5.2 and §5.3, plus esbuild bundles so plain `node` can run them. |
 
 Ten commits. `packages/editor` passes 1,202 tests, `packages/tldraw` passes
 2,912 across the full 213-file suite, and the parity fuzz passes 10.

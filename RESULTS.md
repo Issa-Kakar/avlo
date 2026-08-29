@@ -1,3 +1,27 @@
+> ## ⚠️ The numbers below are superseded — do not quote them
+>
+> A later measurement pass invalidated most of this file. Two classes of error:
+>
+> - **Speedups inflated by workload choice.** The drag figure ("240×") parked
+>   every update in the O(1) fast tier by nudging shapes 3% of their width; the
+>   honest figure is 39×. The remove figure ("63×") drains the whole tree, which
+>   is rbush's worst case; on uniform data it is 3.7×. Load was quoted at the
+>   adapter level (2.1×) where the tree-level number is 3.4×.
+> - **The GC comparison measured process setup, not the loop.** "71 → 31
+>   scavenges" counted every collection in the process, including building 100k
+>   objects and `rbush.load`, at a semi-space size where the measured loop
+>   produced roughly one scavenge of real signal.
+>
+> The replacement measurement — a marker-bracketed, per-mode, heap-delta
+> decomposition that separates the index from the mandatory `Set` — is in
+> **`RECAP.md` §5.2**, along with the query-per-frame counts in §5.3. That method
+> is self-validating (its parts sum to the whole within 0.2%) and its headline is
+> stronger than anything here: **~520× less garbage on the index-attributable
+> path, 684× on mutation alone.**
+>
+> The design in this branch is also wrong in a way no number fixes — see
+> `RECAP.md` §0.
+
 # Replacing rbush in the spatial index: measurements
 
 A flat, structure-of-arrays R-tree behind `SpatialIndexManager`, in place of
