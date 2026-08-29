@@ -1,8 +1,8 @@
 From 4ccd1e3784264e07fcbe169c1bd28e360aabe279 Mon Sep 17 00:00:00 2001
 From: issakakar <Issakakar@icloud.com>
 Date: Sat, 29 Aug 2026 10:20:27 +0000
-Subject: [PATCH 4/8] perf(editor): keep the viewport cull on the Set path, and
- trim dead engine API
+Subject: [PATCH 04/10] perf(editor): keep the viewport cull on the Set path,
+ and trim dead engine API
 
 The cull is the one consumer that probes every shape on the page for a result
 of a few hundred, so the cost is all lookups and a small Set is a smaller table

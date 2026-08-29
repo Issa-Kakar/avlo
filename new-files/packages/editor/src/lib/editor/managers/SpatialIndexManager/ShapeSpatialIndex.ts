@@ -243,10 +243,18 @@ export class ShapeSpatialIndex {
 		for (const query of this.queryPool) query.reset()
 	}
 
-	/** Terminal teardown — releases every buffer this index holds. */
+	/**
+	 * Release everything this index holds. Equivalent to {@link ShapeSpatialIndex.clear} plus
+	 * dropping the pooled queries and the staging buffers.
+	 *
+	 * Deliberately NOT terminal: the editor registers this as a disposable, and
+	 * a read can still land afterwards — the index computed is not torn down
+	 * with it, so anything that pulls it schedules a rebuild against an index
+	 * that has just been disposed. That has to produce an empty index, not a
+	 * broken one.
+	 */
 	dispose(): void {
 		this.clear()
-		this.tree.dispose()
 		this.stagedIds = EMPTY_U32
 		this.stagedBoxes = EMPTY_F64
 		this.stagedCount = 0

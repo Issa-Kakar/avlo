@@ -1,7 +1,7 @@
 From 19f859fdbae25d30dcc3aa2534ccf559633ede47 Mon Sep 17 00:00:00 2001
 From: issakakar <Issakakar@icloud.com>
 Date: Sat, 29 Aug 2026 11:28:35 +0000
-Subject: [PATCH 8/8] docs(bench): record which suites were run
+Subject: [PATCH 08/10] docs(bench): record which suites were run
 
 ---
  internal/scripts/spatial-bench/RESULTS.md | 16 ++++++++++++----

@@ -1,8 +1,8 @@
 From 464df673f1d084f7c3d69993e13f4af7b3486e48 Mon Sep 17 00:00:00 2001
 From: issakakar <Issakakar@icloud.com>
 Date: Sat, 29 Aug 2026 10:14:14 +0000
-Subject: [PATCH 3/8] perf(editor): pick the search result shape by how it will
- be read
+Subject: [PATCH 03/10] perf(editor): pick the search result shape by how it
+ will be read
 
 Measuring the consumers rather than the index changed the answer for one of
 them. A query's membership stamps beat a Set when the number of probes is in

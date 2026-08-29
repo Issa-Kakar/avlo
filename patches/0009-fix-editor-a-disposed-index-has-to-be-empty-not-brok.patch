@@ -1,0 +1,216 @@
+From 1f8519cffc772c063b33c893dcf583bf9e7f29a5 Mon Sep 17 00:00:00 2001
+From: issakakar <Issakakar@icloud.com>
+Date: Sat, 29 Aug 2026 12:50:31 +0000
+Subject: [PATCH 09/10] fix(editor): a disposed index has to be empty, not
+ broken
+
+resizing.test.ts hung. The editor registers the index's dispose as a
+disposable but does not tear down the index computed with it, so a read after
+disposal schedules a rebuild against an index that has just been disposed.
+rbush tolerated that -- clear() plus bulkLoad on a fresh tree. The flat engine
+did not: dispose released the Float64Array the box arguments travel through,
+every coordinate then read as undefined, and the ancestor-extension walk, whose
+exit is a containment test, never terminated against NaN.
+
+Removes FlatRTree.dispose() entirely rather than guarding it. clear() already
+returns every growable buffer to newborn size; all a terminal teardown bought
+was a few KB of fixed scratch, in exchange for a structure that can be made
+unusable while something still holds it. ShapeSpatialIndex.dispose() is now
+clear() plus dropping the pooled queries and staging, which is what
+RBushIndex.dispose() always was.
+
+Regression test covers dispose-then-reuse and double dispose.
+---
+ packages/editor/api-report.api.md             |  1 -
+ .../managers/SpatialIndexManager/FlatRTree.ts | 57 +++++--------------
+ .../ShapeSpatialIndex.test.ts                 | 33 +++++++++++
+ .../SpatialIndexManager/ShapeSpatialIndex.ts  | 12 +++-
+ 4 files changed, 56 insertions(+), 47 deletions(-)
+
+diff --git a/packages/editor/api-report.api.md b/packages/editor/api-report.api.md
+index 6c32d78c..45a9abb5 100644
+--- a/packages/editor/api-report.api.md
++++ b/packages/editor/api-report.api.md
+@@ -1818,7 +1818,6 @@ export const featureFlags: Record<string, DebugFlag<boolean>>;
+ export class FlatRTree {
+     constructor();
+     clear(): void;
+-    dispose(): void;
+     // (undocumented)
+     getSize(): number;
+     // (undocumented)
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
+index 7a2bfd0f..381a909a 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/FlatRTree.ts
+@@ -85,12 +85,14 @@
+  * pool EXACTLY — a node-count arithmetic dry-run of the OMT recursion — so
+  * loads never grow mid-build.
+  * `clear()` reallocates everything growable at newborn sizes: a cleared tree
+- * retains no high-water memory from the page it just held. Load-engine
+- * scratch is BUILD-TRANSIENT (allocated per load, released before load
+- * returns — nothing survives at instance or module scope; see the engine
+- * section). `dispose()` releases every last buffer for good — a disposed
+- * instance is dead. The traversal stack is a FIXED 1024 words with no growth
+- * logic anywhere (SQLite R-tree style): a DFS holds ≤ 15 pending siblings per
++ * retains no high-water memory from the page it just held, and it is the ONLY
++ * teardown. There is deliberately no terminal `dispose()`: a structure that can
++ * be made unusable is a trap for an embedder whose lifecycle lets a read land
++ * after teardown, and what clear() cannot release is a few KB of
++ * construction-fixed scratch. Load-engine scratch is BUILD-TRANSIENT (allocated
++ * per load, released before load returns — nothing survives at instance or
++ * module scope; see the engine section). The traversal stack is a FIXED 1024
++ * words with no growth logic anywhere (SQLite R-tree style): a DFS holds ≤ 15 pending siblings per
+  * level of the current path and a covered-subtree dump nests one more walk of
+  * the same shape, so the need is < 2·height·15 + 2. Height is structurally
+  * bounded: splits create nodes with ≥ 7 of 16 entries, so filling one back to
+@@ -184,8 +186,8 @@
+  * Engine state is BUILD-TRANSIENT and instance-owned: _buildFrom allocates
+  * the lanes (24 B/item), parks them in instance fields for the recursion,
+  * and resets those fields to empty sentinels before returning. Nothing
+- * outlives a build, nothing is module-scoped — clear() and dispose() owe the
+- * engine nothing. Measured vs multiSelect: warm builds −17% (500k) to −28%
++ * outlives a build, nothing is module-scoped — clear() owes the engine
++ * nothing. Measured vs multiSelect: warm builds −17% (500k) to −28%
+  * (10k), fresh-tree search quality ~10% better via the center keys.
+  *
+  * ── Contracts (trusted-boundary) ────────────────────────────────────────────
+@@ -205,8 +207,7 @@
+  * - Zero allocation on insert/update/remove/search steady state.
+  * - `load` reads its inputs, synchronously, and never retains or mutates
+  *   them.
+- * - `dispose()` is terminal: every buffer is released; any further use of
+- *   the instance is undefined.
++ * - A cleared tree is a usable empty tree. Nothing here can be made dead.
+  */
+ 
+ const MAX_ID = 0x40000000 // id ceiling (exclusive): 2^30
+@@ -219,7 +220,7 @@ const RESULTS_CAP0 = 256
+ const STACK_CAP = 1024 // fixed forever — bound proof in the header
+ 
+ // Immutable zero-length sentinels: what the transient engine fields hold
+-// between builds, and what dispose() leaves behind. Never written.
++// between builds. Never written.
+ const EMPTY_U32 = new Uint32Array(0)
+ const EMPTY_I32 = new Int32Array(0)
+ const EMPTY_F64 = new Float64Array(0)
+@@ -300,7 +301,7 @@ export class FlatRTree {
+ 	// ── build-transient load-engine lanes — EMPTY sentinels between builds.
+ 	//    _buildFrom allocates them (24 B/item), the OMT recursion hoists them
+ 	//    into locals per call, and _buildFrom resets them before returning:
+-	//    zero retention at any scope, dispose() has nothing extra to do.
++	//    zero retention at any scope.
+ 	private _lk = EMPTY_I32 //   record key lane [0, count) + scatter half at +count
+ 	private _li = EMPTY_I32 //   record index lane, same shape
+ 	private _tk = EMPTY_I32 //   _lk.subarray(count) — the scatter half
+@@ -537,38 +538,6 @@ export class FlatRTree {
+ 		this._reset()
+ 	}
+ 
+-	/** Terminal teardown for library consumers: release EVERY buffer — pool,
+-	 *  id map, results, stack, split arena, channels — so a disposed index
+-	 *  pins nothing even while the instance object itself is still referenced.
+-	 *  Any further use of the instance is undefined; construct a new one (or
+-	 *  call clear() instead of dispose() to keep a reusable tree). Idempotent. */
+-	dispose(): void {
+-		this._boxes = EMPTY_F64
+-		this._refs = EMPTY_U32
+-		this._parentCell = EMPTY_U32
+-		this._cellOf = EMPTY_U32
+-		this.results = EMPTY_U32
+-		this._stack = EMPTY_U32
+-		this._sF = EMPTY_F64
+-		this._sU = EMPTY_U32
+-		this._splitMBR = EMPTY_F64
+-		this._mbr = EMPTY_F64
+-		this._argBox = EMPTY_F64
+-		this._lk = EMPTY_I32
+-		this._li = EMPTY_I32
+-		this._tk = EMPTY_I32
+-		this._ti = EMPTY_I32
+-		this._kx = EMPTY_I32
+-		this._ky = EMPTY_I32
+-		this._hist = EMPTY_I32
+-		this._poolCap = 0
+-		this._poolLen = 0
+-		this._freeHead = 0
+-		this._freeLen = 0
+-		this._size = 0
+-		this._splitLeftCnt = 0
+-	}
+-
+ 	/** clear() minus the reallocation — also the rebuild() entry, which reuses
+ 	 *  capacity (the same data is about to reload). */
+ 	private _reset(): void {
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
+index d631b6dc..0095fba2 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.test.ts
+@@ -325,6 +325,39 @@ describe('ShapeSpatialIndex', () => {
+ 		index.validate()
+ 	})
+ 
++	it('is still usable after dispose', () => {
++		// The editor registers dispose as a disposable but does not tear down the
++		// index computed with it, so a read afterwards schedules a rebuild against
++		// a disposed index. That has to produce an empty index rather than a
++		// broken one: an earlier version released the tree's argument channel
++		// here, every box then read as NaN, and the insert path spun forever.
++		const index = new ShapeSpatialIndex()
++		index.upsert('shape:before' as TLShapeId, 0, 0, 10, 10)
++		index.dispose()
++		expect(index.getSize()).toBe(0)
++
++		index.beginLoad(1)
++		index.stage('shape:after' as TLShapeId, 5, 5, 15, 15)
++		index.commitLoad()
++		expect(index.getSize()).toBe(1)
++
++		const found = index.searchToSet(0, 0, 20, 20, false)
++		expect(found.has('shape:after' as TLShapeId)).toBe(true)
++		expect(found.has('shape:before' as TLShapeId)).toBe(false)
++
++		const query = index.acquireQuery().searchBounds(0, 0, 20, 20)
++		expect(query.size).toBe(1)
++
++		index.upsert('shape:third' as TLShapeId, 1, 1, 2, 2)
++		index.remove('shape:after' as TLShapeId)
++		index.validate()
++
++		// And disposing twice is fine.
++		index.dispose()
++		index.dispose()
++		expect(index.getSize()).toBe(0)
++	})
++
+ 	it('reports no-op bounds so the manager can skip prop-only updates', () => {
+ 		const index = new ShapeSpatialIndex()
+ 		const id = 'shape:m' as TLShapeId
+diff --git a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
+index 61d7c1e4..70b82a23 100644
+--- a/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
++++ b/packages/editor/src/lib/editor/managers/SpatialIndexManager/ShapeSpatialIndex.ts
+@@ -243,10 +243,18 @@ export class ShapeSpatialIndex {
+ 		for (const query of this.queryPool) query.reset()
+ 	}
+ 
+-	/** Terminal teardown — releases every buffer this index holds. */
++	/**
++	 * Release everything this index holds. Equivalent to {@link ShapeSpatialIndex.clear} plus
++	 * dropping the pooled queries and the staging buffers.
++	 *
++	 * Deliberately NOT terminal: the editor registers this as a disposable, and
++	 * a read can still land afterwards — the index computed is not torn down
++	 * with it, so anything that pulls it schedules a rebuild against an index
++	 * that has just been disposed. That has to produce an empty index, not a
++	 * broken one.
++	 */
+ 	dispose(): void {
+ 		this.clear()
+-		this.tree.dispose()
+ 		this.stagedIds = EMPTY_U32
+ 		this.stagedBoxes = EMPTY_F64
+ 		this.stagedCount = 0
+-- 
+2.43.0
+

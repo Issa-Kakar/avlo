@@ -85,12 +85,14 @@
  * pool EXACTLY — a node-count arithmetic dry-run of the OMT recursion — so
  * loads never grow mid-build.
  * `clear()` reallocates everything growable at newborn sizes: a cleared tree
- * retains no high-water memory from the page it just held. Load-engine
- * scratch is BUILD-TRANSIENT (allocated per load, released before load
- * returns — nothing survives at instance or module scope; see the engine
- * section). `dispose()` releases every last buffer for good — a disposed
- * instance is dead. The traversal stack is a FIXED 1024 words with no growth
- * logic anywhere (SQLite R-tree style): a DFS holds ≤ 15 pending siblings per
+ * retains no high-water memory from the page it just held, and it is the ONLY
+ * teardown. There is deliberately no terminal `dispose()`: a structure that can
+ * be made unusable is a trap for an embedder whose lifecycle lets a read land
+ * after teardown, and what clear() cannot release is a few KB of
+ * construction-fixed scratch. Load-engine scratch is BUILD-TRANSIENT (allocated
+ * per load, released before load returns — nothing survives at instance or
+ * module scope; see the engine section). The traversal stack is a FIXED 1024
+ * words with no growth logic anywhere (SQLite R-tree style): a DFS holds ≤ 15 pending siblings per
  * level of the current path and a covered-subtree dump nests one more walk of
  * the same shape, so the need is < 2·height·15 + 2. Height is structurally
  * bounded: splits create nodes with ≥ 7 of 16 entries, so filling one back to
@@ -184,8 +186,8 @@
  * Engine state is BUILD-TRANSIENT and instance-owned: _buildFrom allocates
  * the lanes (24 B/item), parks them in instance fields for the recursion,
  * and resets those fields to empty sentinels before returning. Nothing
- * outlives a build, nothing is module-scoped — clear() and dispose() owe the
- * engine nothing. Measured vs multiSelect: warm builds −17% (500k) to −28%
+ * outlives a build, nothing is module-scoped — clear() owes the engine
+ * nothing. Measured vs multiSelect: warm builds −17% (500k) to −28%
  * (10k), fresh-tree search quality ~10% better via the center keys.
  *
  * ── Contracts (trusted-boundary) ────────────────────────────────────────────
@@ -205,8 +207,7 @@
  * - Zero allocation on insert/update/remove/search steady state.
  * - `load` reads its inputs, synchronously, and never retains or mutates
  *   them.
- * - `dispose()` is terminal: every buffer is released; any further use of
- *   the instance is undefined.
+ * - A cleared tree is a usable empty tree. Nothing here can be made dead.
  */
 
 const MAX_ID = 0x40000000 // id ceiling (exclusive): 2^30
@@ -219,7 +220,7 @@ const RESULTS_CAP0 = 256
 const STACK_CAP = 1024 // fixed forever — bound proof in the header
 
 // Immutable zero-length sentinels: what the transient engine fields hold
-// between builds, and what dispose() leaves behind. Never written.
+// between builds. Never written.
 const EMPTY_U32 = new Uint32Array(0)
 const EMPTY_I32 = new Int32Array(0)
 const EMPTY_F64 = new Float64Array(0)
@@ -300,7 +301,7 @@ export class FlatRTree {
 	// ── build-transient load-engine lanes — EMPTY sentinels between builds.
 	//    _buildFrom allocates them (24 B/item), the OMT recursion hoists them
 	//    into locals per call, and _buildFrom resets them before returning:
-	//    zero retention at any scope, dispose() has nothing extra to do.
+	//    zero retention at any scope.
 	private _lk = EMPTY_I32 //   record key lane [0, count) + scatter half at +count
 	private _li = EMPTY_I32 //   record index lane, same shape
 	private _tk = EMPTY_I32 //   _lk.subarray(count) — the scatter half
@@ -535,38 +536,6 @@ export class FlatRTree {
 		this.results = new Uint32Array(RESULTS_CAP0)
 		this._poolCap = POOL_CAP0
 		this._reset()
-	}
-
-	/** Terminal teardown for library consumers: release EVERY buffer — pool,
-	 *  id map, results, stack, split arena, channels — so a disposed index
-	 *  pins nothing even while the instance object itself is still referenced.
-	 *  Any further use of the instance is undefined; construct a new one (or
-	 *  call clear() instead of dispose() to keep a reusable tree). Idempotent. */
-	dispose(): void {
-		this._boxes = EMPTY_F64
-		this._refs = EMPTY_U32
-		this._parentCell = EMPTY_U32
-		this._cellOf = EMPTY_U32
-		this.results = EMPTY_U32
-		this._stack = EMPTY_U32
-		this._sF = EMPTY_F64
-		this._sU = EMPTY_U32
-		this._splitMBR = EMPTY_F64
-		this._mbr = EMPTY_F64
-		this._argBox = EMPTY_F64
-		this._lk = EMPTY_I32
-		this._li = EMPTY_I32
-		this._tk = EMPTY_I32
-		this._ti = EMPTY_I32
-		this._kx = EMPTY_I32
-		this._ky = EMPTY_I32
-		this._hist = EMPTY_I32
-		this._poolCap = 0
-		this._poolLen = 0
-		this._freeHead = 0
-		this._freeLen = 0
-		this._size = 0
-		this._splitLeftCnt = 0
 	}
 
 	/** clear() minus the reallocation — also the rebuild() entry, which reuses

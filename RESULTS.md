@@ -64,11 +64,8 @@ reload, and the small/large result crossover.
 
 The existing suites pass. On this branch:
 
-- `packages/editor` — 1,201 tests across 56 files.
-- `packages/tldraw`, the suites closest to the change — spatial index,
-  notVisibleShapes, getCulledShapes, getShapeAtPoint, SelectTool, EraserTool,
-  select, selection-omnibus, frames, transparent-image-hit-test,
-  arrows-megabus — 490 tests across 11 files.
+- `packages/editor` — 1,202 tests across 56 files.
+- `packages/tldraw` — the full suite, 213 files.
 - The parity fuzz above — 9 tests.
 
 One existing test changed: it spied on `RBushIndex.applyBatch` by name to assert
@@ -260,7 +257,27 @@ would go with the change.
 
 ## Behaviour changes and open questions
 
-Three things behave differently, all deliberately:
+The full `packages/tldraw` suite caught one real bug that the targeted suites and
+the fuzz both missed, and it is worth recording because it is the kind of thing
+that separates the two structures rather than a slip.
+
+`resizing.test.ts` hung. The editor registers the index's `dispose` as a
+disposable but does not tear down the index computed with it, so a read after
+disposal schedules a rebuild against an index that has just been disposed. rbush
+tolerated that — `clear()` plus `bulkLoad` on a fresh tree. The flat engine did
+not: `dispose()` released the `Float64Array` that box arguments travel through
+(the channel that keeps doubles off call boundaries), every coordinate then read
+as `undefined`, and the ancestor-extension walk — whose exit condition is a
+containment test — never terminated against NaN.
+
+The fix was to delete `FlatRTree.dispose()` rather than guard it. `clear()`
+already returns every growable buffer to newborn size; all a terminal teardown
+bought was a few KB of fixed scratch, in exchange for a structure that can be
+made unusable while something still holds a reference to it.
+`ShapeSpatialIndex.dispose()` is now `clear()` plus dropping the pooled queries
+and staging — which is exactly what `RBushIndex.dispose()` always was.
+
+Three other things behave differently, all deliberately:
 
 - **Invalid bounds are defined rather than undefined.** The old gate was
   `Box.isValid()`, which checks finiteness only and therefore accepts an

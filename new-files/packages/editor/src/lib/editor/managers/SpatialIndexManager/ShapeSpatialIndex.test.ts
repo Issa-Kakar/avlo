@@ -325,6 +325,39 @@ describe('ShapeSpatialIndex', () => {
 		index.validate()
 	})
 
+	it('is still usable after dispose', () => {
+		// The editor registers dispose as a disposable but does not tear down the
+		// index computed with it, so a read afterwards schedules a rebuild against
+		// a disposed index. That has to produce an empty index rather than a
+		// broken one: an earlier version released the tree's argument channel
+		// here, every box then read as NaN, and the insert path spun forever.
+		const index = new ShapeSpatialIndex()
+		index.upsert('shape:before' as TLShapeId, 0, 0, 10, 10)
+		index.dispose()
+		expect(index.getSize()).toBe(0)
+
+		index.beginLoad(1)
+		index.stage('shape:after' as TLShapeId, 5, 5, 15, 15)
+		index.commitLoad()
+		expect(index.getSize()).toBe(1)
+
+		const found = index.searchToSet(0, 0, 20, 20, false)
+		expect(found.has('shape:after' as TLShapeId)).toBe(true)
+		expect(found.has('shape:before' as TLShapeId)).toBe(false)
+
+		const query = index.acquireQuery().searchBounds(0, 0, 20, 20)
+		expect(query.size).toBe(1)
+
+		index.upsert('shape:third' as TLShapeId, 1, 1, 2, 2)
+		index.remove('shape:after' as TLShapeId)
+		index.validate()
+
+		// And disposing twice is fine.
+		index.dispose()
+		index.dispose()
+		expect(index.getSize()).toBe(0)
+	})
+
 	it('reports no-op bounds so the manager can skip prop-only updates', () => {
 		const index = new ShapeSpatialIndex()
 		const id = 'shape:m' as TLShapeId

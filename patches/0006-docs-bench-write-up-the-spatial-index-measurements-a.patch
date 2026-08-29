@@ -1,8 +1,8 @@
 From 23f358a864e5916abd880ea4bee9a4a8aaeaec4e Mon Sep 17 00:00:00 2001
 From: issakakar <Issakakar@icloud.com>
 Date: Sat, 29 Aug 2026 10:59:47 +0000
-Subject: [PATCH 6/8] docs(bench): write up the spatial index measurements and
- the issue draft
+Subject: [PATCH 06/10] docs(bench): write up the spatial index measurements
+ and the issue draft
 
 ---
  internal/scripts/spatial-bench/ISSUE-DRAFT.md |  58 ++---

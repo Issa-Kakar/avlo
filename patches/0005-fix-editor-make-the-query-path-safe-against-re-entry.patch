@@ -1,7 +1,7 @@
 From 672405f2872eb6edfa9cf1508c3a5b1eb8c2a1a8 Mon Sep 17 00:00:00 2001
 From: issakakar <Issakakar@icloud.com>
 Date: Sat, 29 Aug 2026 10:44:55 +0000
-Subject: [PATCH 5/8] fix(editor): make the query path safe against re-entry
+Subject: [PATCH 05/10] fix(editor): make the query path safe against re-entry
  and reuse
 
 Two latent bugs, both from a query outliving the search that filled it.

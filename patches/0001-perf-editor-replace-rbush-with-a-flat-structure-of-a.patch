@@ -1,7 +1,7 @@
 From e7423fa332970d51917de79adf336f3a903c0fbf Mon Sep 17 00:00:00 2001
 From: issakakar <Issakakar@icloud.com>
 Date: Sat, 29 Aug 2026 09:28:46 +0000
-Subject: [PATCH 1/8] perf(editor): replace rbush with a flat
+Subject: [PATCH 01/10] perf(editor): replace rbush with a flat
  structure-of-arrays R-tree
 
 Swaps the spatial index's storage engine and gives its consumers an

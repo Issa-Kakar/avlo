@@ -1,8 +1,8 @@
 From b15d913143ea963f447d302816ee169e1aec8df5 Mon Sep 17 00:00:00 2001
 From: issakakar <Issakakar@icloud.com>
 Date: Sat, 29 Aug 2026 09:45:41 +0000
-Subject: [PATCH 2/8] test(editor): spatial index parity fuzz, micro benchmark
- and in-app timings
+Subject: [PATCH 02/10] test(editor): spatial index parity fuzz, micro
+ benchmark and in-app timings
 
 - ShapeSpatialIndex.test.ts: random churn checked against a brute-force scan
   and against rbush on every step, plus structural validate(), slot recycling,

@@ -1,5 +1,5 @@
 diff --git a/packages/editor/api-report.api.md b/packages/editor/api-report.api.md
-index 9c5dcc91..6c32d78c 100644
+index 9c5dcc91..45a9abb5 100644
 --- a/packages/editor/api-report.api.md
 +++ b/packages/editor/api-report.api.md
 @@ -1422,6 +1422,8 @@ export class Editor extends EventEmitter<TLEventMap> {
@@ -11,7 +11,7 @@ index 9c5dcc91..6c32d78c 100644
      getStateDescendant<T extends StateNode>(path: string): T | undefined;
      getStyleForNextShape<T>(style: StyleProp<T>): T;
      getSvgElement(shapes: TLShape[] | TLShapeId[], opts?: TLSvgExportOptions): Promise<{
-@@ -1812,6 +1814,46 @@ export function extractSessionStateFromLegacySnapshot(store: Record<string, Unkn
+@@ -1812,6 +1814,45 @@ export function extractSessionStateFromLegacySnapshot(store: Record<string, Unkn
  // @internal (undocumented)
  export const featureFlags: Record<string, DebugFlag<boolean>>;
  
@@ -19,7 +19,6 @@ index 9c5dcc91..6c32d78c 100644
 +export class FlatRTree {
 +    constructor();
 +    clear(): void;
-+    dispose(): void;
 +    // (undocumented)
 +    getSize(): number;
 +    // (undocumented)
@@ -58,7 +57,7 @@ index 9c5dcc91..6c32d78c 100644
  // @public (undocumented)
  export class FontManager {
      constructor(editor: Editor, assetUrls?: {
-@@ -3046,6 +3088,30 @@ export function setRuntimeOverrides(input: Partial<typeof runtime>): void;
+@@ -3046,6 +3087,30 @@ export function setRuntimeOverrides(input: Partial<typeof runtime>): void;
  // @public (undocumented)
  export function setUserPreferences(user: TLUserPreferences): void;
  
@@ -89,7 +88,7 @@ index 9c5dcc91..6c32d78c 100644
  // @public (undocumented)
  export abstract class ShapeUtil<Shape extends TLShape = TLShape> {
      constructor(editor: Editor);
-@@ -3210,6 +3276,7 @@ export class SnapManager {
+@@ -3210,6 +3275,7 @@ export class SnapManager {
  // @internal
  export class SpatialIndexManager {
      constructor(editor: Editor);
@@ -97,7 +96,7 @@ index 9c5dcc91..6c32d78c 100644
      // @public
      dispose(): void;
      // (undocumented)
-@@ -3221,6 +3288,26 @@ export class SpatialIndexManager {
+@@ -3221,6 +3287,26 @@ export class SpatialIndexManager {
      }, margin?: number): Set<TLShapeId>;
      // @public
      getShapeIdsInsideBounds(bounds: Box): Set<TLShapeId>;
