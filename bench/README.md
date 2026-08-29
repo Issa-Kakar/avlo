@@ -2,6 +2,9 @@
 
 Measurements for replacing rbush behind tldraw's `SpatialIndexManager`.
 
+- **`doc/VS-RBUSH.md`** — what is actually different from rbush, mechanism by
+  mechanism, with every rbush-side claim referenced into its `index.js`. Read
+  this first if the question is "why would this be faster".
 - **`doc/METHOD.md`** — how the numbers were taken, and the four ways an
   earlier attempt at this produced confident wrong ones. Read this first if you
   intend to disbelieve anything in RESULTS.

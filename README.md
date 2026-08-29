@@ -12,6 +12,7 @@ against a clone of `tldraw/tldraw`, and the container does not survive.
 | | |
 |---|---|
 | **`RESULTS.md`** | The numbers. Three tiers — raw engine, gestures, and the wrapper as the manager drives it — across three datasets. |
+| **`VS-RBUSH.md`** | What is actually different from rbush, mechanism by mechanism, with every rbush-side claim referenced into its `index.js`. Read this if the question is "why would this be faster". |
 | **`METHOD.md`** | How they were measured, and the four ways an earlier attempt produced confident wrong ones. Read this if you intend to disbelieve anything in RESULTS. |
 | `patches/` | The change as a `git am` series against `tldraw/tldraw` at `cbbcf357`. One commit. |
 | `new-files/` | The three new files, at their tldraw paths. |
