@@ -1,0 +1,78 @@
+================================================================================================
+TIER 1 — raw engine: rbush 3.0.1 vs FlatRTree. No wrapper, no Set, no id mapping.
+================================================================================================
+
+ALLOCATION per operation (bytes) — exact, measured in GC-free windows
+  dataset/n         op           hits      rbush B     flat B   less garbage    check
+  ----------------  --------  -------  -----------  ---------  -------------  -------
+  uniform/20000     search        206      5969.71       0.00         >1000×   linear
+  uniform/20000     insert                  936.54     215.52           4.3×   repeat
+  uniform/20000     update                  615.49       0.69         >1000×   repeat
+  uniform/20000     remove                  429.86       5.91          72.8×   repeat
+  clustered/20000   search        189      5147.49       0.00         >1000×   linear
+  clustered/20000   insert                  925.61     215.95           4.3×   repeat
+  clustered/20000   update                  622.11       0.69         >1000×   repeat
+  clustered/20000   remove                  429.86       5.91          72.8×   repeat
+  board/20000       search        192      5231.33       0.00         >1000×   linear
+  board/20000       insert                  936.14     222.05           4.2×   repeat
+  board/20000       update                  728.01       0.70         >1000×   repeat
+  board/20000       remove                  429.86       5.91          72.8×   repeat
+  uniform/20000     search          3       356.63       0.00         >1000×   linear
+  uniform/20000     search         22       655.86       0.01         >1000×   linear
+  uniform/20000     search       2021     64212.33       0.00         >1000×   linear
+  board/20000       search          3       327.55       0.01         >1000×   linear
+  board/20000       search         22       633.03       0.00         >1000×   linear
+  board/20000       search       1927     62327.47       0.00         >1000×   linear
+  board/2000        update                  724.83       6.98         103.8×   repeat
+  board/2000        search         20       612.86       0.00         >1000×   linear
+  board/100000      update                  872.49       0.27         >1000×   repeat
+  board/100000      search        991     30953.80       0.00         >1000×   linear
+
+TIME per operation (ns) — minimum of 7 runs
+  dataset/n         op           hits     rbush ns    flat ns    faster
+  ----------------  --------  -------  -----------  ---------  --------
+  uniform/20000     search        206         8587       1792      4.8×
+  uniform/20000     insert                    1959        772      2.5×
+  uniform/20000     update                    2269        259      8.8×
+  uniform/20000     remove                    1537        153     10.1×
+  clustered/20000   search        189         7026       1684      4.2×
+  clustered/20000   insert                    1981        771      2.6×
+  clustered/20000   update                    2578        215     12.0×
+  clustered/20000   remove                    1519        166      9.2×
+  board/20000       search        192         8893       1862      4.8×
+  board/20000       insert                    2047        781      2.6×
+  board/20000       update                    2950        192     15.4×
+  board/20000       remove                    1780        138     12.9×
+  uniform/20000     search          3         1132        317      3.6×
+  uniform/20000     search         22         2684        589      4.6×
+  uniform/20000     search       2021        43152       8439      5.1×
+  board/20000       search          3         1305        354      3.7×
+  board/20000       search         22         2913        642      4.5×
+  board/20000       search       1927        43228       8634      5.0×
+  board/2000        update                    1832        155     11.8×
+  board/2000        search         20         1892        493      3.8×
+  board/100000      update                    4890        241     20.3×
+  board/100000      search        991        39714       6461      6.1×
+
+BULK LOAD (whole tree)
+  dataset/n         measure             rbush            flat    better
+  ----------------  ---------  --------------  --------------  --------
+  uniform/20000     alloc            10.84 MB         0.00 MB         —
+  uniform/20000     time            10.820 ms        3.070 ms      3.5×
+  clustered/20000   alloc            11.21 MB         0.00 MB         —
+  clustered/20000   time            11.355 ms        3.292 ms      3.4×
+  board/20000       alloc            11.14 MB         0.00 MB         —
+  board/20000       time            11.267 ms        3.335 ms      3.4×
+
+RETAINED SIZE of the index structure itself (after a full collection)
+  dataset/n           rbush total    flat total   rbush B/item   flat B/item    leaner
+  ----------------  -------------  ------------  -------------  ------------  --------
+  uniform/2000            0.36 MB       0.14 MB          186.9          73.0      2.6×
+  uniform/20000           3.41 MB       1.00 MB          178.9          52.7      3.4×
+  uniform/100000         16.66 MB       5.91 MB          174.7          62.0      2.8×
+  clustered/2000          0.35 MB       0.14 MB          182.4          71.4      2.6×
+  clustered/20000         3.41 MB       1.01 MB          178.9          52.8      3.4×
+  clustered/100000       16.66 MB       5.92 MB          174.7          62.1      2.8×
+  board/2000              0.35 MB       0.14 MB          183.0          71.4      2.6×
+  board/20000             3.41 MB       1.01 MB          178.9          52.9      3.4×
+  board/100000           16.66 MB       5.93 MB          174.7          62.1      2.8×
