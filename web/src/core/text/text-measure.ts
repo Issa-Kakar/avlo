@@ -98,25 +98,27 @@ export function internFont(fontSize: number, famCode: number, styleBits: number)
 // --- Per-measure-pass style quad ---
 // The four styleBits→fontIdx resolutions for one (fontSize, famCode), filled
 // lazily as combos appear. Memoized across calls on the same size/family so
-// back-to-back measures of sibling entries skip even the reset.
-const _quad = new Int32Array(4).fill(-1);
+// back-to-back measures of sibling entries skip even the reset. Uint32 with 0
+// as the unfilled sentinel — intern index 0 is the reserved '' slot, so no
+// real font ever aliases it (the reservation pays a second time here).
+const _quad = new Uint32Array(4);
 let _quadSizeKey = -1;
 let _quadFam = -1;
 
 export function beginFontQuad(fontSize: number, famCode: number): void {
   const sizeKey = (fontSize * 1000 + 0.5) | 0;
   if (sizeKey === _quadSizeKey && famCode === _quadFam) return;
-  _quad[0] = -1;
-  _quad[1] = -1;
-  _quad[2] = -1;
-  _quad[3] = -1;
+  _quad[0] = 0;
+  _quad[1] = 0;
+  _quad[2] = 0;
+  _quad[3] = 0;
   _quadSizeKey = sizeKey;
   _quadFam = famCode;
 }
 
 export function quadFontIdx(styleBits: number): number {
   let idx = _quad[styleBits];
-  if (idx < 0) {
+  if (idx === 0) {
     idx = internFont(_quadSizeKey / 1000, _quadFam, styleBits);
     _quad[styleBits] = idx;
   }
