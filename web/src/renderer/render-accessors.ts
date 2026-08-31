@@ -205,7 +205,7 @@ export function readShapeLabelRenderNoFrame(y: Y.Map<unknown>): ShapeLabelRender
 // =============================================================================
 //
 // fontSize/fontFamily/width/content NOT read on the hot path — they're already
-// baked into the cached layout (`textLayoutCache.getLayoutById`).
+// baked into the entry's pooled layout tier (`renderTextLayoutById`).
 
 interface TextRender {
   originX: number;

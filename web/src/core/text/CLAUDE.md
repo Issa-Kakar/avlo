@@ -18,11 +18,12 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 
 | File | Purpose |
 |------|---------|
-| `core/text/text-system.ts` | Layout engine, three-tier cache, text renderer, text BBox |
+| `core/text/text-store.ts` | **The SoA data plane** (LEAF — pure storage, no Yjs/canvas/measure imports): dense text-slot fabric (`Map<id,ts>` + LIFO free list), interleaved scalar columns (`R` u32 stride 16 = range bases/counts/caps + packed status word; `S` f64 stride 8 with NaN staleness sentinels; frame col f64 stride 4), five cross-entry pools in two repack groups (content: para/tok/seg · layout: line/run) with tail-bump alloc + slack + fresh-array repack, appSlot→ts draw accelerator, highlight intern, per-entry `MeasuredContent` view descriptors kept coherent across relocation |
+| `core/text/text-system.ts` | Pipeline (tokenize→staging→pool, in-place measure, base-offset-parameterized flow core), `textLayoutCache` facade (tiered orchestration over columns), unified run render kernel + `renderTextLayoutById`, text BBox |
 | `core/text/line-break.ts` | UAX #14 soft-break machinery (`nextSoftBreak`, `isBreakOpportunity`) — pure char-code logic, leaf module |
-| `core/text/text-measure.ts` | Measure context, font-string builders, measured font metrics, measurement caches — shared boundary (code-system, bookmark-render, transform, TextTool, sticky-note) |
-| `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + `renderShapeLabel` + `layoutIntoLabelScratch` |
-| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
+| `core/text/text-measure.ts` | Measure context, **lazy font intern table** (`internFont`/`FONT_STRINGS` — u16 indices stored in pool lanes; per-measure `beginFontQuad`/`quadFontIdx`), idx-keyed measure caches (`measureTextByIdx`/`spaceWidthByIdx`), string-keyed API kept for bookmark/code, measured font metrics (+ famCode-indexed mirrors), measurement caches — shared boundary |
+| `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + twin kernel renders: `renderShapeLabelSlot` (at rest, pool lanes) / `renderShapeLabelPreview` (transform preview — flows the measured view into staging and paints straight from it, no commit) |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size search over pool lanes (`Float64Array` steps + O(1) `STEP_FOR_FLOOR` LUT; `noteFlowCheck` returns int sentinels −1 fits / −2 heightOverflow / ≥0 jump idx), `getNoteLayout`/`getNoteDerivedFontSize` (columnar), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging, lazy ySync-origin registration. Lives in the lazy editor chunk (sole importer is `tiptap-editor.ts`) |
 | `core/text/tiptap-loader.ts` | **Eager** — cached `loadTiptapEditor()`/`loadTiptapBase()` (only dynamic `import()`s, zero `@tiptap` value import) + tool-select preload subscription |
 | `core/text/tiptap-editor.ts` | **Lazy** editor chunk — `import './tiptap.css'` + re-exported `Editor` + `buildTextExtensions()` (Placeholder + base defs + TextCollaboration) |
@@ -99,22 +100,35 @@ See **Sticky Notes** section for full details.
 
 ---
 
-## Text System Pipeline (`text-system.ts`)
+## Text System Pipeline (`text-system.ts` over `text-store.ts`)
 
 ```
 Y.XmlFragment
-    ↓ parseAndTokenize(fragment, out?)
-TokenizedContent (SOA: paragraphTokenStart, tokenSegStart, tokenKind, segText, segBold, segItalic, segHighlight, segSpaceMode)
-    ↓ measureTokenizedContent(tokenized, fontSize, fontFamily, out?)
-MeasuredContent (SOA: + tokenAdvanceWidth, segFont, segAdvanceWidth; lineHeight, fontFamily)
-    ↓ layoutMeasuredContent(measured, width, fontSize, out?)   ← exported
-TextLayout (SOA: lineRunStart, lineAdvanceWidth, lineAlignmentWidth, lineBaselineY, runText, runFont,
-            runHighlight, runAdvanceWidth, runAdvanceX; fontSize, fontFamily, lineHeight, widthMode, boxWidth)
+    ↓ tokenizeFragment() → module staging → commitTokenizedToSlot(ts)
+content tier (pooled, cross-entry): paraTok u32 · tokSeg u32 (segStartRel | kind<<31) ·
+    tokAdvW f64 · segText string[] · segStyle u8 (bold|italic|spaceMode bits) ·
+    segFontIdx u16 · segHl u16 · segAdvW f64
+    ↓ measureSlot(ts, fontSize, famCode)     — IN PLACE: writes only advW + fontIdx lanes
+    ↓ flowSlotContent(ts, maxWidth) → staging → commitFlowToSlot(ts, …)
+layout tier (pooled): lineRunStart u32 · lineAdvW f64 · lineAlignW f64 ·
+    runText string[] · runFontIdx u16 · runHl u16 · runAdvW f64 · runAdvX f64
 ```
 
-All three stages are **parallel-array (SOA) buffers**: `out?` parameters let callers reuse a buffer across re-tokenize / re-measure / re-flow. Capacities double on grow; counts reset between calls. Renderers iterate via `for (let li=0; li<lineCount; li++) { for (let r=lineRunStart[li]; r<lineRunStart[li+1]; r++) ... }`. Per-line / per-run object allocations are eliminated entirely after the first call.
+Every entry's variable-length data lives in the SHARED pools, referenced by
+(base, count, cap) ranges in the `R` column; in-range indices are entry-relative
+so ranges relocate with a base update. The old per-id buffer objects (and the
+full tokenized→measured topology copy every measure did) are gone — measure
+rewrites two lanes in place. The flow engine is one base-offset-parameterized
+core: the cache path hands it pool lanes + bases, the transform shim hands it a
+`MeasuredContent` view (same lane types, own bases) — one monomorphic body, its
+output committed from staging to a pool range, a `TextLayout` object, or painted
+directly (label preview).
 
-Primary API: `textLayoutCache.getLayout()` (auto-wires per-id buffers). `layoutMeasuredContent()` is exported for reflow during E/W transforms; the `out` param lets the transform's `Entry<'text'>.out.layout` be reused per pointermove. `layoutIntoLabelScratch()` (in `shape-label.ts`) writes into a single module-level scratch shared across all labeled shapes per frame.
+Primary API: `textLayoutCache.getLayout()` (ensures + returns `TextLayoutScalars`,
+a module scratch). `layoutMeasuredContent()` stays exported for the transform's
+E/W reflow sidecar (`Entry<'text'>.out.layout` reused per pointermove);
+`renderShapeLabelPreview()` renders labeled-shape previews straight from flow
+staging with zero per-frame buffers.
 
 ### Font Metrics
 
@@ -136,12 +150,14 @@ Highlight extraction: `attrs.highlight` with `{ color: '#hex' }` → that color;
 
 ### Stage 2: Measurement
 
-Canvas `measureText()` via singleton offscreen canvas. The measure context, font-string builders, and the caches below all live in `text-measure.ts` (shared measurement boundary — no dependency on text-system):
-- `MEASURE_BY_FONT: Map<font, Map<text, width>>` — two-level cache, no concat-key allocation per call. Soft-cap at 200k entries (clears on overflow).
-- `SPACE_WIDTH_CACHE` — per-font space char width.
+Canvas `measureText()` via singleton offscreen canvas. The measure context, the font intern table, and the caches below all live in `text-measure.ts` (shared measurement boundary — no dependency on text-system):
+- **Font intern table** — `internFont(fontSize, famCode, styleBits)` → u16 index into `FONT_STRINGS` (idx 0 = `''` sentinel, so `lastFontIdx = 0` in render kernels sets ctx.font on the first run branch-free). Lazy and append-only for the room session (pool lanes hold the indices): a font string is built only for (size, family, style) combos the content actually uses — the old `buildFontMatrix`, which eagerly allocated all four bold×italic strings per measure call, is gone. `resetFontTable()` only alongside `textLayoutCache.clear()`.
+- `beginFontQuad(fontSize, famCode)` + `quadFontIdx(styleBits)` — per-measure-pass 4-slot memo (also memoized across calls on the same size/family), so per-segment font resolution is an Int32Array load.
+- `measureTextByIdx(fontIdx, text)` / `spaceWidthByIdx(fontIdx)` — idx-keyed value caches (array load outer level, NaN-lazy space widths); the string-keyed `measureTextCached`/`getSpaceWidth`/`buildFontString` survive for bookmark/code. Shared 200k soft cap clears both worlds.
 - `CHAR_ENDS_CACHE: Map<text, Uint32Array>` — grapheme end-offsets (font-independent). Powers `sliceTextToFit`'s grapheme-aligned binary search.
+- famCode-indexed metric mirrors (`getBaselineToTopRatioByCode`, NaN-lazy Float64Array(4)) for draw paths; string-keyed getters remain the fill path.
 
-All cleared on `textLayoutCache.clear()` via `clearMeasurementCaches()`. Per-token measure pre-builds the four (bold × italic) font strings once via exported `buildFontMatrix(fontSize, fontFamily)` and indexes via `fontFromMatrix(F, bold, italic)` — eliminates O(segments) `buildFontString` calls; sticky-note's Phase B reuses both helpers when projecting 100px measurements onto the derived font size. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`). Token kind for word vs whitespace dispatch in the flow engine reads `tokenKind[ti]` directly — no per-segment whitespace flag is stored.
+Value caches cleared on `textLayoutCache.clear()` via `clearMeasurementCaches()`. Each whitespace segment carries spaceMode bits in `segStyle` (1=all-ASCII-space → `spaceWidthByIdx × len`, 2=mixed-WS → `measureTextByIdx`). Word-vs-space token kind rides bit 31 of the `tokSeg` word the flow engine already loads.
 
 ### Stage 3: Flow Engine
 
@@ -159,87 +175,93 @@ Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at
 
 Style seams are classified via `isBreakOpportunity(prevCharCode, currCharCode)` (`line-break.ts`) between the previous segment's last char and the current segment's first char. Within a segment after the first chunk, `cursor > 0` implies a real break op (it's what `nextSoftBreak` just returned). `noteFlowCheck` (sticky-note search predicate) mirrors the same ladder.
 
-**Oversized words — slicer mechanics:** `sliceTextToFit(font, text, maxW, start?, endChar?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. The slicer reads grapheme boundaries from `CHAR_ENDS_CACHE` (font-independent) and probes each binary-search candidate via `measureTextCached(font, text.substring(start, charEnds[mid]))` — direct shaping captures kerning exactly, so each broken line's width matches what the DOM would render for that line shaped independently. (The previous per-grapheme cumulative-widths approach summed individual char advances, missing cumulative kerning and evicting trailing chars near the line edge.) Fast path: if `[start..endChar]` fits as a whole, returns in one measureText call. Forward-progress: >=1 grapheme advances from `start` per slice.
+**Oversized words — slicer mechanics:** `sliceTextToFit(fontIdx, text, maxW, start?, endChar?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. The slicer reads grapheme boundaries from `CHAR_ENDS_CACHE` (font-independent) and probes each binary-search candidate via `measureTextByIdx(fontIdx, text.substring(start, charEnds[mid]))` — direct shaping captures kerning exactly, so each broken line's width matches what the DOM would render for that line shaped independently. (The previous per-grapheme cumulative-widths approach summed individual char advances, missing cumulative kerning and evicting trailing chars near the line edge.) Fast path: if `[start..endChar]` fits as a whole, returns in one measureText call. Forward-progress: >=1 grapheme advances from `start` per slice.
 
 **Run coalescing:** Adjacent runs with identical font+highlight merge via string concat.
 
-### Layout Output Types (SOA)
+### Layout Output Shapes
+
+The COMMITTED layout of an entry lives in the pooled layout tier plus scalar columns — no per-entry layout object exists. `lineBaselineY` is gone everywhere: baseline Y is `firstY + li * lineHeight` in the kernels (one multiply beats a lane load). Run fonts/highlights are u16 intern indices, so coalescing and ctx.font changes are int compares.
 
 ```typescript
+// Transform-shim twin (reflow sidecar buffers) — same lane shapes, base 0:
 interface TextLayout {
-  fontSize: number; fontFamily: FontFamily; lineHeight: number;
-  widthMode: 'auto' | 'fixed'; boxWidth: number;
-
-  lineCount: number; lineCap: number;
-  lineRunStart: Uint32Array;       // [lineCap+1] — runs of line i are [lineRunStart[i], lineRunStart[i+1])
-  lineAdvanceWidth: Float64Array;  // total incl. trailing whitespace
-  lineAlignmentWidth: Float64Array; // wrap-break → visualWidth; paragraph-end → min(advance,max)
-  lineBaselineY: Float64Array;     // i * lineHeight, cached for hot read
-
-  runCount: number; runCap: number;
-  runText: string[];               // grow but never shrink; slots overwritten in-place
-  runFont: string[];
-  runHighlight: (string | null)[];
-  runAdvanceWidth: Float64Array;
-  runAdvanceX: Float64Array;
+  fontSize; famCode; lineHeight; boxWidth;
+  maxWidthReq: number;   // Infinity = auto — one value encodes mode + flow maxWidth
+  lineCount; lineCap; lineRunStart: Uint32Array; lineAdvW: Float64Array; lineAlignW: Float64Array;
+  runCount; runCap; runText: string[]; runFontIdx: Uint16Array; runHl: Uint16Array;
+  runAdvW: Float64Array; runAdvX: Float64Array;
 }
+// Scalar reads (module scratch — consume before the next scalar-returning call):
+interface TextLayoutScalars { slot; fontSize; famCode; lineHeight; lineCount; boxWidth }
 ```
 
-`createTextLayout()` allocates an empty buffer with default capacities; `resetTextLayout(l)` zeros counts (preserves capacity). `layoutMeasuredContent(content, width, fontSize, out?)` writes into `out` if provided. Layout coalescing (adjacent runs with identical font+highlight merge via `runText[r] += text`) and the pending-WS state machine are unchanged.
+`createTextLayout()` allocates an empty shim buffer (engine zeroes `lineCount` at freeze as its stale-glyph guard). `layoutMeasuredContent(content, width, fontSize, out?)` flows through staging and commits into `out`. Layout coalescing (adjacent runs with identical fontIdx+hlIdx merge) and the pending-WS state machine are unchanged from the pre-store engine.
 
 ---
 
-## TextLayoutCache (singleton)
+## TextLayoutCache (facade singleton over the store)
 
-Three-tier cache: content → measurement → flow.
+Three-tier orchestration: content → measurement → flow. Staleness is columnar
+and sentinel-driven: NaN `measuredFontSize` fails the `=== fontSize` compare
+exactly like a stale tag (no null-check branch), `layoutWidthReq` stores the
+flow maxWidth with Infinity meaning 'auto' (one value = mode + number, NaN = no
+committed layout).
 
 ```typescript
-textLayoutCache.getLayout(id, fragment, fontSize, fontFamily?, width?)
-  // Hit order:
-  //   same content + fontSize + fontFamily + width -> cached layout
+textLayoutCache.getLayout(id, fragment, fontSize, fontFamily?, width?) // → TextLayoutScalars
+  // Ensures the entry (acquiring its text slot on first touch), then:
+  //   same content + fontSize + fontFamily + width -> no work
   //   same content + fontSize + fontFamily, diff width -> reflow only
-  //   same content, diff fontSize/fontFamily -> re-measure + reflow
-  //   stale -> full pipeline
-  // Width/fontFamily changes detected by inline comparison — no explicit invalidation needed.
+  //   same content, diff fontSize/fontFamily -> re-measure (in place) + reflow
+  //   content stale -> full pipeline
+  // Width/fontSize/fontFamily changes detected by columnar comparison — no explicit invalidation.
 
 textLayoutCache.invalidateContent(id, fragment?)
-  // fragment provided -> eager re-tokenize (critical for shape labels — context menu
-  // queries getInlineStyles() before getLayout() runs)
-  // fragment omitted -> lazy re-parse on next getLayout()
-  // Both null measuredFontSize + frame -> forces re-measure + BBox recompute
+  // fragment provided -> eager re-tokenize into the pool (critical for shape labels —
+  // context menu queries getInlineStyles() before getLayout() runs)
+  // fragment omitted -> clears CONTENT_VALID; next getLayout re-runs the pipeline
+  // Both NaN measuredFontSize + noteDerivedFontSize + frame -> re-measure + BBox recompute
 
-textLayoutCache.invalidateLayout(id)     // fontSize changed -> forces re-measure
-textLayoutCache.invalidateFlow(id)       // width changed -> forces reflow
-textLayoutCache.remove(id) / clear()     // Deletion / full rebuild (clear also clears LRUs)
-
-textLayoutCache.setFrame(id, frame)      // Derived frame (set by computeTextBBox/computeNoteBBox)
-textLayoutCache.getFrame(id)             // Read derived frame
-textLayoutCache.getMeasuredContent(id)   // For E/W reflow (skips tokenize + measure)
-textLayoutCache.getInlineStyles(id)      // UniformStyles from cached tokenized content
-
-// Note bridge — narrow, allocation-free accessors. `noteDerivedFontSize` lives on
-// CacheEntry so `invalidateContent` nulls it.
-textLayoutCache.noteCachedTokenized(id)         // → TokenizedContent | null
-textLayoutCache.noteCachedMeasured(id)          // → MeasuredContent | null
-textLayoutCache.noteCachedFontFamily(id)        // → FontFamily | null
-textLayoutCache.noteCachedDerivedFontSize(id)   // → number | null
-textLayoutCache.noteCachedLayout(id)            // → TextLayout | null
-textLayoutCache.setNoteResults(id, tokenized, measured, fontFamily, derivedFontSize, layout)
+textLayoutCache.evict(id) / clear()      // Deletion (frees ranges + slot) / full rebuild
+                                          // (clear also resets the font intern table + value caches)
+textLayoutCache.getFrame(id)             // Derived frame — per-slot tuple refreshed from the
+                                          // frame column; borrowed ref, copy scalars to hold
+textLayoutCache.getMeasuredContent(id)   // MeasuredContent VIEW (pool lanes + bases) — one
+                                          // descriptor per entry, kept coherent across pool
+                                          // relocation; gesture-stable for the transform freeze
+textLayoutCache.getLayoutScalarsById(id) // Scalars, no stale probe (renderer/connector-label)
+textLayoutCache.noteCachedLayout(id)     // Alias of getLayoutScalarsById (convert-kind)
+textLayoutCache.getInlineStyles(id)      // UniformStyles scratch from the packed status word
 ```
 
-Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `sticky-note.ts` — it reads/writes via the field accessors above. The previous `NoteCacheSnapshot` wrapper has been removed; readers now poll fields directly without per-call object allocation.
+Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `sticky-note.ts` and reads/writes the store columns directly — the old note-bridge accessor set (five Map.gets per read path) is gone.
 
 ---
 
 ## Renderers, BBox & Helpers
 
-### `renderTextLayout(ctx, layout, originX, originY, color, align?, fillColor?)`
+### The run render kernel (`renderRunsCore` + `setRenderKernelScalars`)
 
-Pass 0: fillRect background (if fillColor). Per line: compute `startX` via `anchorFactor(align)` + `getLineStartX()`. Pass 1: highlight roundRects (radius `fontSize * 0.25`; fixed mode clamps to container). Pass 2: fillText, `textBaseline = 'alphabetic'`. Fixed mode uses `alignmentWidth` for line width; auto uses `advanceWidth`.
+ONE kernel body serves every text-bearing draw — at-rest text/notes/labels off
+pool lanes (`renderRunsForSlot`), transform previews off `TextLayout` objects,
+label previews straight off flow staging (`renderRunsFromStaging`) — all the
+same array types, so the body stays monomorphic. Scalars travel through a
+9-lane `Float64Array` channel (FlatRTree argBox idiom — only ints/arrays cross
+the call). Per line: `startX = boxLeft + (boxWidth − lineW) · alignFactor`
+(branchless over the old per-align switch); pass 1 highlight roundRects (radius
+`fontSize · 0.25`, radii via a reused 4-slot scratch); pass 2 fillText with
+ctx.font changes gated on `runFontIdx` int compares (`lastFi = 0` sentinel —
+index 0 is the intern table's `''`). Container clamp runs unconditionally:
+unclamped draws pass `∓Infinity` containers, which make the min/max return the
+raw edges and the radius picks stay full — the sentinel computes the unclamped
+result through the clamped body, no mode branch.
 
-### `renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)` — `shape-label.ts`
+### Entry points
 
-H+V alignment within text box. Vertical via `getNoteContentOffsetY()`. Overflow clips via `ctx.clip()`.
+- `renderTextLayoutById(ctx, appSlot, id, originX, originY, color, align?, fillColor?)` — at-rest text, connector labels, scale previews. Resolves through the appSlot accelerator; silent no-op on the cold-miss race. Fixed mode (finite `layoutWidthReq`) uses `lineAlignW` + container clamp; auto uses `lineAdvW`, unclamped.
+- `renderTextLayout(ctx, layout, …)` — object twin for the transform reflow preview.
+- `renderShapeLabelSlot(ctx, ts, textBox, color, align?, alignV?)` / `renderShapeLabelPreview(ctx, measured, fontSize, textBox, color, align?, alignV?)` — `shape-label.ts`. H+V alignment within text box, vertical via `getNoteContentOffsetY()`, overflow clips via `ctx.clip()`. The preview variant flows the measured view into staging and paints from it — no per-frame layout buffer, no cache writes.
 
 ### Alignment Helpers
 
@@ -490,18 +512,18 @@ getNoteShadowPad{Top,Side,Bottom}(scale) -> NOTE_WIDTH * scale * {0.06, 0.075, 0
 
 **Key invariant:** Auto-sizing always operates at base dimensions (`BASE_CONTENT_WIDTH`, derived from `NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO)`). Scale only affects world-space size — never the layout algorithm. Scale changes don't invalidate cache.
 
-### Auto Font Size Algorithm — `layoutNoteContent`
+### Auto Font Size Algorithm — `layoutNoteContentSlot`
 
 #### 100px Ratio Strategy
 
-Font glyph widths scale linearly. Measure once at 100px via `measureTokenizedContent(tokenized, 100, fontFamily)`. For candidate step `s`: `maxW100 = contentWidth / (s / 100)`. Zero per-token multiplication during search. Height: `maxLines = floor(contentHeight / (s * lineHeightMultiplier))`.
+Font glyph widths scale linearly. Measure once at 100px via `measureSlot(ts, 100, famCode)` (in place over the entry's pool lanes). For candidate step `s`: `maxW100 = contentWidth / (s / 100)`. Zero per-token multiplication during search. Height: `maxLines = floor(contentHeight / (s * lineHeightMultiplier))`.
 
 #### Font Size Steps
 
 ```typescript
-NOTE_FONT_STEPS = [54, 48, 44, 43, 42, 41, 40, 38, 37, 36, 35, 34, 33, 32, 31, 30,
-                   29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14,
-                   13, 12, 11, 10, 9, 8]
+NOTE_FONT_STEPS = Float64Array [54, 48, 44, 43, 42, 41, 40, 38, 37, 36, 35, 34, 33, 32,
+                   31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15,
+                   14, 13, 12, 11, 10, 9, 8]
 NOTE_PHASE1_FLOOR = 11   // Below this, char-breaking activates
 ```
 
@@ -519,30 +541,38 @@ Single descending sweep through `NOTE_FONT_STEPS` captures both `startIdxP2` (fi
 
 #### Phase 1: Words Atomic (floor 11px), Binary Search
 
-Binary search `[startIdxP1, NOTE_PHASE1_FLOOR_IDX)` for smallest index where `noteFlowCheck(..., phase2=false)` returns `'fits'`:
-- `'fits'` -> record `answer = mid`, `hi = mid` (try smaller step, larger font)
-- `'heightOverflow'` -> `lo = mid + 1`
-- `number` (step index from `findStepForWord`) -> word-too-wide lower bound. `lo = max(mid + 1, jumpIdx)`. If `jumpIdx >= NOTE_PHASE1_FLOOR_IDX`, break to phase 2.
+Binary search `[startIdxP1, NOTE_PHASE1_FLOOR_IDX)` for smallest index where `noteFlowCheck(..., phase2=0)` returns `FLOW_FITS`:
+- `FLOW_FITS` (−1) -> record `answer = mid`, `hi = mid` (try smaller step, larger font)
+- `FLOW_HEIGHT_OVERFLOW` (−2) -> `lo = mid + 1`
+- `≥ 0` (step index from `findStepForWord`) -> word-too-wide lower bound. `lo = max(mid + 1, jumpIdx)`. If `jumpIdx >= NOTE_PHASE1_FLOOR_IDX`, break to phase 2.
 
 ~6 probes typical vs ~15–20 for the old linear scan.
 
 ```typescript
-function findStepForWord(wordW100: number, contentWidth: number): number {
+// O(1): steps are integers, so `step ≤ maxStep ⟺ step ≤ ⌊maxStep⌋` — one LUT load.
+// STEP_FOR_FLOOR[f] = first step index whose step ≤ f (NOTE_STEP_COUNT when f < 8,
+// so indices 0..7 answer "no step fits" through the same load, no extra branch).
+function findStepForWord(wordW100, contentWidth) {
   const maxStep = (contentWidth * 100) / wordW100;
-  // Return first step index where NOTE_FONT_STEPS[i] <= maxStep
+  return STEP_FOR_FLOOR[maxStep >= 54 ? 54 : maxStep | 0]; // float clamp BEFORE |0 (int32 overflow)
 }
 ```
 
 #### Phase 2: Character Breaking, Binary Search
 
-Binary search `[startIdxP2, length)` — char-breaking relaxes the word-width constraint, so height is the only remaining bound. `noteFlowCheck(..., phase2=true)` returns only `'fits'` / `'heightOverflow'`. Font can jump **up** from phase 1's floor (e.g., 11→40) because multi-line wrapping allows larger fonts.
+Binary search `[startIdxP2, length)` — char-breaking relaxes the word-width constraint, so height is the only remaining bound. `noteFlowCheck(..., phase2=1)` returns only `FLOW_FITS` / `FLOW_HEIGHT_OVERFLOW`. Font can jump **up** from phase 1's floor (e.g., 11→40) because multi-line wrapping allows larger fonts.
 
 **Fallback:** If no step fits, `derivedFontSize = 8`. Empty text returns `NOTE_FONT_STEPS[0]` (54).
 
 #### `noteFlowCheck` — Inline Flow Simulation
 
+Returns ONE int — the negative sentinels leave the ≥ 0 range as the
+jump-to-step-index payload, so a sign test splits the classes and every call
+site stays monomorphic on number (the old `'fits' | 'heightOverflow' | number`
+union is gone):
+
 ```typescript
-type NoteFlowResult = 'fits' | 'heightOverflow' | number; // number = jumpToStepIdx
+FLOW_FITS = -1;  FLOW_HEIGHT_OVERFLOW = -2;  // ≥ 0 = jumpToStepIdx
 ```
 
 Mirrors `layoutMeasuredContent`'s pending whitespace state machine:
@@ -557,44 +587,45 @@ Sub-segment ladder is the same two-decision-system structure as `placeWord` (Sta
 
 #### Phase B: Mutate + Build Layout
 
-After finding `derivedFontSize`, mutates `MeasuredContent` (100px) in place:
+After finding `derivedFontSize`, rescales the pool lanes in place 100px → derived:
 
 ```typescript
 const ratio = derivedFontSize / 100;
-const F = buildFontMatrix(derivedFontSize, fontFamily);
-for (seg) { seg.advanceWidth *= ratio; seg.font = fontFromMatrix(F, bold, italic); }
-for (tok) { tok.advanceWidth *= ratio; }
-measured.lineHeight = derivedFontSize * lhMult;
-layoutMeasuredContent(measured, contentWidth, derivedFontSize);
+beginFontQuad(derivedFontSize, famCode);                              // lazy re-intern
+for (seg range) { segAdvW[s] *= ratio; segFontIdx[s] = quadFontIdx(segStyle[s] & 3); }
+for (tok range) tokAdvW[t] *= ratio;
+S[measuredFontSize] = NaN;  // lanes are note-scaled — a text-style getLayout must re-measure
+S[measuredLineHeight] = derivedFontSize * lhMult;                     // + syncViewIfAny
+flowSlotContent(ts, contentWidth); commitFlowToSlot(ts, derived, famCode, contentWidth);
 ```
 
-Safe — mutated content never reused for 100px work. Fresh measurement on next cache miss.
+Safe — mutated lanes never reused for 100px work. Fresh measurement on next cache miss.
 
 ### Cache — `getNoteLayout`
 
-Lives in `sticky-note.ts` as a module function (not on `TextLayoutCache`). No fontSize/width params — always at base dimensions. Reads/writes the shared cache via the `noteCached*` field accessors / `setNoteResults`.
+Lives in `sticky-note.ts` as a module function (not on `TextLayoutCache`). No fontSize/width params — always at base dimensions. Reads/writes the store columns directly (one slot resolve, then column loads — the old path was four string-keyed Map.gets through the note-bridge accessors).
 
 ```typescript
-getNoteLayout(id, fragment, fontFamily): TextLayout   // sticky-note.ts
-getNoteDerivedFontSize(id): number                    // sticky-note.ts, fallback NOTE_FONT_STEPS[0]
+getNoteLayout(id, fragment, fontFamily): TextLayoutScalars  // sticky-note.ts (population + scalars)
+getNoteDerivedFontSize(id): number                          // NaN-column probe, fallback NOTE_FONT_STEPS[0]
 ```
 
-**Two-tier:**
-1. **Hit:** tokenized valid + fontFamily matches + noteDerivedFontSize valid -> cached layout
-2. **Stale:** Re-measure at 100px + `layoutNoteContent` (reuses tokenized if content unchanged)
-3. **Full miss:** `parseAndTokenize` -> measure at 100px -> `layoutNoteContent`
+**Tiers:**
+1. **Hit:** CONTENT_VALID + famCode byte matches + noteDerivedFontSize column non-NaN -> return scalars
+2. **Stale:** re-measure at 100px in place + `layoutNoteContentSlot` (reuses pooled topology when content unchanged)
+3. **Full miss:** tokenize -> commit -> measure at 100px -> `layoutNoteContentSlot`
 
-**Invalidation:** `invalidateContent(id)` on `TextLayoutCache` nulls tokenized + `noteDerivedFontSize` (field still on `CacheEntry`, so no extra coordination needed). Scale changes don't invalidate. FontFamily detected by comparison.
+**Invalidation:** `invalidateContent(id)` clears CONTENT_VALID + NaNs `measuredFontSize`/`noteDerivedFontSize` — one column write path, no extra coordination. Scale changes don't invalidate. FontFamily detected by famCode-byte comparison.
 
 ### Canvas Rendering — `drawStickyNote`
 
-Renders inside `ctx.translate(origin) + ctx.scale(noteScale)` at **base dimensions** (145×145). Does NOT call `renderTextLayout` — custom rendering with alignment.
+Renders inside `ctx.translate(origin) + ctx.scale(noteScale)` at **base dimensions** (145×145) through the shared run kernel with note-specific anchors/clip.
 
 ```
 drawStickyNote(ctx, handle):
-  1. getNoteProps(y) -> origin, scale, fontFamily, fillColor, content, align, alignV
-  2. getNoteLayout(id, content, fontFamily) -> layout at base dimensions
-  3. getNoteDerivedFontSize(id) -> derived font size
+  1. textSlotFast(handle.slot, id) -> ts (bail on cold-miss; observer fills first)
+  2. derivedFontSize + lineCount + lineHeight off the S/R columns (NaN derived -> bail)
+  3. readNoteRender(y) -> origin, scale, fontFamily, fillColor, align, alignV
   4. ctx.translate(origin) + ctx.scale(noteScale)
   5. renderNoteBody(ctx, 0, 0, fillColor) -- always drawn, even during editing
   6. if textEditingId === id -> return (DOM overlay handles text)

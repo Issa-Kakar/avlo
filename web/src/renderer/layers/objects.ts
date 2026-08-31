@@ -8,9 +8,9 @@ import { getImageMeta } from '@/core/image/image-cache';
 import { getBitmap } from '@/core/image/image-manager';
 import { getBBoxColumn, getHandlesBySlot, getKindCodes } from '@/core/slots/slot-table';
 import { spatialTree } from '@/core/spatial/spatial-tree';
-import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel } from '@/core/text/shape-label';
+import { computeLabelTextBox, renderShapeLabelPreview, renderShapeLabelSlot } from '@/core/text/shape-label';
 import { drawStickyNote } from '@/core/text/sticky-note';
-import { renderTextLayout, type TextLayout, textLayoutCache } from '@/core/text/text-system';
+import { renderTextLayout, renderTextLayoutById, type TextLayout, textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { K_BOOKMARK, K_CODE, K_CONNECTOR, K_IMAGE, K_NOTE, K_SHAPE, K_STROKE, K_TEXT, type ObjectHandle } from '@/core/types/objects';
 import { getZOrder } from '@/runtime/room-runtime';
@@ -371,8 +371,10 @@ function drawShapeLabel(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
   if (!r) return;
   const textBox = computeLabelTextBox(r.shapeType, r.frame);
   if (textBox[2] <= 0 || textBox[3] <= 0) return;
-  const layout = textLayoutCache.getLayout(handle.id, r.content, r.fontSize, r.fontFamily, textBox[2]);
-  renderShapeLabel(ctx, layout, textBox, r.labelColor, r.fontFamily, r.align, r.alignV);
+  // getLayout refreshes the entry for the current fontSize/family/width
+  // (comparison staleness) and hands back its slot for the pooled-lane draw.
+  const sc = textLayoutCache.getLayout(handle.id, r.content, r.fontSize, r.fontFamily, textBox[2]);
+  renderShapeLabelSlot(ctx, sc.slot, textBox, r.labelColor, r.align, r.alignV);
 }
 
 function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frame: FrameTuple): void {
@@ -382,9 +384,7 @@ function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHa
   const measured = textLayoutCache.getMeasuredContent(handle.id);
   if (!measured) return;
   const textBox = computeLabelTextBox(r.shapeType, frame);
-  if (textBox[2] <= 0 || textBox[3] <= 0) return;
-  const layout = layoutIntoLabelScratch(measured, textBox[2], r.fontSize);
-  renderShapeLabel(ctx, layout, textBox, r.labelColor, r.fontFamily, r.align, r.alignV);
+  renderShapeLabelPreview(ctx, measured, r.fontSize, textBox, r.labelColor, r.align, r.alignV);
 }
 
 /**
@@ -395,10 +395,10 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
   if (_textEditingId === id) return;
 
-  const layout = textLayoutCache.getLayoutById(id);
-  if (!layout) return; // cold-miss race — observer fills the cache before render
   const r = readTextRender(y);
-  renderTextLayout(ctx, layout, r.originX, r.originY, r.color, r.align, r.fillColor);
+  // Slot-accelerated pooled-lane draw; no-ops on the cold-miss race (observer
+  // fills the cache before render).
+  renderTextLayoutById(ctx, handle.slot, id, r.originX, r.originY, r.color, r.align, r.fillColor);
 }
 
 // Code-block chrome — the spans/source/origin/title/output/outputCache
@@ -519,11 +519,11 @@ function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHa
  */
 function drawConnectorLabelText(ctx: CanvasRenderingContext2D, handle: ObjectHandle, labelRect: BBoxTuple | null): void {
   if (!labelRect || _textEditingId === handle.id) return;
-  const layout = textLayoutCache.getLayoutById(handle.id);
-  if (!layout) return;
+  const sc = textLayoutCache.getLayoutScalarsById(handle.id);
+  if (!sc) return;
   const anchorX = (labelRect[0] + labelRect[2]) / 2;
   const anchorY = (labelRect[1] + labelRect[3]) / 2;
-  renderTextLayout(ctx, layout, anchorX, labelOriginYFor(layout, anchorY), getLabelColor(handle.y), 'center');
+  renderTextLayoutById(ctx, handle.slot, handle.id, anchorX, labelOriginYFor(sc, anchorY), getLabelColor(handle.y), 'center');
 }
 
 // ============================================================================
@@ -581,14 +581,14 @@ function renderScaleEntryLanes(ctx: CanvasRenderingContext2D, handle: ObjectHand
     case OP_ORIGIN_UNIFORM: {
       switch (m & META_KIND_MASK) {
         case K_TEXT: {
-          const layout = textLayoutCache.getLayoutById(handle.id);
-          if (!layout) break;
           const ratio = lanes[b + 14] / lanes[b + 6];
           const r = readTextRender(handle.y);
           ctx.save();
           ctx.translate(lanes[b + 12], lanes[b + 13]);
           ctx.scale(ratio, ratio);
-          renderTextLayout(ctx, layout, 0, 0, r.color, r.align, r.fillColor);
+          // No-op inside the transform block when the layout is absent —
+          // visually identical to the old null-probe break.
+          renderTextLayoutById(ctx, handle.slot, handle.id, 0, 0, r.color, r.align, r.fillColor);
           ctx.restore();
           break;
         }

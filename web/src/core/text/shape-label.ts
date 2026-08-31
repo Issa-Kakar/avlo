@@ -1,28 +1,36 @@
 /**
  * SHAPE-LABEL RENDERING
  *
- * Shape labels reuse the full text pipeline (tokenize → measure → layout) with
- * shape-aware positioning. This module owns the two pieces specific to labels:
- *   - `computeLabelTextBox` — max inscribed rect per shape type, inset by padding
- *   - `renderShapeLabel`    — H+V aligned, overflow-clipped canvas draw
+ * Shape labels reuse the full text pipeline (tokenize → measure → flow) with
+ * shape-aware positioning. This module owns the pieces specific to labels:
+ *   - `computeLabelTextBox`      — max inscribed rect per shape type, inset by padding
+ *   - `renderShapeLabelSlot`     — at-rest draw off the entry's pooled layout tier
+ *   - `renderShapeLabelPreview`  — transform-preview draw: flow the cached
+ *     measured view into staging and paint straight from it — no per-frame
+ *     layout buffer, no commit copy, no cache pollution
+ *
+ * The two render bodies are deliberate twins over the shared run kernel
+ * (`setRenderKernelScalars` + renderRuns*) rather than one body with a source
+ * flag — each keeps its own monomorphic call into the kernel.
  *
  * `computeLabelTextBox` writes into a module-level scratch (read transiently by
- * the renderer and TextTool, never retained — see the call-site note below);
- * `layoutIntoLabelScratch` writes into a single shared `TextLayout` buffer for
- * the transform-preview path. Dependency direction: shape-label → text-system.
+ * the renderer and TextTool, never retained — see the call-site note below).
+ * Dependency direction: shape-label → text-system.
  */
 
-import type { FontFamily, TextAlign, TextAlignV, TextWidth } from '../accessors';
+import type { TextAlign, TextAlignV } from '../accessors';
 import type { FrameTuple } from '../types/geometry';
-import { getBaselineToTopRatio } from './text-measure';
+import { getBaselineToTopRatioByCode } from './text-measure';
+import { getR, getS, TS_FAM_SHIFT } from './text-store';
 import {
   anchorFactor,
-  createTextLayout,
-  getLineStartX,
+  flowMeasuredToStaging,
   getNoteContentOffsetY,
-  layoutMeasuredContent,
   type MeasuredContent,
-  type TextLayout,
+  renderRunsForSlot,
+  renderRunsFromStaging,
+  setRenderKernelScalars,
+  stagedFlowLineCount,
 } from './text-system';
 
 export const LABEL_PADDING = 8;
@@ -31,8 +39,8 @@ const SQRT2_OVER_2 = Math.SQRT2 / 2;
 // --- Module-scope label-textbox scratch ---
 // computeLabelTextBox is a pure computation with no owner — every call site reads
 // the four slots immediately (destructure, or pass straight into getLayout /
-// renderShapeLabel / layoutIntoLabelScratch, none of which call back into
-// computeLabelTextBox) and never retains the tuple. Same idiom as _labelScratch.
+// renderShapeLabel*, none of which call back into computeLabelTextBox) and never
+// retains the tuple.
 const _labelTextBox: FrameTuple = [0, 0, 0, 0];
 
 /** Max inscribed text rect for a shape label, inset by LABEL_PADDING. Writes into
@@ -87,28 +95,38 @@ export function computeLabelTextBox(shapeType: string, frame: FrameTuple): Frame
   }
 }
 
-// --- Renderer ---
+// --- Renderers (twin bodies over the shared run kernel) ---
 
-export function renderShapeLabel(
+/** At-rest label draw off the entry's committed layout tier. `ts` comes from
+ *  the caller's `textLayoutCache.getLayout(...).slot` (which also refreshed
+ *  the layout for the current fontSize/family/width). */
+export function renderShapeLabelSlot(
   ctx: CanvasRenderingContext2D,
-  layout: TextLayout,
+  ts: number,
   textBox: FrameTuple,
   color: string,
-  fontFamily: FontFamily,
   align: TextAlign = 'center',
   alignV: TextAlignV = 'middle',
 ): void {
-  const [tbx, tby, tbw, tbh] = textBox;
-  if (tbw <= 0 || tbh <= 0 || layout.lineCount === 0) return;
+  const tbx = textBox[0];
+  const tby = textBox[1];
+  const tbw = textBox[2];
+  const tbh = textBox[3];
+  const R = getR();
+  const b16 = ts << 4;
+  const lineCount = R[b16 + 10];
+  if (tbw <= 0 || tbh <= 0 || lineCount === 0) return;
+  const S = getS();
+  const b8 = ts << 3;
+  const fontSize = S[b8 + 2];
+  const lineHeight = S[b8 + 3];
+  const famCode = (R[b16 + 15] >>> TS_FAM_SHIFT) & 255;
 
-  const { fontSize, lineHeight, lineCount } = layout;
   const contentHeight = lineCount * lineHeight;
-  const baselineToTop = fontSize * getBaselineToTopRatio(fontFamily);
+  const b2t = fontSize * getBaselineToTopRatioByCode(famCode);
   const needsClip = contentHeight > tbh;
-
   const vOffset = getNoteContentOffsetY(alignV, tbh, contentHeight);
-  const contentTopY = needsClip ? tby : tby + vOffset;
-  const firstBaselineY = contentTopY + baselineToTop;
+  const firstBaselineY = (needsClip ? tby : tby + vOffset) + b2t;
 
   if (needsClip) {
     ctx.save();
@@ -120,57 +138,55 @@ export function renderShapeLabel(
   ctx.textBaseline = 'alphabetic';
   ctx.textRendering = 'optimizeSpeed';
 
-  const shapeAnchorX = tbx + anchorFactor(align) * tbw;
-  const hlR = fontSize * 0.25;
-  let lastFont = '';
-  for (let li = 0; li < lineCount; li++) {
-    const startRun = layout.lineRunStart[li];
-    const endRun = layout.lineRunStart[li + 1];
-    if (startRun === endRun) continue;
-    const lineY = firstBaselineY + layout.lineBaselineY[li];
-    const lineW = layout.lineAlignmentWidth[li];
-    const startX = getLineStartX(shapeAnchorX, tbw, lineW, align);
-
-    // Pass 1: highlights
-    for (let r = startRun; r < endRun; r++) {
-      const hl = layout.runHighlight[r];
-      if (!hl) continue;
-      ctx.fillStyle = hl;
-      const hlX = startX + layout.runAdvanceX[r];
-      const hlY = lineY - baselineToTop;
-      const runW = layout.runAdvanceWidth[r];
-      const hlEnd = hlX + runW;
-      const clL = Math.max(hlX, tbx);
-      const clR = Math.min(hlEnd, tbx + tbw);
-      if (clR > clL) {
-        const rL = clL > hlX ? 0 : hlR,
-          rR = clR < hlEnd ? 0 : hlR;
-        ctx.beginPath();
-        ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
-        ctx.fill();
-      }
-    }
-
-    // Pass 2: text
-    ctx.fillStyle = color;
-    for (let r = startRun; r < endRun; r++) {
-      const f = layout.runFont[r];
-      if (f !== lastFont) {
-        ctx.font = f;
-        lastFont = f;
-      }
-      ctx.fillText(layout.runText[r], startX + layout.runAdvanceX[r], lineY);
-    }
-  }
+  const af = anchorFactor(align);
+  setRenderKernelScalars(tbx + af * tbw, firstBaselineY, af, tbw, lineHeight, b2t, tbx, tbx + tbw, fontSize * 0.25);
+  renderRunsForSlot(ctx, ts, 1, color);
 
   if (needsClip) ctx.restore();
 }
 
-// --- Module-scope label scratch (one buffer for ALL labeled shapes per frame) ---
-const _labelScratch = createTextLayout();
+/** Transform-preview label draw: flow the cached measured view at the preview
+ *  frame's text-box width straight into staging and paint from it. Zero cache
+ *  writes, zero per-frame layout buffers. */
+export function renderShapeLabelPreview(
+  ctx: CanvasRenderingContext2D,
+  measured: MeasuredContent,
+  fontSize: number,
+  textBox: FrameTuple,
+  color: string,
+  align: TextAlign = 'center',
+  alignV: TextAlignV = 'middle',
+): void {
+  const tbx = textBox[0];
+  const tby = textBox[1];
+  const tbw = textBox[2];
+  const tbh = textBox[3];
+  if (tbw <= 0 || tbh <= 0) return;
 
-/** Layout into a shared module-level scratch buffer. Used by renderer's transform-preview path
- *  for shape labels (drawShapeLabelWithFrame) — eliminates per-shape per-frame allocation. */
-export function layoutIntoLabelScratch(measured: MeasuredContent, width: TextWidth, fontSize: number): TextLayout {
-  return layoutMeasuredContent(measured, width, fontSize, _labelScratch);
+  flowMeasuredToStaging(measured, tbw > 0.01 ? tbw : 0.01);
+  const lineCount = stagedFlowLineCount();
+  if (lineCount === 0) return;
+  const lineHeight = measured.lineHeight;
+
+  const contentHeight = lineCount * lineHeight;
+  const b2t = fontSize * getBaselineToTopRatioByCode(measured.famCode);
+  const needsClip = contentHeight > tbh;
+  const vOffset = getNoteContentOffsetY(alignV, tbh, contentHeight);
+  const firstBaselineY = (needsClip ? tby : tby + vOffset) + b2t;
+
+  if (needsClip) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(tbx, tby, tbw, tbh);
+    ctx.clip();
+  }
+
+  ctx.textBaseline = 'alphabetic';
+  ctx.textRendering = 'optimizeSpeed';
+
+  const af = anchorFactor(align);
+  setRenderKernelScalars(tbx + af * tbw, firstBaselineY, af, tbw, lineHeight, b2t, tbx, tbx + tbw, fontSize * 0.25);
+  renderRunsFromStaging(ctx, 1, color);
+
+  if (needsClip) ctx.restore();
 }

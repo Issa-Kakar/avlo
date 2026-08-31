@@ -127,7 +127,7 @@ All paths relative to `web/src/` unless noted.
 | `geometry/recognizer/` | $P/$Q shape recognizer — 550ms-hold match. Entry: `recognize.ts`, `hold-detector.ts`. See CLAUDE.md |
 | `spatial/` | Hit testing + region queries over `spatialTree` — the slot-keyed FlatRTree singleton (`spatial-tree.ts`; queries return dense u32 slots in a reused buffer, twin `query`/`queryPrecise` bodies). Entry: `object-query.ts` (picker facade), `handle-hit.ts`, `hit-dispatch.ts` (per-kind switch dispatchers), `FlatRTree.ts` (the engine). See CLAUDE.md |
 | `connectors/` | Elbow A* + straight routing, snap. Entry: `connector-router.ts`, `snap.ts`, `reroute-connector.ts`, `anchor-atoms.ts`, `connector-paths.ts`, `constants.ts`. See CLAUDE.md |
-| `text/` | Layout engine + three-tier cache + sticky notes. Entry: `text-system.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
+| `text/` | Layout engine + SoA text store (cross-entry pooled tiers, slot-keyed, three-tier staleness) + sticky notes. Entry: `text-system.ts`, `text-store.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
 | `code/` | Two-tier tokenization + CodeMirror + canvas renderer. Entry: `code-system.ts`, `code-tokens.ts`, `lezer-worker.ts`, `code-theme.ts`. See CLAUDE.md |
 | `image/` | Offline-first pipeline + demand-scaled work-stealing decode pool (1 baseline, grows under backlog, idle extras self-retire) over a SharedArrayBuffer control plane. Entry: `image-manager.ts`, `image-sab.ts`, `image-cache.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
 | `sab/` | Worker-agnostic SharedArrayBuffer control-plane toolkit (`Futex`, `SpmcRing`, `SlotTable`, `allocControlSab`/`assertCrossOriginIsolated`). First consumer: image decode (`image-sab.ts`). See CLAUDE.md |
@@ -397,7 +397,7 @@ computeBBoxForInto(id, kind, y, out) {
 
 | Subsystem cache | Owner | Read API |
 |---|---|---|
-| `textLayoutCache` (tokenized / measured / layout / frame / note-derived fontSize) | `core/text/text-system.ts` | `getTextFrame`, `getLayout`, `getMeasuredContent`, `getInlineStyles` + note bridge |
+| `textLayoutCache` (SoA text store: cross-entry pooled content/layout tiers + NaN-sentinel scalar columns, slot-keyed — `core/text/text-store.ts`) | `core/text/text-system.ts` (facade) | `getTextFrame`, `getLayout` (→ scalars), `getMeasuredContent` (view), `getLayoutScalarsById`, `getInlineStyles` |
 | `codeSystem` (source / spans / layout / output / frame) | `core/code/code-system.ts` | `getCodeFrame`, `getSpans`, `getSource`, `getOutputCache` |
 | `bookmarkCache` (layout + frame) | `core/bookmark/bookmark-render.ts` | `getBookmarkFrame` |
 | `connectorRouter.routes` (per-id pooled `Point[]` + reverse `shape→connectors`) | `core/connectors/connector-router.ts` (owned by RDM) | `getConnectorRoute`, `getAttachedConnectors` |
@@ -425,7 +425,7 @@ computeBBoxForInto(id, kind, y, out) {
 ### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
 Each leaf `draw*` calls one `readXxxRender(y)` that reads only the keys it paints straight off Yjs's `_map` (~10 ns/key vs ~109 for `y.get()`) into a per-kind module scratch. The mechanism — `readPrim`/`readY` split by Content subclass, the `!deleted` tombstone guard, the `arr[0]` length-1 invariant, scratch-consumed-before-the-next-reader — is documented in the file.
 
-Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById` / `codeSystem.getLayoutById` / `noteCachedLayout` / `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls; populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, …)` signature.
+Layout-bearing kinds read without content pulls: text/note draw straight off the text store's pooled lanes via `renderTextLayoutById`/`drawStickyNote` (appSlot-accelerated slot resolve, no Y.XmlFragment reads); code/bookmark via `codeSystem.getLayoutById` / `bookmarkCache.getLayoutById`. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, …)` signature.
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
