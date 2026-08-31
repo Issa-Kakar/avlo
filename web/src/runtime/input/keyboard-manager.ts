@@ -126,6 +126,9 @@ export function handleKeyDown(e: KeyboardEvent): void {
 function handleModifierShortcut(e: KeyboardEvent, key: string): void {
   const tool = getCurrentTool();
   const gestureActive = tool?.isActive() ?? false;
+  // Durable-lock chokepoint: a locked selection blocks every mutating shortcut below
+  // (copy stays live; Cmd+Z/Y are gated at the doc manager; Cmd+A filters internally).
+  const locked = useSelectionStore.getState().selectionLocked;
 
   switch (key) {
     case 'c':
@@ -137,12 +140,12 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case 'x':
       e.preventDefault();
-      if (!gestureActive) cutSelected();
+      if (!gestureActive && !locked) cutSelected();
       return;
 
     case 'd':
       e.preventDefault();
-      if (!gestureActive) duplicateSelected();
+      if (!gestureActive && !locked) duplicateSelected();
       return;
 
     case 'a':
@@ -173,17 +176,17 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case 'b':
       e.preventDefault();
-      if (!gestureActive) toggleSelectedBold();
+      if (!gestureActive && !locked) toggleSelectedBold();
       return;
 
     case 'i':
       e.preventDefault();
-      if (!gestureActive) toggleSelectedItalic();
+      if (!gestureActive && !locked) toggleSelectedItalic();
       return;
 
     case 'h':
       e.preventDefault();
-      if (!gestureActive) {
+      if (!gestureActive && !locked) {
         const { selectedIds } = useSelectionStore.getState();
         const { highlightColor } = computeUniformInlineStyles(selectedIds);
         if (highlightColor) {
@@ -213,12 +216,12 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case ']':
       e.preventDefault();
-      if (!gestureActive) bringSelectedToFront();
+      if (!gestureActive && !locked) bringSelectedToFront();
       return;
 
     case '[':
       e.preventDefault();
-      if (!gestureActive) sendSelectedToBack();
+      if (!gestureActive && !locked) sendSelectedToBack();
       return;
   }
 }
@@ -274,6 +277,10 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     toggleGridEnabled();
     return;
   }
+
+  // Durable-lock chokepoint: everything below mutates the selection (z-order,
+  // delete, enter-to-edit). Tool switches / grid / image picker above stay live.
+  if (useSelectionStore.getState().selectionLocked) return;
 
   // Z-order step ops — viewport-bound bisection
   if (key === ']') {

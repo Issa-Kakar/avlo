@@ -65,10 +65,10 @@ export interface Aggregate<V> {
   readonly mixed: boolean;
 }
 
-// One-cast-per-loop dispatch bridge — mirrors `tools/selection/transform.ts`'s
-// `APPLY_SCALE[kind]` cast. (Spatial hit dispatch was switched to a per-kind
-// switch in `core/spatial/hit-dispatch.ts`, so this is now the canonical
-// example of a mapped-table dispatch with biome-ignore.)
+// One-cast-per-loop dispatch bridge. (Spatial hit dispatch was switched to a
+// per-kind switch in `core/spatial/hit-dispatch.ts`, and the transform engine
+// to int-LUT op dispatch, so this is now the canonical example of a
+// mapped-table dispatch with biome-ignore.)
 // biome-ignore lint/suspicious/noExplicitAny: dispatch boundary; mapped table proves correctness at definition
 type AnyDescriptor = FieldDescriptor<any>;
 

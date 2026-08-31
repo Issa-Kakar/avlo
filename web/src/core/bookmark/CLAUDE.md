@@ -96,7 +96,7 @@ handleUnfurlFailed(objectId): pasteUrlAsText fallback + cleanup
 Bookmark asset IDs flow through the **same decode pipeline as images**, but always at level 0 (ppsp = Infinity, no mip selection). The og/favicon ids are sourced from the `BookmarkLayout` cache — no separate metadata map:
 
 - `computeBookmarkBBox` → `getLayout` stores `ogImageAssetId` / `faviconAssetId` on the layout; `bookmarkCache.evict(id)` (via `removeObjectCaches`) clears it on delete
-- `manageImageViewport()` — per frame, iterates visible bookmark `ObjectHandle`s (rbush items are handles) + reads `bookmarkCache.getLayoutById`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
+- `manageImageViewport()` — per frame, iterates visible bookmark slots (`spatialTree.query`; handles via the slot reverse map, boxes off the bbox column) + reads `bookmarkCache.getLayoutById`, calls `markAsset(assetId, Infinity, 1, 1, x0,y0,x1,y1)` for both OG + favicon
 - `hydrateImages()` (zero-arg) — at room join, reads `bookmarkCache.forEachLayout`; bookmark assets contribute at level 0 using the handle's bbox
 
 OG images ≤ 300wu (card width); favicons 18×18.
@@ -238,7 +238,7 @@ Hover state and paint both live on the **base canvas**. Overlay never paints it.
 
 **Gesture handoff (openButton press → translate).** When the pointer drifts past `MOVE_THRESHOLD_PX` mid-press, phase promotes to `translate` **without clearing hover**. The renderer's translate path wraps `drawObject(ctx, handle)` in `ctx.translate(tdx, tdy)`, which re-dispatches into `case 'bookmark'` with `hoveredOpen = true` — hover rides the translate naturally. On `end()`, `rehoverFromLastCursor()` re-evaluates against the post-commit frame.
 
-**Scale gestures clear hover** at `SelectTool.begin()` before phase classification. Scale previews route through `renderScaleEntry` → recursive `drawObject` with `hoveredOpen = false`.
+**Scale gestures clear hover** at `SelectTool.begin()` before phase classification. Scale previews route through `renderScaleEntryLanes` → recursive `drawObject` with `hoveredOpen = false`.
 
 **Edge cases:**
 - Deletion mid-hover → `getOpenButtonWorldBBox` returns `null`, invalidate bails; the deletion's own bbox invalidation cleans up the full bookmark paint
@@ -316,7 +316,7 @@ All worker logs prefixed `[unfurl]`.
 ## Integration Points
 
 ### Hit Testing — `core/spatial/hit-dispatch.ts`
-Bookmark closes over `getBookmarkFrame(h.id)` via the shared `paddedHit*FromFrame` helpers (same precision-pass model as text and note — bbox carries shadow pad, so the rbush envelope is coarser than the frame). Paint is `'ink'` on hit. All marquee + point picking flows through the spatial pipeline; **no per-bookmark cases in `EraserTool` or `snap.ts`**.
+Bookmark closes over `getBookmarkFrame(h.id)` via the shared `paddedHit*FromFrame` helpers (same precision-pass model as text and note — bbox carries shadow pad, so the tree envelope is coarser than the frame). Paint is `'ink'` on hit. All marquee + point picking flows through the spatial pipeline; **no per-bookmark cases in `EraserTool` or `snap.ts`**.
 
 ### Selection
 - `SelectionKind` value: `'bookmark'` (the type is `ObjectKind | 'none' | 'mixed'`)
@@ -334,7 +334,7 @@ Origin + uniform scale, same pattern as sticky notes.
 | `'mixed'`, corner | Uniform scale |
 | `'mixed'`, side | Edge-pin translate (`edgePinOffset` + `commitOrigin`) |
 
-`OutOf<'bookmark'> = HasOrigin & HasScale & HasBBox`. Scale preview routes through `renderScaleEntry` → `case 'bookmark'`: `ctx.scale(ratio)` around `out.origin` + recursive `drawObject` (no dedicated preview fn).
+Bookmark gesture lanes: aux = `[originX, originY, scale, 0]`. Scale preview routes through `renderScaleEntryLanes`' origin-uniform arm: `ctx.scale(ratio)` (aux lanes 14/6) around the out-origin lanes + recursive `drawObject` (no dedicated preview fn).
 
 ### Connector Topology — `tools/selection/connector-topology.ts`
 `fillFrameFromBind` for bookmark bind sides: `[origin.x, origin.y, frozen.w × ratio, frozen.h × ratio]` where `ratio = out.scale / frozen.scale`. Frame caches are populated during hydrate and only become `null` post-delete — see `connector-topology.ts:382`.

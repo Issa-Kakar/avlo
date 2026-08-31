@@ -88,13 +88,13 @@ export function getActivePreview(): PreviewData | null {
 }
 
 /**
- * Check if MMB pan can start.
+ * Check if a pan (MMB or right-drag) can start.
  * - Pan must not already be active
  * - No other tool can be in an active gesture
  *
- * This allows MMB pan to interrupt idle tools but not active gestures.
+ * This allows pan to interrupt idle tools but not active gestures.
  */
-export function canStartMMBPan(): boolean {
+export function canStartPan(): boolean {
   if (panTool.isActive()) return false;
   const tool = getCurrentTool();
   // If current tool is panTool, we already checked above

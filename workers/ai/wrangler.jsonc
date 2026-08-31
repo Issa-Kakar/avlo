@@ -1,0 +1,47 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "avlo-ai",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30", // pinned per-worker; bump uniformly when needed
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The AI host: WSS on /agents/* (Agents SDK routing). Two same-script DOs:
+  //  - AvloAiAgent — per (user, room) chat agent (AIChatAgent: SQLite message
+  //    persistence + resumable streams). Instance name `<userId>:<roomId>`,
+  //    identity bound by the edge gate (src/gate.ts).
+  //  - AiQuota — per USER durable token buckets (spans rooms; the agent DO is
+  //    per user:room, so budgets cannot live there).
+  "durable_objects": {
+    "bindings": [{ "name": "AvloAiAgent", "class_name": "AvloAiAgent" }, { "name": "AI_QUOTA", "class_name": "AiQuota" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AvloAiAgent", "AiQuota"] }],
+
+  // Edge auth (AuthRpc.verifySession in the gate — account sessions only).
+  "services": [{ "binding": "AUTH", "service": "avlo-auth", "entrypoint": "AuthRpc" }],
+
+  // Workers AI: the no-provider-key fallback chat model + image gen (FLUX).
+  // `remote: true` is the binding's only mode (Workers AI has no local simulator) —
+  // stated explicitly: local dev hits the REAL network and bills neurons.
+  "ai": { "binding": "AI", "remote": true },
+
+  // Generated images land content-addressed in the shared assets bucket the
+  // images worker serves (unfurl precedent for direct shared-bucket writes).
+  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "avlo-assets" }],
+
+  // Tier-1 edge damping before the DO (per-colo, approximate — the durable
+  // budget lives in AiQuota). Namespace ids: 1001 images, 1002 unfurl,
+  // 1003 auth, 1004 users, 1005 ai.
+  "ratelimits": [{ "name": "RL_AI", "namespace_id": "1005", "simple": { "limit": 20, "period": 60 } }],
+
+  // Secrets (via `.dev.vars` locally, `wrangler secret put` in prod):
+  //   GOOGLE_AI_STUDIO_API_KEY — Gemini (primary chat model)
+  //   AI_GATEWAY_ACCOUNT_ID / AI_GATEWAY_NAME — optional; routes Gemini through
+  //     Cloudflare AI Gateway (observability + BYOK later)
+
+  // routes uncommented post-DNS-transfer + remaining pre-prod essentials
+  // "routes": [{ "pattern": "ai.avlo.io", "custom_domain": true }],
+
+  "dev": { "port": 8794 },
+  "observability": { "enabled": true },
+  "minify": true
+}

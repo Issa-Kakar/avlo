@@ -1,10 +1,39 @@
 /**
- * Transform System — entry-based scale/translate with typed per-kind dispatch.
+ * Transform system — module-level SoA gesture engine (no class, no controller).
  *
- * Atom-based: arithmetic primitives live in `core/geometry/scale-system.ts`. transform.ts
- * orchestrates lifecycle, dispatch, and freeze/commit. EdgePin and translate share one
- * offset pipeline (`applyOffset`); the only difference is whether the delta comes from
- * gesture state or `edgePinDelta(bbox, ctx)`.
+ * Every gesture entry lives in ONE interleaved Float64Array (`_lanes`, stride
+ * 16 — layout in `transform-kernels.ts`), partitioned into contiguous op
+ * ranges at begin (counting sort over `OP_LUT[kind, behavior]`). Per
+ * pointermove: hoist gesture globals once, run one straight-line kernel per
+ * non-empty op range, rebake connector topology, push OLD+NEW damage rects
+ * into the batch accumulator, flush once. Steady-state begin/update/commit
+ * allocates nothing except reflow-sidecar field writes and cold pool growth.
+ *
+ * ROUTING — `_slotGesture: Int32Array` (sparse, slot-keyed, −1 default):
+ *   −1              not in gesture
+ *   gi              gesture entry (index into lanes/meta/gslot)
+ *   TOPO_TAG | ti   topology connector (index into `topology.entries`)
+ *   EPDRAG_TAG      the endpoint-drag connector
+ * The renderer pack loop skips `sg[slot] >= 0` in one load + sign test; the
+ * inject cull re-validates every inject slot against the map (a tag mismatch
+ * means the slot was evicted mid-gesture — prevents recycled-slot aliasing
+ * AND double-pack).
+ *
+ * EVICTION — `transformEvictSlot(slot)` (RoomDocManager: Phase A pre-
+ * releaseSlot + the kind-keychange branch) clears the slot's map cell, flags
+ * gesture entries DEAD (meta bit; commit-skip only — hot loops never test
+ * it), and pushes the evicted preview rect + flushes — the release-without-
+ * another-move path has no later pushAllDamage to erase those pixels.
+ *
+ * LIFECYCLE — commit derenders FIRST (mode→0 + map reset) so the renderer
+ * sees idle state before the observer repaints (the old clear-visual-state-
+ * first glitch guard), then runs ONE transact over live, unlocked entries;
+ * buffers persist at high-water across gestures; `_gy` refs and the code
+ * sidecar's source refs are released at dispose so deleted Y.Maps aren't
+ * rooted (the text sidecar holds only a slot int — nothing to release).
+ *
+ * Buffer getters follow the FlatRTree `results` idiom: refs are valid within
+ * a frame; refetch per frame (arrays swap only at begin/growth).
  */
 
 import type * as Y from 'yjs';
@@ -31,41 +60,20 @@ import {
   slotPointIndex,
 } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
-import {
-  bboxCenter,
-  copyBbox,
-  frameToBbox,
-  offsetBBox,
-  offsetFrame as offsetFrameMut,
-  offsetPoint,
-  setBBoxXYWH,
-} from '@/core/geometry/bounds';
-import {
-  computeReflowWidth,
-  derivePaddedFrame,
-  edgePinDelta,
-  MIN_SHAPE_FRAME_DIM,
-  roundProp,
-  scaleBBoxEdges,
-  scaleBBoxUniform,
-} from '@/core/geometry/scale-system';
+import { copyBbox } from '@/core/geometry/bounds';
+import { getLockedFlags, getLockOwners, isLockedObject } from '@/core/locks/lock-table';
+import { getBBoxColumn, slotHighWater } from '@/core/slots/slot-table';
 import { getItalicOverhangPad, getMinCharWidth } from '@/core/text/text-measure';
-import {
-  anchorFactor,
-  createTextLayout,
-  getTextFrame,
-  layoutMeasuredContent,
-  type TextLayout,
-  textLayoutCache,
-} from '@/core/text/text-system';
-import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import { anchorFactor, createTextLayout, getTextFrame, layoutSlotContent, type TextLayout, textSlotOf } from '@/core/text/text-system';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
-import type { BindableKind, ConnectorEndpoint, ObjectHandle, ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
-import { isBindableKind } from '@/core/types/objects';
-import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
+import type { ConnectorEndpoint, ObjectHandle } from '@/core/types/objects';
+import { isBindableKind, K_CODE, K_IMAGE, K_SHAPE, K_STROKE, K_TEXT, KIND_CODE } from '@/core/types/objects';
+import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getHandle, getObjects, transact } from '@/runtime/room-runtime';
 import {
+  type ConnectorEntry,
   type ConnectorTopology,
   cancelTopology,
   commitTopology,
@@ -74,1008 +82,1079 @@ import {
   runTopologyScale,
   runTopologyTranslate,
 } from './connector-topology';
+import { flushDamage, pushDamage } from './transform-damage';
+import {
+  applyEdgePinRange,
+  applyFrameEdgesRange,
+  applyFrameUniformRange,
+  applyOffsetRange,
+  applyOriginUniformRange,
+  applyStrokeUniformRange,
+  BEH_UNIFORM,
+  BEHAVIOR_LUT,
+  CAT_CORNER,
+  CAT_HSIDE,
+  CAT_VSIDE,
+  EPDRAG_TAG,
+  fillUniformPack,
+  G_STRIDE,
+  GIDX_MASK,
+  META_CODE_HEADER_VISIBLE,
+  META_CODE_LINE_NUMBERS,
+  META_CODE_OUTPUT_VISIBLE,
+  META_DEAD,
+  META_KIND_MASK,
+  META_OP_MASK,
+  META_OP_SHIFT,
+  OP_COUNT,
+  OP_FRAME_EDGES,
+  OP_FRAME_UNIFORM,
+  OP_LUT,
+  OP_OFFSET,
+  OP_ORIGIN_UNIFORM,
+  OP_REFLOW_CODE,
+  OP_REFLOW_TEXT,
+  OP_STROKE_UNIFORM,
+  reflowLeftWidth,
+  reflowOut,
+  TOPO_TAG,
+} from './transform-kernels';
 import type { ScaleCtx } from './types';
 
 // ============================================================================
-// Structural Traits — field-set atoms for generic function signatures
+// Module state
 // ============================================================================
 
-type HasOrigin = { origin: Point };
-type HasBBox = { bbox: BBoxTuple };
-type HasFrame = { frame: FrameTuple };
-type HasScale = { scale: number };
-type HasFontSize = { fontSize: number };
-type HasWidth = { width: number };
-type HasPoints = { points: Point[] };
+const MODE_NONE = 0;
+const MODE_SCALE = 1;
+const MODE_TRANSLATE = 2;
+const MODE_EP_DRAG = 3;
 
-// ============================================================================
-// Mapped Types — Single Source of Truth (composed from traits)
-// ============================================================================
+let _mode = MODE_NONE;
+let _sx = 1;
+let _sy = 1;
+let _dx = 0;
+let _dy = 0;
 
-type ScalableKind = Exclude<ObjectKind, 'connector'>;
-type MeasuredContent = ReturnType<typeof textLayoutCache.getMeasuredContent>;
+let _count = 0;
+const _opStart = new Int32Array(OP_COUNT);
+const _opCount = new Int32Array(OP_COUNT);
+const _opCursor = new Int32Array(OP_COUNT);
 
-type GeoMap = {
-  shape: HasFrame & HasBBox;
-  image: HasFrame & HasBBox;
-  // width is uniform-only (used by commitStrokeUniform). Translate/edgePin freeze omits it.
-  stroke: HasPoints & HasBBox & { width?: number };
-  // fontSize is required (every text behavior captures it — translate/edgePin do too so
-  // applyOffset can propagate it to out.fontSize, keeping fillDirty's italic-pad math
-  // unconditional). align/measured/minW are reflow-only.
-  text: HasOrigin &
-    HasBBox & {
-      fontSize: number;
-      width?: TextWidth;
-      align?: TextAlign;
-      measured?: MeasuredContent | null;
-      minW?: number;
-    };
-  // fontSize/width are uniform+reflow only; the rest are reflow-only.
-  code: HasOrigin &
-    HasBBox & {
-      fontSize?: number;
-      width?: number;
-      source?: CodeSource | null;
-      lineNumbers?: boolean;
-      headerVisible?: boolean;
-      outputVisible?: boolean;
-      output?: string | undefined;
-      minW?: number;
-    };
-  note: HasOrigin & HasBBox & { scale?: number };
-  bookmark: HasOrigin & HasBBox & { scale?: number };
-  connector: never;
+let _lanes = new Float64Array(64 * G_STRIDE);
+let _meta = new Uint32Array(64);
+let _gslot = new Uint32Array(64);
+/** Y refs for commit; length = 0 after commit/cancel so deleted maps aren't rooted. */
+const _gy: (Y.Map<unknown> | null)[] = [];
+
+/** Sparse slot→gesture map; capacity ensured ≥ slotHighWater at begin AND by
+ *  the renderer-facing getter each frame (peers mint slots mid-gesture). */
+let _slotGesture = new Int32Array(0);
+let _injectSlots = new Uint32Array(64);
+let _injectSlotCount = 0;
+/** Lock-acquisition ids ONLY (selection-store's acquireTransformLocks) — the
+ *  renderer never sees this. Same push rules as the old controller: all
+ *  non-locked selected ids incl. freeze-bailed ones, + attached connector
+ *  ids (the FULL attached set — an attached connector whose entry
+ *  construction bailed is still lock-acquired), or the epDrag id. */
+const _injectIds: string[] = [];
+
+/** Persistent ScaleCtx — `origin`/`selBounds` are OWNED arrays COPIED at
+ *  begin (a single-selected handle's live bbox must not alias the gesture
+ *  baseline: RDM's copyBbox would drift it under remote edits mid-gesture);
+ *  sx/sy mutated per frame. Threaded to topology + overlay. */
+const _scaleCtx: ScaleCtx = { sx: 1, sy: 1, origin: [0, 0], selBounds: [0, 0, 0, 0], handleId: 'se' };
+let _single = false;
+let _cat = CAT_CORNER;
+let _corner = false;
+/** Computed once at end of beginScale — behaviors are fixed at begin. */
+let _overlayUniform = false;
+
+const _translateSelBounds: BBoxTuple = [0, 0, 0, 0];
+let _hasTranslateBounds = false;
+
+let _topology: ConnectorTopology | null = null;
+
+/** Frozen stroke points, packed x,y pairs; per-entry [off, count] in fAux. */
+let _strokePool = new Float64Array(256);
+let _strokePoolLen = 0;
+
+interface TextSidecar {
+  measuredTs: number; // frozen text slot — lanes/bases read fresh per move, −1 idle
+  minW: number;
+  anchor: number;
+  readonly layout: TextLayout;
+}
+interface CodeSidecar {
+  source: CodeSource | null;
+  minW: number;
+  output: string | undefined;
+  readonly layout: CodeLayout;
+}
+/** Reflow sidecars — op-contiguity gives the dense index `gi - opStart[op]`.
+ *  Pooled, grown high-water; layout allocated once per pool slot. */
+const _textSidecars: TextSidecar[] = [];
+const _codeSidecars: CodeSidecar[] = [];
+
+// --- endpoint drag ---
+let _epSlot = -1; // object slot of the dragged connector (−1 = idle)
+let _epDragSlotArg: Slot = 0; // which endpoint moves (0 = start, 1 = end)
+let _epRouteCtx: RouteContext | null = null;
+const _epDragPrevBbox: BBoxTuple = [0, 0, 0, 0];
+/** Reused scratch reassigned per gesture — `id`/`slot` written per begin,
+ *  `currBbox`/`pointsBuf`/`validCount` mutated per frame. */
+const _epDragEntryScratch: EndpointDragEntry = {
+  mode: 'reroute',
+  id: '',
+  slot: 0,
+  currBbox: [0, 0, 0, 0],
+  pointsBuf: [],
+  validCount: 0,
 };
 
-type OutMap = {
-  shape: HasFrame & HasBBox;
-  image: HasFrame & HasBBox;
-  // No points/width — gestures only update bbox; commitStrokeOffset/Uniform read frozen.
-  stroke: HasBBox & { factor: number; fcx: number; fcy: number };
-  text: HasOrigin & HasFontSize & HasWidth & HasBBox & { layout: TextLayout | null };
-  code: HasOrigin & HasFontSize & HasWidth & HasBBox & { layout: CodeLayout };
-  note: HasOrigin & HasScale & HasBBox;
-  bookmark: HasOrigin & HasScale & HasBBox;
-  connector: never;
-};
-
-export type GeoOf<K extends ObjectKind> = GeoMap[K];
-export type OutOf<K extends ObjectKind> = OutMap[K];
-
-/** Kinds whose GeoOf has bbox — safe for entry.frozen.bbox / entry.out.bbox access. Resolves to `Exclude<ObjectKind, 'connector'>`. */
-export type KindWithBBoxGeo = { [K in ObjectKind]: GeoOf<K> extends { bbox: BBoxTuple } ? K : never }[ObjectKind];
+// --- freeze scratch (pass 1 → pass 2; module-reused) ---
+let _fSlots = new Int32Array(64);
+let _fOps = new Uint8Array(64);
+let _fKinds = new Uint8Array(64);
+const _fHandles: ObjectHandle[] = [];
 
 // ============================================================================
-// Entry + Store — Generics Survive Through Indexed Access
+// Capacity management (cold paths)
 // ============================================================================
 
-export interface Entry<K extends ObjectKind = ObjectKind> {
-  readonly id: string;
-  readonly y: Y.Map<unknown>;
-  readonly frozen: Readonly<GeoOf<K>>;
-  out: OutOf<K>;
-  prevBbox: BBoxTuple;
+function ensureSlotMapCapacity(): void {
+  const hw = slotHighWater();
+  if (_slotGesture.length >= hw) return;
+  let cap = Math.max(256, _slotGesture.length);
+  while (cap < hw) cap *= 2;
+  const next = new Int32Array(cap).fill(-1);
+  next.set(_slotGesture); // live tags must survive mid-gesture growth
+  _slotGesture = next;
 }
 
-type EntryStore = { [K in ObjectKind]?: Map<string, Entry<K>> };
-
-// ============================================================================
-// Behavior Resolution
-// ============================================================================
-
-export type ScaleBehavior = 'uniform' | 'nonUniform' | 'edgePin' | 'reflow';
-
-type HandleCat = 'corner' | 'hSide' | 'vSide';
-type Comp = 'single' | 'multi';
-type BKey = `${ScalableKind}_${HandleCat}_${Comp}`;
-
-const DEFAULT_BEHAVIOR: Record<HandleCat, Record<Comp, ScaleBehavior>> = {
-  corner: { single: 'uniform', multi: 'uniform' },
-  hSide: { single: 'uniform', multi: 'edgePin' },
-  vSide: { single: 'uniform', multi: 'edgePin' },
-};
-
-/**
- * Exceptions: shapes do nonUniform on sides (always) and on corners only when single (multi-shape
- * corners fall through to default `uniform` so groups scale together). Text/code reflow on E/W always.
- */
-const BEHAVIOR_OVERRIDES: Partial<Record<BKey, ScaleBehavior>> = {
-  shape_corner_single: 'nonUniform',
-  shape_hSide_single: 'nonUniform',
-  shape_hSide_multi: 'nonUniform',
-  shape_vSide_single: 'nonUniform',
-  shape_vSide_multi: 'nonUniform',
-  text_hSide_single: 'reflow',
-  text_hSide_multi: 'reflow',
-  code_hSide_single: 'reflow',
-  code_hSide_multi: 'reflow',
-};
-
-function resolveBehavior(kind: ScalableKind, handleId: HandleId, single: boolean): ScaleBehavior {
-  const cat: HandleCat = isCorner(handleId) ? 'corner' : isHorzSide(handleId) ? 'hSide' : 'vSide';
-  const comp: Comp = single ? 'single' : 'multi';
-  return BEHAVIOR_OVERRIDES[`${kind}_${cat}_${comp}`] ?? DEFAULT_BEHAVIOR[cat][comp];
+function ensureGestureCapacity(n: number): void {
+  if (n * G_STRIDE <= _lanes.length) return;
+  let cap = _lanes.length / G_STRIDE;
+  while (cap < n) cap *= 2;
+  _lanes = new Float64Array(cap * G_STRIDE);
+  _meta = new Uint32Array(cap);
+  _gslot = new Uint32Array(cap);
 }
 
-// ============================================================================
-// Scale Apply Functions — atoms compose atoms
-// ============================================================================
-
-/** Shape/image: scale bbox uniformly, derive frame with constant stroke padding. */
-function scaleFrameUniform(f: HasFrame & HasBBox, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
-  scaleBBoxUniform(o.bbox, f.bbox, ctx);
-  derivePaddedFrame(o.frame, o.bbox, f.frame, f.bbox);
+function ensureInjectCapacity(n: number): void {
+  if (n <= _injectSlots.length) return;
+  let cap = _injectSlots.length;
+  while (cap < n) cap *= 2;
+  const next = new Uint32Array(cap);
+  next.set(_injectSlots);
+  _injectSlots = next;
 }
 
-/**
- * Shape: scale bbox edges independently with per-axis min clamp, derive frame with constant stroke padding.
- * Bbox-min = frame-min + 2 * pad so `derivePaddedFrame`'s pad subtraction leaves frame ≥ `MIN_SHAPE_FRAME_DIM`,
- * which keeps connectors anchored to the shape well-defined even as the user crosses the scale origin.
- */
-function scaleFrameNonUniform(f: HasFrame & HasBBox, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
-  const padX = f.frame[0] - f.bbox[0];
-  const padY = f.frame[1] - f.bbox[1];
-  scaleBBoxEdges(o.bbox, f.bbox, ctx, MIN_SHAPE_FRAME_DIM + 2 * padX, MIN_SHAPE_FRAME_DIM + 2 * padY);
-  derivePaddedFrame(o.frame, o.bbox, f.frame, f.bbox);
+function ensureFreezeCapacity(n: number): void {
+  if (n <= _fSlots.length) return;
+  let cap = _fSlots.length;
+  while (cap < n) cap *= 2;
+  _fSlots = new Int32Array(cap);
+  _fOps = new Uint8Array(cap);
+  _fKinds = new Uint8Array(cap);
 }
 
-/** Stroke uniform: bbox-only update; renderer uses ctx.scale around frozen center. */
-function scaleStrokeBBox(f: GeoOf<'stroke'>, ctx: ScaleCtx, o: OutOf<'stroke'>): void {
-  const [fcx, fcy] = bboxCenter(f.bbox);
-  o.fcx = fcx;
-  o.fcy = fcy;
-  o.factor = scaleBBoxUniform(o.bbox, f.bbox, ctx);
-}
-
-/**
- * Origin-based uniform scale shared by text/code/note/bookmark.
- * Invariant: new_origin = new_bbox_min + (frozen_origin - frozen_bbox_min) * effective_factor.
- * Returns [rounded, ef] so callers write the prop and apply ef to derived width/etc.
- */
-function scaleBBoxOriginProp(
-  f: HasOrigin & HasBBox,
-  ctx: ScaleCtx,
-  o: HasOrigin & HasBBox,
-  propVal: number,
-): [rounded: number, ef: number] {
-  const af = scaleBBoxUniform(o.bbox, f.bbox, ctx);
-  const [rounded, ef] = roundProp(propVal, af);
-  o.origin[0] = o.bbox[0] + (f.origin[0] - f.bbox[0]) * ef;
-  o.origin[1] = o.bbox[1] + (f.origin[1] - f.bbox[1]) * ef;
-  return [rounded, ef];
-}
-
-/**
- * Uniform scale for text + code. Shared because both are origin+fontSize+width with the
- * same math. The typeof guard handles text's `'auto' | number` width — code's width is
- * always number at runtime, so it falls through the same branch.
- * (`o.layout` stays null throughout a uniform gesture — createOutFor initializes it null
- * and only `reflow` behavior writes a layout, so no reset is needed here.)
- */
-function scaleOriginFontSize(
-  f: HasOrigin & HasBBox & { fontSize?: number; width?: TextWidth | number },
-  ctx: ScaleCtx,
-  o: HasOrigin & HasFontSize & HasWidth & HasBBox,
-): void {
-  const [rounded, ef] = scaleBBoxOriginProp(f, ctx, o, f.fontSize!);
-  o.fontSize = rounded;
-  o.width = typeof f.width === 'number' ? f.width * ef : NaN;
-}
-
-function scaleOriginScale(f: HasOrigin & HasBBox & { scale?: number }, ctx: ScaleCtx, o: HasOrigin & HasScale & HasBBox): void {
-  const [rounded] = scaleBBoxOriginProp(f, ctx, o, f.scale!);
-  o.scale = rounded;
-}
-
-function reflowText(f: GeoOf<'text'>, ctx: ScaleCtx, o: OutOf<'text'>): void {
-  const fx = f.bbox[0];
-  const fw = f.bbox[2] - f.bbox[0];
-  const [newLeft, targetWidth] = computeReflowWidth(fx, fw, ctx.origin[0], ctx.sx, f.minW!);
-  // o.layout is pre-allocated at freeze time (createOutFor('text')); reused per pointermove.
-  const layout = layoutMeasuredContent(f.measured!, targetWidth, f.fontSize!, o.layout ?? undefined);
-  o.origin[0] = newLeft + anchorFactor(f.align!) * targetWidth;
-  o.origin[1] = f.origin[1];
-  o.width = layout.boxWidth;
-  o.layout = layout;
-  o.fontSize = f.fontSize!;
-  const nh = layout.lineCount * layout.lineHeight;
-  setBBoxXYWH(o.bbox, newLeft, f.bbox[1], targetWidth, nh);
-}
-
-function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
-  const fx = f.bbox[0];
-  const fw = f.bbox[2] - f.bbox[0];
-  const [newLeft, targetWidth] = computeReflowWidth(fx, fw, ctx.origin[0], ctx.sx, f.minW!);
-  // o.layout is pre-allocated at freeze time (createOutFor('code')); reused per pointermove.
-  const layout = layoutCodeSourceInto(f.source!, f.fontSize!, targetWidth, f.lineNumbers!, o.layout);
-  o.origin[0] = newLeft;
-  o.origin[1] = f.origin[1];
-  o.width = layout.totalWidth;
-  o.layout = layout;
-  o.fontSize = f.fontSize!;
-  const nh = codeBlockHeight(layout, f.fontSize!, f.headerVisible!, f.outputVisible!, f.output);
-  setBBoxXYWH(o.bbox, newLeft, f.bbox[1], targetWidth, nh);
-}
-
-// ============================================================================
-// Unified Offset Pipeline — translate AND scale-edgePin share one apply
-// ============================================================================
-
-/** Field-presence-checked offset apply. Used by both translate and edgePin. */
-// biome-ignore lint/suspicious/noExplicitAny: field-presence runtime check bridges all kinds
-function applyOffset(f: any, dx: number, dy: number, o: any): void {
-  if ('frame' in o) offsetFrameMut(o.frame, f.frame, dx, dy);
-  if ('origin' in o) offsetPoint(o.origin, f.origin, dx, dy);
-  // Propagate fields that translate/edgePin doesn't change but downstream readers need:
-  //   scale (note/bookmark) — connector-topology's fillFrameFromBind needs ratio=1
-  //   fontSize (text)       — fillDirty's italic-pad math reads out.fontSize
-  if ('scale' in o && 'scale' in f) o.scale = f.scale;
-  if ('fontSize' in o && 'fontSize' in f) o.fontSize = f.fontSize;
-  offsetBBox(o.bbox, f.bbox, dx, dy);
-}
-
-/** EdgePin scale: derive delta from bbox, dispatch to applyOffset. */
-function edgePinOffset(f: HasBBox, ctx: ScaleCtx, o: HasBBox): void {
-  const [dx, dy] = edgePinDelta(f.bbox, ctx);
-  applyOffset(f, dx, dy, o);
-}
-
-// ============================================================================
-// Dispatch Tables
-// ============================================================================
-
-type ScaleApplyTable = {
-  [K in ScalableKind]: Partial<Record<ScaleBehavior, (f: GeoOf<K>, ctx: ScaleCtx, o: OutOf<K>) => void>>;
-};
-type ScaleCommitTable = {
-  [K in ScalableKind]: Partial<Record<ScaleBehavior, (y: Y.Map<unknown>, o: OutOf<K>, f: Readonly<GeoOf<K>>) => void>>;
-};
-type TranslateCommitTable = {
-  [K in ScalableKind]: (y: Y.Map<unknown>, o: OutOf<K>, f: Readonly<GeoOf<K>>) => void;
-};
-
-const APPLY_SCALE: ScaleApplyTable = {
-  shape: { uniform: scaleFrameUniform, nonUniform: scaleFrameNonUniform },
-  image: { uniform: scaleFrameUniform, edgePin: edgePinOffset },
-  stroke: { uniform: scaleStrokeBBox, edgePin: edgePinOffset },
-  text: { uniform: scaleOriginFontSize, edgePin: edgePinOffset, reflow: reflowText },
-  code: { uniform: scaleOriginFontSize, edgePin: edgePinOffset, reflow: reflowCode },
-  note: { uniform: scaleOriginScale, edgePin: edgePinOffset },
-  bookmark: { uniform: scaleOriginScale, edgePin: edgePinOffset },
-};
-
-// ============================================================================
-// Commit Functions
-// ============================================================================
-
-function commitFrame(y: Y.Map<unknown>, o: HasFrame): void {
-  y.set('frame', [...o.frame]);
-}
-function commitOrigin(y: Y.Map<unknown>, o: HasOrigin): void {
-  y.set('origin', [...o.origin]);
-}
-function commitOriginScale(y: Y.Map<unknown>, o: HasOrigin & HasScale): void {
-  y.set('origin', [...o.origin]);
-  y.set('scale', o.scale);
-}
-function commitTextScale(y: Y.Map<unknown>, o: OutOf<'text'>): void {
-  y.set('origin', [...o.origin]);
-  y.set('fontSize', o.fontSize);
-  if (!Number.isNaN(o.width)) y.set('width', o.width);
-}
-function commitCodeScale(y: Y.Map<unknown>, o: OutOf<'code'>): void {
-  y.set('origin', [...o.origin]);
-  y.set('fontSize', o.fontSize);
-  y.set('width', o.width);
-}
-function commitReflow(y: Y.Map<unknown>, o: HasOrigin & HasWidth): void {
-  y.set('origin', [...o.origin]);
-  y.set('width', o.width);
-}
-
-/** Stroke uniform commit: scale points around new center using factor stored on output. */
-function commitStrokeUniform(y: Y.Map<unknown>, o: OutOf<'stroke'>, f: Readonly<GeoOf<'stroke'>>): void {
-  const [ncx, ncy] = bboxCenter(o.bbox);
-  const af = o.factor;
-  y.set(
-    'points',
-    f.points.map(([px, py]) => [ncx + (px - o.fcx) * af, ncy + (py - o.fcy) * af]),
-  );
-  y.set('width', f.width! * af);
-}
-
-/** Stroke offset commit: translate frozen points by bbox delta (edgePin + translate). */
-function commitStrokeOffset(y: Y.Map<unknown>, o: OutOf<'stroke'>, f: Readonly<GeoOf<'stroke'>>): void {
-  const dx = o.bbox[0] - f.bbox[0];
-  const dy = o.bbox[1] - f.bbox[1];
-  y.set(
-    'points',
-    f.points.map(([px, py]) => [px + dx, py + dy]),
-  );
-}
-
-const COMMIT_SCALE: ScaleCommitTable = {
-  shape: { uniform: commitFrame, nonUniform: commitFrame },
-  image: { uniform: commitFrame, edgePin: commitFrame },
-  stroke: { uniform: commitStrokeUniform, edgePin: commitStrokeOffset },
-  text: { uniform: commitTextScale, edgePin: commitOrigin, reflow: commitReflow },
-  code: { uniform: commitCodeScale, edgePin: commitOrigin, reflow: commitReflow },
-  note: { uniform: commitOriginScale, edgePin: commitOrigin },
-  bookmark: { uniform: commitOriginScale, edgePin: commitOrigin },
-};
-
-const TRANSLATE_COMMIT: TranslateCommitTable = {
-  shape: commitFrame,
-  image: commitFrame,
-  stroke: commitStrokeOffset,
-  text: commitOrigin,
-  code: commitOrigin,
-  note: commitOrigin,
-  bookmark: commitOrigin,
-};
-
-// ============================================================================
-// Dirty-Rect Inflation — keeps `prevBbox` padded for italic overhang
-// ============================================================================
-
-/**
- * Write the inflated dirty tuple for `e` into `out`. For text we widen horizontally by
- * the italic-overhang pad — `out.fontSize` is the live value during uniform/reflow and
- * the propagated frozen value during translate/edgePin (see `applyOffset`). Other kinds
- * already carry the right padding in `out.bbox` (shapes/images embed strokePad,
- * notes/bookmarks embed shadowPad).
- */
-function fillDirty(out: BBoxTuple, kind: ObjectKind, e: Entry): void {
-  const bb = (e.out as HasBBox).bbox;
-  if (kind === 'text') {
-    const padH = getItalicOverhangPad((e.out as OutOf<'text'>).fontSize);
-    out[0] = bb[0] - padH;
-    out[1] = bb[1] - 2;
-    out[2] = bb[2] + padH;
-    out[3] = bb[3] + 2;
-  } else {
-    copyBbox(bb, out);
+function packStrokePoints(pts: readonly Point[]): number {
+  const need = _strokePoolLen + pts.length * 2;
+  if (need > _strokePool.length) {
+    let cap = _strokePool.length;
+    while (cap < need) cap *= 2;
+    const next = new Float64Array(cap);
+    next.set(_strokePool);
+    _strokePool = next;
   }
+  const off = _strokePoolLen;
+  for (let i = 0; i < pts.length; i++) {
+    _strokePool[off + i * 2] = pts[i][0];
+    _strokePool[off + i * 2 + 1] = pts[i][1];
+  }
+  _strokePoolLen = need;
+  return off;
+}
+
+function textSidecarAt(j: number): TextSidecar {
+  while (_textSidecars.length <= j) _textSidecars.push({ measuredTs: -1, minW: 0, anchor: 0, layout: createTextLayout() });
+  return _textSidecars[j];
+}
+
+function codeSidecarAt(j: number): CodeSidecar {
+  while (_codeSidecars.length <= j) _codeSidecars.push({ source: null, minW: 0, output: undefined, layout: createCodeLayout() });
+  return _codeSidecars[j];
 }
 
 // ============================================================================
-// Output Factories (pre-allocation)
+// Shared teardown
 // ============================================================================
 
-// biome-ignore lint/suspicious/noExplicitAny: output shape varies by kind; return type widens to union
-function createOutFor(kind: ObjectKind): any {
-  switch (kind) {
-    case 'shape':
-    case 'image':
-      return { frame: [0, 0, 0, 0] as FrameTuple, bbox: [0, 0, 0, 0] as BBoxTuple };
-    case 'stroke':
-      // No points array allocation — gestures only update bbox.
-      return { bbox: [0, 0, 0, 0] as BBoxTuple, factor: 1, fcx: 0, fcy: 0 };
-    case 'text':
-      // Pre-allocate a TextLayout buffer once at freeze; reflowText reuses it per pointermove.
-      // Other text behaviors (uniform/edgePin) leave it untouched but it's harmless.
-      return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: createTextLayout() };
-    case 'code':
-      // Pre-allocate a CodeLayout buffer once at freeze; reflowCode reuses it per pointermove.
-      // Other code behaviors (uniform/edgePin) leave it untouched but it's harmless.
-      return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: createCodeLayout() };
-    case 'note':
-    case 'bookmark':
-      return { origin: [0, 0] as Point, scale: 1, bbox: [0, 0, 0, 0] as BBoxTuple };
+/** Reset everything the renderer keys off: mode, the sparse map, inject slots. */
+function derender(): void {
+  _mode = MODE_NONE;
+  for (let gi = 0; gi < _count; gi++) _slotGesture[_gslot[gi]] = -1; // idempotent for evicted slots
+  const topo = _topology;
+  if (topo) {
+    const entries = topo.entries;
+    for (let i = 0; i < entries.length; i++) _slotGesture[entries[i].slot] = -1;
+  }
+  if (_epSlot >= 0) {
+    _slotGesture[_epSlot] = -1;
+    _epSlot = -1;
+  }
+  _injectSlotCount = 0;
+  _hasTranslateBounds = false;
+}
+
+/** Release heap refs + reset gesture bookkeeping. Lane/pool buffers persist at high-water. */
+function disposeGesture(): void {
+  _gy.length = 0;
+  _count = 0;
+  _opCount.fill(0);
+  for (let i = 0; i < _textSidecars.length; i++) _textSidecars[i].measuredTs = -1;
+  for (let i = 0; i < _codeSidecars.length; i++) {
+    _codeSidecars[i].source = null;
+    _codeSidecars[i].output = undefined;
+  }
+  _topology = null;
+  _injectIds.length = 0;
+  _strokePoolLen = 0;
+  _epRouteCtx = null;
+  _fHandles.length = 0;
+  _sx = 1;
+  _sy = 1;
+  _dx = 0;
+  _dy = 0;
+  _overlayUniform = false;
+}
+
+// ============================================================================
+// Freeze (begin) — two passes over selectedIds (cold; double accessor reads accepted)
+// ============================================================================
+
+/**
+ * Op-qualified freeze-bail predicate — OFFSET freezes are minimal (today's
+ * `freezeTranslateEntry` requirements), uniform/reflow require their extra
+ * inputs. A bailed id stays in `_injectIds` (locked but never painted as
+ * preview → it now draws in place — ledgered) but gets no lanes.
+ */
+function passFreezeBail(kc: number, op: number, id: string, y: Y.Map<unknown>): boolean {
+  switch (op) {
+    case OP_OFFSET:
+      switch (kc) {
+        case K_SHAPE:
+        case K_IMAGE:
+          return !!getFrame(y);
+        case K_STROKE:
+          return (getPoints(y) as Point[]).length > 0;
+        case K_TEXT:
+          return !!getTextProps(y); // getTextFrame null is NOT a bail — column fallback
+        case K_CODE:
+          return !!getOrigin(y);
+        default:
+          return !!getOrigin(y); // note / bookmark
+      }
+    case OP_FRAME_UNIFORM:
+    case OP_FRAME_EDGES:
+      return !!getFrame(y);
+    case OP_STROKE_UNIFORM:
+      return (getPoints(y) as Point[]).length > 0;
+    case OP_ORIGIN_UNIFORM:
+      switch (kc) {
+        case K_TEXT:
+          return !!getTextProps(y) && !!getTextFrame(id);
+        case K_CODE:
+          return !!getCodeProps(y) && !!getCodeFrame(id); // vestigial frame bail — kept (parity)
+        default:
+          return !!getOrigin(y);
+      }
+    case OP_REFLOW_TEXT:
+      return !!getTextProps(y) && !!getTextFrame(id) && textSlotOf(id) >= 0;
+    case OP_REFLOW_CODE:
+      return !!getCodeProps(y) && !!getCodeFrame(id) && !!getCodeSource(id);
     default:
-      return { bbox: [0, 0, 0, 0] as BBoxTuple };
-  }
-}
-
-// ============================================================================
-// Freeze Functions
-// ============================================================================
-
-function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string, y: Y.Map<unknown>, bbox: BBoxTuple): unknown | null {
-  // EdgePin needs exactly what translate needs — same minimal frozen set.
-  if (behavior === 'edgePin') return freezeTranslateEntry(kind, id, y, bbox);
-
-  switch (kind) {
-    case 'shape':
-    case 'image':
-      // uniform / nonUniform — same shape as translate freeze (frame + bbox)
-      return freezeTranslateEntry(kind, id, y, bbox);
-
-    case 'stroke': {
-      // uniform only — needs width for commitStrokeUniform
-      const pts = getPoints(y) as Point[];
-      if (pts.length === 0) return null;
-      return {
-        points: pts.map((p) => [...p] as Point),
-        width: getWidth(y),
-        bbox: [...bbox] as BBoxTuple,
-      };
-    }
-
-    case 'text': {
-      const p = getTextProps(y);
-      const tf = getTextFrame(id);
-      if (!p || !tf) return null;
-      const b = frameToBbox(tf);
-      if (behavior === 'reflow') {
-        return {
-          origin: [...p.origin] as Point,
-          bbox: b,
-          fontSize: p.fontSize,
-          width: p.width,
-          align: p.align,
-          measured: textLayoutCache.getMeasuredContent(id) ?? null,
-          minW: getMinCharWidth(p.fontSize, p.fontFamily),
-        };
-      }
-      // uniform: drop reflow-only fields
-      return {
-        origin: [...p.origin] as Point,
-        bbox: b,
-        fontSize: p.fontSize,
-        width: p.width,
-      };
-    }
-
-    case 'code': {
-      const p = getCodeProps(y);
-      const cf = getCodeFrame(id);
-      if (!p || !cf) return null;
-      const b = frameToBbox(cf);
-      if (behavior === 'reflow') {
-        return {
-          origin: [...p.origin] as Point,
-          bbox: b,
-          fontSize: p.fontSize,
-          width: p.width,
-          source: getCodeSource(id),
-          lineNumbers: p.lineNumbers,
-          headerVisible: p.headerVisible,
-          outputVisible: p.outputVisible,
-          output: p.output,
-          minW: getCodeMinWidth(p.fontSize),
-        };
-      }
-      // uniform: drop reflow-only fields and frame
-      return {
-        origin: [...p.origin] as Point,
-        bbox: b,
-        fontSize: p.fontSize,
-        width: p.width,
-      };
-    }
-
-    case 'note':
-    case 'bookmark': {
-      const origin = getOrigin(y);
-      if (!origin) return null;
-      // uniform — needs scale for ratio computation in renderer + commit
-      const scale = (y.get('scale') as number) ?? 1;
-      return { origin: [...origin] as Point, scale, bbox: [...bbox] as BBoxTuple };
-    }
-
-    default:
-      return null;
-  }
-}
-
-function freezeTranslateEntry(kind: ObjectKind, id: string, y: Y.Map<unknown>, bbox: BBoxTuple): unknown | null {
-  switch (kind) {
-    case 'shape':
-    case 'image': {
-      const frame = getFrame(y);
-      return frame ? { frame: [...frame] as FrameTuple, bbox: [...bbox] as BBoxTuple } : null;
-    }
-    case 'stroke': {
-      // No width — commitStrokeOffset reads only points + bbox.
-      const pts = getPoints(y) as Point[];
-      if (pts.length === 0) return null;
-      return { points: pts.map((p) => [...p] as Point), bbox: [...bbox] as BBoxTuple };
-    }
-    case 'text': {
-      // Text is the special case: handle.bbox carries italic-overhang pad, so derive the
-      // tight visual frame from the layout cache. fontSize captured (not used by translate's
-      // apply) so applyOffset can propagate it → fillDirty reads out.fontSize unconditionally.
-      const p = getTextProps(y);
-      if (!p) return null;
-      const tf = getTextFrame(id);
-      const tightBbox = tf ? frameToBbox(tf) : ([...bbox] as BBoxTuple);
-      return { origin: [...p.origin] as Point, bbox: tightBbox, fontSize: p.fontSize };
-    }
-    case 'code': {
-      // computeCodeBBox writes bbox = frameToBbox(frame), so handle.bbox is already tight.
-      const origin = getOrigin(y);
-      if (!origin) return null;
-      return { origin: [...origin] as Point, bbox: [...bbox] as BBoxTuple };
-    }
-    case 'note':
-    case 'bookmark': {
-      const origin = getOrigin(y);
-      if (!origin) return null;
-      // Capture scale so applyOffset can propagate it to out.scale (needed by
-      // connector-topology's fillFrameFromBind under translate/edgePin).
-      const scale = (y.get('scale') as number) ?? 1;
-      return { origin: [...origin] as Point, scale, bbox: [...bbox] as BBoxTuple };
-    }
-    default:
-      return null;
-  }
-}
-
-// ============================================================================
-// TransformController
-// ============================================================================
-
-export class TransformController {
-  private store: EntryStore = {};
-  private activeKinds: ScalableKind[] = [];
-  private behaviors: Partial<Record<ScalableKind, ScaleBehavior>> = {};
-  private scaleCtx: ScaleCtx | null = null;
-  /** Selection union snapshotted at `beginTranslate`. Two reasons: (a) overlay reads it directly
-   * each frame instead of recomputing from live Y.Map state (translate has no `scaleCtx` to
-   * piggyback on); (b) frozen at begin so a remote peer mutating a selected object can't drift
-   * the rect off the ephemeral transform. */
-  private translateSelBounds: BBoxTuple | null = null;
-  dx = 0;
-  dy = 0;
-  private mode: 'none' | 'scale' | 'translate' | 'endpointDrag' = 'none';
-  private topology: ConnectorTopology | null = null;
-  /**
-   * Endpoint-drag state — logical only. The renderer reads the synthetic
-   * `EndpointDragEntry` directly via `getEndpointDragEntry()`; no Map / array
-   * wrapper collections. `entry` and `prevBbox` alias the controller-owned
-   * scratches so per-gesture allocation is zero.
-   */
-  private endpointDrag: {
-    readonly entry: EndpointDragEntry;
-    readonly routeCtx: RouteContext;
-    readonly slot: Slot;
-    readonly prevBbox: BBoxTuple;
-  } | null = null;
-  /**
-   * Pre-allocated EndpointDragEntry scratch — reused across every endpoint
-   * drag gesture. `id` reset per begin; `currBbox`/`pointsBuf` slots mutated
-   * per frame; `validCount` reset per begin and updated per frame.
-   */
-  private readonly epDragEntryScratch: EndpointDragEntry = {
-    mode: 'reroute',
-    id: '',
-    currBbox: [0, 0, 0, 0],
-    pointsBuf: [],
-    validCount: 0,
-  };
-  /** Pre-allocated `prevBbox` scratch for endpoint drag — reused across gestures. */
-  private readonly epDragPrevBbox: BBoxTuple = [0, 0, 0, 0];
-  /**
-   * Per-gesture inject ids, reused across translate / scale / endpointDrag.
-   * Length reset at every begin; pushed during the freeze loop and after
-   * `builder.finalize()` (attached connectors). Returned via `getInjectIds()`.
-   */
-  private readonly injectIds: string[] = [];
-
-  // --- Scale lifecycle ---
-
-  beginScale(selectedIds: ReadonlySet<string>, handleId: HandleId, origin: Point, selBounds: BBoxTuple): void {
-    this.clear();
-    this.mode = 'scale';
-    const single = selectedIds.size === 1;
-
-    this.scaleCtx = { sx: 1, sy: 1, origin, selBounds, handleId };
-
-    const builder = newTopologyBuilder('scale', selectedIds);
-
-    for (const id of selectedIds) {
-      this.injectIds.push(id);
-      const handle = getHandle(id);
-      if (!handle) continue;
-
-      if (handle.kind === 'connector') {
-        builder.onSelectedConnector(id, handle);
-        continue;
-      }
-
-      const behavior = resolveBehavior(handle.kind, handleId, single);
-
-      // Reflow text/code: skip if measured/sourceLines unavailable
-      if (behavior === 'reflow' && handle.kind === 'text') {
-        const m = textLayoutCache.getMeasuredContent(id);
-        if (!m) continue;
-      }
-      if (behavior === 'reflow' && handle.kind === 'code') {
-        const s = getCodeSource(id);
-        if (!s) continue;
-      }
-
-      const frozen = freezeScaleEntry(handle.kind, behavior, id, handle.y, handle.bbox);
-      if (!frozen) continue;
-
-      const out = createOutFor(handle.kind);
-      const entry = { id, y: handle.y, frozen, out, prevBbox: [...handle.bbox] as BBoxTuple } as Entry;
-
-      if (!this.store[handle.kind]) this.store[handle.kind] = new Map();
-      (this.store[handle.kind] as Map<string, Entry>).set(id, entry);
-
-      if (!this.behaviors[handle.kind]) {
-        this.behaviors[handle.kind] = behavior;
-        this.activeKinds.push(handle.kind);
-      }
-
-      if (isBindableKind(handle.kind)) {
-        builder.onSelectedBindable(id, handle.kind, entry as Entry<BindableKind>, handle);
-      }
-    }
-
-    this.topology = builder.finalize();
-    if (this.topology) {
-      for (const id of this.topology.attachedConnectorIds) this.injectIds.push(id);
-    }
-  }
-
-  updateScale(sx: number, sy: number): void {
-    if (!this.scaleCtx) return;
-    this.scaleCtx.sx = sx;
-    this.scaleCtx.sy = sy;
-
-    for (const kind of this.activeKinds) {
-      const map = this.store[kind]!;
-      const behavior = this.behaviors[kind]!;
-      // SAFETY: ScaleApplyTable mapped type enforces kind→function compatibility at definition.
-      // Cast due to correlated union: TS can't prove APPLY_SCALE[kind] and store[kind] share K.
-      // biome-ignore lint/suspicious/noExplicitAny: correlated-union cast documented above
-      const apply = APPLY_SCALE[kind][behavior] as ((f: any, ctx: ScaleCtx, o: any) => void) | undefined;
-      if (!apply) continue;
-      for (const [, e] of map) {
-        apply(e.frozen, this.scaleCtx, e.out);
-        invalidateWorldBBox(e.prevBbox); // OLD dirty (padded for text via fillDirty)
-        fillDirty(e.prevBbox, kind, e); // NEW dirty into prevBbox
-        invalidateWorldBBox(e.prevBbox);
-      }
-    }
-
-    if (this.topology) runTopologyScale(this.topology, this.scaleCtx);
-  }
-
-  // --- Translate lifecycle ---
-
-  beginTranslate(selectedIds: ReadonlySet<string>, selBounds: BBoxTuple): void {
-    this.clear();
-    this.mode = 'translate';
-    this.translateSelBounds = selBounds;
-    this.dx = 0;
-    this.dy = 0;
-
-    const builder = newTopologyBuilder('translate', selectedIds);
-
-    for (const id of selectedIds) {
-      this.injectIds.push(id);
-      const handle = getHandle(id);
-      if (!handle) continue;
-
-      if (handle.kind === 'connector') {
-        builder.onSelectedConnector(id, handle);
-        continue;
-      }
-
-      const frozen = freezeTranslateEntry(handle.kind, id, handle.y, handle.bbox);
-      if (!frozen) continue;
-
-      const out = createOutFor(handle.kind);
-      const entry = { id, y: handle.y, frozen, out, prevBbox: [...handle.bbox] as BBoxTuple } as Entry;
-
-      if (!this.store[handle.kind]) this.store[handle.kind] = new Map();
-      (this.store[handle.kind] as Map<string, Entry>).set(id, entry);
-
-      if (!this.activeKinds.includes(handle.kind)) this.activeKinds.push(handle.kind);
-
-      if (isBindableKind(handle.kind)) {
-        builder.onSelectedBindable(id, handle.kind, entry as Entry<BindableKind>, handle);
-      }
-    }
-
-    this.topology = builder.finalize();
-    if (this.topology) {
-      for (const id of this.topology.attachedConnectorIds) this.injectIds.push(id);
-    }
-  }
-
-  updateTranslate(dx: number, dy: number): void {
-    this.dx = dx;
-    this.dy = dy;
-
-    // Translate is uniform across kinds — call applyOffset directly, no dispatch table.
-    for (const kind of this.activeKinds) {
-      const map = this.store[kind]!;
-      for (const [, e] of map) {
-        applyOffset(e.frozen, dx, dy, e.out);
-        invalidateWorldBBox(e.prevBbox); // OLD dirty (padded for text via fillDirty)
-        fillDirty(e.prevBbox, kind, e); // NEW dirty into prevBbox
-        invalidateWorldBBox(e.prevBbox);
-      }
-    }
-
-    if (this.topology) runTopologyTranslate(this.topology, dx, dy);
-  }
-
-  // --- Endpoint drag lifecycle ---
-
-  /**
-   * Begin an endpoint-drag gesture. Builds RouteContext, mutates the controller's
-   * pre-allocated scratch (`epDragEntryScratch`/`epDragPrevBbox`), and pushes the
-   * dragged connector id into the shared `injectIds` buffer. Returns false when
-   * `buildRouteContext` fails (partially-built connector); SelectTool keeps the
-   * pending phase in idle and bails. Per-gesture allocation: zero.
-   */
-  beginEndpointDrag(connectorId: string, slot: Slot, handle: ObjectHandle): boolean {
-    this.clear();
-    const routeCtx = buildRouteContext(connectorId, handle.y);
-    if (!routeCtx) return false;
-    this.mode = 'endpointDrag';
-
-    const e = this.epDragEntryScratch;
-    e.id = connectorId;
-    copyBbox(handle.bbox, e.currBbox);
-    e.pointsBuf.length = 0;
-    e.validCount = 0;
-    copyBbox(handle.bbox, this.epDragPrevBbox);
-
-    this.endpointDrag = {
-      entry: e,
-      routeCtx,
-      slot,
-      prevBbox: this.epDragPrevBbox,
-    };
-
-    this.injectIds.push(connectorId);
-    return true;
-  }
-
-  /** Per-event endpoint-drag update. `snap` is null when unsnapped (free position). */
-  updateEndpointDrag(worldX: number, worldY: number, snap: SnapTarget | null): void {
-    if (!this.endpointDrag) return;
-    const ed = this.endpointDrag;
-    // Snapshot CURRENT (just-painted) bbox into prevBbox BEFORE the reroute mutates currBbox.
-    copyBbox(ed.entry.currBbox, ed.prevBbox);
-    invalidateWorldBBox(ed.prevBbox); // OLD dirty
-    const override: EndpointDragOverride = snap ?? [worldX, worldY];
-    const count = rerouteEndpointDragInto(ed.routeCtx, ed.slot, override, ed.entry.currBbox, ed.entry.pointsBuf);
-    ed.entry.validCount = count;
-    if (count > 0) {
-      // Union the label rect at the new midpoint so the dirty rect covers the
-      // glyphs as the dragged endpoint reshapes the route.
-      unionConnectorLabelRectInto(ed.entry.id, ed.entry.pointsBuf, count, ed.entry.currBbox);
-      invalidateWorldBBox(ed.entry.currBbox); // NEW dirty
-    }
-  }
-
-  /**
-   * Commit endpoint drag. Returns true when a Y.Map write happened (validCount ≥ 2);
-   * false on failed routes. Always tears down the gesture state.
-   */
-  commitEndpointDrag(snap: SnapTarget | null): boolean {
-    if (!this.endpointDrag) return false;
-    const ed = this.endpointDrag;
-    invalidateWorldBBox(ed.prevBbox);
-    if (ed.entry.validCount >= 2) invalidateWorldBBox(ed.entry.currBbox);
-    if (ed.entry.validCount < 2) {
-      this.endpointDrag = null;
-      this.mode = 'none';
       return false;
-    }
-    const slot = ed.slot;
-    const validCount = ed.entry.validCount;
-    const id = ed.entry.id;
-    const src = ed.entry.pointsBuf[slotPointIndex(slot, validCount)];
-    const value: ConnectorEndpoint = snap ? anchorRecordFromSnap(snap) : ([src[0], src[1]] as Point);
-    transact(() => {
-      const yMap = getObjects().get(id);
-      if (!yMap) return;
-      yMap.set(slotKey(slot), value);
-    });
-    this.endpointDrag = null;
-    this.mode = 'none';
-    return true;
   }
+}
 
-  // --- Shared lifecycle ---
+/**
+ * Fill fBBox/fAux for `gi`, seed oBBox/oAux, populate reflow sidecars.
+ * Accessors return LIVE Yjs refs — the lane writes ARE the copy. Bail
+ * predicates already held in pass 1, so `!` assertions are sound.
+ * Returns the code-flag meta bits (0 for everything else).
+ */
+function freezeLanes(gi: number, kc: number, op: number, slot: number, handle: ObjectHandle, col: Float64Array): number {
+  const lanes = _lanes;
+  const b = gi * G_STRIDE;
+  const y = handle.y;
+  const o4 = slot * 4;
+  let fb0 = col[o4];
+  let fb1 = col[o4 + 1];
+  let fb2 = col[o4 + 2];
+  let fb3 = col[o4 + 3];
+  let flags = 0;
 
-  commit(): void {
-    const store = this.store;
-    const behaviors = this.behaviors;
-    const topology = this.topology;
-    const mode = this.mode;
-    const dx = this.dx;
-    const dy = this.dy;
-
-    // Clear visual state FIRST (prevents double-transform glitch)
-    this.clear();
-
-    transact(() => {
-      for (const kind in store) {
-        const k = kind as ScalableKind;
-        const map = store[k];
-        if (!map) continue;
-        if (mode === 'scale') {
-          const behavior = behaviors[k];
-          // SAFETY: ScaleCommitTable mapped type enforces kind→function compatibility at definition.
-          const commitFn = behavior
-            ? // biome-ignore lint/suspicious/noExplicitAny: correlated-union cast documented above
-              (COMMIT_SCALE[k][behavior] as ((y: Y.Map<unknown>, o: any, f: any) => void) | undefined)
-            : undefined;
-          if (!commitFn) continue;
-          for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
-        } else {
-          // SAFETY: TranslateCommitTable mapped type enforces kind→function compatibility at definition.
-          // biome-ignore lint/suspicious/noExplicitAny: correlated-union cast documented above
-          const commitFn = TRANSLATE_COMMIT[k] as (y: Y.Map<unknown>, o: any, f: any) => void;
-          for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
+  switch (kc) {
+    case K_SHAPE:
+    case K_IMAGE: {
+      const fr = getFrame(y)!;
+      lanes[b + 4] = fr[0];
+      lanes[b + 5] = fr[1];
+      lanes[b + 6] = fr[2];
+      lanes[b + 7] = fr[3];
+      break;
+    }
+    case K_STROKE: {
+      const pts = getPoints(y) as Point[];
+      lanes[b + 4] = packStrokePoints(pts);
+      lanes[b + 5] = pts.length;
+      lanes[b + 6] = getWidth(y); // always filled; OFFSET commit ignores it (uniform freeze body)
+      lanes[b + 7] = 0;
+      break;
+    }
+    case K_TEXT: {
+      const p = getTextProps(y)!;
+      const tf = getTextFrame(handle.id);
+      // fBBox = TIGHT frame bbox (handle bbox carries italic-overhang pad).
+      // OFFSET-only null-frame fallback: the PADDED column rect (today's [...bbox]).
+      if (tf) {
+        fb0 = tf[0];
+        fb1 = tf[1];
+        fb2 = tf[0] + tf[2];
+        fb3 = tf[1] + tf[3];
+      }
+      lanes[b + 4] = p.origin[0];
+      lanes[b + 5] = p.origin[1];
+      lanes[b + 6] = p.fontSize;
+      lanes[b + 7] = typeof p.width === 'number' ? p.width : NaN;
+      if (op === OP_REFLOW_TEXT) {
+        const sc = textSidecarAt(gi - _opStart[OP_REFLOW_TEXT]);
+        sc.measuredTs = textSlotOf(handle.id); // ≥ 0 — the pass-1 bail predicate held
+        sc.minW = getMinCharWidth(p.fontSize, p.fontFamily);
+        sc.anchor = anchorFactor(p.align);
+        // Empty the pooled layout: a begin→first-move repaint must paint
+        // nothing (old fresh-createTextLayout parity), never a previous
+        // gesture's stale glyphs.
+        sc.layout.lineCount = 0;
+      }
+      break;
+    }
+    case K_CODE: {
+      // fBBox = column (≡ tight — computeCodeBBox writes frameToBbox(frame)).
+      if (op === OP_OFFSET) {
+        const origin = getOrigin(y)!; // today's minimal getOrigin freeze
+        lanes[b + 4] = origin[0];
+        lanes[b + 5] = origin[1];
+        lanes[b + 6] = 0;
+        lanes[b + 7] = 0;
+      } else {
+        const p = getCodeProps(y)!;
+        lanes[b + 4] = p.origin[0];
+        lanes[b + 5] = p.origin[1];
+        lanes[b + 6] = p.fontSize;
+        lanes[b + 7] = p.width;
+        if (op === OP_REFLOW_CODE) {
+          const sc = codeSidecarAt(gi - _opStart[OP_REFLOW_CODE]);
+          sc.source = getCodeSource(handle.id)!;
+          sc.minW = getCodeMinWidth(p.fontSize);
+          sc.output = p.output;
+          sc.layout.visualLineCount = 0; // same stale-glyph guard as text
+          flags =
+            (p.lineNumbers ? META_CODE_LINE_NUMBERS : 0) |
+            (p.headerVisible ? META_CODE_HEADER_VISIBLE : 0) |
+            (p.outputVisible ? META_CODE_OUTPUT_VISIBLE : 0);
         }
       }
-      // commit() is reached only when mode is 'scale' or 'translate' (endpointDrag
-      // routes through commitEndpointDrag); narrow explicitly so commitTopology's
-      // discriminated parameter types check.
-      if (topology && (mode === 'scale' || mode === 'translate')) commitTopology(topology, mode, dx, dy);
-    });
-  }
-
-  cancel(): void {
-    // Endpoint drag uses precise dirty rects (single connector). Translate/scale gestures
-    // touch arbitrarily many objects; full repaint is simpler than walking everything.
-    if (this.endpointDrag) {
-      invalidateWorldBBox(this.endpointDrag.prevBbox);
-      if (this.endpointDrag.entry.validCount >= 2) invalidateWorldBBox(this.endpointDrag.entry.currBbox);
-      this.endpointDrag = null;
-      this.mode = 'none';
-      return;
+      break;
     }
-    invalidateWorldAll();
-    if (this.topology) cancelTopology(this.topology);
-    this.clear();
+    default: {
+      // K_NOTE / K_BOOKMARK
+      const origin = getOrigin(y)!;
+      lanes[b + 4] = origin[0];
+      lanes[b + 5] = origin[1];
+      lanes[b + 6] = (y.get('scale') as number) ?? 1;
+      lanes[b + 7] = 0;
+      break;
+    }
   }
 
-  clear(): void {
-    this.store = {};
-    this.activeKinds = [];
-    this.behaviors = {};
-    this.scaleCtx = null;
-    this.translateSelBounds = null;
-    this.dx = 0;
-    this.dy = 0;
-    this.mode = 'none';
-    this.topology = null;
-    this.endpointDrag = null;
-    this.injectIds.length = 0;
+  lanes[b] = fb0;
+  lanes[b + 1] = fb1;
+  lanes[b + 2] = fb2;
+  lanes[b + 3] = fb3;
+  // Seed out = frozen — first-frame overlay/cull reads are exact at rest.
+  lanes[b + 8] = fb0;
+  lanes[b + 9] = fb1;
+  lanes[b + 10] = fb2;
+  lanes[b + 11] = fb3;
+  if (op === OP_STROKE_UNIFORM) {
+    // The renderer's stroke arm reads oAux as fcx/fcy/factor from the first
+    // overlapping repaint in the begin→first-move window — a blind fAux copy
+    // would paint the stroke scaled `width`× around (ptsOff, ptsCount).
+    lanes[b + 12] = (fb0 + fb2) / 2;
+    lanes[b + 13] = (fb1 + fb3) / 2;
+    lanes[b + 14] = 1;
+    lanes[b + 15] = 0;
+  } else {
+    lanes[b + 12] = lanes[b + 4];
+    lanes[b + 13] = lanes[b + 5];
+    lanes[b + 14] = lanes[b + 6];
+    lanes[b + 15] = lanes[b + 7];
+  }
+  return flags;
+}
+
+/** Shared begin body — pass 1 (validate + count), prefix sum, pass 2 (fill), topology. */
+function beginGesture(selectedIds: ReadonlySet<string>, isScale: boolean): void {
+  ensureSlotMapCapacity();
+  const builder = newTopologyBuilder(isScale ? 'scale' : 'translate', selectedIds);
+  const lo = getLockOwners();
+  const lf = getLockedFlags();
+  ensureFreezeCapacity(selectedIds.size);
+
+  // --- pass 1: validate + count per op ---
+  let n = 0;
+  let allUniform = true;
+  for (const id of selectedIds) {
+    const handle = getHandle(id);
+    // Remote- or durably-locked ids never enter the gesture: no injectIds push
+    // (renderer draws them in place), no freeze, no topology entry.
+    if (!handle || lo[handle.slot] > 1 || lf[handle.slot] === 1) continue;
+    _injectIds.push(id);
+    if (handle.kind === 'connector') {
+      builder.onSelectedConnector(id, handle);
+      continue;
+    }
+    const kc = KIND_CODE[handle.kind];
+    let op: number;
+    let beh = BEH_UNIFORM;
+    if (isScale) {
+      beh = BEHAVIOR_LUT[kc * 8 + _cat * 2 + (_single ? 1 : 0)];
+      op = OP_LUT[kc * 4 + beh]; // never 0xFF — BEHAVIOR_LUT can't produce an unpopulated cell
+    } else {
+      op = OP_OFFSET;
+    }
+    if (!passFreezeBail(kc, op, id, handle.y)) continue;
+    if (beh !== BEH_UNIFORM) allUniform = false;
+    _fSlots[n] = handle.slot;
+    _fOps[n] = op;
+    _fKinds[n] = kc;
+    _fHandles[n] = handle;
+    n++;
+    _opCount[op]++;
   }
 
-  // --- Accessors ---
+  // --- prefix sum → contiguous op ranges ---
+  let acc = 0;
+  for (let op = 0; op < OP_COUNT; op++) {
+    _opStart[op] = acc;
+    acc += _opCount[op];
+    _opCursor[op] = 0;
+  }
+  _count = acc;
+  ensureGestureCapacity(acc);
+  ensureInjectCapacity(acc);
 
-  getMode(): 'none' | 'scale' | 'translate' | 'endpointDrag' {
-    return this.mode;
+  // --- pass 2: lane fill + registration ---
+  const col = getBBoxColumn();
+  for (let i = 0; i < n; i++) {
+    const op = _fOps[i];
+    const gi = _opStart[op] + _opCursor[op]++;
+    const handle = _fHandles[i];
+    const slot = _fSlots[i];
+    const kc = _fKinds[i];
+    _gslot[gi] = slot;
+    _gy[gi] = handle.y;
+    _meta[gi] = kc | (op << META_OP_SHIFT) | freezeLanes(gi, kc, op, slot, handle, col);
+    _slotGesture[slot] = gi;
+    _injectSlots[_injectSlotCount++] = slot;
+    if (isBindableKind(handle.kind)) builder.onSelectedBindable(handle.id, handle.kind, gi, handle);
+  }
+  _fHandles.length = 0; // don't root handles past begin
+
+  // --- topology ---
+  _topology = builder.finalize();
+  if (_topology) {
+    const entries = _topology.entries;
+    ensureInjectCapacity(_injectSlotCount + entries.length);
+    for (let ti = 0; ti < entries.length; ti++) {
+      const s = entries[ti].slot;
+      _slotGesture[s] = TOPO_TAG | ti;
+      _injectSlots[_injectSlotCount++] = s;
+    }
+    // Lock set from the FULL attached set, NOT from `entries` — an attached
+    // connector whose entry construction bailed is still lock-acquired today.
+    for (const cid of _topology.attachedConnectorIds) _injectIds.push(cid);
   }
 
-  getScaleCtx(): ScaleCtx | null {
-    return this.scaleCtx;
-  }
-
-  getTopology(): ConnectorTopology | null {
-    return this.topology;
-  }
-
-  /**
-   * Synthetic connector entry for the active endpoint-drag gesture. Renderer
-   * dispatches off this in the connector branch when `topology` is null —
-   * one string-equality test per connector iteration vs. a Map.get on
-   * topology gestures.
-   */
-  getEndpointDragEntry(): EndpointDragEntry | null {
-    return this.endpointDrag ? this.endpointDrag.entry : null;
-  }
-
-  /** Inject IDs for the cull loop. Reused buffer; null when idle. */
-  getInjectIds(): readonly string[] | null {
-    return this.mode === 'none' ? null : this.injectIds;
-  }
-
-  getMap<K extends ObjectKind>(kind: K): Map<string, Entry<K>> | undefined {
-    return this.store[kind];
-  }
-
-  getBehavior(kind: ScalableKind): ScaleBehavior | undefined {
-    return this.behaviors[kind];
-  }
-
-  hasChange(): boolean {
-    if (this.mode === 'translate') return this.dx !== 0 || this.dy !== 0;
-    if (this.mode === 'scale' && this.scaleCtx) return this.scaleCtx.sx !== 1 || this.scaleCtx.sy !== 1;
-    return false;
-  }
-
-  /**
-   * Overlay-only: should the multi-select rect scale via `uniformFactor` or per-axis (sx, sy)?
-   *   - Standard case: every active scalable kind is `uniform` → uniformFactor (rect agrees
-   *     with per-entry math).
-   *   - All-connector selection: connectors don't enter `activeKinds` (topology owns them),
-   *     so `activeKinds.length === 0` flags this case. Mirrors the topology free-endpoint
-   *     resolver — corner = uniformFactor, side = per-axis (rawScaleFactors hardcodes the
-   *     inactive side-axis to 1, so per-axis math is correct on sides). Without this
-   *     branch, all-connector corner gestures would diagonal-stretch the rect while the
-   *     connectors themselves uniform-scaled per-endpoint — visual disagreement.
-   *   - Anything else (mixed behaviors, shape nonUniform, text/code reflow, edgePin):
-   *     per-axis falls through.
-   */
-  isOverlayUniform(): boolean {
-    if (this.mode !== 'scale' || !this.scaleCtx) return false;
-    if (this.activeKinds.length === 0) return this.topology !== null && isCorner(this.scaleCtx.handleId);
-    for (const k of this.activeKinds) if (this.behaviors[k] !== 'uniform') return false;
-    return true;
-  }
-
-  getTranslateSelBounds(): BBoxTuple | null {
-    return this.translateSelBounds;
-  }
+  // Overlay rect math: uniformFactor iff every active behavior is uniform, or
+  // (all-connector selection) topology on a corner — mirrors the free-endpoint
+  // resolver. Behaviors are fixed at begin, so compute once.
+  _overlayUniform = isScale && (_count === 0 ? _topology !== null && _corner : allUniform);
 }
 
 // ============================================================================
-// Module Singleton + Renderer Getters
+// Scale lifecycle
 // ============================================================================
 
-let ctrl: TransformController | null = null;
-
-export function getController(): TransformController {
-  if (!ctrl) ctrl = new TransformController();
-  return ctrl;
+export function beginScale(selectedIds: ReadonlySet<string>, handleId: HandleId, origin: Point, selBounds: BBoxTuple): void {
+  clearTransform();
+  _mode = MODE_SCALE;
+  _single = selectedIds.size === 1; // Set size incl. connectors — today's rule
+  _corner = isCorner(handleId);
+  _cat = _corner ? CAT_CORNER : isHorzSide(handleId) ? CAT_HSIDE : CAT_VSIDE;
+  _scaleCtx.sx = 1;
+  _scaleCtx.sy = 1;
+  _scaleCtx.origin[0] = origin[0];
+  _scaleCtx.origin[1] = origin[1];
+  copyBbox(selBounds, _scaleCtx.selBounds); // OWNED copy — see _scaleCtx doc
+  _scaleCtx.handleId = handleId;
+  beginGesture(selectedIds, true);
 }
 
-export function getScaleEntry<K extends ObjectKind>(kind: K, id: string): Entry<K> | undefined {
-  return ctrl?.getMap(kind)?.get(id);
+/** OLD + NEW damage: every entry's current oBBox, text padded by the italic
+ *  overhang (±2 vertical). Called before AND after the kernels each frame —
+ *  two rects per entry per frame (union rejected: it inflates repaint on fast
+ *  drags). Dead entries' stale lanes are pushed too (erases their last
+ *  preview). Known divergence, accepted: under translate these rects are
+ *  frozen+delta while paint/cull track live+delta — they differ only when a
+ *  peer edit lands in the lock-race window, and the loser's commit heal
+ *  repaints both rects at pointerup. */
+function pushAllDamage(): void {
+  const lanes = _lanes;
+  const meta = _meta;
+  for (let gi = 0; gi < _count; gi++) {
+    const b = gi * G_STRIDE;
+    if ((meta[gi] & META_KIND_MASK) === K_TEXT) {
+      const padH = getItalicOverhangPad(lanes[b + 14]); // oAux2 = live fontSize
+      pushDamage(lanes[b + 8] - padH, lanes[b + 9] - 2, lanes[b + 10] + padH, lanes[b + 11] + 2);
+    } else {
+      pushDamage(lanes[b + 8], lanes[b + 9], lanes[b + 10], lanes[b + 11]);
+    }
+  }
 }
 
-export function getScaleBehavior(kind: ScalableKind): ScaleBehavior | undefined {
-  return ctrl?.getBehavior(kind);
+/** Commit-skip / evict damage: one entry rect at lane offset `o` (0 = frozen
+ *  fBBox, 8 = current oBBox), text-padded like pushAllDamage — the fontSize
+ *  lane rides at `o + 6` in both banks. Cold paths only. */
+function pushEntryRect(gi: number, o: number): void {
+  const lanes = _lanes;
+  const b = gi * G_STRIDE + o;
+  if ((_meta[gi] & META_KIND_MASK) === K_TEXT) {
+    const padH = getItalicOverhangPad(lanes[b + 6]);
+    pushDamage(lanes[b] - padH, lanes[b + 1] - 2, lanes[b + 2] + padH, lanes[b + 3] + 2);
+  } else {
+    pushDamage(lanes[b], lanes[b + 1], lanes[b + 2], lanes[b + 3]);
+  }
 }
 
-export function getTransformMode(): 'none' | 'scale' | 'translate' | 'endpointDrag' {
-  return ctrl?.getMode() ?? 'none';
+/** Canonical column rect for `slot` — the no-write epDrag exits (lock heal,
+ *  failed route, cancel) must repaint the route the gesture's first move
+ *  erased; a successful commit gets this from the observer instead. */
+function pushSlotCanonicalRect(slot: number): void {
+  const col = getBBoxColumn();
+  const o4 = slot * 4;
+  pushDamage(col[o4], col[o4 + 1], col[o4 + 2], col[o4 + 3]);
 }
 
-export function getTranslateDelta(): [number, number] | null {
-  if (ctrl?.getMode() !== 'translate') return null;
-  return [ctrl.dx, ctrl.dy];
+function applyReflowTextRange(start: number, end: number, ox: number, sx: number): void {
+  const lanes = _lanes;
+  for (let gi = start; gi < end; gi++) {
+    const b = gi * G_STRIDE;
+    const sc = _textSidecars[gi - start];
+    const fb0 = lanes[b];
+    const fb1 = lanes[b + 1];
+    reflowLeftWidth(fb0, lanes[b + 2] - fb0, ox, sx, sc.minW);
+    const newLeft = reflowOut[0];
+    const targetWidth = reflowOut[1];
+    const fontSize = lanes[b + 6];
+    const layout = layoutSlotContent(sc.measuredTs, targetWidth, fontSize, sc.layout);
+    lanes[b + 12] = newLeft + sc.anchor * targetWidth;
+    lanes[b + 13] = lanes[b + 5];
+    lanes[b + 14] = fontSize;
+    lanes[b + 15] = layout.boxWidth;
+    lanes[b + 8] = newLeft;
+    lanes[b + 9] = fb1;
+    lanes[b + 10] = newLeft + targetWidth;
+    lanes[b + 11] = fb1 + layout.lineCount * layout.lineHeight;
+  }
 }
 
-export function getTransformTopology(): ConnectorTopology | null {
-  return ctrl?.getTopology() ?? null;
+function applyReflowCodeRange(start: number, end: number, ox: number, sx: number): void {
+  const lanes = _lanes;
+  const meta = _meta;
+  for (let gi = start; gi < end; gi++) {
+    const b = gi * G_STRIDE;
+    const sc = _codeSidecars[gi - start];
+    const fb0 = lanes[b];
+    const fb1 = lanes[b + 1];
+    reflowLeftWidth(fb0, lanes[b + 2] - fb0, ox, sx, sc.minW);
+    const newLeft = reflowOut[0];
+    const targetWidth = reflowOut[1];
+    const fontSize = lanes[b + 6];
+    const m = meta[gi];
+    const layout = layoutCodeSourceInto(sc.source!, fontSize, targetWidth, (m & META_CODE_LINE_NUMBERS) !== 0, sc.layout);
+    lanes[b + 12] = newLeft;
+    lanes[b + 13] = lanes[b + 5];
+    lanes[b + 14] = fontSize;
+    lanes[b + 15] = layout.totalWidth;
+    // blockHeight WITHOUT outputCache — today's transform path (parity over the micro-win).
+    const nh = codeBlockHeight(layout, fontSize, (m & META_CODE_HEADER_VISIBLE) !== 0, (m & META_CODE_OUTPUT_VISIBLE) !== 0, sc.output);
+    lanes[b + 8] = newLeft;
+    lanes[b + 9] = fb1;
+    lanes[b + 10] = newLeft + targetWidth;
+    lanes[b + 11] = fb1 + nh;
+  }
+}
+
+export function updateScale(sx: number, sy: number): void {
+  if (_mode !== MODE_SCALE) return;
+  _sx = sx;
+  _sy = sy;
+  _scaleCtx.sx = sx;
+  _scaleCtx.sy = sy;
+  const sel = _scaleCtx.selBounds;
+  const ox = _scaleCtx.origin[0];
+  const oy = _scaleCtx.origin[1];
+  const lanes = _lanes;
+
+  pushAllDamage(); // OLD rects
+
+  if (_opCount[OP_OFFSET] > 0) {
+    applyEdgePinRange(
+      lanes,
+      _opStart[OP_OFFSET],
+      _opStart[OP_OFFSET] + _opCount[OP_OFFSET],
+      ox,
+      oy,
+      sx,
+      sy,
+      sel[0],
+      sel[1],
+      sel[2],
+      sel[3],
+    );
+  }
+  if (_opCount[OP_FRAME_UNIFORM] + _opCount[OP_STROKE_UNIFORM] + _opCount[OP_ORIGIN_UNIFORM] > 0) {
+    const U = fillUniformPack(sx, sy, _scaleCtx.handleId, sel[0], sel[1], sel[2], sel[3], ox, oy);
+    if (_opCount[OP_FRAME_UNIFORM] > 0) {
+      applyFrameUniformRange(lanes, _opStart[OP_FRAME_UNIFORM], _opStart[OP_FRAME_UNIFORM] + _opCount[OP_FRAME_UNIFORM], U);
+    }
+    if (_opCount[OP_STROKE_UNIFORM] > 0) {
+      applyStrokeUniformRange(lanes, _opStart[OP_STROKE_UNIFORM], _opStart[OP_STROKE_UNIFORM] + _opCount[OP_STROKE_UNIFORM], U);
+    }
+    if (_opCount[OP_ORIGIN_UNIFORM] > 0) {
+      applyOriginUniformRange(lanes, _opStart[OP_ORIGIN_UNIFORM], _opStart[OP_ORIGIN_UNIFORM] + _opCount[OP_ORIGIN_UNIFORM], U);
+    }
+  }
+  if (_opCount[OP_FRAME_EDGES] > 0) {
+    applyFrameEdgesRange(lanes, _opStart[OP_FRAME_EDGES], _opStart[OP_FRAME_EDGES] + _opCount[OP_FRAME_EDGES], ox, oy, sx, sy);
+  }
+  if (_opCount[OP_REFLOW_TEXT] > 0) {
+    applyReflowTextRange(_opStart[OP_REFLOW_TEXT], _opStart[OP_REFLOW_TEXT] + _opCount[OP_REFLOW_TEXT], ox, sx);
+  }
+  if (_opCount[OP_REFLOW_CODE] > 0) {
+    applyReflowCodeRange(_opStart[OP_REFLOW_CODE], _opStart[OP_REFLOW_CODE] + _opCount[OP_REFLOW_CODE], ox, sx);
+  }
+
+  if (_topology) runTopologyScale(_topology, _scaleCtx, lanes);
+
+  pushAllDamage(); // NEW rects — without this the preview trails/vanishes (RenderLoop clips to dirty rects)
+  flushDamage();
+}
+
+// ============================================================================
+// Translate lifecycle
+// ============================================================================
+
+export function beginTranslate(selectedIds: ReadonlySet<string>, selBounds: BBoxTuple): void {
+  clearTransform();
+  _mode = MODE_TRANSLATE;
+  copyBbox(selBounds, _translateSelBounds); // owned copy — same aliasing hazard as _scaleCtx
+  _hasTranslateBounds = true;
+  beginGesture(selectedIds, false);
+}
+
+export function updateTranslate(dx: number, dy: number): void {
+  if (_mode !== MODE_TRANSLATE) return;
+  _dx = dx;
+  _dy = dy;
+  pushAllDamage(); // OLD rects
+  applyOffsetRange(_lanes, 0, _count, dx, dy); // translate ignores ops — one branchless loop
+  if (_topology) runTopologyTranslate(_topology, dx, dy, _lanes);
+  pushAllDamage(); // NEW rects
+  flushDamage();
+}
+
+// ============================================================================
+// Endpoint drag lifecycle — ported, slot-registered
+// ============================================================================
+
+/**
+ * Begin an endpoint-drag gesture. Builds RouteContext, seeds the reused
+ * scratches (bbox seeds read the COLUMN, not handle.bbox), registers the
+ * connector's slot under EPDRAG_TAG. Returns false when `buildRouteContext`
+ * fails (partially-built connector); SelectTool stays idle. Zero per-gesture
+ * allocation.
+ */
+export function beginEndpointDrag(connectorId: string, slot: Slot, handle: ObjectHandle): boolean {
+  clearTransform();
+  if (getLockOwners()[handle.slot] > 1 || isLockedObject(handle)) return false; // remote-/durably-locked — stay idle
+  const routeCtx = buildRouteContext(connectorId, handle.y);
+  if (!routeCtx) return false;
+  _mode = MODE_EP_DRAG;
+  ensureSlotMapCapacity();
+  const e = _epDragEntryScratch;
+  e.id = connectorId;
+  e.slot = handle.slot;
+  const col = getBBoxColumn();
+  const o4 = handle.slot * 4;
+  e.currBbox[0] = col[o4];
+  e.currBbox[1] = col[o4 + 1];
+  e.currBbox[2] = col[o4 + 2];
+  e.currBbox[3] = col[o4 + 3];
+  // validCount = 0 alone resets visible state — pointsBuf keeps its high-water
+  // tuples (buffer-length contract: consumers iterate by count, the reroute
+  // reuses tuples find-or-push; truncating would just re-allocate them).
+  e.validCount = 0;
+  copyBbox(e.currBbox, _epDragPrevBbox);
+  _epRouteCtx = routeCtx;
+  _epDragSlotArg = slot;
+  _epSlot = handle.slot;
+  _slotGesture[handle.slot] = EPDRAG_TAG;
+  _injectSlots[0] = handle.slot;
+  _injectSlotCount = 1;
+  _injectIds.push(connectorId);
+  return true;
+}
+
+/** Per-event endpoint-drag update. `snap` is null when unsnapped (free position). */
+export function updateEndpointDrag(worldX: number, worldY: number, snap: SnapTarget | null): void {
+  if (_mode !== MODE_EP_DRAG || !_epRouteCtx) return;
+  const e = _epDragEntryScratch;
+  // Snapshot CURRENT (just-painted) bbox into prevBbox BEFORE the reroute mutates currBbox.
+  copyBbox(e.currBbox, _epDragPrevBbox);
+  pushDamage(_epDragPrevBbox[0], _epDragPrevBbox[1], _epDragPrevBbox[2], _epDragPrevBbox[3]); // OLD
+  const override: EndpointDragOverride = snap ?? [worldX, worldY];
+  const count = rerouteEndpointDragInto(_epRouteCtx, _epDragSlotArg, override, e.currBbox, e.pointsBuf);
+  e.validCount = count;
+  if (count > 0) {
+    // Union the label rect at the new midpoint so the dirty rect covers the
+    // glyphs as the dragged endpoint reshapes the route.
+    unionConnectorLabelRectInto(e.id, e.pointsBuf, count, e.currBbox);
+    pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]); // NEW
+  }
+  flushDamage();
 }
 
 /**
- * Per-frame accessor for the renderer's connector branch under endpoint drag.
- * Returns null when idle, scale, or translate — those gestures expose their
- * connector entries via `getTransformTopology().byId` instead. The split keeps
- * the per-frame branch monomorphic: topology mode does one Map.get, endpoint
- * drag does one string equality.
+ * Commit endpoint drag. Returns true when a Y.Map write happened (validCount
+ * ≥ 2); false on failed routes. Always tears down (sparse slot cleared on
+ * EVERY exit).
  */
-export function getEndpointDragEntry(): EndpointDragEntry | null {
-  return ctrl?.getEndpointDragEntry() ?? null;
+export function commitEndpointDrag(snap: SnapTarget | null): boolean {
+  if (_mode !== MODE_EP_DRAG) return false;
+  const e = _epDragEntryScratch;
+  pushDamage(_epDragPrevBbox[0], _epDragPrevBbox[1], _epDragPrevBbox[2], _epDragPrevBbox[3]);
+  if (e.validCount >= 2) pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+  flushDamage();
+  if (e.validCount < 2) {
+    pushSlotCanonicalRect(e.slot); // no write coming — repaint the canonical route
+    flushDamage();
+    derender();
+    disposeGesture();
+    return false;
+  }
+  const epSlot = _epDragSlotArg;
+  const validCount = e.validCount;
+  const id = e.id;
+  // Lost first-wins arbitration mid-drag (peer key overwrote our optimistic
+  // claim) — heal by dropping the commit. Id-keyed recheck: slots recycle, ids don't.
+  const h = getHandle(id);
+  if (h && (getLockOwners()[h.slot] > 1 || isLockedObject(h))) {
+    pushSlotCanonicalRect(h.slot); // dropped commit — same canonical repaint as the failed-route exit
+    flushDamage();
+    derender();
+    disposeGesture();
+    return false;
+  }
+  const src = e.pointsBuf[slotPointIndex(epSlot, validCount)];
+  const value: ConnectorEndpoint = snap ? anchorRecordFromSnap(snap) : ([src[0], src[1]] as Point);
+  transact(() => {
+    const yMap = getObjects().get(id);
+    if (!yMap) return;
+    yMap.set(slotKey(epSlot), value);
+  });
+  derender();
+  disposeGesture();
+  return true;
 }
 
-/** Pre-deduplicated inject IDs for the cull loop (selected ∪ attached, or [draggedId]). */
-export function getTransformInjectIds(): readonly string[] | null {
-  return ctrl?.getInjectIds() ?? null;
+// ============================================================================
+// Shared lifecycle
+// ============================================================================
+
+/** Build + write commit values for one live, unlocked entry. */
+function commitEntry(gi: number, m: number): void {
+  const y = _gy[gi]!;
+  const lanes = _lanes;
+  const b = gi * G_STRIDE;
+  const op = (m >>> META_OP_SHIFT) & META_OP_MASK;
+  switch (op) {
+    case OP_OFFSET: {
+      const kc = m & META_KIND_MASK;
+      if (kc === K_SHAPE || kc === K_IMAGE) {
+        y.set('frame', [lanes[b + 12], lanes[b + 13], lanes[b + 14], lanes[b + 15]]);
+      } else if (kc === K_STROKE) {
+        const off = lanes[b + 4] | 0;
+        const cnt = lanes[b + 5] | 0;
+        const dx = lanes[b + 8] - lanes[b];
+        const dy = lanes[b + 9] - lanes[b + 1];
+        const pts: Point[] = new Array(cnt);
+        for (let i = 0; i < cnt; i++) pts[i] = [_strokePool[off + i * 2] + dx, _strokePool[off + i * 2 + 1] + dy];
+        y.set('points', pts);
+      } else {
+        y.set('origin', [lanes[b + 12], lanes[b + 13]]); // origin ONLY — old commitOrigin
+      }
+      break;
+    }
+    case OP_FRAME_UNIFORM:
+    case OP_FRAME_EDGES:
+      y.set('frame', [lanes[b + 12], lanes[b + 13], lanes[b + 14], lanes[b + 15]]);
+      break;
+    case OP_STROKE_UNIFORM: {
+      const off = lanes[b + 4] | 0;
+      const cnt = lanes[b + 5] | 0;
+      const ncx = (lanes[b + 8] + lanes[b + 10]) / 2;
+      const ncy = (lanes[b + 9] + lanes[b + 11]) / 2;
+      const fcx = lanes[b + 12];
+      const fcy = lanes[b + 13];
+      const af = lanes[b + 14];
+      const pts: Point[] = new Array(cnt);
+      for (let i = 0; i < cnt; i++) {
+        pts[i] = [ncx + (_strokePool[off + i * 2] - fcx) * af, ncy + (_strokePool[off + i * 2 + 1] - fcy) * af];
+      }
+      y.set('points', pts);
+      y.set('width', lanes[b + 6] * af);
+      break;
+    }
+    case OP_ORIGIN_UNIFORM: {
+      const kc = m & META_KIND_MASK;
+      y.set('origin', [lanes[b + 12], lanes[b + 13]]);
+      if (kc === K_TEXT) {
+        y.set('fontSize', lanes[b + 14]);
+        if (!Number.isNaN(lanes[b + 15])) y.set('width', lanes[b + 15]); // 'auto' flows as NaN — skip
+      } else if (kc === K_CODE) {
+        y.set('fontSize', lanes[b + 14]);
+        y.set('width', lanes[b + 15]);
+      } else {
+        y.set('scale', lanes[b + 14]); // note / bookmark
+      }
+      break;
+    }
+    case OP_REFLOW_TEXT:
+    case OP_REFLOW_CODE:
+      // origin + width ONLY (no fontSize) — old commitReflow.
+      y.set('origin', [lanes[b + 12], lanes[b + 13]]);
+      y.set('width', lanes[b + 15]);
+      break;
+  }
 }
 
-export function getTransformScaleCtx(): ScaleCtx | null {
-  return ctrl?.getScaleCtx() ?? null;
+/** Commit scale/translate: derender first (renderer sees idle before the
+ *  observer repaints), then ONE transact over live, unlocked entries. */
+export function commitTransform(): void {
+  const n = _count;
+  const mode = _mode;
+  const dx = _dx;
+  const dy = _dy;
+  const topology = _topology;
+  derender();
+  const lo = getLockOwners();
+  const lf = getLockedFlags();
+  transact(() => {
+    for (let gi = 0; gi < n; gi++) {
+      const m = _meta[gi];
+      // Dead FIRST — a recycled slot's lock lanes belong to someone else.
+      // No damage here: transformEvictSlot already erased the dead preview.
+      if (m & META_DEAD) continue;
+      const slot = _gslot[gi];
+      if (lo[slot] > 1 || lf[slot] === 1) {
+        // Loser's heal — peer won first-wins mid-gesture. The skip means no
+        // write, so no observer repaint: erase the preview (oBBox) and restore
+        // the canonical rect (fBBox) that the first pushAllDamage erased.
+        pushEntryRect(gi, 8);
+        pushEntryRect(gi, 0);
+        continue;
+      }
+      commitEntry(gi, m);
+    }
+    if (topology && (mode === MODE_SCALE || mode === MODE_TRANSLATE)) {
+      commitTopology(topology, mode === MODE_SCALE ? 'scale' : 'translate', dx, dy);
+    }
+  });
+  flushDamage(); // skip-path rects (ours + commitTopology's lockedElsewhere) — no-op when none pushed
+  disposeGesture();
 }
 
-export function isOverlayUniform(): boolean {
-  return ctrl?.isOverlayUniform() ?? false;
+/** Drop the gesture without committing (no-change pointerup). */
+export function clearTransform(): void {
+  derender();
+  disposeGesture();
 }
 
-/** True only after a meaningful update has been applied (sx/sy ≠ 1, or dx/dy ≠ 0). */
+/** Cancel (Esc / kind-change / room switch). Endpoint drag uses precise dirty
+ *  rects (single connector); translate/scale full-repaint — cancel is rare. */
+export function cancelTransform(): void {
+  if (_mode === MODE_EP_DRAG) {
+    const e = _epDragEntryScratch;
+    pushDamage(_epDragPrevBbox[0], _epDragPrevBbox[1], _epDragPrevBbox[2], _epDragPrevBbox[3]);
+    if (e.validCount >= 2) pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+    pushSlotCanonicalRect(e.slot); // no write on cancel — repaint the canonical route
+    flushDamage();
+    derender();
+    disposeGesture();
+    return;
+  }
+  invalidateWorldAll();
+  if (_topology) cancelTopology(_topology);
+  derender();
+  disposeGesture();
+}
+
+/** True only after a meaningful update (sx/sy ≠ 1, or dx/dy ≠ 0). */
 export function transformHasChange(): boolean {
-  return ctrl?.hasChange() ?? false;
+  if (_mode === MODE_TRANSLATE) return _dx !== 0 || _dy !== 0;
+  if (_mode === MODE_SCALE) return _sx !== 1 || _sy !== 1;
+  return false;
+}
+
+// ============================================================================
+// Mid-gesture eviction (RoomDocManager only)
+// ============================================================================
+
+/**
+ * A slot died (Phase A delete) or converted kind mid-gesture: clear its map
+ * cell; gesture entries also get the DEAD meta bit (commit-skip). Lanes/meta
+ * are otherwise untouched — `pushAllDamage` keeps erasing the dead entry's
+ * lanes while moves continue. The push+flush here covers the other path:
+ * release (or kind-converted canonical redraw) WITHOUT another pointermove,
+ * where nothing else would ever erase the last preview pixels. Fires inside
+ * the synchronous observer (where invalidation is already legal), never
+ * between the renderer's `ensureRanksValid()` and its pack loop.
+ */
+export function transformEvictSlot(slot: number): void {
+  if (_mode === MODE_NONE) return;
+  if (slot >= _slotGesture.length) return;
+  const g = _slotGesture[slot];
+  if (g < 0) return;
+  _slotGesture[slot] = -1;
+  if ((g & (TOPO_TAG | EPDRAG_TAG)) === 0) {
+    _meta[g] |= META_DEAD;
+    pushEntryRect(g, 8);
+  } else if (g & TOPO_TAG) {
+    const e = _topology!.entries[g & GIDX_MASK]; // TOPO tags exist ⇒ topology non-null until dispose
+    pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+  } else {
+    const e = _epDragEntryScratch;
+    pushDamage(e.currBbox[0], e.currBbox[1], e.currBbox[2], e.currBbox[3]);
+  }
+  flushDamage();
+}
+
+// ============================================================================
+// Getters — renderer / overlay / store consumers
+// ============================================================================
+
+/** 0 = none, 1 = scale, 2 = translate, 3 = endpointDrag. */
+export function getTransformModeCode(): number {
+  return _mode;
+}
+
+/** Sparse slot→gesture map; capacity ensured ≥ slotHighWater on every fetch
+ *  (peers mint slots mid-gesture). Refetch per frame. */
+export function getGestureSlotMap(): Int32Array {
+  ensureSlotMapCapacity();
+  return _slotGesture;
+}
+
+export function getGestureLanes(): Float64Array {
+  return _lanes;
+}
+
+export function getGestureMeta(): Uint32Array {
+  return _meta;
+}
+
+export function getInjectSlots(): Uint32Array {
+  return _injectSlots;
+}
+
+export function getInjectSlotCount(): number {
+  return _injectSlotCount;
+}
+
+export function getTopoEntries(): readonly ConnectorEntry[] | null {
+  return _topology ? _topology.entries : null;
+}
+
+/** Synthetic connector entry for the active endpoint-drag gesture (null otherwise). */
+export function getEndpointDragEntry(): EndpointDragEntry | null {
+  return _mode === MODE_EP_DRAG ? _epDragEntryScratch : null;
+}
+
+export function getTranslateDX(): number {
+  return _dx;
+}
+
+export function getTranslateDY(): number {
+  return _dy;
+}
+
+/** Null unless scaling — the object is persistent and must not leak stale gesture consts. */
+export function getTransformScaleCtx(): ScaleCtx | null {
+  return _mode === MODE_SCALE ? _scaleCtx : null;
+}
+
+/** Overlay-only: uniformFactor rect vs per-axis rect. Gated on scale mode —
+ *  `_overlayUniform` is computed only at beginScale. */
+export function isOverlayUniform(): boolean {
+  return _mode === MODE_SCALE && _overlayUniform;
 }
 
 export function getTranslateSelBounds(): BBoxTuple | null {
-  return ctrl?.getTranslateSelBounds() ?? null;
+  return _hasTranslateBounds ? _translateSelBounds : null;
+}
+
+/** Reflow entry's pooled layout (renderer's REFLOW_* arms). */
+export function getReflowLayout(gi: number): TextLayout | CodeLayout | null {
+  const op = (_meta[gi] >>> META_OP_SHIFT) & META_OP_MASK;
+  if (op === OP_REFLOW_TEXT) return _textSidecars[gi - _opStart[OP_REFLOW_TEXT]].layout;
+  if (op === OP_REFLOW_CODE) return _codeSidecars[gi - _opStart[OP_REFLOW_CODE]].layout;
+  return null;
+}
+
+/**
+ * Copy a gesture entry's out-bbox into `out` — image-manager's narrow
+ * accessor. Guards: OOB slot (an `undefined < 0` compare is false and would
+ * decode gi 0's lanes), non-membership, topology/epDrag tags.
+ */
+export function readGestureOutBBox(slot: number, out: BBoxTuple): boolean {
+  if (slot >= _slotGesture.length) return false;
+  const g = _slotGesture[slot];
+  if (g < 0) return false;
+  if ((g & (TOPO_TAG | EPDRAG_TAG)) !== 0) return false;
+  const b = g * G_STRIDE;
+  out[0] = _lanes[b + 8];
+  out[1] = _lanes[b + 9];
+  out[2] = _lanes[b + 10];
+  out[3] = _lanes[b + 11];
+  return true;
+}
+
+/** LOCKS ONLY — selection-store's acquireTransformLocks. Reused buffer; null when idle. */
+export function getTransformInjectIds(): readonly string[] | null {
+  return _mode === MODE_NONE ? null : _injectIds;
 }

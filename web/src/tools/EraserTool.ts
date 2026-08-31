@@ -1,3 +1,11 @@
+import {
+  acquireLocalLock,
+  getLockedFlags,
+  getLockOwners,
+  LOCK_SRC_ERASER,
+  onRemoteLocksApplied,
+  releaseLocalLocks,
+} from '@/core/locks/lock-table';
 import { atPoint, queryHandleIds } from '@/core/spatial/object-query';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/renderer/animation/EraserTrailAnimation';
@@ -39,9 +47,22 @@ export class EraserTool implements PointerTool {
    */
   constructor() {
     this.resetState();
+    // A peer's lock landing mid-sweep evicts those ids from the sweep (they're the peer's
+    // now): drop the dim preview + the pending delete. The inert local claims left in the
+    // eraser source list release harmlessly at gesture end (the `=== 1` check skips them).
+    onRemoteLocksApplied((ids) => {
+      if (!this.state.isErasing) return;
+      let changed = false;
+      for (const id of ids) {
+        this.state.hitNow.delete(id);
+        if (this.state.hitAccum.delete(id)) changed = true;
+      }
+      if (changed) invalidateOverlay();
+    });
   }
 
   private resetState(): void {
+    releaseLocalLocks(LOCK_SRC_ERASER); // no-op on the constructor call (empty source list)
     this.state = {
       isErasing: false,
       pointerId: null,
@@ -141,7 +162,10 @@ export class EraserTool implements PointerTool {
 
     if (this.state.isErasing) {
       for (const id of this.state.hitNow) {
-        this.state.hitAccum.add(id);
+        if (!this.state.hitAccum.has(id)) {
+          this.state.hitAccum.add(id);
+          acquireLocalLock(LOCK_SRC_ERASER, id); // lock-on-first-hit — peers see it grey immediately
+        }
       }
     }
 
@@ -160,6 +184,15 @@ export class EraserTool implements PointerTool {
     }
 
     const idsToDelete = this.state.hitAccum;
+
+    // Loser-heal: a peer lock (or a durable lock) that landed between the last hit-test
+    // and pointer-up wins — drop those ids. (Deleting from a Set mid-iteration is legal.)
+    const lo = getLockOwners();
+    const lf = getLockedFlags();
+    for (const id of idsToDelete) {
+      const handle = getHandle(id);
+      if (handle && (lo[handle.slot] > 1 || lf[handle.slot] === 1)) idsToDelete.delete(id);
+    }
 
     // Collect (connectorId, shapeId) pairs to detach. Surviving connectors get their bound
     // endpoint(s) replaced with the cached route's first/last point so they remain visible.

@@ -8,6 +8,7 @@ import type { Slot } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import { pointsToBBoxMut } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
+import { isLockedObject } from '@/core/locks/lock-table';
 import { hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
@@ -31,7 +32,7 @@ import {
   flowButtonGate,
   hitFlowButton,
 } from '@/tools/selection/connector-flow';
-import { getController } from '@/tools/selection/transform';
+import * as tf from '@/tools/selection/transform';
 import type { PointerTool, PreviewData } from '../types';
 
 // === Constants ===
@@ -69,8 +70,8 @@ type DownHit =
  * - Cursor: useDeviceUIStore (applyCursor, setCursorOverride)
  * - Camera/Selection: Zustand stores
  *
- * Endpoint drag's RouteContext + buffer + bbox snapshots live on TransformController;
- * SelectTool just routes lifecycle through `getController().beginEndpointDrag(...)`
+ * Endpoint drag's RouteContext + buffer + bbox snapshots live on the transform
+ * engine; SelectTool just routes lifecycle through `tf.beginEndpointDrag(...)`
  * and the standard `endTransform` / `cancelTransform` store actions.
  */
 export class SelectTool implements PointerTool {
@@ -157,8 +158,15 @@ export class SelectTool implements PointerTool {
     const store = useSelectionStore.getState();
     const { mode, selectedIds, textEditingId } = store;
 
-    // 1. Mode-specific first-priority hit targets
-    if (mode === 'standard' && selectedIds.length > 0 && (!textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
+    // 1. Mode-specific first-priority hit targets (locked selections render no
+    // handles/endpoint dots, so their hit probes are skipped to match)
+    if (
+      mode === 'standard' &&
+      !store.selectionLocked &&
+      selectedIds.length > 0 &&
+      (!textEditingId || textTool.isEditingLabel()) &&
+      !store.codeEditingId
+    ) {
       // Standard mode: check resize handles first
       const selectionBounds = computeSelectionBounds();
       const handleHit = selectionBounds ? hitResizeHandle([worldX, worldY], selectionBounds) : null;
@@ -168,7 +176,7 @@ export class SelectTool implements PointerTool {
         invalidateOverlay();
         return;
       }
-    } else if (mode === 'connector') {
+    } else if (mode === 'connector' && !store.selectionLocked) {
       // Connector mode: check endpoint dots first
       const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
@@ -204,7 +212,7 @@ export class SelectTool implements PointerTool {
       // Bookmark Open-button: handled below standard handle/endpoint priority
       // (those returned already) but above the regular object click. Shift/Ctrl
       // falls through to additive object selection — standard convention.
-      if (hit.kind === 'bookmark' && !this.hasAddModifier() && hitTestOpenButton(hit, worldX, worldY)) {
+      if (hit.kind === 'bookmark' && !isLockedObject(hit) && !this.hasAddModifier() && hitTestOpenButton(hit, worldX, worldY)) {
         this.downHit = { kind: 'openButton', handle: hit };
         this.hoveredOpenBookmarkId = hit.id;
         this.phase = 'pendingClick';
@@ -229,8 +237,9 @@ export class SelectTool implements PointerTool {
       return;
     }
 
-    // 3. No object hit - selectionGap or background
-    if (mode === 'standard') {
+    // 3. No object hit - selectionGap or background. A locked selection has no
+    // gap affordance (gap→translate must be unreachable) — falls to background.
+    if (mode === 'standard' && !store.selectionLocked) {
       // Standard mode has selection bounds - can have gap clicks
       const selectionBounds = computeSelectionBounds();
       if (selectionBounds && pointInBBox([worldX, worldY], selectionBounds)) {
@@ -313,9 +322,14 @@ export class SelectTool implements PointerTool {
             if (epStore.selectedIds.length > 1) epStore.setSelection([connectorId]);
 
             const connHandle = getHandle(connectorId);
-            if (!connHandle) break;
-            // Controller owns RouteContext + buffer + bbox snapshots for the gesture.
-            if (!getController().beginEndpointDrag(connectorId, slot, connHandle)) break;
+            // The engine owns RouteContext + buffer + bbox snapshots for the gesture.
+            // One failed attempt (locked / partially-built connector) → idle, like the
+            // 'handle' branch — staying pendingClick would re-run the whole begin
+            // (lock check + RouteContext alloc) on every subsequent pointermove.
+            if (!connHandle || !tf.beginEndpointDrag(connectorId, slot, connHandle)) {
+              this.phase = 'idle';
+              break;
+            }
             this.phase = 'endpointDrag';
             useSelectionStore.getState().beginEndpointDrag(connectorId, slot);
             setCursorOverride('grabbing');
@@ -327,8 +341,10 @@ export class SelectTool implements PointerTool {
             if (!passMove) break;
             const { handle, isSelected } = this.downHit;
             const store = useSelectionStore.getState();
-            // Anchored connectors: marquee (cannot translate them rigidly).
-            if (handle.kind === 'connector' && isAnchored(handle)) {
+            // Locked objects can't translate — drag from one sweeps a marquee
+            // (which excludes locked ids). Anchored connectors: same divert
+            // (cannot translate them rigidly).
+            if (isLockedObject(handle) || (handle.kind === 'connector' && isAnchored(handle))) {
               this.phase = 'marquee';
               this.marqueeActive = true;
               this.updateMarqueeBBox(worldX, worldY);
@@ -419,7 +435,7 @@ export class SelectTool implements PointerTool {
               prevAttach: epTransform.currentSnap,
               connectorType: getConnectorType(handle.y),
             });
-        getController().updateEndpointDrag(worldX, worldY, snap);
+        tf.updateEndpointDrag(worldX, worldY, snap);
         const currentPosition: [number, number] = snap ? snap.position : [worldX, worldY];
         useSelectionStore.getState().updateEndpointDrag(currentPosition, snap);
         break;
@@ -466,6 +482,13 @@ export class SelectTool implements PointerTool {
           case 'object': {
             const { handle, isSelected } = this.downHit;
             const hitId = handle.id;
+            // Locked: always solo-select — no additive/subtractive, no drill,
+            // no edit entry. The lock-only context menu shows via the common
+            // post-end() show() below.
+            if (isLockedObject(handle)) {
+              store.setSelection([hitId]);
+              break;
+            }
             if (!isSelected) {
               if (this.hasAddModifier()) {
                 // Additive: add to current selection
@@ -581,7 +604,7 @@ export class SelectTool implements PointerTool {
   }
 
   cancel(): void {
-    // Controller's cancel() handles all gesture modes (translate / scale / endpointDrag).
+    // The engine's cancelTransform handles all gesture modes (translate / scale / endpointDrag).
     useSelectionStore.getState().cancelTransform();
 
     this.marqueeActive = false;
@@ -661,7 +684,7 @@ export class SelectTool implements PointerTool {
     const store = useSelectionStore.getState();
     const { mode, selectedIds } = store;
 
-    if (mode === 'standard' && (!store.textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
+    if (mode === 'standard' && !store.selectionLocked && (!store.textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
       const bounds = computeSelectionBounds();
       if (bounds) {
         const handle = hitResizeHandle([worldX, worldY], bounds);
@@ -672,7 +695,7 @@ export class SelectTool implements PointerTool {
           return;
         }
       }
-    } else if (mode === 'connector') {
+    } else if (mode === 'connector' && !store.selectionLocked) {
       const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
         this.clearBookmarkOpenHoverIfAny();
@@ -700,7 +723,7 @@ export class SelectTool implements PointerTool {
     // the cursor is on genuinely visible bookmark pixels — no separate
     // 4-corner sampling needed).
     const topmost = pickTopmostPaint([worldX, worldY], { px: HIT_RADIUS_PX });
-    if (topmost && topmost.kind === 'bookmark' && hitTestOpenButton(topmost, worldX, worldY)) {
+    if (topmost && topmost.kind === 'bookmark' && !isLockedObject(topmost) && hitTestOpenButton(topmost, worldX, worldY)) {
       if (this.hoveredOpenBookmarkId !== topmost.id) {
         const prevId = this.hoveredOpenBookmarkId;
         this.hoveredOpenBookmarkId = topmost.id;

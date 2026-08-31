@@ -1,1 +1,1 @@
-export { ObjectSpatialIndex } from './object-spatial-index';
+export { spatialTree } from './spatial-tree';

@@ -29,8 +29,8 @@
 import type * as Y from 'yjs';
 import { getContent, getFontFamily, getFontSize } from '../accessors';
 import { expandBBox } from '../geometry/bounds';
-import { getBaselineToTopRatio } from '../text/text-measure';
-import { type TextLayout, textLayoutCache } from '../text/text-system';
+import { getBaselineToTopRatioByCode } from '../text/text-measure';
+import { type TextLayoutScalars, textLayoutCache } from '../text/text-system';
 import type { BBoxTuple, Point } from '../types/geometry';
 
 // Clip-hole / bbox breathing room around the glyph block, proportional to font
@@ -54,7 +54,7 @@ const _labelRectReturn: BBoxTuple = [0, 0, 0, 0];
  * `textLayoutCache` keyed by the connector id (mirrors `computeTextBBox`), so
  * the observer/bbox path guarantees the layout is fresh whenever a handle exists.
  */
-export function computeConnectorLabelLayout(id: string, yObj: Y.Map<unknown>): TextLayout | null {
+export function computeConnectorLabelLayout(id: string, yObj: Y.Map<unknown>): TextLayoutScalars | null {
   const content = getContent(yObj);
   if (!content) return null;
   return textLayoutCache.getLayout(id, content, getFontSize(yObj), getFontFamily(yObj), 'auto');
@@ -108,7 +108,7 @@ export function connectorLabelMidpointInto(points: Point[], count: number, out: 
  * `renderTextLayout` paints with `align='center'`. Symmetric about the anchor,
  * matching the render + editor anchor model.
  */
-function connectorLabelRectInto(layout: TextLayout, points: Point[], count: number, out: BBoxTuple): void {
+function connectorLabelRectInto(layout: TextLayoutScalars, points: Point[], count: number, out: BBoxTuple): void {
   connectorLabelMidpointInto(points, count, _midScratch);
   const ax = _midScratch[0];
   const ay = _midScratch[1];
@@ -144,7 +144,7 @@ export function unionConnectorLabelBBoxInto(id: string, yObj: Y.Map<unknown>, po
  */
 export function getConnectorLabelRect(id: string, points: Point[], count: number): BBoxTuple | null {
   if (count < 2) return null;
-  const layout = textLayoutCache.getLayoutById(id);
+  const layout = textLayoutCache.getLayoutScalarsById(id);
   if (!layout) return null;
   connectorLabelRectInto(layout, points, count, _labelRectReturn);
   return _labelRectReturn;
@@ -167,6 +167,6 @@ export function unionConnectorLabelRectInto(id: string, points: Point[], count: 
  * `originX` for the render is the anchor X; `renderTextLayout` with `align='center'`
  * centres each line on it.
  */
-export function labelOriginYFor(layout: TextLayout, anchorY: number): number {
-  return anchorY + getBaselineToTopRatio(layout.fontFamily) * layout.fontSize - (layout.lineCount * layout.lineHeight) / 2;
+export function labelOriginYFor(layout: TextLayoutScalars, anchorY: number): number {
+  return anchorY + getBaselineToTopRatioByCode(layout.famCode) * layout.fontSize - (layout.lineCount * layout.lineHeight) / 2;
 }

@@ -13,7 +13,7 @@
  */
 
 import type { FontFamily } from '../accessors';
-import { FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
+import { FAMILY_LIST, FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
 import { areFontsLoaded } from './font-loader';
 
 // --- Measurement context (singleton offscreen canvas) ---
@@ -49,18 +49,118 @@ export function buildFontString(bold: boolean, italic: boolean, fontSize: number
   return `${style} ${weight} ${fontSize}px ${FONT_FAMILIES[fontFamily].fallback}`;
 }
 
-/** Pre-build the four (bold × italic) font strings for a given (fontSize, fontFamily). */
-export function buildFontMatrix(fontSize: number, fontFamily: FontFamily): readonly [string, string, string, string] {
-  return [
-    buildFontString(false, false, fontSize, fontFamily),
-    buildFontString(false, true, fontSize, fontFamily),
-    buildFontString(true, false, fontSize, fontFamily),
-    buildFontString(true, true, fontSize, fontFamily),
-  ] as const;
+// =============================================================================
+// FONT INTERN TABLE — lazy, append-only for the room session
+// =============================================================================
+//
+// Every distinct (fontSize, family, bold, italic) combination that is actually
+// USED gets one interned index; the font string is built once, on first demand.
+// This replaces the old eager `buildFontMatrix`, which allocated all four
+// bold×italic strings (plus the tuple) on every measure call whether or not the
+// content carried any bold/italic run.
+//
+// Indices are stored in text-store pool lanes (`segFontIdx`/`runFontIdx`), so
+// the table must NOT shrink or reorder mid-session — `resetFontTable()` is
+// legal only alongside a full store reset (`textLayoutCache.clear()`).
+//
+// Key encoding (integer, always a Smi): sizeKey * 16 + famCode * 4 + styleBits,
+// where sizeKey = round(fontSize * 1000) (3dp — matches transform commit
+// quantization) and styleBits = bold | italic << 1.
+//
+// Index 0 is reserved as the '' sentinel: `lastFontIdx = 0` in render kernels
+// makes the first run of every draw set ctx.font without an extra branch, and
+// a zeroed pool lane can never alias a real font.
+
+export const FONT_STRINGS: string[] = [''];
+const _fontKeyToIdx = new Map<number, number>();
+
+// Per-font measurement caches keyed by intern index (array load instead of a
+// string-keyed Map.get on the outer level). `null` = not yet created.
+const _measureByIdx: (Map<string, number> | null)[] = [null];
+let _spaceWByIdx = new Float64Array(64).fill(Number.NaN);
+
+export function internFont(fontSize: number, famCode: number, styleBits: number): number {
+  const key = ((fontSize * 1000 + 0.5) | 0) * 16 + famCode * 4 + styleBits;
+  const hit = _fontKeyToIdx.get(key);
+  if (hit !== undefined) return hit;
+  const idx = FONT_STRINGS.length;
+  FONT_STRINGS[idx] = buildFontString((styleBits & 1) !== 0, (styleBits & 2) !== 0, fontSize, FAMILY_LIST[famCode]);
+  _measureByIdx[idx] = null;
+  if (idx >= _spaceWByIdx.length) {
+    const next = new Float64Array(idx + (idx >> 1) + 16).fill(Number.NaN);
+    next.set(_spaceWByIdx);
+    _spaceWByIdx = next;
+  }
+  _fontKeyToIdx.set(key, idx);
+  return idx;
 }
 
-export function fontFromMatrix(F: readonly [string, string, string, string], bold: boolean, italic: boolean): string {
-  return F[(bold ? 2 : 0) | (italic ? 1 : 0)];
+// --- Per-measure-pass style quad ---
+// The four styleBits→fontIdx resolutions for one (fontSize, famCode), filled
+// lazily as combos appear. Memoized across calls on the same size/family so
+// back-to-back measures of sibling entries skip even the reset. Uint32 with 0
+// as the unfilled sentinel — intern index 0 is the reserved '' slot, so no
+// real font ever aliases it (the reservation pays a second time here).
+const _quad = new Uint32Array(4);
+let _quadSizeKey = -1;
+let _quadFam = -1;
+
+export function beginFontQuad(fontSize: number, famCode: number): void {
+  const sizeKey = (fontSize * 1000 + 0.5) | 0;
+  if (sizeKey === _quadSizeKey && famCode === _quadFam) return;
+  _quad[0] = 0;
+  _quad[1] = 0;
+  _quad[2] = 0;
+  _quad[3] = 0;
+  _quadSizeKey = sizeKey;
+  _quadFam = famCode;
+}
+
+export function quadFontIdx(styleBits: number): number {
+  let idx = _quad[styleBits];
+  if (idx === 0) {
+    idx = internFont(_quadSizeKey / 1000, _quadFam, styleBits);
+    _quad[styleBits] = idx;
+  }
+  return idx;
+}
+
+export function measureTextByIdx(fontIdx: number, text: string): number {
+  let inner = _measureByIdx[fontIdx];
+  if (inner !== null) {
+    const w = inner.get(text);
+    if (w !== undefined) return w;
+  } else {
+    inner = new Map();
+    _measureByIdx[fontIdx] = inner;
+  }
+  const ctx = getMeasureContext();
+  setMeasureFont(FONT_STRINGS[fontIdx]);
+  const w = ctx.measureText(text).width;
+  inner.set(text, w);
+  if (++measureEntryCount > MEASURE_SOFT_CAP) softEvictMeasure();
+  return w;
+}
+
+export function spaceWidthByIdx(fontIdx: number): number {
+  let w = _spaceWByIdx[fontIdx];
+  if (w !== w) {
+    w = measureTextByIdx(fontIdx, ' ');
+    _spaceWByIdx[fontIdx] = w;
+  }
+  return w;
+}
+
+/** Session-level teardown of the intern table. ONLY legal alongside a full
+ *  text-store reset — pool lanes hold interned indices. */
+export function resetFontTable(): void {
+  FONT_STRINGS.length = 1;
+  _fontKeyToIdx.clear();
+  _measureByIdx.length = 1;
+  _measureByIdx[0] = null;
+  _spaceWByIdx.fill(Number.NaN);
+  _quadSizeKey = -1;
+  _quadFam = -1;
 }
 
 // --- Font metrics (measured, not approximated) ---
@@ -159,12 +259,28 @@ export function getItalicOverhangPad(fontSize: number): number {
   return v < 2 ? 2 : v;
 }
 
+// --- famCode-indexed metric mirrors (NaN = unfilled; the self-compare probe
+// IS the cache-hit branch). Filled lazily through the string-keyed getters
+// above so the fonts-not-loaded fallback path stays identical; cleared by
+// resetFontMetrics. ---
+
+const _b2tByCode = new Float64Array(4).fill(Number.NaN);
+
+export function getBaselineToTopRatioByCode(famCode: number): number {
+  const v = _b2tByCode[famCode];
+  if (v === v) return v;
+  const r = getBaselineToTopRatio(FAMILY_LIST[famCode]);
+  _b2tByCode[famCode] = r;
+  return r;
+}
+
 export function resetFontMetrics(): void {
   _measuredAscentRatio.clear();
   _measuredDescentRatio.clear();
   _baselineToTopRatio.clear();
   _minCharWidthRatio.clear();
   _italicPadFactor = null;
+  _b2tByCode.fill(Number.NaN);
 }
 
 // =============================================================================
@@ -180,9 +296,11 @@ let measureEntryCount = 0;
 const MEASURE_SOFT_CAP = 200_000;
 
 function softEvictMeasure(): void {
-  // Cheap path: clear the whole table on cap. CHAR_ENDS_CACHE and SPACE_WIDTH_CACHE
-  // are independent — they cache typed arrays / single floats and don't depend on this LRU.
+  // Cheap path: clear the whole table on cap (string-keyed AND idx-keyed inner
+  // maps — both feed measureEntryCount). CHAR_ENDS_CACHE and the space-width
+  // caches are independent — typed arrays / single floats, refilled on demand.
   MEASURE_BY_FONT.clear();
+  for (let i = 0; i < _measureByIdx.length; i++) _measureByIdx[i] = null;
   measureEntryCount = 0;
 }
 
@@ -217,19 +335,21 @@ export function getSpaceWidth(font: string): number {
 
 const CHAR_ENDS_CACHE = new Map<string, Uint32Array>();
 
+// Lazy module singleton — constructing an Intl.Segmenter resolves locale data,
+// far too costly to repeat per uncached string.
+let _graphemeSeg: Intl.Segmenter | null = null;
+
 /** Char-index end-offsets for each grapheme cluster of `text`. `out[0] = 0`,
  *  `out[i+1]` = end of i-th grapheme. Used by `sliceTextToFit` to align cuts on
  *  grapheme boundaries (LB9-correct: never splits CM/ZWJ/ZWNJ/surrogate pairs). */
 export function getCharEnds(text: string): Uint32Array {
   const hit = CHAR_ENDS_CACHE.get(text);
   if (hit) return hit;
-  // First pass: count graphemes so we can size the typed array exactly. Avoids the
-  // intermediate string[] that the old getGraphemes carried just for its length.
   const offsets: number[] = [0];
   let ci = 0;
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    for (const { segment } of seg.segment(text)) {
+    if (_graphemeSeg === null) _graphemeSeg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    for (const { segment } of _graphemeSeg.segment(text)) {
       ci += segment.length;
       offsets.push(ci);
     }
@@ -244,11 +364,15 @@ export function getCharEnds(text: string): Uint32Array {
   return out;
 }
 
-/** Full teardown of every measurement cache — called by `TextLayoutCache.clear()`
- *  on room switch / rebuild. `softEvictMeasure` is the cap-triggered partial sibling. */
+/** Full teardown of every measurement VALUE cache — called by
+ *  `textLayoutCache.clear()` on room switch / rebuild. Does NOT touch the font
+ *  intern table (`resetFontTable` is its separate, store-coupled teardown);
+ *  `softEvictMeasure` is the cap-triggered partial sibling. */
 export function clearMeasurementCaches(): void {
   MEASURE_BY_FONT.clear();
+  for (let i = 0; i < _measureByIdx.length; i++) _measureByIdx[i] = null;
   measureEntryCount = 0;
   SPACE_WIDTH_CACHE.clear();
+  _spaceWByIdx.fill(Number.NaN);
   CHAR_ENDS_CACHE.clear();
 }

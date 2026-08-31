@@ -27,3 +27,9 @@ export const USERS_ORIGIN = import.meta.env.PROD ? 'https://users.avlo.io' : `${
 // the client WS provider host AND lets the SW match WSS by host. null in dev → the provider falls
 // back to `window.location.host` so the upgrade reaches the sync worker via the Vite `/sync` proxy.
 export const SYNC_HOST_PROD: string | null = import.meta.env.PROD ? 'sync.avlo.io' : null;
+
+// AI host: same model as sync — WSS-primary (Agents SDK /agents/* — WS + the chat HTTP
+// endpoints share the prefix), cross-origin in prod (cookie rides Domain=.avlo.io +
+// SameSite=Lax same-site). null in dev → useAgent falls back to `window.location.host`
+// so both the upgrade and HTTP hit the ai worker via the Vite `/agents` proxy.
+export const AI_HOST_PROD: string | null = import.meta.env.PROD ? 'ai.avlo.io' : null;

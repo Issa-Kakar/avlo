@@ -67,7 +67,7 @@ const logLevel = LOG_LEVELS[(process.env.MF_LOG_LEVEL ?? 'info').toLowerCase()] 
 // dir name → wrangler `name`. LOAD-BEARING: services + cross-script DO resolve by
 // wrangler NAME, not dir. A mismatch silently breaks every cross-worker edge
 // (the pre-flight assert below catches it loudly).
-const NAME = { sync: 'avlo-sync', images: 'avlo-images', unfurl: 'avlo-unfurl', auth: 'avlo-auth', users: 'avlo-users' };
+const NAME = { sync: 'avlo-sync', images: 'avlo-images', unfurl: 'avlo-unfurl', auth: 'avlo-auth', users: 'avlo-users', ai: 'avlo-ai' };
 
 // CRITICAL: `wrangler dev --persist-to <X>` (and `wrangler d1 migrations apply
 // --persist-to <X>`) store under `<X>/v3/{d1,r2,kv,do,cache}` — Miniflare's
@@ -98,6 +98,20 @@ let reloadTimer = null;
 // drizzle. `.sql` → text inlines sync's drizzle migration modules (its generated
 // migrations.js does `import m0000 from './0000_*.sql'`), so no Miniflare Text rule
 // is needed. `@avlo/*` resolve via each package's `exports` map (default condition).
+
+// Bare node-builtin specifiers (`require('path')` deep inside npm deps — the `agents`
+// graph's mime-types is the first real case) → rewritten to canonical `node:path` and
+// left external, matching the `node:*` external above. nodejs_compat (v2 at our compat
+// dates) supplies them at runtime either way; the rewrite just normalizes the form.
+const NODE_BUILTIN_RE =
+  /^(assert|async_hooks|buffer|child_process|cluster|console|constants|crypto|dgram|diagnostics_channel|dns|domain|events|fs|http|http2|https|inspector|module|net|os|path|perf_hooks|process|punycode|querystring|readline|repl|stream|string_decoder|sys|timers|tls|trace_events|tty|url|util|v8|vm|worker_threads|zlib)(\/.*)?$/;
+const nodeBuiltinsPlugin = {
+  name: 'node-builtins-external',
+  setup(build) {
+    build.onResolve({ filter: NODE_BUILTIN_RE }, (args) => ({ path: `node:${args.path}`, external: true }));
+  },
+};
+
 function esbuildOptions(entryAbs, define, plugins) {
   return {
     entryPoints: [entryAbs],
@@ -113,7 +127,7 @@ function esbuildOptions(entryAbs, define, plugins) {
     write: false,
     sourcemap: 'inline',
     logLevel: 'warning',
-    plugins,
+    plugins: [nodeBuiltinsPlugin, ...plugins],
   };
 }
 

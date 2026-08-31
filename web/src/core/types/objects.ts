@@ -10,10 +10,36 @@ import type { BBoxTuple, FrameTuple } from './geometry';
 export const OBJECT_KINDS = ['stroke', 'shape', 'text', 'connector', 'code', 'image', 'note', 'bookmark'] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
-// Lightweight handle pointing to Y.Map. The handle IS the rbush spatial-index item —
-// `minX/minY/maxX/maxY` mirror `bbox[0..3]` and are kept in sync by `applyHandleBBox`
-// (the only legal post-creation bbox mutator). rbush reads its envelope via the default
-// `toBBox(item) = item`, so passing the handle directly satisfies its item shape.
+// Numeric kind codes — OBJECT_KINDS order IS the canonical numbering. The K_*
+// literal consts exist for switch-case narrowing + jump-table dispatch on hot
+// paths (renderer, transform kernels); KIND_CODE is the string→code map for
+// cold writers (slot-table registration, RDM kind-keychange). The kernels
+// selftest asserts `K_X === KIND_CODE[OBJECT_KINDS[i]]` for all 8 — drift
+// between the two is caught there without runtime cost.
+export const KIND_CODE: Readonly<Record<ObjectKind, number>> = Object.freeze(
+  OBJECT_KINDS.reduce(
+    (acc, k, i) => {
+      acc[k] = i;
+      return acc;
+    },
+    {} as Record<ObjectKind, number>,
+  ),
+);
+export const K_STROKE = 0,
+  K_SHAPE = 1,
+  K_TEXT = 2,
+  K_CONNECTOR = 3,
+  K_CODE = 4,
+  K_IMAGE = 5,
+  K_NOTE = 6,
+  K_BOOKMARK = 7;
+
+// Lightweight handle pointing to Y.Map. The handle is NOT the spatial-index entry —
+// the FlatRTree (`core/spatial/spatial-tree.ts`) is keyed by `slot`, and queries
+// recover handles via the slot table's reverse map. `bbox` + `slot` are the geometry
+// links: the tuple for in-place object readers, the global bbox column
+// (`getBBoxColumn()`, `slot * 4`) for typed-array paths — kept identical by
+// RoomDocManager's tripartite write (tuple + column + tree, `upsertHandle` only).
 export interface ObjectHandle {
   id: string;
   // Mirror of `y.get('kind')`. Mutated ONLY by the deep observer's kind-keychange
@@ -21,15 +47,12 @@ export interface ObjectHandle {
   kind: ObjectKind;
   y: Y.Map<unknown>; // Direct Y.Map reference
   bbox: BBoxTuple; // Computed locally, NOT stored in Y.Map
-  // rbush envelope mirrors — written ONLY by createHandle / applyHandleBBox. Mirror bbox[0..3].
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
   // Fractional z-key (mirror of y.get('z')). Mutated only by the deep observer's z-key-edit branch.
   z: ZKey;
-  // Stable index into ZRankTable._ranks. Assigned at creation by acquireSlot(); never reassigned.
-  // Returns to the free-list on delete; future objects may reuse it.
+  // Index into the slot-table columns (`core/slots/slot-table.ts`) — the app-wide dense id
+  // space (rank table, lock columns, reverse map, global bbox column, spatial tree all key
+  // off it). Acquired once at creation, never reassigned; returned to the pool on delete
+  // (LIFO reuse).
   slot: number;
 }
 
@@ -46,30 +69,9 @@ export function createHandle(
     kind,
     y,
     bbox: [bbox[0], bbox[1], bbox[2], bbox[3]],
-    minX: bbox[0],
-    minY: bbox[1],
-    maxX: bbox[2],
-    maxY: bbox[3],
     z,
     slot,
   };
-}
-
-/**
- * Mutate `handle.bbox` and the four rbush mirror fields together.
- *
- * CONTRACT: ONLY callable from `ObjectSpatialIndex.updateHandleBBox` (which has already
- * removed the handle from the rbush tree using the OLD envelope). Direct external call
- * corrupts the spatial index: the tree leaf still carries the old envelope, but the
- * handle's mirror fields now say "new", so the next `spatialIndex.remove(handle)` silently
- * no-ops (rbush descends to the wrong leaf) and the entry leaks.
- */
-export function applyHandleBBox(handle: ObjectHandle, src: Readonly<BBoxTuple>): void {
-  const b = handle.bbox;
-  b[0] = handle.minX = src[0];
-  b[1] = handle.minY = src[1];
-  b[2] = handle.maxX = src[2];
-  b[3] = handle.maxY = src[3];
 }
 
 // ============================================================================
@@ -80,6 +82,11 @@ export type BindableKind = Extract<ObjectKind, 'shape' | 'text' | 'code' | 'imag
 export type UnbindableKind = Exclude<ObjectKind, BindableKind>;
 
 export const BINDABLE_KINDS: readonly BindableKind[] = ['shape', 'text', 'code', 'image', 'note', 'bookmark'] as const;
+
+/** Bit `i` set ⇔ kind code `i` is bindable — one-load kind filters over slot
+ *  columns: `(BINDABLE_KIND_MASK >>> kinds[slot]) & 1`. Derived from
+ *  BINDABLE_KINDS + KIND_CODE so drift is impossible. */
+export const BINDABLE_KIND_MASK: number = BINDABLE_KINDS.reduce((m, k) => m | (1 << KIND_CODE[k]), 0);
 
 const BINDABLE_SET: ReadonlySet<ObjectKind> = new Set(BINDABLE_KINDS);
 export const isBindableKind = (k: ObjectKind): k is BindableKind => BINDABLE_SET.has(k);

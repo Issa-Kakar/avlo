@@ -51,3 +51,14 @@ jobs:
             grep -E 'partyserverMiddleware|HTMLRewriter|R2Bucket|isPrivateHost' web/dist/sw.js
             exit 1
           fi
+
+      - name: Verify AI server symbols stay out of the client bundle
+        # The web client must import only agents/react + @cloudflare/ai-chat/react
+        # (the AiPanel lazy chunk). Server entries (AIChatAgent, routeAgentRequest)
+        # in ANY client chunk mean a server import leaked into the browser graph.
+        run: |
+          if grep -lE 'AIChatAgent|routeAgentRequest' web/dist/assets/*.js web/dist/sw.js > /dev/null 2>&1; then
+            echo "ERROR: client bundle contains agents server-entry symbols"
+            grep -lE 'AIChatAgent|routeAgentRequest' web/dist/assets/*.js web/dist/sw.js
+            exit 1
+          fi

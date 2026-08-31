@@ -1,6 +1,14 @@
 import type { CodeLanguage, FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
 import type { ConnectorCap } from '@/core/types/objects';
-import { detachConnectorFromShape, getAttachedConnectors, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
+import {
+  detachConnectorFromShape,
+  getActiveRoomDoc,
+  getAttachedConnectors,
+  getObjects,
+  getObjectsById,
+  transact,
+} from '@/runtime/room-runtime';
+import { codeTool, textTool } from '@/runtime/tool-registry';
 import { TEXT_FONT_SIZE_PRESETS, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { convertObjectsTo, convertObjectsToShape } from './convert-kind';
@@ -116,6 +124,40 @@ export const decrementCodeFontSize = (): void =>
 export const toggleCodeLineNumbers = (): void => toggleField(getCodeIds(), LINE_NUMBERS, true);
 export const toggleCodeHeader = (): void => toggleField(getCodeIds(), HEADER_VISIBLE, true);
 export const toggleCodeOutput = (): void => toggleField(getCodeIds(), OUTPUT_VISIBLE, false);
+
+// === Durable lock toggle (structural — presence of the `locked` key, not a style field) ===
+
+/**
+ * Lock or unlock the whole selection (all-or-nothing by the selectionLocked invariant).
+ * Tracked write — both directions undoable. stopCapturing bookends isolate the toggle
+ * as its own undo step (apply-actions.ts pattern): the 500ms captureTimeout can neither
+ * merge it into a preceding edit nor absorb the next one. Downstream is fully
+ * observer-driven: locked keychange → flags column → onObjectsLockChanged → recompose.
+ */
+export function toggleSelectedLocked(): void {
+  const { selectedIds, selectionLocked, textEditingId, codeEditingId } = useSelectionStore.getState();
+  if (selectedIds.length === 0) return;
+  // Locking an object whose label/code editor is open: close it first (locked = not
+  // editable). Safe here — we're outside any observer fire. Remote toggles take the
+  // deferred force-close in selection-store's onObjectsLockChanged instead.
+  if (!selectionLocked) {
+    if (textEditingId !== null && selectedIds.includes(textEditingId)) textTool.commitAndClose();
+    if (codeEditingId !== null && selectedIds.includes(codeEditingId)) codeTool.commitAndClose();
+  }
+  const um = getActiveRoomDoc().getUndoManager();
+  um?.stopCapturing();
+  transact(() => {
+    const objects = getObjects();
+    for (const id of selectedIds) {
+      const y = objects.get(id);
+      if (!y) continue;
+      if (selectionLocked)
+        y.delete('locked'); // unlock deletes the key — never writes 0
+      else y.set('locked', 1);
+    }
+  });
+  um?.stopCapturing();
+}
 
 // === Delete (structural — connector-detach prelude, not a property write) ===
 

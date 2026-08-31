@@ -7,21 +7,43 @@ import { getZ, isZKey, Permission, type RoomId, SYNC_WS_PREFIX, type UserId, typ
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { getContent, getFontFamily, getFontSize, getLanguage } from '@/core/accessors';
+import { getContent, getFontFamily, getFontSize, getLanguage, getLocked } from '@/core/accessors';
 import { codeSystem, terminateCodeWorkers } from '@/core/code/code-system';
 import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor, computeBBoxForInto } from '@/core/geometry/bbox';
+import { copyBbox } from '@/core/geometry/bounds';
 import { ensureImageWorkers, hydrateImages } from '@/core/image/image-manager';
-import { ObjectSpatialIndex } from '@/core/spatial';
+import { attachLocks, detachLocks } from '@/core/locks/lock-protocol';
+import {
+  bindLockTable,
+  getLockOwners,
+  lockSlotAcquired,
+  lockSlotReleased,
+  markLockVeilDirty,
+  resetLockTable,
+  setLockedFlag,
+} from '@/core/locks/lock-table';
+import {
+  acquireSlot,
+  getBBoxColumn,
+  registerHandle,
+  releaseSlot,
+  resetSlotTable,
+  slotHighWater,
+  writeSlotBBox,
+  writeSlotKind,
+} from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
-import { createHandle, isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
+import { createHandle, isUnbindableKind, KIND_CODE, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { ZRankTable } from '@/core/z-order/z-rank-table';
 import { queryClient } from '@/query/client';
 import { ROOMS_QUERY_KEY, type RoomsQueryData } from '@/query/rooms';
 import { evictGeometry } from '@/renderer/geometry-cache';
+import { notifyLockVeil } from '@/renderer/lock-veil/lock-veil';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
-import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { invalidateWorldAll, invalidateWorldBBox, invalidateWorldSlot } from '@/renderer/RenderLoop';
 import { router } from '@/router';
 import { getUserId } from '@/stores/auth-store';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
@@ -29,6 +51,7 @@ import { bindUndoManagerToHistoryStore } from '@/stores/history-store';
 import { removeRoom, setRoomOwnerFact, setRoomPermissionFact } from '@/stores/room-list-store';
 import { resetRoomSession, setRoomAccess, setRoomIsOwner, setRoomMode, setRoomPermission, setRoomTitle } from '@/stores/room-session-store';
 import { useSelectionStore } from '@/stores/selection-store';
+import { transformEvictSlot } from '@/tools/selection/transform';
 import { dispose } from '@/utils/dispose';
 import { ROOM_DOC_DB_PREFIX } from '@/utils/room-local-data';
 import { attach, detach } from './presence/presence';
@@ -38,11 +61,13 @@ function invalidateIfVisible(b: BBoxTuple, vp: Readonly<BBoxTuple>): void {
   if (b[2] >= vp[0] && b[0] <= vp[2] && b[3] >= vp[1] && b[1] <= vp[3]) invalidateWorldBBox(b);
 }
 
+/** StackItem.meta key → Set<string> of top-level object ids the item's transaction(s) wrote. */
+const UNDO_TOUCHED_IDS = Symbol('avlo:undo-touched-ids');
+
 // Manager interface - public API
 export interface IRoomDocManager {
   readonly objects: YObjects;
   readonly objectsById: ReadonlyMap<string, ObjectHandle>;
-  readonly spatialIndex: ObjectSpatialIndex;
   readonly connectorRouter: ConnectorRouter;
   readonly zOrder: ZRankTable;
 
@@ -70,6 +95,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Undo/Redo manager
   private undoManager: Y.UndoManager | null = null;
   private unbindHistory: (() => void) | null = null;
+  private unbindUndoMeta: (() => void) | null = null;
 
   // Track if destroyed for cleanup
   private destroyed = false;
@@ -80,7 +106,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Y.Map-based object storage
   readonly objectsById = new Map<string, ObjectHandle>();
-  readonly spatialIndex = new ObjectSpatialIndex();
   readonly connectorRouter = new ConnectorRouter();
   readonly zOrder = new ZRankTable();
   private objectsObserver: ((events: Y.YEvent<Y.AbstractType<unknown>>[], tx: Y.Transaction) => void) | null = null;
@@ -92,6 +117,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private readonly _deletedIds = new Set<string>();
   private readonly _bboxChangedIds = new Set<string>();
   private readonly _kindChangedIds = new Set<string>();
+  private readonly _lockChangedIds = new Set<string>();
+  // Per-transaction snapshot of Y-written ids (touched ∪ deleted), taken BEFORE Phase C
+  // pollutes `touched` with derived-reroute connector ids. Read synchronously by the
+  // UndoManager stack-item handlers (deep observers fire before afterTransaction).
+  private readonly _lastTxObjectIds = new Set<string>();
   // Scratch bbox reused across every upsert in a single fire. `upsertHandle` copies its
   // values into `handle.bbox` (or seeds a fresh tuple on first insert) — the scratch never
   // leaks into `objectsById`.
@@ -104,6 +134,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
+
+    // Lock table is a leaf module (see its header) — inject its two external needs.
+    bindLockTable(this.objectsById, notifyLockVeil);
 
     // Spawn the image worker pool now (synchronous, parallel with init's IDB/WS) so the first
     // image bitmap is ready ASAP. Idempotent + session-scoped — see ensureImageWorkers().
@@ -147,6 +180,34 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       captureTimeout: 500,
     });
     this.unbindHistory = bindUndoManagerToHistoryStore(this.undoManager);
+    this.unbindUndoMeta = this.attachUndoMetaCapture(this.undoManager);
+  }
+
+  /**
+   * Stamp every StackItem with the set of object ids its transaction(s) wrote, so
+   * `undo()`/`redo()` can vet the top item against live ephemeral locks before popping.
+   * 'stack-item-added' fires for new items (incl. `type:'redo'` items minted during undo —
+   * their ids come from the undo transaction's own observer fire); 'stack-item-updated'
+   * fires on captureTimeout merges and unions into the existing set (covers the editors'
+   * 600s-session captureTimeout too). Origin-agnostic: ySync-tagged editor transactions
+   * flow through the same deep observer. Mirrors the stackItem.meta precedent in
+   * core/text/extensions.ts.
+   */
+  private attachUndoMetaCapture(um: Y.UndoManager): () => void {
+    const onAdded = ({ stackItem }: { stackItem: Y.UndoManager['undoStack'][number] }) => {
+      stackItem.meta.set(UNDO_TOUCHED_IDS, new Set(this._lastTxObjectIds));
+    };
+    const onUpdated = ({ stackItem }: { stackItem: Y.UndoManager['undoStack'][number] }) => {
+      const ids = stackItem.meta.get(UNDO_TOUCHED_IDS) as Set<string> | undefined;
+      if (ids) for (const id of this._lastTxObjectIds) ids.add(id);
+      else stackItem.meta.set(UNDO_TOUCHED_IDS, new Set(this._lastTxObjectIds));
+    };
+    um.on('stack-item-added', onAdded);
+    um.on('stack-item-updated', onUpdated);
+    return () => {
+      um.off('stack-item-added', onAdded);
+      um.off('stack-item-updated', onUpdated);
+    };
   }
 
   mutate(fn: () => void): void {
@@ -156,12 +217,40 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   undo(): void {
     if (this.destroyed) return;
-    this.undoManager?.undo();
+    const um = this.undoManager;
+    if (!um || this.isStackTopBlocked(um.undoStack)) return;
+    um.undo();
   }
 
   redo(): void {
     if (this.destroyed) return;
-    this.undoManager?.redo();
+    const um = this.undoManager;
+    if (!um || this.isStackTopBlocked(um.redoStack)) return;
+    um.redo();
+  }
+
+  /**
+   * Undo/redo gate — silent no-op while the top stack item touches an object a peer is
+   * mid-gesture on (ephemeral remote lock). Self-resolving: the peer's release unblocks.
+   * Deliberately does NOT consult the durable `locked` flag — history writes through
+   * persistent locks (Figma semantics; keeps every stack item reachable). Ids without a
+   * live handle (deleted objects) can't be locked: undoing a field edit on a top-level-
+   * deleted object is a yjs no-op, undo-of-own-delete resurrects — both fine. Missing
+   * meta (pre-capture item — impossible in practice, stacks don't persist) → allow.
+   * Accepted residual: yjs pops past zero-change items to the next one unvetted — needs
+   * a peer-delete/overwrite race AND a lock below; degrades to the old baseline.
+   */
+  private isStackTopBlocked(stack: readonly Y.UndoManager['undoStack'][number][]): boolean {
+    const top = stack[stack.length - 1];
+    if (!top) return false;
+    const ids = top.meta.get(UNDO_TOUCHED_IDS) as ReadonlySet<string> | undefined;
+    if (!ids) return false;
+    const lo = getLockOwners();
+    for (const id of ids) {
+      const h = this.objectsById.get(id);
+      if (h !== undefined && lo[h.slot] > 1) return true;
+    }
+    return false;
   }
 
   getUndoManager(): Y.UndoManager | null {
@@ -177,21 +266,26 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Detach presence listeners (signals departure while WS still open)
     detach();
+    detachLocks();
 
     this.websocketProvider = dispose(this.websocketProvider, (p) => {
       p.disconnect();
       p.destroy();
     });
     this.unbindHistory = dispose(this.unbindHistory, (fn) => fn());
+    this.unbindUndoMeta = dispose(this.unbindUndoMeta, (fn) => fn());
     this.undoManager = dispose(this.undoManager, (m) => m.destroy());
     this.objectsObserver = dispose(this.objectsObserver, (fn) => this.objects.unobserveDeep(fn));
 
-    this.spatialIndex.clear();
+    spatialTree.clear();
 
     // Clear connector router state before object-cache teardown.
     this.connectorRouter.clear();
 
     this.zOrder.clear();
+
+    resetLockTable();
+    resetSlotTable();
 
     // Drop UI selection so stale selectedIds don't render against the next room's objects.
     useSelectionStore.getState().clearSelection();
@@ -222,6 +316,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       touched.clear();
       deleted.clear();
       this._kindChangedIds.clear();
+      this._lockChangedIds.clear();
 
       for (const ev of events) {
         // Top-level adds/deletes
@@ -260,6 +355,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             if (handle && kind && handle.kind !== kind) {
               removeObjectCaches(id, handle.kind);
               handle.kind = kind;
+              writeSlotKind(handle.slot, KIND_CODE[kind]); // kind column mirrors the handle mirror
+              // Mid-gesture conversion: the frozen old-kind lanes are garbage for
+              // the new kind — evict (draws canonically, commit skips via DEAD).
+              transformEvictSlot(handle.slot);
               this._kindChangedIds.add(id);
               // Effective outline changed even when the bbox doesn't — Phase B's
               // bbox-gated propagation can't cover that case. Set-deduped otherwise.
@@ -295,6 +394,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             router.onBindableChanged(id);
           }
 
+          // Durable lock keychange: mirror onto the lock-table column synchronously.
+          // No eviction, no veil poke — repaint rides the generic touched invalidate.
+          if (ev.keysChanged.has('locked')) {
+            const handle = this.objectsById.get(id);
+            if (handle) {
+              setLockedFlag(handle.slot, getLocked(yObj) ? 1 : 0);
+              this._lockChangedIds.add(id);
+            }
+          }
+
           // z key-edit: mirror Y onto handle.z + rank table synchronously with the fire.
           // A z-only edit has no bbox impact, so Phase B's upsertHandle would no-op on
           // bbox check. Updating here keeps next sort site's view consistent without
@@ -321,6 +430,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         }
       }
 
+      // Snapshot Y-written ids for the UndoManager meta capture BEFORE Phase C adds
+      // derived-reroute connector ids to `touched` (those had no Y-write — including
+      // them would spuriously block undo while a peer merely holds an attached connector).
+      const snap = this._lastTxObjectIds;
+      snap.clear();
+      for (const id of touched) snap.add(id);
+      for (const id of deleted) snap.add(id);
+
       if (touched.size === 0 && deleted.size === 0) return;
       this.applyObjectChanges();
     };
@@ -341,10 +458,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     for (const id of deleted) {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
-      this.spatialIndex.remove(handle); // identity removal; envelope mirrors still describe the live entry
-      this.zOrder.releaseSlot(handle.slot, handle.z);
+      spatialTree.remove(handle.slot); // slot-keyed consumer — must finalize before releaseSlot below
+      lockSlotReleased(handle.slot); // lock columns + peer prune (+ veil poke)
+      this.zOrder.noteRemove(handle.z);
+      transformEvictSlot(handle.slot); // gesture map + DEAD flag — slot-keyed consumer, finalize before release
+      // releaseSlot LAST among the slot-keyed ops: a slot is freed only after every slot-keyed
+      // consumer has finalized — Phase B of this same fire can recycle it (LIFO), and a late
+      // spatialTree.remove(slot) would delete the RECYCLED entry.
+      releaseSlot(handle.slot);
       removeObjectCaches(id, handle.kind);
-      invalidateIfVisible(handle.bbox, vp);
+      invalidateIfVisible(handle.bbox, vp); // local var — safe after release
       this.objectsById.delete(id);
     }
 
@@ -399,21 +522,30 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // against the recomputed selection composition (selectionKind/kindCounts/mode).
     if (this._kindChangedIds.size > 0) sel.onObjectsKindChanged(this._kindChangedIds);
 
+    // Durable-lock bridge — recompose/prune the selection so `selectionLocked` and the
+    // context-menu bar react in the same beat as the keychange.
+    if (this._lockChangedIds.size > 0) sel.onObjectsLockChanged(this._lockChangedIds);
+
     sel.onObjectsChanged(touched, changed);
   }
 
   /**
    * Insert/update a handle in place. On first insert, allocates the ObjectHandle once
-   * (via `createHandle`) with its own owned `bbox` tuple cloned from `newBBox` and the
-   * rbush mirror fields seeded to match. On update, mutates `handle.bbox` + mirrors
-   * in place via `spatialIndex.updateHandleBBox` — provably safe because no downstream
-   * consumer holds a bbox ref across observer fires (transform/topology/image-manager
-   * snapshot at gesture begin; renderer and spatial index destructure on read).
+   * (via `createHandle`) with its own owned `bbox` tuple cloned from `newBBox`, then
+   * registers the slot columns and guard-inserts into the tree (the duplicate tripwire).
    *
-   * Ordering critical when `bboxChanged`: publish prev rect BEFORE calling
-   * `updateHandleBBox` (rbush's `remove` reads the current envelope to locate the leaf,
-   * and we still want the prev-rect publish to use the old values). `updateHandleBBox`
-   * internally encapsulates the remove → mutate → insert dance.
+   * SOLE-WRITER CONTRACT: the update branch's tripartite write — `handle.bbox` tuple
+   * (`copyBbox`), global slot column (`writeSlotBBox`), tree entry (`spatialTree.update`)
+   * — is the ONLY post-creation bbox writer path in the app; the three always move
+   * together, and only here. In-place mutation is safe because no downstream consumer
+   * holds a bbox ref across observer fires (transform/topology/image-manager snapshot at
+   * gesture begin; renderer and pickers destructure on read).
+   *
+   * `spatialTree.update()` is an upsert, but relies on: handle exists ⇒ slot in tree
+   * (guarded insert below + hydrate bulk load + observer-attaches-after-hydrate make an
+   * absent slot unreachable). Ordering: publish the prev rect BEFORE the write (the only
+   * ordering hazard left — old-rect-before-write); the tree itself needs no envelope
+   * choreography (slot-keyed remove/update, no descent by old box).
    *
    * Returns `bboxChanged`. Caller drives selection bookkeeping + bindable propagation off
    * the flag.
@@ -431,24 +563,38 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (!handle) {
       const z = getZ(yObj);
       if (!isZKey(z)) throw new Error(`upsertHandle: object ${id} (kind=${kind}) has no z key`);
-      const slot = this.zOrder.acquireSlot();
+      const slot = acquireSlot();
+      lockSlotAcquired(slot);
+      if (getLocked(yObj)) setLockedFlag(slot, 1); // seed the durable-lock column (create / remote add / undo-of-delete)
       const fresh = createHandle(id, kind, yObj, newBBox, z, slot);
+      registerHandle(fresh); // reverse map + global bbox column
       this.zOrder.noteAdd(z);
       this.objectsById.set(id, fresh);
-      this.spatialIndex.insert(fresh);
+      spatialTree.insert(slot, newBBox[0], newBBox[1], newBBox[2], newBBox[3]); // guarded — duplicate slot throws
       evictGeometry(id);
-      invalidateIfVisible(fresh.bbox, vp);
+      invalidateWorldSlot(slot); // column fresh post-registerHandle
       return true;
     }
 
     const bboxChanged = !bboxEquals(handle.bbox, newBBox);
 
     if (bboxChanged) {
-      invalidateIfVisible(handle.bbox, vp); // prev area — handle.bbox still old
-      this.spatialIndex.updateHandleBBox(handle, newBBox); // remove(handle) → applyHandleBBox → insert(handle)
+      invalidateIfVisible(handle.bbox, vp); // prev rect — handle.bbox still old
+      copyBbox(newBBox, handle.bbox); // tuple
+      writeSlotBBox(handle.slot, newBBox); // column
+      spatialTree.update(handle.slot, newBBox[0], newBBox[1], newBBox[2], newBBox[3]); // tree
     }
     if (bboxChanged || alwaysEvict) evictGeometry(id);
-    invalidateIfVisible(handle.bbox, vp); // new area — always (content may have changed visually even when bbox identical)
+    // New rect — always (content may change visually with an identical bbox). On the
+    // no-change path the column ≡ tuple still holds: registerHandle seeds, the block
+    // above is the sole writer.
+    invalidateWorldSlot(handle.slot);
+
+    // Remote-locked GEOMETRY changed (the lock holder moved/resized it) → re-raster
+    // the veil. Gated on bboxChanged: the veil paints only bboxes, so a content/style
+    // edit with an identical bbox (peer typing in a locked code block) can't change
+    // its output — skipping avoids an alloc + transfer + full worker redraw per keystroke.
+    if (bboxChanged && getLockOwners()[handle.slot] > 1) markLockVeilDirty();
 
     return bboxChanged;
   }
@@ -456,19 +602,25 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Hydrate from Y.Map
   private hydrateObjectsFromY(): void {
     this.objectsById.clear();
-    this.spatialIndex.clear();
+    spatialTree.clear();
     this.connectorRouter.clear();
     this.zOrder.clear();
+    // Slot + lock resets FIRST, with the other clears — mandatory, not tidiness: durable-lock
+    // flags are seeded inline per pass below, and an end-of-hydrate resetLockTable() would
+    // wipe them. Safe here: hydrate is synchronous init — WS (and any lock traffic) attaches
+    // only after; incoming lock frames buffer until 'sync'.
+    resetSlotTable();
+    resetLockTable();
     clearAllObjectCaches();
 
-    const handles: ObjectHandle[] = [];
     const deferredConnectorIds: string[] = [];
 
     // Pass 1: build handles for everything except connectors. Connectors only get
     // their anchorIds + shapeToConnectors entries here — bbox + route deferred to pass 2.
     // `computeBBoxFor` populates each kind's subsystem cache (image meta + text/code/
     // note/bookmark layout) so the immediately-following hydrateImages() reads them.
-    // Slot acquisition is deferred to zOrder.load() below so slots are densely packed [0..N-1].
+    // Slots are acquired inline against the fresh table, so they come out dense
+    // [0..N-1] in creation order — identical numbering to the old deferred-load path.
     this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
@@ -482,9 +634,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const z = getZ(yObj);
       if (!isZKey(z)) throw new Error(`hydrate: object ${id} (kind=${kind}) has no z key`);
       const bbox = computeBBoxFor(id, kind, yObj);
-      const handle = createHandle(id, kind, yObj, bbox, z, -1); // slot=-1 sentinel; zOrder.load assigns
+      const slot = acquireSlot();
+      lockSlotAcquired(slot);
+      if (getLocked(yObj)) setLockedFlag(slot, 1); // durable-lock seed, inline (no trailing sweep)
+      const handle = createHandle(id, kind, yObj, bbox, z, slot);
+      registerHandle(handle);
+      this.zOrder.noteAdd(z);
       this.objectsById.set(id, handle);
-      handles.push(handle);
     });
 
     // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).
@@ -499,15 +655,27 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (!isZKey(z)) throw new Error(`hydrate: connector ${id} has no z key`);
       const bbox: BBoxTuple = [0, 0, 0, 0];
       this.connectorRouter.rerouteCanonical(id, yObj, bbox); // mutates bbox tuple in place
-      const handle = createHandle(id, 'connector', yObj, bbox, z, -1); // slot=-1 sentinel; zOrder.load assigns
+      const slot = acquireSlot();
+      lockSlotAcquired(slot);
+      if (getLocked(yObj)) setLockedFlag(slot, 1);
+      const handle = createHandle(id, 'connector', yObj, bbox, z, slot);
+      registerHandle(handle);
+      this.zOrder.noteAdd(z);
       this.objectsById.set(id, handle);
-      handles.push(handle);
     }
 
-    if (handles.length > 0) {
-      this.spatialIndex.load(handles);
+    // OMT bulk load straight off the global bbox column: hydrate starts from
+    // resetSlotTable with no frees, so slots are dense [0..N-1] and item-index
+    // === slot — the slot-indexed column IS load()'s item-indexed layout (it
+    // subarrays the longer buffer). Cold alloc OK. Connector routing-failure
+    // [0,0,0,0] boxes are valid finite min≤max entries — same spurious-near-
+    // origin behavior as before; the next observer fire corrects them.
+    const n = slotHighWater();
+    if (n > 0) {
+      const ids = new Uint32Array(n);
+      for (let i = 0; i < n; i++) ids[i] = i;
+      spatialTree.load(n, ids, getBBoxColumn());
     }
-    this.zOrder.load(this.objectsById.values());
 
     hydrateImages();
     invalidateWorldAll();
@@ -543,6 +711,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         this.wsConnected = wsConnected;
         if (!wsConnected) this.wsRepacked = false;
       });
+
+      // Ephemeral lock wire: messageHandlers[MSG_LOCK] + buffer-until-sync + lease egress.
+      attachLocks(this.websocketProvider);
 
       // Listen for sync status — repack spatial index on first sync per connection
       this.websocketProvider.on('sync', (isSynced: boolean) => {
@@ -610,10 +781,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
+  // Repack in place from the tree's own live entries — provenance changed from the
+  // old clear+load-from-objectsById: the accidental self-healing that gave is unneeded
+  // (guarded insert + ordered remove leave no divergence path between tree and handles).
   private repackSpatialIndex(): void {
-    this.spatialIndex.clear();
-    const handles = Array.from(this.objectsById.values());
-    if (handles.length > 0) this.spatialIndex.load(handles);
+    spatialTree.rebuild();
   }
 
   public isConnected(): boolean {

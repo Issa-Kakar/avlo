@@ -1,6 +1,8 @@
 import { generateNZAtBottom, generateNZAtTop, generateNZBetween } from '@avlo/shared';
+import { getHandlesBySlot } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
+import { getObjectsById, getZOrder, transact } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 
@@ -8,6 +10,11 @@ import { useSelectionStore } from '@/stores/selection-store';
 // monomorphic shape but the alloc cost would not have mattered.
 const _selectedScratch: ObjectHandle[] = [];
 const _visUnselScratch: ObjectHandle[] = [];
+
+// Rank-ascending comparator over the last-fetched ranks column. Cold keyboard paths
+// only — every action stores its `getRanks()` fetch into `_ranks` before sorting.
+let _ranks: Uint32Array = new Uint32Array(0);
+const rankAsc = (a: ObjectHandle, b: ObjectHandle): number => _ranks[a.slot] - _ranks[b.slot];
 
 function getSelectedIds(): readonly string[] {
   return useSelectionStore.getState().selectedIds;
@@ -39,8 +46,9 @@ export function bringSelectedToFront(): void {
   if (ids.length === 0) return;
   const byId = getObjectsById();
   const zOrder = getZOrder();
-  zOrder.ensureRanksValid(byId.values());
+  zOrder.ensureRanksValid();
   const ranks = zOrder.getRanks();
+  _ranks = ranks;
 
   _selectedScratch.length = 0;
   for (const id of ids) {
@@ -52,7 +60,7 @@ export function bringSelectedToFront(): void {
   // Idempotent: every selected handle already occupies a top slot.
   if (countAtTop(byId, ranks, _selectedScratch.length) === _selectedScratch.length) return;
 
-  _selectedScratch.sort(zOrder.handleAscCmp);
+  _selectedScratch.sort(rankAsc);
   const keys = generateNZAtTop(zOrder.maxZ(), _selectedScratch.length);
   transact(() => {
     for (let i = 0; i < _selectedScratch.length; i++) {
@@ -66,8 +74,9 @@ export function sendSelectedToBack(): void {
   if (ids.length === 0) return;
   const byId = getObjectsById();
   const zOrder = getZOrder();
-  zOrder.ensureRanksValid(byId.values());
+  zOrder.ensureRanksValid();
   const ranks = zOrder.getRanks();
+  _ranks = ranks;
 
   _selectedScratch.length = 0;
   for (const id of ids) {
@@ -78,7 +87,7 @@ export function sendSelectedToBack(): void {
 
   if (countAtBottom(ranks, _selectedScratch.length) === _selectedScratch.length) return;
 
-  _selectedScratch.sort(zOrder.handleAscCmp);
+  _selectedScratch.sort(rankAsc);
   const keys = generateNZAtBottom(zOrder.minZ(), _selectedScratch.length);
   transact(() => {
     for (let i = 0; i < _selectedScratch.length; i++) {
@@ -94,25 +103,28 @@ export function sendSelectedToBack(): void {
 export function bringSelectedForward(): void {
   const ids = getSelectedIds();
   if (ids.length === 0) return;
-  const byId = getObjectsById();
   const zOrder = getZOrder();
-  zOrder.ensureRanksValid(byId.values());
+  zOrder.ensureRanksValid();
   const ranks = zOrder.getRanks();
+  _ranks = ranks;
   const selectedSet = new Set(ids);
 
   const viewport = getVisibleBoundsTuple();
-  const entries = getSpatialIndex().queryBBox(viewport);
+  const n = spatialTree.query(viewport[0], viewport[1], viewport[2], viewport[3]);
+  const res = spatialTree.results;
+  const bySlot = getHandlesBySlot();
 
   _visUnselScratch.length = 0;
   _selectedScratch.length = 0;
-  for (const h of entries) {
+  for (let i = 0; i < n; i++) {
+    const h = bySlot[res[i]]!;
     if (selectedSet.has(h.id)) _selectedScratch.push(h);
     else _visUnselScratch.push(h);
   }
   if (_visUnselScratch.length === 0 || _selectedScratch.length === 0) return;
 
-  _visUnselScratch.sort(zOrder.handleAscCmp);
-  _selectedScratch.sort(zOrder.handleAscCmp);
+  _visUnselScratch.sort(rankAsc);
+  _selectedScratch.sort(rankAsc);
 
   // Group selected by "target pair": first visUnsel with rank > sel.rank.
   // next visUnsel becomes the upper bound. Two-pointer walk over sorted arrays.
@@ -142,25 +154,28 @@ export function bringSelectedForward(): void {
 export function sendSelectedBackward(): void {
   const ids = getSelectedIds();
   if (ids.length === 0) return;
-  const byId = getObjectsById();
   const zOrder = getZOrder();
-  zOrder.ensureRanksValid(byId.values());
+  zOrder.ensureRanksValid();
   const ranks = zOrder.getRanks();
+  _ranks = ranks;
   const selectedSet = new Set(ids);
 
   const viewport = getVisibleBoundsTuple();
-  const entries = getSpatialIndex().queryBBox(viewport);
+  const n = spatialTree.query(viewport[0], viewport[1], viewport[2], viewport[3]);
+  const res = spatialTree.results;
+  const bySlot = getHandlesBySlot();
 
   _visUnselScratch.length = 0;
   _selectedScratch.length = 0;
-  for (const h of entries) {
+  for (let i = 0; i < n; i++) {
+    const h = bySlot[res[i]]!;
     if (selectedSet.has(h.id)) _selectedScratch.push(h);
     else _visUnselScratch.push(h);
   }
   if (_visUnselScratch.length === 0 || _selectedScratch.length === 0) return;
 
-  _visUnselScratch.sort(zOrder.handleAscCmp);
-  _selectedScratch.sort(zOrder.handleAscCmp);
+  _visUnselScratch.sort(rankAsc);
+  _selectedScratch.sort(rankAsc);
 
   // For each selected, find the last visUnsel with rank < sel.rank.
   // Walk visUnsel descending in parallel with selected descending.
@@ -188,7 +203,7 @@ export function sendSelectedBackward(): void {
   transact(() => {
     for (const [targetIdx, members] of groups) {
       // members were pushed in desc rank; sort asc so generateNZBetween outputs map correctly.
-      members.sort(zOrder.handleAscCmp);
+      members.sort(rankAsc);
       const target = _visUnselScratch[targetIdx];
       const prev = _visUnselScratch[targetIdx - 1] ?? null;
       const lower = prev?.z ?? null;

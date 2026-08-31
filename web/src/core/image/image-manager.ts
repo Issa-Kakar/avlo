@@ -25,11 +25,13 @@
 
 import { hexToBytesInto } from '@avlo/shared';
 import { assertCrossOriginIsolated } from '@/core/sab';
+import { getBBoxColumn, getHandlesBySlot, getKindCodes } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
+import { K_BOOKMARK, K_IMAGE } from '@/core/types/objects';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getHandle, getSpatialIndex, hasActiveRoom } from '@/runtime/room-runtime';
+import { getHandle, hasActiveRoom } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
-import { useSelectionStore } from '@/stores/selection-store';
-import { getScaleEntry, getTransformMode } from '@/tools/selection/transform';
+import { getInjectSlotCount, getInjectSlots, getTransformModeCode, readGestureOutBBox } from '@/tools/selection/transform';
 import { repositionAllPlaceholders } from '../bookmark/bookmark-placeholder';
 import { bookmarkCache } from '../bookmark/bookmark-render';
 import { handleUnfurlFailed, handleUnfurlResult } from '../bookmark/bookmark-unfurl';
@@ -242,9 +244,11 @@ const inflightIngests = new Map<string, { resolve: (result: IngestResult) => voi
 // Helpers
 // ============================================================
 
-// Scratch tuple — overwritten each call. Safe because rbush queryBBox reads
-// the bounds synchronously into its scratch envelope and doesn't retain.
+// Scratch tuple — overwritten each call. Safe because spatialTree.query reads
+// the four scalars synchronously and doesn't retain them.
 const _paddedScratch: BBoxTuple = [0, 0, 0, 0];
+// Gesture out-bbox copy target for the transform mark phase (readGestureOutBBox).
+const _gestureBBoxScratch: BBoxTuple = [0, 0, 0, 0];
 function padViewport(vb: Readonly<[number, number, number, number]>): BBoxTuple {
   const vw = vb[2] - vb[0];
   const vh = vb[3] - vb[1];
@@ -458,7 +462,7 @@ const _decodeQueue: DecodeRequest[] = [];
 /**
  * Mark an asset as visible this frame. First mark resets the entry; subsequent marks aggregate
  * (max ppsp, union bbox). Coords passed as 4 numbers to avoid a tuple-construction at the
- * spatial-index call site (rbush items expose flat min/maxX/Y on the ObjectHandle itself).
+ * spatial call site (boxes read straight off the global bbox column at `slot * 4`).
  */
 function markAsset(assetId: string, ppsp: number, nw: number, nh: number, x0: number, y0: number, x1: number, y1: number): void {
   let info = _assetInfo.get(assetId);
@@ -522,45 +526,61 @@ export function manageImageViewport(): void {
   const dpr = window.devicePixelRatio || 1;
 
   // === MARK PHASE A: spatial visibility ===
-  // Spatial query returns ObjectHandle[] (the handle IS the rbush item) — id/kind/min/max
-  // resolve on the handle directly, no getHandle() needed per result. hasActiveRoom guard
-  // above already covers the no-room case.
-  const visible = getSpatialIndex().queryBBox(padded);
-  for (const entry of visible) {
-    if (entry.kind === 'image') {
+  // Wide-twin query fills `spatialTree.results` with slots; kind/id resolve via the
+  // slot reverse map, boxes straight off the global bbox column (`slot * 4` lanes).
+  // hasActiveRoom guard above already covers the no-room case.
+  const n = spatialTree.query(padded[0], padded[1], padded[2], padded[3]);
+  const res = spatialTree.results;
+  const bySlot = getHandlesBySlot();
+  const col = getBBoxColumn();
+  const kinds = getKindCodes();
+  for (let i = 0; i < n; i++) {
+    const slot = res[i];
+    // Kind-code prefilter on the raw slot — the reverse-map deref (scattered
+    // heap load) only pays for the image/bookmark minority of a padded query.
+    const k = kinds[slot];
+    if (k !== K_IMAGE && k !== K_BOOKMARK) continue;
+    const entry = bySlot[slot]!;
+    if (k === K_IMAGE) {
       const meta = getImageMeta(entry.id);
       if (!meta) continue;
-      const w = entry.maxX - entry.minX;
+      const b = slot * 4;
+      const w = col[b + 2] - col[b];
       const ppsp = (w * scale * dpr) / meta.nw;
-      markAsset(meta.assetId, ppsp, meta.nw, meta.nh, entry.minX, entry.minY, entry.maxX, entry.maxY);
-    } else if (entry.kind === 'bookmark') {
+      markAsset(meta.assetId, ppsp, meta.nw, meta.nh, col[b], col[b + 1], col[b + 2], col[b + 3]);
+    } else {
       const layout = bookmarkCache.getLayoutById(entry.id);
       if (!layout) continue;
+      const b = slot * 4;
       // Bookmarks always decode at level 0; nw/nh unused for level 0 (worker uses width=0,height=0).
-      if (layout.ogImageAssetId) markAsset(layout.ogImageAssetId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
-      if (layout.faviconAssetId) markAsset(layout.faviconAssetId, Infinity, 1, 1, entry.minX, entry.minY, entry.maxX, entry.maxY);
+      if (layout.ogImageAssetId) markAsset(layout.ogImageAssetId, Infinity, 1, 1, col[b], col[b + 1], col[b + 2], col[b + 3]);
+      if (layout.faviconAssetId) markAsset(layout.faviconAssetId, Infinity, 1, 1, col[b], col[b + 1], col[b + 2], col[b + 3]);
     }
   }
 
   // === MARK PHASE B: transform overlay ===
   // During translate/scale, the stored spatial-index bbox can lag the live transform
-  // output bbox. Re-mark selected images using their transform-output bbox, but only
-  // if it still intersects the padded viewport (Ctrl+A → scale must respect viewport).
-  const mode = getTransformMode();
-  if (mode === 'scale' || mode === 'translate') {
-    const { selectedIdSet, kindCounts } = useSelectionStore.getState();
-    if (kindCounts.image > 0) {
-      for (const id of selectedIdSet) {
-        const meta = getImageMeta(id);
-        if (!meta) continue;
-        const tEntry = getScaleEntry('image', id);
-        if (!tEntry) continue;
-        const b = tEntry.out.bbox;
-        if (!bboxIntersects(b, padded)) continue;
-        const w = b[2] - b[0];
-        const ppsp = mode === 'scale' ? Infinity : (w * scale * dpr) / meta.nw;
-        markAsset(meta.assetId, ppsp, meta.nw, meta.nh, b[0], b[1], b[2], b[3]);
-      }
+  // output bbox. Re-mark gestured images at their out-bbox lanes, but only while they
+  // still intersect the padded viewport (Ctrl+A → scale must respect viewport).
+  // Iteration derives from ENGINE state (inject slots + kind column), not the store
+  // selection — the store can clear mid-gesture (partial remote delete) while
+  // survivors keep painting, and module mode is the single render truth.
+  const mc = getTransformModeCode();
+  if (mc === 1 || mc === 2) {
+    const injectSlots = getInjectSlots();
+    const injectCount = getInjectSlotCount();
+    for (let i = 0; i < injectCount; i++) {
+      const slot = injectSlots[i];
+      if (kinds[slot] !== K_IMAGE) continue; // stale lane for a dead slot is fine — next check catches it
+      if (!readGestureOutBBox(slot, _gestureBBoxScratch)) continue; // evicted / tagged — not a live gesture image
+      const entry = bySlot[slot]!; // live: readGestureOutBBox ⇒ un-evicted gesture entry
+      const meta = getImageMeta(entry.id);
+      if (!meta) continue;
+      const b = _gestureBBoxScratch;
+      if (!bboxIntersects(b, padded)) continue;
+      const w = b[2] - b[0];
+      const ppsp = mc === 1 ? Infinity : (w * scale * dpr) / meta.nw;
+      markAsset(meta.assetId, ppsp, meta.nw, meta.nh, b[0], b[1], b[2], b[3]);
     }
   }
 

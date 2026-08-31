@@ -19,6 +19,7 @@ const selectMenuOpen = (s: SelectionStore) => s.menuOpen;
 const selectKind = (s: SelectionStore) => s.selectionKind;
 const selectEditing = (s: SelectionStore) => s.textEditingId;
 const selectCodeEditing = (s: SelectionStore) => s.codeEditingId;
+const selectLocked = (s: SelectionStore) => s.selectionLocked;
 
 // Per-kind menu bar. `none` / `image` / `bookmark` intentionally have no menu
 // content — the lock button in the shell is the entire bar for those kinds.
@@ -38,6 +39,7 @@ function ContextMenuBar() {
   const kind = useSelectionStore(selectKind);
   const editing = useSelectionStore(selectEditing);
   const codeEditing = useSelectionStore(selectCodeEditing);
+  const locked = useSelectionStore(selectLocked);
   const effectiveKind: SelectionKind =
     editing !== null && kind === 'none'
       ? getHandleKind(editing) === 'note'
@@ -52,7 +54,8 @@ function ContextMenuBar() {
   return (
     <div className="ctx-menu">
       <LockButton />
-      {Menu && (
+      {/* Locked selection collapses to the lock button alone — unlock re-expands. */}
+      {!locked && Menu && (
         <>
           <div className="ctx-divider" />
           <Menu />

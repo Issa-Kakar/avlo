@@ -32,6 +32,7 @@ import {
 } from '@/core/accessors';
 import { connectorLabelMidpointInto } from '@/core/connectors/connector-label';
 import { getConnectorRoute } from '@/core/connectors/connector-router';
+import { isLockedObject, isRemoteLocked } from '@/core/locks/lock-table';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { computeLabelTextBox } from '@/core/text/shape-label';
 import {
@@ -236,7 +237,10 @@ export class TextTool implements PointerTool {
    */
   startEditing(objectId: string, entryPoint?: [number, number]): void {
     const handle = getHandle(objectId);
-    if (!handle) return;
+    // Remote-locked → a peer holds the object (pickers filter these; this covers the
+    // Enter-key path + label-create, which mutates the existing shape/connector below).
+    // Durably-locked → editing is blocked outright (lock-only context menu).
+    if (!handle || isRemoteLocked(handle) || isLockedObject(handle)) return;
 
     // Create label fields if a shape/connector without a label. Connectors reuse the
     // shape-label keys minus align/alignV (anchor-centred on the route midpoint).
@@ -395,7 +399,14 @@ export class TextTool implements PointerTool {
       return;
     }
     const fresh = getHandle(objectId);
-    if (!fresh || (fresh.kind !== 'text' && fresh.kind !== 'note' && fresh.kind !== 'shape' && fresh.kind !== 'connector')) {
+    // isRemoteLocked: a peer's lock landed during the import await (create-flow mounts
+    // pass trivially — a just-created object can't be peer-locked yet).
+    if (
+      !fresh ||
+      (fresh.kind !== 'text' && fresh.kind !== 'note' && fresh.kind !== 'shape' && fresh.kind !== 'connector') ||
+      isRemoteLocked(fresh) ||
+      isLockedObject(fresh)
+    ) {
       this.pendingMountId = null;
       if (isNew) this.deleteIfEmptyCreated(objectId);
       return;
@@ -431,7 +442,13 @@ export class TextTool implements PointerTool {
         mainUndoManager: getActiveRoomDoc().getUndoManager(),
         onPropsSync: (keys) => this.syncProps(keys),
       }),
-      autofocus: isNew ? 'end' : false,
+      // Focus at doc end whenever there's no click point to place the caret — that's
+      // both create (isNew) AND keyboard Enter-to-edit (existing object, no entryPoint →
+      // clickWorld null). Only a real click keeps this `false` and defers to the PHASE 6
+      // rAF, which maps the click through posAtCoords. Keying off isNew alone left the
+      // Enter path unfocused (autofocus false + PHASE 6 gated on clickWorld) — mounted but
+      // untypeable until a manual click.
+      autofocus: clickWorld ? false : 'end',
       onCreate: ({ editor: ed }) => {
         syncInlineStylesToStore(ed);
         useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));

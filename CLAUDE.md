@@ -4,7 +4,7 @@
 
 ## Subsystems
 
-Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,z-order,geometry/recognizer}`, `renderer/grid`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `routes`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
+Each ships its own `CLAUDE.md` (file map + notes): `core/{text,code,connectors,image,sab,bookmark,clipboard,spatial,slots,z-order,locks,geometry/recognizer}`, `renderer/grid`, `tools/selection`, `runtime/{input,presence,viewport}`, `query`, `routes`, `components/{context-menu,toolbar,topbar,dashboard}`. Reading any file in one pulls its whole doc — be deliberate. Cross-kind concerns (`RoomDocManager`, `computeBBoxFor`, render pipeline) live here.
 
 ## Commands & Aliases
 ```bash
@@ -27,7 +27,7 @@ pnpm lint         # Biome — skip routine runs (noisy, sometimes wrong); pre-co
 
 - **Pre-production, solo dev.** Don't plan migrations, compat shims, or schema-versioning seams — clear history / new room / refresh covers any Y.Doc or store pivot.
 - **Reuse before invention.** Bbox/frame/handle/accessor primitives exist — grep `core/geometry/bounds.ts`, `core/accessors.ts`, `core/types/`, `utils/` first. A named 3-line helper beats inline reinvention.
-- **Low-friction modules.** Cross-module data flows through module-level getters (`getHandle`, `frameOf`, `getSpatialIndex`, `getVisibleBoundsTuple`). Over-encapsulation is the enemy.
+- **Low-friction modules.** Cross-module data flows through module-level getters (`getHandle`, `frameOf`, `getHandlesBySlot`, `getVisibleBoundsTuple`) and singletons (`spatialTree`). Over-encapsulation is the enemy.
 - **Fewest lines for full robustness.** No defensive checks at trusted boundaries, no backwards-compat shims, no half-finished abstractions.
 
 ## Invariants
@@ -67,7 +67,7 @@ All paths relative to `web/src/` unless noted.
 ### Renderer (`renderer/`)
 | File | Responsibility |
 |------|----------------|
-| `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,All}` |
+| `RenderLoop.ts` | Base canvas singleton, dirty-rect tracking (`Float64Array`), exports `invalidateWorld{,BBox,Slot,All}` (`Slot` reads the global bbox column and gates markDirty on real damage) |
 | `OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
 | `grid/` | Third canvas — standalone WebGPU/Canvas2D dot grid below content ('G' toggles). See CLAUDE.md |
 | `types.ts` | `FRAME_CONFIG`, Perfect Freehand options, `getSvgPathFromStroke` |
@@ -83,6 +83,7 @@ All paths relative to `web/src/` unless noted.
 | `layers/shape-preview.ts` | In-flight shape draw (line/rect/ellipse/diamond/roundedRect) |
 | `layers/stroke-preview.ts` | In-flight Perfect Freehand stroke |
 | `layers/eraser-dim.ts` | Dim hovered objects under eraser via 'screen' blend |
+| `lock-veil/` | Remote-lock veil — worker-owned canvas layer (`transferControlToOffscreen`) between base and overlay painting a grey filter rect per locked bbox; main thread ships camera scalars + one transferred bbox Float64Array, worker culls + single-path fills, 0×0 when idle (see `core/locks/CLAUDE.md`) |
 | `layers/handle-stamp.ts` | Resize-handle bitmap stamp — pre-rendered offscreen, blitted (no per-frame `shadowBlur`) |
 | `animation/AnimationController.ts` | Singleton animation job manager — push-based invalidation |
 | `animation/EraserTrailAnimation.ts` | Decaying eraser-stroke trail |
@@ -92,7 +93,9 @@ All paths relative to `web/src/` unless noted.
 |------|-------|
 | `types.ts` | `PointerTool` interface + `PreviewData` union |
 | `selection/SelectTool.ts` | Selection state machine, translate, scale, connector endpoints, code/text editing entry |
-| `selection/transform.ts` | `TransformController` (scale/translate/endpoint drag), entry system, per-kind dispatch tables |
+| `selection/transform.ts` | Module-level SoA gesture engine (scale/translate/endpoint drag) — interleaved Float64 lane buffer, op-partitioned kernel ranges, sparse slot→gesture map, batched damage, RDM eviction hook |
+| `selection/transform-kernels.ts` | Pure lane math (LEAF): op/behavior LUTs, straight-line apply kernels, `UniformPack` hoist — oracle-proven by its selftest |
+| `selection/transform-damage.ts` | Shared damage accumulator (LEAF): `pushDamage`/`flushDamage` → one `invalidateWorldRects` per pointermove |
 | `selection/types.ts` | Shared selection types (`TransformState`, entry/dispatch helpers) |
 | `selection/selection-utils.ts` | Composition, bounds, declarative `foldField` over the field table |
 | `selection/selection-actions.ts` | Mutation wrappers — each a 1-3 line `applyField`/`toggleField`/`adjustByPresets` |
@@ -111,7 +114,7 @@ All paths relative to `web/src/` unless noted.
 | File | Responsibility |
 |------|----------------|
 | `accessors.ts` | Typed Y.Map accessors (per-field + per-kind bulk `getXxxProps`) |
-| `types/objects.ts` | `ObjectKind`, `ObjectHandle` (+ `createHandle`/`applyHandleBBox`), prop types, `BindableKind`/`BINDABLE_KINDS`/`isBindable*` |
+| `types/objects.ts` | `ObjectKind`, `ObjectHandle` (+ `createHandle`), prop types, `BindableKind`/`BINDABLE_KINDS`/`isBindable*` |
 | `types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
 | `types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `index.ts` | Type re-export barrel |
@@ -122,15 +125,18 @@ All paths relative to `web/src/` unless noted.
 | `geometry/scale-system.ts` | Pure math atoms: `uniformFactor`, `preservePosition`, `edgePinPosition1D`, `computeReflowWidth` |
 | `geometry/hit-primitives.ts` | Pure tuple-first hit math: point/segment/polyline/shape/rect/circle atoms |
 | `geometry/recognizer/` | $P/$Q shape recognizer — 550ms-hold match. Entry: `recognize.ts`, `hold-detector.ts`. See CLAUDE.md |
-| `spatial/` | Hit testing + region queries. Entry: `object-query.ts` (picker facade), `handle-hit.ts`, `hit-dispatch.ts` (per-kind switch dispatchers). See CLAUDE.md |
+| `spatial/` | Hit testing + region queries over `spatialTree` — the slot-keyed FlatRTree singleton (`spatial-tree.ts`; queries return dense u32 slots in a reused buffer, twin `query`/`queryPrecise` bodies). Entry: `object-query.ts` (picker facade), `handle-hit.ts`, `hit-dispatch.ts` (per-kind switch dispatchers), `FlatRTree.ts` (the engine). See CLAUDE.md |
 | `connectors/` | Elbow A* + straight routing, snap. Entry: `connector-router.ts`, `snap.ts`, `reroute-connector.ts`, `anchor-atoms.ts`, `connector-paths.ts`, `constants.ts`. See CLAUDE.md |
-| `text/` | Layout engine + three-tier cache + sticky notes. Entry: `text-system.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
+| `text/` | Layout engine + SoA text store (cross-entry pooled tiers, slot-keyed, three-tier staleness) + sticky notes. Entry: `text-system.ts`, `text-store.ts`, `line-break.ts`, `text-measure.ts`, `shape-label.ts`, `sticky-note.ts`, `font-config.ts`, `font-loader.ts`. See CLAUDE.md |
 | `code/` | Two-tier tokenization + CodeMirror + canvas renderer. Entry: `code-system.ts`, `code-tokens.ts`, `lezer-worker.ts`, `code-theme.ts`. See CLAUDE.md |
 | `image/` | Offline-first pipeline + demand-scaled work-stealing decode pool (1 baseline, grows under backlog, idle extras self-retire) over a SharedArrayBuffer control plane. Entry: `image-manager.ts`, `image-sab.ts`, `image-cache.ts`, `image-actions.ts`, `image-worker.ts`. See CLAUDE.md |
 | `sab/` | Worker-agnostic SharedArrayBuffer control-plane toolkit (`Futex`, `SpmcRing`, `SlotTable`, `allocControlSab`/`assertCrossOriginIsolated`). First consumer: image decode (`image-sab.ts`). See CLAUDE.md |
 | `bookmark/` | URL unfurl + OG metadata. Entry: `bookmark-render.ts`, `bookmark-actions.ts`, `bookmark-unfurl.ts`, `bookmark-placeholder.ts`. See CLAUDE.md |
 | `clipboard/` | Nonce-based clipboard + serializer. Entry: `clipboard-actions.ts`, `clipboard-serializer.ts`. See CLAUDE.md |
-| `z-order/` | `ZRankTable` (SoA Uint32 ranks + slot pool) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
+| `slots/` | App-wide dense slot fabric (LEAF) — allocator (`acquireSlot`/`releaseSlot`, LIFO), slot→handle reverse map, global interleaved bbox column (`slot * 4`), numeric kind column (`getKindCodes`, `K_*` at `slot`). RDM writes; z-order ranks, lock columns, veil, renderer/pickers, transform engine consume. Entry: `slot-table.ts`. See CLAUDE.md |
+| `z-order/` | `ZRankTable` (SoA Uint32 ranks + `slotsByRank` inverse permutation over the slot fabric; zero-arg `ensureRanksValid`, self-healing maxZ/minZ) + bring/send/forward/backward actions. Algorithm lives in `@avlo/shared/z-order` (cross-runtime). See CLAUDE.md |
+| `locks/` | Ephemeral conflict-resolution grabs — `lockOwner: Uint32Array` keyed by `handle.slot` (0=unlocked, 1=mine, ≥2=peer key; every guard is ONE `lo[slot] > 1` compare), binary `MSG_LOCK` frames on the Yjs WS (never awareness), DO-arbitrated first-wins, worker-rendered grey veil — PLUS the durable `locked: 1` object property mirrored into `_locked: Uint8Array` (observer-written; marquee/eraser/edit-inert but click-solo-selectable, lock-only context menu, undo writes through). Entry: `lock-table.ts`, `lock-protocol.ts` (+ `@avlo/shared/lock-protocol`, `workers/sync/src/room.ts`, `renderer/lock-veil/`). See CLAUDE.md |
+| `ai/` | Client side of the AI assistant — `short-ids.ts` (per-conversation `sN`↔ULID map + chat-origin int coords; reset on room change), `context-serializer.ts` (three-tier `CanvasContext`: selection full / viewport blurry / offscreen clusters), `apply-actions.ts` (the `canvas` tool executor — shared-Zod re-parse, unknown-id drops, ONE `transact()` per tool call = one undo step, `stopCapturing()` isolation). Wire schemas in `@avlo/shared/src/ai/`; transport in `components/ai/useAiChat.ts` (Agents SDK `useAgent`+`useAgentChat`). See `docs/ai/protocol.md` |
 
 ### Stores
 | File | Responsibility |
@@ -143,6 +149,7 @@ All paths relative to `web/src/` unless noted.
 | `room-list-store.ts` | Two local slices. **`rooms`** — per-room facts for interacted rooms (createdAt/lastVisitedAt + `title` fact — local-only-room display fallback, stamped by the rename mutation; born only from a real create/visit/rename, so timestamps are always real, never sentinels) PLUS persisted server-fact mirrors `permission`/`ownerName`/`isOwner` (update-only — stamped by `absorbServerRooms` in the rooms queryFn and the `perm:`/`owner:` pushes; private-not-owned entries PRUNED, ids returned for doc-DB deletion). **`starredIds`** — the star-preference id set, DECOUPLED from facts so `toggleStar` flips membership only and never fabricates a timestamp (the merge reads it as an independent overlay). `removeRoom` (4403 path), `clearAllRooms` (sign-out purge) clear both; `absorbServerRooms`'s prune drops the dangling star too. localStorage (persist v2 hoists legacy in-`RoomFacts` stars); merged with the D1 projection in `query/room-list.ts` (immer) |
 | `room-session-store.ts` | Server-delivered room session state (immer): mode/access (`mode:` custom message; 4401/4403 close codes) + `title`/`isOwner`/`permission` (`title:`/`owner:`/`perm:` pushes, seeded from the rooms cache in the room route's beforeLoad — `title` drives the TopBar name + tab title, `isOwner` gates the rename affordance + the Share modal's permission dropdown, `permission` is that dropdown's current value) |
 | `history-store.ts` | Undo/redo availability (`canUndo`/`canRedo`) for toolbar buttons + `bindUndoManagerToHistoryStore` (subscribes a `Y.UndoManager`'s stack events → the store; disposer resets to `(false,false)`; called by `room-doc-manager`) |
+| `ai-panel-store.ts` | AI panel chrome state (device-ui-store model): persisted `open`; ephemeral quota snapshot (pushed via agent state) + send-interval guard. Conversation itself lives server-side (agent DO SQLite) |
 
 ### Utils + Shared
 | File | Responsibility |
@@ -163,7 +170,7 @@ All paths relative to `web/src/` unless noted.
 
 ### Server (`workers/`)
 
-Six independently-deployed Cloudflare Workers. Full architecture, hardening invariants, ports, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
+Seven independently-deployed Cloudflare Workers. Full architecture, hardening invariants, ports, and the app-type/drift-guard pattern in `workers/CLAUDE.md`.
 
 | Worker | Folder | Prod | Bindings | Surface |
 |---|---|---|---|---|
@@ -173,6 +180,7 @@ Six independently-deployed Cloudflare Workers. Full architecture, hardening inva
 | **unfurl** | `workers/unfurl/` | `unfurl.avlo.io` | `IMAGES` (R2, shared), `AUTH` (service), `RL_UPLOAD` | `GET /?url=` — `requireAuth`, Zod query + SSRF refine, HTMLRewriter OG extraction, image→R2, edge cache 7d |
 | **auth** | `workers/auth/` | `auth.avlo.io` | `SESSIONS` (KV), `RL_AUTH`, services `USERS`/`IMAGES`, secrets `ANON_SECRET`/`GOOGLE_CLIENT_SECRET`/`OAUTH_PKCE_SECRET` | `GET /me` (KV session branch first → signed `avlo_anon` cookie mint/slide) + Google OAuth (`GET /login/google` → PKCE/state/nonce flow cookie → `GET /callback` trust pipeline → promote-or-adopt + KV session + promote+adopt anon rotation; `POST /logout`) + `AuthRpc.verifySession` (session→anon fallback; signature unchanged — every consumer inherits Google sessions) |
 | **users** | `workers/users/` | `users.avlo.io` | `DB` (D1, sole schema owner), `AUTH` (service), `RL_ROOMS`, cross-script `rooms` (DO), `ROOM_MIGRATE` (queue producer), queue **consumers** `avlo-room-visits`/`avlo-room-meta`/`avlo-room-migrate` (+DLQs) | `GET /rooms` (dashboard list; `ownerName` via `users` left-join — private-not-owned rows redacted to `title:''`/`ownerName:null`, kept as the client's prune signal) + `PATCH /rooms/:id/{permission,title}` (owner-only DO RPC → direct rev-guarded D1 write + RYW bookmark) + `UsersRpc.linkAccount` (atomic promote-or-adopt upsert; auth-worker-only) + `UsersRpc.migrateOwnedRooms` (OAuth adopt owner-migration orchestrator — synchronous sync slice + `ROOM_MIGRATE` overflow; never throws; auth-worker-only) + `queue` consumer projecting visits/meta + draining migrate → D1 |
+| **ai** | `workers/ai/` | `ai.avlo.io` | `AvloAiAgent` (DO/SQLite, per user:room — Agents SDK `AIChatAgent`: persisted messages + resumable streams) + `AI_QUOTA` (DO/SQLite `AiQuota`, per-user durable budgets), `AUTH` (service), `AI` (Workers AI, remote), `IMAGES` (R2, shared), `RL_AI` | WSS+HTTP `/agents/avlo-ai-agent/<userId>:<roomId>` — edge gate (Origin allowlist → RL → **account-only** `verifySession` → name===userId, rejects pre-DO). Canvas tools execute CLIENT-side (`core/ai/apply-actions.ts`); the worker never touches a Y.Doc. Providers: gemini-3.5-flash (AI Studio key, optional AI Gateway) → Workers AI glm-4.7-flash fallback. See `workers/ai/CLAUDE.md` + `docs/ai/{providers,precedents,protocol}.md` |
 
 `@avlo/db` (server-only) owns the D1 + DO-SQLite Drizzle schemas. Identity is **server-resolved only** (`/me`) — the client never mints a userId. Routes blocks land **commented out** today; deploy is gated on DNS transfer + additional pre-prod essentials. `packages/{worker-shared,api-client,db}/CLAUDE.md` cover the shared backend primitives, typed-RPC clients, and DB schemas.
 
@@ -206,9 +214,9 @@ Y.Doc (source of truth)
    ↓ observers (Y.Map.observeDeep)
 RoomDocManager.applyObjectChanges()
    ├─ computeBBoxForInto(id, kind, yMap, scratch)
-   ├─ upsertHandle (mutates handle.bbox in place; rbush update before mutation)
+   ├─ upsertHandle (tripartite write: bbox tuple + slot column + spatialTree.update, together)
    ├─ evictGeometry(id) + per-kind layout cache evict
-   └─ invalidateIfVisible(bbox, vp) → invalidateWorldBBox      [base canvas]
+   └─ invalidateWorldSlot(slot) (new rect; prev rect via invalidateIfVisible)   [base canvas]
          ↓
    RenderLoop (dirty-rect base)
    OverlayRenderLoop (full-clear overlay)
@@ -245,7 +253,7 @@ All tools implement `PointerTool` (`tools/types.ts`): `canBegin`, `begin(pointer
 
 Module-level room context. `connectRoom(roomId)` from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`/`getZOrder()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`, `renormalizeAttachedAnchors`.
+**Key exports:** `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getObjectsById()`/`getObjects()`/`getZOrder()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. (Spatial queries don't route through here — `spatialTree` is a module-level singleton in `core/spatial/spatial-tree.ts`.) Re-exports from `connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`, `renormalizeAttachedAnchors`.
 
 Prefer `getHandle(id)` over `getObjectsById().get(id)`. Prefer `transact(fn)` over `getActiveRoomDoc().mutate(fn)` — `transact` returns whatever `fn` returns, so callers can elide the `let foo; transact(()=>{ foo = ... })` dance.
 
@@ -254,7 +262,7 @@ Prefer `getHandle(id)` over `getObjectsById().get(id)`. Prefer `transact(fn)` ov
 ## Invalidation — Singleton Render Loops
 
 Module-level singletons, safe no-ops before `start()`. Tools and observers import directly.
-- **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldAll()`
+- **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldSlot(slot)` (rect read off the global bbox column at `slot * 4`; live slots only), `invalidateWorldRects(rects, count)` (batched — 4 lanes per rect, one camera hoist; the transform engine's per-pointermove flush), `invalidateWorldAll()`. Slot + Rects variants gate their rAF schedule on real damage — offscreen publishes stay idle.
 - **OverlayRenderLoop:** `invalidateOverlay()`
 
 ---
@@ -283,7 +291,7 @@ All objects share `{ id (ULID), kind, ownerId, createdAt, z: ZKey }`. `id` is cr
 
 ### Creating an object
 
-One pattern for every kind: inside a single `transact()`, build a `Y.Map`, set the shared + per-kind fields, then `getObjects().set(id, m)`. The deep observer does everything downstream — handle, spatial index, caches, dirty rect — so never touch those by hand.
+One pattern for every kind: inside a single `transact()`, build a `Y.Map`, set the shared + per-kind fields, then `getObjects().set(id, m)`. The deep observer does everything downstream — handle, spatial index, caches, dirty rect — so never touch those by hand. **Never overwrite an existing top-level id in place** (`objects.set(existingId, newMap)`): the observer routes non-delete actions to `touched` only, so the live handle would keep pointing at the tombstoned old map. Always mint a fresh ULID.
 
 ```ts
 const id = ulid();
@@ -301,19 +309,18 @@ transact(() => {
 
 **`z` is mandatory and never hand-authored** — a fractional sort key minted against the current stack. Generators (`generateZAtTop` etc.) are exported from `@avlo/shared`; `getZOrder()` (room-runtime) returns the client `ZRankTable`, whose `.maxZ()`/`.minZ()` give the current top/bottom `z` (`null` on an empty doc). One object on top → `generateZAtTop(getZOrder().maxZ())`. N objects in one `transact` → `generateNZAtTop(getZOrder().maxZ(), n): ZKey[]` — mint once, assign in order (see `clipboard-actions.ts`). `*AtBottom` (minZ) / `*Between` variants cover the other anchors; reorder actions live in `core/z-order/`.
 
-### ObjectHandle (live reference, IS the rbush item)
-`objectsById` and the spatial index reference the **same** object — one source of truth, two access paths; spatial queries return handles directly. Full shape in `core/types/objects.ts`:
+### ObjectHandle (live reference, slot-keyed into the index)
+The handle is NOT the spatial-index entry — `spatialTree` (FlatRTree, `core/spatial/spatial-tree.ts`) is keyed by `handle.slot`, and queries return dense u32 slots; handles are recovered via the slot table's reverse map (`getHandlesBySlot()`). `bbox` + `slot` are the geometry links: the tuple for in-place object readers, the global bbox column (`getBBoxColumn()`, `slot * 4`) for typed-array paths. Full shape in `core/types/objects.ts`:
 ```ts
 interface ObjectHandle {
   id; kind;                  // kind mirrors y.get('kind')
   y: Y.Map<unknown>;         // LIVE reference
   bbox: BBoxTuple;           // [minX,minY,maxX,maxY]
-  minX; minY; maxX; maxY;    // rbush envelope — mirrors bbox[0..3]
   z: ZKey;                   // mirrors y.get('z')
-  slot: number;              // immutable Uint32 index into ZRankTable._ranks
+  slot: number;              // immutable Uint32 index into the slot-table columns (core/slots/)
 }
 ```
-**Mutation invariants** (violate → spatial tree desyncs): `applyHandleBBox(handle, src)` — wrapped by `spatialIndex.updateHandleBBox` — is the ONLY legal post-creation writer of `bbox` + the four mirrors, written atomically; never `handle.bbox[N]=…` / `copyBbox(_, handle.bbox)`. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`), reusable after delete but never reassigned on a live handle. The wrapper persists for the id's lifetime — consumers needing a snapshot across fires clone at read time (`[...handle.bbox]`; transform/topology/image-manager do).
+**Mutation invariants** (violate → spatial tree desyncs): RoomDocManager `upsertHandle`'s tripartite write — `copyBbox` into the tuple, `writeSlotBBox` into the column, `spatialTree.update` into the tree, always together — is the ONLY legal post-creation bbox writer path; never `handle.bbox[N]=…` / a lone `copyBbox(_, handle.bbox)` anywhere else. `kind` mutates only in the observer's kind-keychange branch (in-place conversion, `convert-kind.ts`; evicts OLD-kind caches first so Phase B repopulates the new kind; mirrors into the slot kind column via `writeSlotKind`). `z` only in the observer's `'z'` handler. `slot` assigned once (`acquireSlot`, `core/slots/slot-table.ts`), reusable after delete but never reassigned on a live handle. The tuple persists for the id's lifetime — consumers needing a snapshot across fires copy at read time (the transform engine freezes lanes off the column at begin; image-manager clones).
 
 ### Stored vs derived geometry
 
@@ -340,7 +347,7 @@ interface ObjectHandle {
 
 ## RoomDocManager
 
-Public fields (non-null from construction): `objectsById`, `spatialIndex`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (non-connectors first, connectors second so bindable frames exist for routing) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`).
+Public fields (non-null from construction): `objectsById`, `connectorRouter`. Sync constructor + async init: IDB sync → hydrate (slot + lock tables + `spatialTree` reset at the TOP, then non-connectors first, connectors second so bindable frames exist for routing; slots acquired inline + durable-lock flags seeded per object — dense [0..N-1] in creation order; tail = `spatialTree.load` OMT bulk load straight off the global bbox column, item-index === slot while dense) → `observeDeep` → UndoManager → WS provider (first `'sync'` → `repackSpatialIndex`, now `spatialTree.rebuild()`).
 
 ### Observer Pipeline
 
@@ -348,16 +355,16 @@ Public fields (non-null from construction): `objectsById`, `spatialIndex`, `conn
 
 **Two passes per fire.** First, **inline routing** — per event, route the edit to its subsystem hook so that state is fresh BEFORE the bulk phase reads it. This ordering is **load-bearing**: `compute*BBox` then reads already-fresh caches and Phase C can drain reroutes in the same fire (no second pass).
 - top-level add/delete → `router.onConnectorAdded` / `onObjectDeleted`
-- `kind` keychange (in-place conversion) → `removeObjectCaches(id, OLD kind)` → set `handle.kind` → `kindChanged+=id` + `router.onBindableChanged` (→shape eager-layouts so `getInlineStyles` is warm)
+- `kind` keychange (in-place conversion) → `removeObjectCaches(id, OLD kind)` → set `handle.kind` + `writeSlotKind` (kind column mirror) + `transformEvictSlot` (mid-gesture conversion: draws canonically, commit skips) → `kindChanged+=id` + `router.onBindableChanged` (→shape eager-layouts so `getInlineStyles` is warm)
 - connector `start|end|connectorType` → `router.onConnectorEdited`; `startCap|endCap` → `evictGeometry` (cap bakes into Path2D); shape `shapeType` → `router.onBindableChanged`
 - nested `'content'` → code `codeSystem.handleContentChange` / text·label·note `textLayoutCache.invalidateContent`
 
 Then **`applyObjectChanges`** over accumulated `touched`/`deleted` (`_newBBoxScratch` reused):
-- **A · deletions** — `spatialIndex.remove` → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
+- **A · deletions** — `spatialTree.remove(slot)` → `lockSlotReleased` → `zOrder.noteRemove` → `transformEvictSlot` (gesture map + DEAD flag) → `releaseSlot` (last slot-keyed op — every slot consumer finalized before the slot can recycle in Phase B; a late tree remove would delete the recycled entry) → `removeObjectCaches(id, kind)` → invalidate rect → `objectsById.delete` → `selection.onObjectsDeleted`.
 - **B · touched** — skip ids queued for reroute (→C); connectors get style-only `router.computeBBox`, else `computeBBoxForInto` (★ **populates subsystem caches**) → `upsertHandle`; a bbox-changed bindable calls `router.onBindableChanged` (queues a reroute).
 - **C · drain reroute queue** — `router.rerouteCanonical` (route + bbox) → `upsertHandle(…, alwaysEvict=true)`. Then `selection.onObjectsKindChanged` (re-derive composition BEFORE refreshStyles) + `onObjectsChanged`.
 
-`upsertHandle` is the only bbox writer. On bbox change: invalidate prev rect → `spatialIndex.updateHandleBBox(handle, newBBox)` (`remove` reads old envelope → `applyHandleBBox` writes new tuple+mirrors → `insert`) → `evictGeometry` → invalidate new rect. **Order-critical** — `handle.bbox` must still hold OLD values at `updateHandleBBox` (rbush's `remove` descends to the old leaf). New rect is always invalidated (content can change visually without a bbox change); the `alwaysEvict` no-bbox-change path only evicts + invalidates. Mutate via `transact(fn)` (room-runtime), not `mutate(fn)`.
+`upsertHandle` is the only bbox writer. On bbox change: invalidate prev rect (handle.bbox still old) → tripartite write (`copyBbox` tuple, `writeSlotBBox` column, `spatialTree.update(slot, …)` tree — always together, only here) → `evictGeometry` → `invalidateWorldSlot` (new rect). The only ordering hazard left is old-rect-before-write — the slot-keyed tree needs no envelope choreography. New rect is always invalidated (content can change visually without a bbox change); the `alwaysEvict` no-bbox-change path only evicts + invalidates. Mutate via `transact(fn)` (room-runtime), not `mutate(fn)`.
 
 ---
 
@@ -390,7 +397,7 @@ computeBBoxForInto(id, kind, y, out) {
 
 | Subsystem cache | Owner | Read API |
 |---|---|---|
-| `textLayoutCache` (tokenized / measured / layout / frame / note-derived fontSize) | `core/text/text-system.ts` | `getTextFrame`, `getLayout`, `getMeasuredContent`, `getInlineStyles` + note bridge |
+| `textLayoutCache` (SoA text store: cross-entry pooled content/layout tiers + NaN-sentinel scalar columns, slot-keyed — `core/text/text-store.ts`) | `core/text/text-system.ts` (facade) | `getTextFrame`, `getLayout` (→ scalars), `getLayoutScalarsById`, `getInlineStyles`; gesture-stable measured access = the slot int (`textSlotOf`) |
 | `codeSystem` (source / spans / layout / output / frame) | `core/code/code-system.ts` | `getCodeFrame`, `getSpans`, `getSource`, `getOutputCache` |
 | `bookmarkCache` (layout + frame) | `core/bookmark/bookmark-render.ts` | `getBookmarkFrame` |
 | `connectorRouter.routes` (per-id pooled `Point[]` + reverse `shape→connectors`) | `core/connectors/connector-router.ts` (owned by RDM) | `getConnectorRoute`, `getAttachedConnectors` |
@@ -413,12 +420,12 @@ computeBBoxForInto(id, kind, y, out) {
 - `SelectTool` renders transformed objects on the base canvas for correct Z-order during translate/scale.
 
 ### Object dispatch (`renderer/layers/objects.ts`)
-`drawObjects` paints viewport candidates (from the spatial index) in z-order, dispatching each leaf `draw*` on `handle.kind`: stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()`, bookmark via `drawBookmark()`. Under transform, selected/attached handles are re-injected by their preview bbox and scaled per-kind in `renderScaleEntry` (`getScaleBehavior` → reflow / uniform / else translated) — the scale-behavior model lives in `tools/selection/CLAUDE.md`. Per-frame state (editing ids, topology entries, translate delta, viewport) is hoisted once and leaf draws use module scratches for zero alloc; the file is self-contained on the specifics.
+`drawObjects` paints viewport candidates (from the spatial index) in z-order, dispatching each leaf `draw*` on the slot kind column (`K_*` int jump table): stroke/shape/connector via geometry cache (Path2D / ConnectorPaths), text/note/code via layout caches, image via `getBitmap()` at its column rect, bookmark via `drawBookmark()`. Under transform, gestured slots are skipped in the pack loop (one sparse-map load + sign test), re-injected by their preview bbox via the slot-keyed cull, and painted per meta-op in `renderScaleEntryLanes` off the gesture lane buffer — the op model lives in `tools/selection/CLAUDE.md`. Per-frame state (editing ids, gesture buffers, translate delta, viewport) is hoisted once and leaf draws use module scratches for zero alloc; the file is self-contained on the specifics.
 
 ### Hot-path Y.Map reads (`renderer/render-accessors.ts`)
 Each leaf `draw*` calls one `readXxxRender(y)` that reads only the keys it paints straight off Yjs's `_map` (~10 ns/key vs ~109 for `y.get()`) into a per-kind module scratch. The mechanism — `readPrim`/`readY` split by Content subclass, the `!deleted` tombstone guard, the `arr[0]` length-1 invariant, scratch-consumed-before-the-next-reader — is documented in the file.
 
-Layout-bearing kinds (text/code/note/bookmark) read by id — `textLayoutCache.getLayoutById` / `codeSystem.getLayoutById` / `noteCachedLayout` / `bookmarkCache.getLayoutById` — bypassing Y.XmlFragment / Y.Text pulls; populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, …)` signature.
+Layout-bearing kinds read without content pulls: text/note draw straight off the text store's pooled lanes via `renderTextLayoutById`/`drawStickyNote` (appSlot-accelerated slot resolve, no Y.XmlFragment reads); code/bookmark via `codeSystem.getLayoutById` / `bookmarkCache.getLayoutById`. Populator paths (bbox compute, shape labels) keep the stale-checked `getLayout(id, content, …)` signature.
 
 ### Coordinate spaces
 World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
@@ -451,7 +458,7 @@ Server-projection reads (`/me` identity, `GET /rooms` dashboard) + offline mutat
 
 ## Selection System
 
-Detailed in `tools/selection/CLAUDE.md` (state machine, per-kind transform, connector topology, hit testing, text/code reflow, dirty-rect, commit paths). Entry points: `SelectTool` (state machine + commits + marquee), `transform.ts` (TransformController + dispatch tables + built topology), `core/geometry/scale-system.ts`, `selection-store.ts`.
+Detailed in `tools/selection/CLAUDE.md` (state machine, SoA gesture engine, connector topology, hit testing, text/code reflow, batched damage, commit paths). Entry points: `SelectTool` (state machine + marquee), `transform.ts` (the module-level engine: lane buffer + sparse slot routing + op kernels + built topology), `transform-kernels.ts` (oracle-proven lane math), `core/geometry/scale-system.ts` (scalar atoms), `selection-store.ts`.
 
 ---
 

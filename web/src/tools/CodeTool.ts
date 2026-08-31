@@ -34,6 +34,7 @@ import {
   playButtonGeom,
   THEME,
 } from '@/core/code/code-tokens';
+import { isLockedObject, isRemoteLocked } from '@/core/locks/lock-table';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldAll } from '@/renderer/RenderLoop';
@@ -259,7 +260,7 @@ export class CodeTool implements PointerTool {
     if (!host) return;
 
     const handle = getHandle(objectId);
-    if (handle?.kind !== 'code') return;
+    if (handle?.kind !== 'code' || isRemoteLocked(handle) || isLockedObject(handle)) return;
 
     const props = getCodeProps(handle.y);
     if (!props) return;
@@ -320,7 +321,8 @@ export class CodeTool implements PointerTool {
     // and don't touch shared state.
     if (this.pendingMountId !== objectId) return;
     const stillValid = getHandle(objectId);
-    if (stillValid?.kind !== 'code') {
+    // isRemoteLocked / isLockedObject: a peer's lock landed during the import await.
+    if (stillValid?.kind !== 'code' || isRemoteLocked(stillValid) || isLockedObject(stillValid)) {
       this.pendingMountId = null;
       return;
     }
@@ -827,6 +829,9 @@ export class CodeTool implements PointerTool {
     this.outputTextDiv = textDiv;
   }
 
+  // Chrome mutations (saveTitle / toggleHeader / toggleOutput) need no lock guard: they run
+  // only while the editor is mounted ⇒ we hold the editor lock ⇒ a remote lock on this id
+  // force-closes the editor synchronously in the same WS-message tick.
   private saveTitle(): void {
     if (!this.titleInput || !this.objectId) return;
     const handle = getHandle(this.objectId);

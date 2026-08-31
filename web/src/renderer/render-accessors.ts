@@ -2,7 +2,7 @@
  * Renderer-only fast Y.Map readers.
  *
  * Each leaf `draw*` fn in `layers/objects.ts` (and the matching scale-entry
- * branches in `renderScaleEntry`) calls one reader here that pulls only the
+ * branches in `renderScaleEntryLanes`) calls one reader here that pulls only the
  * keys that draw fn actually paints. Reads use Yjs's internal `_map` directly
  * via two Content-subclass-specific helpers (~10ns/key) — see `readPrim` /
  * `readY`. The public `y.get()` is ~109ns/key.
@@ -205,7 +205,7 @@ export function readShapeLabelRenderNoFrame(y: Y.Map<unknown>): ShapeLabelRender
 // =============================================================================
 //
 // fontSize/fontFamily/width/content NOT read on the hot path — they're already
-// baked into the cached layout (`textLayoutCache.getLayoutById`).
+// baked into the entry's pooled layout tier (`renderTextLayoutById`).
 
 interface TextRender {
   originX: number;
@@ -289,7 +289,6 @@ interface NoteRender {
   originX: number;
   originY: number;
   scale: number;
-  fontFamily: FontFamily;
   fillColor: string;
   align: TextAlign;
   alignV: TextAlignV;
@@ -299,7 +298,6 @@ const _noteScratch: NoteRender = {
   originX: 0,
   originY: 0,
   scale: 1,
-  fontFamily: 'Grandstander',
   fillColor: '#FEF3AC',
   align: 'center',
   alignV: 'middle',
@@ -311,7 +309,6 @@ export function readNoteRender(y: Y.Map<unknown>): NoteRender {
   _noteScratch.originX = origin ? origin[0] : 0;
   _noteScratch.originY = origin ? origin[1] : 0;
   _noteScratch.scale = readPrim<number>(yi, 'scale') ?? 1;
-  _noteScratch.fontFamily = readPrim<FontFamily>(yi, 'fontFamily') ?? 'Grandstander';
   _noteScratch.fillColor = readPrim<string>(yi, 'fillColor') ?? '#FEF3AC';
   _noteScratch.align = readPrim<TextAlign>(yi, 'align') ?? 'center';
   _noteScratch.alignV = readPrim<TextAlignV>(yi, 'alignV') ?? 'middle';

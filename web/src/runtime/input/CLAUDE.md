@@ -34,6 +34,7 @@ Single owner of ALL DOM event listeners. Forwards to CanvasRuntime (canvas point
 | `pointerdown` (overlay) | container | MMB only, `.dom-overlay-root` target → runtime.handlePointerDown |
 | `dragover` | canvas | preventDefault, dropEffect = 'copy' |
 | `drop` | canvas | runtime.handleDrop |
+| `contextmenu` | canvas | preventDefault — suppress native menu so right-drag pan owns the RMB |
 | `keydown` | document | updateModifiers → handleKeyDown |
 | `keyup` | document | updateModifiers → handleKeyUp |
 | `paste` | document | handlePaste |
@@ -195,6 +196,18 @@ Module-level `spacebarPanMode` boolean + exported `isSpacebarPanMode()` getter.
 
 ---
 
+## Right-Click Pan
+
+Right mouse button (RMB) also pans, sharing MMB's `panTool` executor. RMB is reserved for a *future* context menu, so it's **click-vs-drag disambiguated** (like `SelectTool`): a stationary right-click is a click; a right-drag past a `RIGHT_PAN_THRESHOLD_PX = 6` screen-px deadzone is a pan. All logic lives in `CanvasRuntime`'s pointer handlers (RMB state fields `rmbPanPending`/`rmbInitiatedPan`/…); `PanTool` stays button-agnostic. The native menu is suppressed by the `contextmenu` listener above (required — else it steals the gesture), so a right-click currently shows nothing until the menu is wired at the `requestContextMenu` seam.
+
+**Chorded buttons.** Pressing/releasing a second button while one is held fires a `pointermove` (not down/up) per the Pointer Events spec; only the transition to no-buttons fires `pointerup`. So pan-end is gated on `e.buttons & PAN_BUTTON_MASK` (middle | right), making the two swap cases seamless:
+- Start RMB-drag pan → also hold MMB → release RMB: pan continues via MMB, **no menu** (terminal button ≠ RMB).
+- Start MMB pan → also hold RMB → release MMB: pan continues via RMB, and the final RMB release **fires the menu seam** (`e.button === 2 && !rmbInitiatedPan`).
+
+Scope: canvas-surface only. `onOverlayPointerDown` stays MMB-only, and native right-click is preserved over Tiptap/CodeMirror overlays.
+
+---
+
 ## Text Formatting Shortcuts
 
 `Cmd+B`, `Cmd+I`, `Cmd+H` toggle formatting on selected objects.
@@ -232,10 +245,10 @@ Returns null if the cursor has never entered the canvas (paste falls back to vie
 ```
 User Input → InputManager (DOM events)
   ├── Canvas pointer events → updateModifiers() → CanvasRuntime.*
-  │     ├── handlePointerDown → spacebar pan check → MMB pan → tool dispatch
+  │     ├── handlePointerDown → spacebar pan check → MMB pan → RMB deferred-pan arm → tool dispatch
   │     ├── handlePointerMove → cursor tracking + edge scroll + tool.move()
   │     ├── handlePointerUp → tool.end() + stopEdgeScroll
-  │     └── handleWheel → zoom (velocity boost + Ctrl pinch)
+  │     └── handleWheel → ctrl: pinch-zoom (both modes) / plain: mouse→wheel-zoom, trackpad→pan
   │
   ├── Document presence pointer → presence-pointer.*
   │     ├── handlePresencePointerMove → screenToWorldInto → updateCursor

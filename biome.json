@@ -108,6 +108,16 @@
           }
         }
       }
+    },
+    {
+      "includes": ["web/src/core/text/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noSelfCompare": "off"
+          }
+        }
+      }
     }
   ]
 }

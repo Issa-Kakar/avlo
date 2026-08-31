@@ -11,9 +11,12 @@
 import { generateNZAtTop, generateZAtTop, normalizeUrl } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
+import { getLockedFlags, getLockOwners } from '@/core/locks/lock-table';
+import { getHandlesBySlot } from '@/core/slots/slot-table';
+import { spatialTree } from '@/core/spatial/spatial-tree';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getLastCursorWorld } from '@/runtime/input/cursor-tracking';
-import { getObjects, getObjectsById, getSpatialIndex, getZOrder, transact } from '@/runtime/room-runtime';
+import { getObjects, getObjectsById, getZOrder, transact } from '@/runtime/room-runtime';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { animateToFit } from '@/runtime/viewport/zoom';
 import { getUserId } from '@/stores/auth-store';
@@ -243,6 +246,9 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
           }
           case 'z':
             // Source z is preserved only for sortedPayload ordering above; assigned fresh below.
+            break;
+          case 'locked':
+            // Pasted/duplicated copies are born unlocked — the durable lock never travels.
             break;
           default:
             yObj.set(key, value);
@@ -534,7 +540,16 @@ export function duplicateSelected(): void {
 
 export function selectAll(): void {
   const objectsById = getObjectsById();
-  const ids = Array.from(objectsById.keys());
+  const lf = getLockedFlags();
+  const lo = getLockOwners();
+  const ids: string[] = [];
+  for (const h of objectsById.values()) {
+    // Neither durably-locked (lf===1) nor ephemerally peer-locked (lo>1) ids join a
+    // selection. Ctrl+A bypasses the click/marquee pickers, so it must re-apply both
+    // filters here — else a remote grab (e.g. a peer's text edit) lands in selectedIds
+    // and the guard-free mutation paths (delete/z-order/cut) write straight through it.
+    if (lf[h.slot] !== 1 && lo[h.slot] <= 1) ids.push(h.id);
+  }
   if (ids.length === 0) return;
 
   useDeviceUIStore.getState().setActiveTool('select');
@@ -557,7 +572,7 @@ export { pasteImage };
 // === Smart Duplicate Offset ===
 
 function computeSmartOffset(bounds: BBoxTuple, excludeIds: Set<string>): [number, number] {
-  const spatialIndex = getSpatialIndex();
+  const bySlot = getHandlesBySlot();
   const [w, h] = bboxSize(bounds);
   const gap = 20;
   const eps = 2;
@@ -571,8 +586,17 @@ function computeSmartOffset(bounds: BBoxTuple, excludeIds: Set<string>): [number
   ];
 
   for (const [dx, dy] of directions) {
-    const query: BBoxTuple = [bounds[0] + dx - eps, bounds[1] + dy - eps, bounds[2] + dx + eps, bounds[3] + dy + eps];
-    if (!spatialIndex.queryBBox(query).some((r) => !excludeIds.has(r.id))) return [dx, dy];
+    // Wide twin — the probe rect is the full selection bbox (arbitrary size).
+    const n = spatialTree.query(bounds[0] + dx - eps, bounds[1] + dy - eps, bounds[2] + dx + eps, bounds[3] + dy + eps);
+    const res = spatialTree.results; // refetch per direction — growth swaps the buffer
+    let occupied = false;
+    for (let i = 0; i < n; i++) {
+      if (!excludeIds.has(bySlot[res[i]]!.id)) {
+        occupied = true;
+        break;
+      }
+    }
+    if (!occupied) return [dx, dy];
   }
 
   // Fallback

@@ -16,12 +16,20 @@ const IMAGES_PORT = devPorts.images + portOffset;
 const UNFURL_PORT = devPorts.unfurl + portOffset;
 const AUTH_PORT = devPorts.auth + portOffset;
 const USERS_PORT = devPorts.users + portOffset;
+const AI_PORT = devPorts.ai + portOffset;
 
 const proxyConfig = {
   // match SYNC_WS_PREFIX (@avlo/shared). No `rewrite` — the full /sync/rooms/<id> path must
   // reach the sync worker (unlike the /api/* proxies, which strip their prefix).
   '/sync': {
     target: `ws://localhost:${SYNC_PORT}`,
+    ws: true,
+    changeOrigin: true,
+  },
+  // Agents SDK routing prefix (AI_AGENTS_PREFIX, @avlo/shared). No `rewrite` —
+  // routeAgentRequest + the browser's useAgent both speak /agents/... natively.
+  '/agents': {
+    target: `ws://localhost:${AI_PORT}`,
     ws: true,
     changeOrigin: true,
   },
