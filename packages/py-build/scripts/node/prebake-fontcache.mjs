@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // D8: bake matplotlib's font cache into the staged tree. Invoked by
-// pack-package.py between staging and tar-ing the matplotlib bundle (also
-// usable standalone between --stage-only and --tar-only).
+// `avlo-build pack-bundles` between staging and tar-ing the matplotlib bundle
+// (also usable standalone between --stage-only and --tar-only).
 //
-// Boots the fork under the deterministic-env kit (lib/det-env.mjs)
+// Boots the fork under the deterministic-env kit (det-env.mjs)
 // on the staged stdlib, mounts the STAGED trees of matplotlib's whole
 // dependency set from .cache/stage/, imports matplotlib.font_manager (which
 // finds no fontlist.json, builds a fresh FontManager over the subset faces,
@@ -13,9 +13,9 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { installDeterministicEnv } from './lib/det-env.mjs';
+import { installDeterministicEnv } from './det-env.mjs';
 
-const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const stageRoot = join(pkgRoot, '.cache/stage');
 const config = JSON.parse(readFileSync(join(pkgRoot, 'build.config.json'), 'utf8'));
 // site-packages prefix follows the toolchain pin — never hardcode the minor.

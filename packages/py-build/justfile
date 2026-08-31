@@ -1,0 +1,90 @@
+# py-build command surface — thin aliases only. `just` is a command runner,
+# not a build system: NO config parsing here, NO dependency edges here (turbo
+# owns the DAG — `just board` delegates to it). Every recipe is one line onto
+# `uv run avlo-build …`, a docker-lane driver, or a turbo-run alias.
+#
+#   just --list      # discover
+#   just board       # the full gate board (incremental via turbo)
+
+default:
+    @just --list
+
+# ── the gate board ──────────────────────────────────────────────────────────
+
+# full board: turbo pipeline DAG + typecheck + test:py + vitest + local seed
+board:
+    cd ../.. && pnpm py:board
+
+# determinism doubles (pack-stdlib ×2 + pack-bundles --repro), on demand
+repro:
+    uv run avlo-build repro
+
+# ── pipeline stages (turbo runs these same commands with caching) ───────────
+
+wheels *ARGS:
+    uv run avlo-build fetch-wheels {{ARGS}}
+
+link-rsp:
+    uv run avlo-build link-rsp
+
+stdlib:
+    uv run avlo-build pack-stdlib
+
+bundles *ARGS='--all':
+    uv run avlo-build pack-bundles {{ARGS}}
+
+builtins:
+    node scripts/node/dump-builtins.mjs
+
+trace-check:
+    uv run avlo-build trace check
+
+trace-record *ARGS:
+    uv run avlo-build trace record {{ARGS}}
+
+census:
+    uv run avlo-build census --check
+
+verify:
+    uv run avlo-build verify-groups && uv run avlo-build verify-pytree
+
+compress *ARGS:
+    uv run avlo-build compress {{ARGS}}
+
+budgets *ARGS:
+    uv run avlo-build budgets {{ARGS}}
+
+stage:
+    uv run avlo-build stage
+
+stage-check:
+    uv run avlo-build stage --check
+
+corpus:
+    node scripts/run-corpus.mjs
+
+harness:
+    node scripts/run-harness.mjs
+
+seed:
+    uv run avlo-build publish
+
+publish-r2 *ARGS:
+    uv run avlo-build publish --remote {{ARGS}}
+
+config-check:
+    uv run avlo-build config check
+
+# ── docker lanes (manual, never in turbo; replatform to Dockerfiles later) ──
+
+fork *ARGS:
+    node scripts/run-build.mjs {{ARGS}}
+
+clone:
+    node scripts/run-build.mjs --clone-only
+
+recipes *ARGS:
+    node scripts/run-recipes.mjs {{ARGS}}
+
+relink:
+    node scripts/run-recipes.mjs --link-only

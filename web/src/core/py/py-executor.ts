@@ -182,7 +182,7 @@ async function verifyStdlibZip(expectedSha256: string): Promise<void> {
   // MEMFS file contents are plain-ArrayBuffer views — the narrow cast is true.
   const sha = await sha256Hex(pyodide.FS.readFile(zipPath) as Uint8Array<ArrayBuffer>);
   if (sha !== expectedSha256) {
-    throw new Error(`stdlib zip drift: ${zipPath} hashes ${sha}, manifest expects ${expectedSha256} — re-run stage.mjs`);
+    throw new Error(`stdlib zip drift: ${zipPath} hashes ${sha}, manifest expects ${expectedSha256} — re-run avlo-build stage`);
   }
 }
 

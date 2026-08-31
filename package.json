@@ -4,7 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=24",
+    "node": ">=26",
     "pnpm": ">=11"
   },
   "scripts": {
@@ -30,8 +30,8 @@
     "deploy:users": "pnpm --filter @avlo/users deploy",
     "deploy:py": "pnpm --filter @avlo/py deploy",
     "deploy": "pnpm deploy:main && pnpm deploy:sync && pnpm deploy:images && pnpm deploy:unfurl && pnpm deploy:auth && pnpm deploy:users && pnpm deploy:py",
-    "py:seed": "pnpm --filter @avlo/py-build seed",
-    "py:board": "pnpm --filter @avlo/py-build board",
+    "py:seed": "pnpm --filter @avlo/py-build py:seed",
+    "py:board": "turbo run py:trace-check py:census py:budgets py:stage-check py:corpus py:harness && pnpm typecheck && pnpm test:py && pnpm test && pnpm py:seed",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",
@@ -57,7 +57,7 @@
     "lint-staged": "^16.1.5",
     "miniflare": "5.20260801.0-alpha",
     "playwright": "^1.61.1",
-    "turbo": "^2.9.18",
+    "turbo": "^2.10.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
     "wrangler": "~4.119.0"

@@ -38,6 +38,124 @@
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/workers/sync/src/**", "$TURBO_ROOT$/workers/sync/drizzle/**"],
       "outputs": []
     },
+    // ── @avlo/py-build: the python-toolchain pipeline (root `pnpm py:board`).
+    // Gitignored build state (dist/raw, dist/groups, .cache) is hashed via
+    // explicit `inputs` globs — verified on turbo 2.10: explicit globs DO hash
+    // untracked files. The docker lanes (fork build, recipes loop) stay manual
+    // commands; their outputs (dist/raw/**, dist/groups/**) enter the graph as
+    // declared inputs of downstream tasks. `.br` siblings are deliberately
+    // NEVER inputs (compress outputs would self-invalidate consumers).
+    "@avlo/py-build#py:wheels": {
+      "inputs": ["src/avlo_py_build/**", "build.config.json", "dist/raw/pyodide-lock.json"],
+      "outputs": [".cache/wheels/**"]
+    },
+    "@avlo/py-build#py:linkrsp": {
+      "inputs": ["src/avlo_py_build/**", "config/dso-groups/groups.json", "dist/groups/*.so"],
+      "outputs": [".cache/link-sos/**"]
+    },
+    "@avlo/py-build#py:stdlib": {
+      "inputs": ["src/avlo_py_build/**", "build.config.json", "config/stdlib-prune.txt", "overlay/**", "dist/raw/python_stdlib.zip"],
+      "outputs": ["dist/stage/python_stdlib.zip", "dist/stage/stdlib-modules.json"]
+    },
+    // dependsOn py:stdlib: prebake-fontcache boots the STAGED stdlib zip.
+    "@avlo/py-build#py:bundles": {
+      "dependsOn": ["py:wheels", "py:stdlib"],
+      "inputs": [
+        "src/avlo_py_build/**",
+        "scripts/node/**",
+        "build.config.json",
+        "config/pkg-prune/**",
+        "config/dso-groups/groups.json",
+        "patches/wheels/**",
+        "dist/groups/*.so",
+        "dist/raw/pyodide-lock.json",
+        "dist/raw/pyodide.mjs",
+        "dist/raw/pyodide.asm.mjs",
+        "dist/raw/pyodide.asm.wasm"
+      ],
+      "outputs": ["dist/stage/bundles/**"]
+    },
+    "@avlo/py-build#py:builtins": {
+      "inputs": [
+        "scripts/node/dump-builtins.mjs",
+        "dist/raw/pyodide.mjs",
+        "dist/raw/pyodide.asm.mjs",
+        "dist/raw/pyodide.asm.wasm",
+        "dist/raw/python_stdlib.zip"
+      ],
+      "outputs": ["dist/stage/builtin-modules.json"]
+    },
+    "@avlo/py-build#py:trace-check": {
+      "inputs": ["src/avlo_py_build/**", ".cache/trace/**", "config/stdlib-prune.txt", "config/pkg-prune/**"],
+      "outputs": []
+    },
+    // census --check + verify-groups + verify-pytree (one board step).
+    "@avlo/py-build#py:census": {
+      "dependsOn": ["py:bundles", "py:wheels"],
+      "inputs": [
+        "src/avlo_py_build/**",
+        "build.config.json",
+        "config/dso-groups/**",
+        "config/pkg-equality-allow.txt",
+        "dist/raw/pyodide.asm.wasm",
+        "dist/groups/**"
+      ],
+      "outputs": [".cache/dso-report.json"]
+    },
+    "@avlo/py-build#py:compress": {
+      "dependsOn": ["py:stdlib", "py:bundles"],
+      "inputs": [
+        "src/avlo_py_build/**",
+        "build.config.json",
+        "dist/raw/pyodide.mjs",
+        "dist/raw/pyodide.asm.mjs",
+        "dist/raw/pyodide.asm.wasm"
+      ],
+      "outputs": ["dist/raw/*.br", "dist/stage/*.br", "dist/stage/bundles/*.br"]
+    },
+    "@avlo/py-build#py:budgets": {
+      "dependsOn": ["py:compress"],
+      "inputs": [
+        "src/avlo_py_build/**",
+        "build.config.json",
+        "dist/raw/pyodide.mjs",
+        "dist/raw/pyodide.asm.mjs",
+        "dist/raw/pyodide.asm.wasm"
+      ],
+      "outputs": []
+    },
+    // Cross-package writes (web/public/py-dev, web/src gen files, py-loader
+    // lock) — turbo outputs are package-relative, so stage stays UNCACHED
+    // (seconds of copy + codegen); correctness rides dependsOn.
+    "@avlo/py-build#py:stage": {
+      "cache": false,
+      "dependsOn": ["py:stdlib", "py:bundles", "py:builtins"]
+    },
+    "@avlo/py-build#py:stage-check": {
+      "cache": false,
+      "dependsOn": ["py:stage"]
+    },
+    // Old runners, untouched until the test-replatform phase — uncached (they
+    // read web/src TS + staged public tree across package lines).
+    "@avlo/py-build#py:corpus": {
+      "cache": false,
+      "dependsOn": ["py:stdlib", "py:bundles"]
+    },
+    "@avlo/py-build#py:harness": {
+      "cache": false,
+      "dependsOn": ["py:stage"]
+    },
+    "@avlo/py-build#py:seed": {
+      "cache": false,
+      "dependsOn": ["py:stage", "py:compress"]
+    },
+    "@avlo/py-build#py:repro": {
+      "cache": false
+    },
+    "@avlo/py-build#test:py": {
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/uv.lock"],
+      "outputs": []
+    },
     // Runs sync/auth/users/images from SOURCE via their real wrangler.jsonc files.
     "@avlo/integration#test": {
       "dependsOn": ["^typecheck"],

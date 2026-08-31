@@ -4,7 +4,7 @@
 # function interface reaches into _core/_stats for data/typing/rules/groupby/
 # scales and the KDE/Hist stats, so the prune is surgical: only the Plot
 # pipeline, its mark layer, and the objects-only stats go. Every entry below
-# is unreached by the full corpus trace (trace-imports.mjs --propose seaborn);
+# is unreached by the full corpus trace (`avlo-build trace propose seaborn`);
 # _core/exceptions is imported only by plot.py/_marks (both pruned) and
 # scales.py's plot/properties imports are TYPE_CHECKING-only.
 # reason: seaborn.objects needs PIL (never shipped)

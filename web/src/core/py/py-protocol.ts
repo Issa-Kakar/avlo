@@ -16,7 +16,7 @@ import type { AvsCaptureMeta, AvsHeader } from './py-snapshot';
 export type PyRunStatus = 'ok' | 'error' | 'cancelled' | 'timeout' | 'unavailable' | 'oom';
 
 /** Package-set key: which bundles a run needs. GENERATED with the set tables
- * — stage.mjs emits the union from build.config.json `sets`, so the type can
+ * — `avlo-build stage` emits the union from build.config.json `sets`, so the type can
  * never lag the data again. Re-exported here so protocol consumers keep one
  * import site (type-only: erased in every bundle and under Node
  * type-stripping, so the harness's protocol import stays value-free). */

@@ -31,7 +31,7 @@ pnpm lint         # Biome — skip routine runs (noisy, sometimes wrong); pre-co
 - `@avlo/py-loader` → `packages/py-loader/src/index.ts` (the committed Python build-lock + `matchesLockEntry`; also `/verify` for lock-free consumers)
 - `@/*` → `web/src/*`
 
-`packages/py-build` is the Python **toolchain** (docker, node/python scripts) — never imported, only run.
+`packages/py-build` is the Python **toolchain** (the uv-run `avlo-build` CLI + manual docker lanes; pipeline DAG in turbo — `pnpm py:board`) — never imported, only run. It is the sole member of the repo-root **uv workspace** (root `pyproject.toml` + committed root `uv.lock`).
 
 ## Best Practices
 

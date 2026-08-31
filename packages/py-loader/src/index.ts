@@ -1,8 +1,9 @@
 // The committed app↔artifact coupling for the Python runtime: the supervisor
 // verifies every fetched artifact against THIS lock (no boot-time manifest
 // discovery), and the SW/supervisor cache is keyed `avlo-py-<PY_BUILD_HASH>`.
-// ONLY py-build's stage.mjs writes build-lock.json (byte-gated by
-// `stage --check`); restage ⇒ new hash ⇒ reseed R2 (publish.mjs) + commit.
+// ONLY py-build's `avlo-build stage` writes build-lock.json (byte-gated by
+// `avlo-build stage --check`); restage ⇒ new hash ⇒ reseed R2 (`avlo-build
+// publish`) + commit.
 import lock from '../build-lock.json';
 
 export interface BuildLock {

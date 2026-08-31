@@ -1,37 +1,34 @@
-#!/usr/bin/env python3.14
 """Build deterministic package-bundle tars for the AVLO Python runtime (M2).
 
-  python3.14 scripts/pack-package.py <bundle>|--all [--repro] [--stage-only|--tar-only]
-  python3.14 scripts/pack-package.py --unpruned [wheel ...]
+  avlo-build pack-bundles <bundle>|--all [--repro] [--stage-only|--tar-only]
+  avlo-build pack-bundles --unpruned [wheel ...]
 
 Pipeline per bundle (D2-D6): for each member wheel — unzip (sha-verified vs
 build.config.json) -> wheel patches (patches/wheels/<pkg>/NNNN-*.patch, sorted,
 `patch -p1 --fuzz=0 -N`) -> global excludes (*.pyi, __pycache__,
 *.dist-info/RECORD; METADATA stays for importlib.metadata) -> prune per
-config/pkg-prune/<pkg>.txt -> pyc compile (optimize=1 — pandas/mpl compose
-__doc__ at runtime, -OO breaks them; sibling sourceless pyc, UNCHECKED_HASH,
-dfile = site-packages path) -> per-bundle tombstone registry
-(_avlo_pruned_<bundle>) -> loadOrder = sorted **/*.so -> meta.json (FIRST tar
-entry, canonical JSON — JS mounts read it with a single 512-byte ustar header
-parse, no tar lib) -> deterministic ustar (packlib.write_tar).
+config/pkg-prune/<pkg>.txt -> pyc compile (config pack.bundlePycOptimize=1 —
+pandas/mpl compose __doc__ at runtime, -OO breaks them; sibling sourceless
+pyc, UNCHECKED_HASH, dfile = site-packages path) -> per-bundle tombstone
+registry (_avlo_pruned_<bundle>) -> loadOrder = sorted **/*.so -> meta.json
+(FIRST tar entry, canonical JSON — JS mounts read it with a single 512-byte
+ustar header parse, no tar lib) -> deterministic ustar (packlib).
 
 --stage-only / --tar-only split the pipeline at the staged tree
-(.cache/stage/<bundle>/) — the seam where prebake-fontcache.mjs injects
-matplotlib's baked fontlist.json between the two phases.
+(.cache/stage/<bundle>/) — the seam where scripts/node/prebake-fontcache.mjs
+injects matplotlib's baked fontlist.json between the two phases.
 
 --unpruned materializes patched-but-unpruned TREES (.cache/unpruned/<wheel>/)
 for the import tracer — includes traceOnly wheels (pillow, fonttools), which
 never ship.
 
 Bundle identity = sha256 of the tar, carried in the staging manifest — never
-inside the tar. Re-execs under PYTHONHASHSEED=0 (marshalled sets iterate in
-hash order).
+inside the tar. The CLI already re-exec'd under PYTHONHASHSEED=0 (marshalled
+sets iterate in hash order).
 """
 
 import hashlib
 import json
-import multiprocessing
-import os
 import shutil
 import subprocess
 import sys
@@ -40,85 +37,68 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import packlib
+from . import packlib, pyc_compile
+from .config import Config, WheelPin, load
+from .paths import BUNDLES_OUT, GROUPS_DIR, PKG_ROOT, RAW_DIR, WHEEL_CACHE
 
-packlib.ensure_hashseed()
+STAGE_ROOT = PKG_ROOT / ".cache/stage"
+UNPRUNED_ROOT = PKG_ROOT / ".cache/unpruned"
+PATCHES = PKG_ROOT / "patches/wheels"
+PRUNES = PKG_ROOT / "config/pkg-prune"
 
-ROOT = Path(__file__).resolve().parent.parent
-CONFIG = json.loads((ROOT / "build.config.json").read_text())
-WHEEL_CACHE = ROOT / ".cache/wheels"
-STAGE_ROOT = ROOT / ".cache/stage"
-UNPRUNED_ROOT = ROOT / ".cache/unpruned"
-PATCHES = ROOT / "patches/wheels"
-PRUNES = ROOT / "config/pkg-prune"
-OUT_DIR = ROOT / "dist/stage/bundles"
-
-# site-packages prefix + host-tool interpreter follow the toolchain pin —
-# never hardcode the minor.
-PY_MM = ".".join(CONFIG["toolchain"]["python"].split(".")[:2])
-PREFIX = f"/lib/python{PY_MM}/site-packages"
 SCHEMA = 1
 DEFAULT_REASON = "stripped from the canvas Python bundle"
 
-WHEELS = {k: v for k, v in CONFIG["recipes"]["wheels"].items() if not k.startswith("$")}
-BUNDLES = {k: v for k, v in CONFIG["bundles"].items() if not k.startswith("$")}
-BUNDLE_OF = {w: b for b, members in BUNDLES.items() for w in members}
+# Set by _init(cfg) at run() time; the wasm-facing paths follow the toolchain
+# pin — never hardcode the minor.
+CFG: Config
+PREFIX: str
+OPTIMIZE: int
+WHEELS: dict[str, WheelPin]
+BUNDLES: dict[str, list[str]]
+BUNDLE_OF: dict[str, str]
 # P1.5 DSO grouping: DSO-bearing bundles ship ONE grouped side module
 # (.avlo/<bundle>.so, linked by the recipes loop) instead of their wheels'
 # per-extension .so files, plus a generated _avlo_groups_<bundle> registry
 # the sitecustomize finder reads. Pure-Python bundles take the unchanged path.
-GROUPS = json.loads((ROOT / "config/dso-groups/groups.json").read_text())["bundles"]
-GROUPS_SO_DIR = ROOT / "dist/groups"
+GROUPS: dict[str, dict]
 
-# Per-file pyc compiles fan out over a process pool (fork children inherit the
-# PYTHONHASHSEED=0 re-exec env, and every job writes a distinct pre-created
-# path, so parallel order can't touch byte-determinism).
-_POOL_JOBS = min(os.cpu_count() or 2, 8)
-
-
-def _compile_job(src: str, dest: str, dfile: str) -> None:
-    Path(dest).write_bytes(packlib.compile_pyc(Path(src).read_bytes(), dfile, optimize=1))
-
-
-def _compile_many(jobs: list[tuple[str, str, str]]) -> None:
-    if len(jobs) < 32 or _POOL_JOBS < 2:
-        for job in jobs:
-            _compile_job(*job)
-        return
-    with multiprocessing.Pool(_POOL_JOBS) as pool:
-        pool.starmap(_compile_job, jobs, chunksize=32)
+def _init(cfg: Config) -> None:
+    global CFG, PREFIX, OPTIMIZE, WHEELS, BUNDLES, BUNDLE_OF, GROUPS
+    CFG = cfg
+    PREFIX = f"/lib/python{cfg.py_mm}/site-packages"
+    OPTIMIZE = cfg.pack.bundlePycOptimize
+    WHEELS = dict(cfg.recipes.wheels)
+    BUNDLES = dict(cfg.bundles)
+    BUNDLE_OF = {w: b for b, members in BUNDLES.items() for w in members}
+    GROUPS = json.loads((PKG_ROOT / "config/dso-groups/groups.json").read_text())["bundles"]
 
 
 def subset_mpl_fonts(stage: Path) -> None:
     """Keep the configured faces: text faces subset to the pinned unicode
     ranges, mathtext fallback faces shipped whole (config `keepUnsubset`).
 
-    fontTools runs at the EXACT `hostTools.fonttools` pin via an isolated
-    `uvx --from fonttools==<pin>` invocation — uv's content-addressed cache
-    dedups the download across worktrees, and the pin (not the installer) is
-    what fixes the subset bytes, so `--repro` byte-identity is unaffected.
-    Decoupled from any project/dev env; the --no-recalc flags keep bytes
-    stable."""
-    fonts = CONFIG["fonts"]
-    pin = CONFIG["hostTools"]["fonttools"]
+    fontTools runs at the EXACT `hostTools.fonttools` pin as a project
+    dependency (uv.lock carries it; require_fonttools_pin() hard-asserts the
+    installed version — the determinism boundary moved from an isolated uvx
+    env into the workspace lock, same pinned bytes, no network at pack time).
+    The --no-recalc flags keep bytes stable."""
+    CFG.require_fonttools_pin()
+    fonts = CFG.fonts
     ttf_dir = stage / "matplotlib/mpl-data/fonts/ttf"
-    keep = set(fonts["faces"])
-    whole = set(fonts["keepUnsubset"])
+    keep = set(fonts.faces)
+    whole = set(fonts.keepUnsubset)
 
     def subset_face(f: Path) -> None:
         tmp = f.with_suffix(".subset.ttf")
         subprocess.run(
             [
-                "uvx",
-                "--python",
-                PY_MM,
-                "--from",
-                f"fonttools=={pin}",
-                "fonttools",
+                sys.executable,
+                "-m",
+                "fontTools",
                 "subset",
                 str(f),
-                f"--unicodes={fonts['unicodes']}",
+                f"--unicodes={fonts.unicodes}",
                 f"--output-file={tmp}",
                 "--no-recalc-timestamp",
                 "--no-recalc-bounds",
@@ -139,7 +119,7 @@ def subset_mpl_fonts(stage: Path) -> None:
             continue
         faces.append(f)
     # Faces subset concurrently — each invocation owns its file pair; the
-    # fonttools PIN (not invocation order) is what fixes the bytes.
+    # fontTools PIN (not invocation order) is what fixes the bytes.
     with ThreadPoolExecutor(max_workers=len(faces) or 1) as pool:
         for _ in pool.map(subset_face, faces):
             pass
@@ -147,12 +127,12 @@ def subset_mpl_fonts(stage: Path) -> None:
 
 def wheel_path(name: str) -> Path:
     pin = WHEELS[name]
-    p = WHEEL_CACHE / pin["file"]
+    p = WHEEL_CACHE / pin.file
     if not p.exists():
-        sys.exit(f"{name}: wheel missing — run fetch-wheels.mjs first ({p})")
+        sys.exit(f"{name}: wheel missing — run avlo-build fetch-wheels first ({p})")
     got = hashlib.sha256(p.read_bytes()).hexdigest()
-    if got != pin["sha256"]:
-        sys.exit(f"{name}: wheel sha256 mismatch\n  want {pin['sha256']}\n  got  {got}")
+    if got != pin.sha256:
+        sys.exit(f"{name}: wheel sha256 mismatch\n  want {pin.sha256}\n  got  {got}")
     return p
 
 
@@ -186,7 +166,7 @@ def stage_group(bundle: str, stage: Path, dropped: set[str]) -> None:
     """Grouped-bundle staging tail: gate the census, inject .avlo/<bundle>.so
     + the _avlo_groups_<bundle> registry the sitecustomize finder reads."""
     group = GROUPS[bundle]
-    stale = [p for p, sha in group["packages"].items() if WHEELS[p]["sha256"] != sha]
+    stale = [p for p, sha in group["packages"].items() if WHEELS[p].sha256 != sha]
     if stale:
         sys.exit(
             f"{bundle}: groups.json wheel pins stale for {', '.join(stale)} — "
@@ -200,7 +180,7 @@ def stage_group(bundle: str, stage: Path, dropped: set[str]) -> None:
             f"  dropped-not-census: {sorted(dropped - want)}\n"
             f"  census-not-dropped: {sorted(want - dropped)}"
         )
-    group_so = GROUPS_SO_DIR / f"{bundle}.so"
+    group_so = GROUPS_DIR / f"{bundle}.so"
     if not group_so.is_file():
         sys.exit(f"{bundle}: {group_so} missing — run the recipes loop (pnpm --filter @avlo/py-build recipes:build)")
     avlo = stage / ".avlo"
@@ -208,12 +188,15 @@ def stage_group(bundle: str, stage: Path, dropped: set[str]) -> None:
     (avlo / f"{bundle}.so").write_bytes(group_so.read_bytes())
     registry = f"_avlo_groups_{bundle.replace('-', '_')}"
     rel_so = f".avlo/{bundle}.so"
+    # Text frozen at the legacy generator name — UNCHECKED_HASH pycs embed the
+    # source hash, so a comment edit here rotates buildHash. Rename at the
+    # next deliberate rotation.
     lines = [f"# GENERATED by pack-package.py ({bundle}) — do not edit", "GROUPS = {"]
     for e in group["extensions"]:  # census order (lexicographic wheelSoPath)
         lines.append(f"    {e['dottedName']!r}: {rel_so!r},")
     lines.append("}")
     (stage / f"{registry}.pyc").write_bytes(
-        packlib.compile_pyc("\n".join(lines).encode(), f"{PREFIX}/{registry}.py", optimize=1)
+        pyc_compile.compile_one("\n".join(lines).encode(), f"{PREFIX}/{registry}.py", optimize=OPTIMIZE)
     )
 
 
@@ -240,7 +223,7 @@ def stage_bundle(bundle: str) -> tuple[Path, dict[str, str]]:
         with tempfile.TemporaryDirectory() as td:
             tree = Path(td)
             extract_and_patch(name, tree)
-            py_jobs: list[tuple[str, str, str]] = []
+            py_jobs: list[tuple[str, str, str, int]] = []
             for f in sorted(p for p in tree.rglob("*") if p.is_file()):
                 rel = f.relative_to(tree).as_posix()
                 if globally_excluded(rel) or packlib.is_pruned(rel, rules):
@@ -254,12 +237,14 @@ def stage_bundle(bundle: str) -> tuple[Path, dict[str, str]]:
                 if rel.endswith(".py"):
                     out = stage / (rel[:-3] + ".pyc")
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    py_jobs.append((str(f), str(out), f"{PREFIX}/{rel}"))
+                    py_jobs.append((str(f), str(out), f"{PREFIX}/{rel}", OPTIMIZE))
                 else:
                     out = stage / rel
                     out.parent.mkdir(parents=True, exist_ok=True)
                     out.write_bytes(f.read_bytes())
-            _compile_many(py_jobs)  # must run inside the tempdir context
+            # Hermetic worker subprocesses (see _pyc_worker.py); must run
+            # inside the tempdir context — jobs reference paths in `tree`.
+            pyc_compile.compile_files(py_jobs)
 
     if bundle == "matplotlib":
         subset_mpl_fonts(stage)
@@ -268,10 +253,10 @@ def stage_bundle(bundle: str) -> tuple[Path, dict[str, str]]:
 
     registry = f"_avlo_pruned_{bundle.replace('-', '_')}"
     (stage / f"{registry}.pyc").write_bytes(
-        packlib.compile_pyc(
-            packlib.registry_source(f"by pack-package.py ({bundle})", pruned),
+        pyc_compile.compile_one(
+            packlib.registry_source(f"by pack-package.py ({bundle})", pruned),  # frozen text, see stage_group note
             f"{PREFIX}/{registry}.py",
-            optimize=1,
+            optimize=OPTIMIZE,
         )
     )
     return stage, pruned
@@ -279,11 +264,12 @@ def stage_bundle(bundle: str) -> tuple[Path, dict[str, str]]:
 
 def prebake_fontcache() -> None:
     """D8: bake matplotlib/fontlist.json into the staged tree (a Node fork
-    boot over the staged set — see prebake-fontcache.mjs)."""
+    boot over the staged set — the sanctioned Python→Node boundary; see
+    scripts/node/prebake-fontcache.mjs)."""
     subprocess.run(
-        ["node", str(ROOT / "scripts/prebake-fontcache.mjs")],
+        ["node", str(PKG_ROOT / "scripts/node/prebake-fontcache.mjs")],
         check=True,
-        cwd=ROOT,
+        cwd=PKG_ROOT,
     )
 
 
@@ -291,19 +277,20 @@ def wheel_depends(name: str, lock: dict) -> list[str]:
     """Direct deps for a wheel: url pins carry a hand-pinned `depends` field
     (they are absent from the stock lock); lock wheels stay loud on a miss."""
     pin = WHEELS[name]
-    if "depends" in pin:
-        return pin["depends"]
+    if pin.depends is not None:
+        return pin.depends
     entry = lock["packages"].get(name) or lock["packages"][name.replace("-", "_")]
     return entry["depends"]
 
 
 def bundle_requires(bundle: str) -> list[str]:
     """Bundle names that must mount before this one (pinned deps -> bundles)."""
-    lock = json.loads((ROOT / "dist/raw/pyodide-lock.json").read_text())
+    lock = json.loads((RAW_DIR / "pyodide-lock.json").read_text())
     reqs: set[str] = set()
     for name in BUNDLES[bundle]:
         for dep in wheel_depends(name, lock):
-            if WHEELS.get(dep, {}).get("traceOnly"):
+            dep_pin = WHEELS.get(dep)
+            if dep_pin is not None and dep_pin.traceOnly:
                 continue  # pillow/fonttools: patched out, never shipped
             owner = BUNDLE_OF.get(dep)
             if owner and owner != bundle:
@@ -330,27 +317,27 @@ def build_tar(bundle: str, stage: Path, pruned: dict[str, str]) -> bytes:
     meta = {
         "schema": SCHEMA,
         "bundle": bundle,
-        "abi": CONFIG["toolchain"]["abi"],
-        "python": CONFIG["toolchain"]["python"],
+        "abi": CFG.toolchain.abi,
+        "python": CFG.toolchain.python,
         "prefix": PREFIX,
         "packages": [
             {
                 "name": n,
-                "version": WHEELS[n]["version"],
-                "wheel": WHEELS[n]["file"],
-                "wheelSha256": WHEELS[n]["sha256"],
+                "version": WHEELS[n].version,
+                "wheel": WHEELS[n].file,
+                "wheelSha256": WHEELS[n].sha256,
             }
             for n in BUNDLES[bundle]
         ],
         "provides": provides,
         "requires": bundle_requires(bundle),
         "loadOrder": load_order,
-        "optimize": 1,
+        "optimize": OPTIMIZE,
         "counts": {"files": len(rels), "so": len(load_order)},
     }
     entries = [("meta.json", packlib.canonical_json(meta))]
     entries += [(r, p.read_bytes()) for r, p in zip(rels, files)]  # rels sorted
-    return packlib.write_tar(OUT_DIR / f"{bundle}.tar", entries)
+    return packlib.write_tar(BUNDLES_OUT / f"{bundle}.tar", entries)
 
 
 def pack(bundle: str, stage_only: bool, tar_only: bool, repro: bool) -> None:
@@ -377,10 +364,7 @@ def pack(bundle: str, stage_only: bool, tar_only: bool, repro: bool) -> None:
         if hashlib.sha256(data).digest() != hashlib.sha256(data2).digest():
             sys.exit(f"{bundle}: G-M2.R FAIL — tar differs across identical builds")
         print(f"{bundle}: repro OK (byte-identical)")
-    print(
-        f"{bundle}.tar {len(data):,} bytes, {len(pruned)} tombstones, "
-        f"sha256 {hashlib.sha256(data).hexdigest()}"
-    )
+    print(f"{bundle}.tar {len(data):,} bytes, {len(pruned)} tombstones, sha256 {hashlib.sha256(data).hexdigest()}")
 
 
 def unpruned(names: list[str]) -> None:
@@ -392,24 +376,18 @@ def unpruned(names: list[str]) -> None:
         print(f"{name}: unpruned tree {dest}")
 
 
-def main() -> None:
-    want = tuple(int(p) for p in CONFIG["toolchain"]["python"].split(".")[:2])
-    if sys.version_info[:2] != want:
-        sys.exit(f"need CPython {want[0]}.{want[1]} (pyc magic must match the wasm interpreter), got {sys.version}")
-    args = [a for a in sys.argv[1:]]
-    flags = {a for a in args if a.startswith("--")}
-    rest = [a for a in args if not a.startswith("--")]
-    if "--unpruned" in flags:
-        unpruned(rest or list(WHEELS))
-        return
-    targets = list(BUNDLES) if "--all" in flags else rest
+def run(args) -> int:
+    cfg = load()
+    cfg.require_host_minor()
+    _init(cfg)
+    if args.unpruned:
+        unpruned(args.bundles or list(WHEELS))
+        return 0
+    targets = list(BUNDLES) if args.all else args.bundles
     if not targets:
-        sys.exit(__doc__)
+        sys.exit("pack-bundles: name at least one bundle, or pass --all")
     for bundle in targets:
         if bundle not in BUNDLES:
             sys.exit(f"unknown bundle {bundle!r} (have: {', '.join(BUNDLES)})")
-        pack(bundle, "--stage-only" in flags, "--tar-only" in flags, "--repro" in flags)
-
-
-if __name__ == "__main__":
-    main()
+        pack(bundle, args.stage_only, args.tar_only, args.repro)
+    return 0

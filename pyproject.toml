@@ -1,0 +1,9 @@
+# uv workspace root. The repo is a TS monorepo (pnpm + turbo); Python tooling
+# lives in workspace members and resolves against the single committed uv.lock
+# here. `uv run avlo-build …` / `uv run --directory packages/py-build pytest`
+# work from anywhere in the checkout.
+[tool.uv.workspace]
+members = ["packages/py-build"]
+
+[tool.uv]
+required-version = ">=0.12"

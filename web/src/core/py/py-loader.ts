@@ -32,7 +32,7 @@ import { traceBegin, traceSpanAsync } from './py-trace';
 import type { PyodideInterface } from './pyodide-fork.gen';
 
 /** The fork's emitted public type (pyodide-fork.gen.d.ts, staged by py-build
- * stage.mjs — patch 0009 declares the `_module`/`_api` surfaces on it). */
+ * `avlo-build stage` — patch 0009 declares the `_module`/`_api` surfaces on it). */
 export type Pyodide = PyodideInterface;
 type PyModule = Pyodide['_module'];
 type PyApi = Pyodide['_api'];

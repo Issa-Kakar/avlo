@@ -1,26 +1,35 @@
+# The py-build toolchain as a real package: `avlo-build` (src/avlo_py_build/)
+# is the one CLI for pack / verify / compress / budgets / stage / publish.
+# Locked by the repo-root uv.lock (workspace member).
 [project]
 name = "avlo-py-build"
 version = "0"
-requires-python = ">=3.13"
+description = "AVLO Python toolchain: forked-Pyodide artifact pack/verify/stage/publish pipeline (the avlo-build CLI)"
+# Hard pin, not a floor: pack-time pycs must carry the wasm interpreter's
+# magic, so the host minor MUST equal toolchain.python's (build.config.json).
+# The pack commands re-assert this at runtime.
+requires-python = "==3.14.*"
+dependencies = [
+  "pydantic>=2.12",
+  "httpx>=0.28",
+  "brotli>=1.1",
+  # Determinism boundary: the mpl DejaVu subset runs fontTools at EXACTLY the
+  # build.config.json `hostTools.fonttools` pin — this dependency must stay
+  # `==` that pin (avlo-build config check + pack-time assert both enforce it).
+  # The pin (not the installer) fixes the subset bytes; uv.lock carries it.
+  "fonttools==4.62.1",
+]
 
-# uv-managed dev/test env for the py-build TOOLCHAIN's pure-CPython logic
-# (pytest over scripts/*.py). Nothing to build — this project only carries the
-# test env. Replaces the old repo-root pyproject + .venv: avlo is a TS monorepo,
-# so Python lives scoped to this one subpackage, not at the root.
+[project.scripts]
+avlo-build = "avlo_py_build.cli:main"
+
 [dependency-groups]
 dev = ["pytest>=8.3"]
 
-[tool.uv]
-package = false # tooling env — nothing to install/build
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
 
-# Determinism boundary — do NOT cross: the reproducible pack path
-# (pack-package.py's mpl DejaVu subset) runs fontTools at the EXACT
-# build.config.json `hostTools.fonttools` pin via an isolated
-# `uvx --from fonttools==<pin>` call. The pin (not the installer) fixes the
-# subset bytes, so `--repro` byte-identity is unaffected, and it is decoupled
-# from THIS dev env (which carries no fonttools). Ad-hoc numpy/fonttools tasks
-# use throwaway `uv run --with …` envs — never a committed dep here.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["scripts"] # makes `import packlib` resolve
 python_files = ["test_*.py"]

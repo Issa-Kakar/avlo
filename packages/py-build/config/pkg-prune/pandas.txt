@@ -1,5 +1,5 @@
 # pandas prune list — paths relative to the site-packages root.
-# Curated from trace-imports.mjs --propose pandas (recipes wheel ships no
+# Curated from `avlo-build trace propose pandas` (recipes wheel ships no
 # tests/). NOTE pandas 2.3's io wrappers (excel/html/xml/sql/sas front doors)
 # are EAGERLY imported by pandas.io.api — only lazy internals are prunable.
 # The Step-3 tracer enforces trace ∩ prune = ∅.

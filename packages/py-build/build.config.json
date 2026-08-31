@@ -1,5 +1,4 @@
 {
-  "$comment": "Every pin for the AVLO Python toolchain. Reproducibility root: identical config + identical patches => identical buildHash. Image digest is stamped after the first successful pull (scripts/run-build.mjs refuses to build with an empty digest unless --allow-undigested).",
   "pyodide": {
     "repo": "https://github.com/pyodide/pyodide",
     "tag": "314.0.2"
@@ -15,15 +14,12 @@
   },
   "recipes": {
     "release": "314-20260629",
-    "$commentRepo": "Source pins for the recipe-rebuild loop (P1.5 DSO grouping): `commit` = the 314-20260629 tag, `pyodideBuildCommit` = its vendored pyodide-build submodule. run-recipes.mjs clones at these and hard-fails on drift.",
     "repo": "https://github.com/pyodide/pyodide-recipes",
     "commit": "732e33c363c22adc15500d6a064ba9db424f6332",
     "pyodideBuildCommit": "93f4df986849bb6798a9b9f619a4cd4b25e49fa4",
     "base": "https://github.com/pyodide/pyodide-recipes/releases/download/314-20260629",
-    "$commentMirror": "The recipes release ships one packages.tar.gz, not per-wheel assets; the pyodide CDN serves the same wheels individually. sha256 pins make the mirror provenance-equivalent (and the only source actually exercised when the release tag lags).",
     "mirror": "https://cdn.jsdelivr.net/pyodide/v314.0.2/full",
     "wheels": {
-      "$comment": "Pinned from the stock release lock (dist/raw/pyodide-lock.json, auto-fetched from the mirror when absent/stale) via fetch-wheels.mjs --stamp. traceOnly wheels are downloaded for the import tracer's unpruned trees but NEVER shipped. Wheels with a `url` are hand-pinned PyPI universal wheels absent from the stock lock: --stamp skips them, downloads go straight to the url (the sha256 pin keeps provenance equivalent), and `depends` hand-pins the direct deps the stock lock would otherwise supply to bundle_requires. sqlite3 is STATIC in the 314 main module — no wheel, no bundle, no set.",
       "numpy": {
         "version": "2.4.3",
         "file": "numpy-2.4.3-cp314-cp314-pyemscripten_2026_0_wasm32.whl",
@@ -101,17 +97,14 @@
     }
   },
   "xbuildenv": {
-    "$comment": "Cross-build environment for the recipe-rebuild loop. The pyodide-build CLI does NOT sha-verify its download — recipes-build.sh pre-downloads, byte-verifies against this pin, pre-extracts, and lets `pyodide xbuildenv install <version>` skip its own fetch. emsdk 5.0.3 auto-installs inside it (with the xbuildenv's own emsdk patches) on first build.",
     "version": "314.0.2",
     "url": "https://github.com/pyodide/pyodide/releases/download/314.0.2/xbuildenv-314.0.2.tar.bz2",
     "sha256": "01ab1b229bf2031603bf20ad4ceb9c1059ba680b26df7bda2db4748906dfd78a"
   },
   "hostTools": {
-    "$comment": "Host pip pins for pack-time tooling (NOT shipped). fontTools drives the DejaVu subset; version-pinned so subsetting is reproducible. 4.62.1 matches the 314 stock lock's fonttools.",
     "fonttools": "4.62.1"
   },
   "fonts": {
-    "$comment": "`faces` are the text faces, subset to `unicodes` via the pinned host fontTools (--no-recalc-timestamp --no-recalc-bounds). `keepUnsubset` ship whole: mathtext's dejavusans fontset probes every one of these fallback families (sized delimiters, \\mathcal, cm set) — missing families spam findfont warnings into user output — and their glyph lookups (STIXNonUni rides the PUA) are fragile under subsetting.",
     "faces": ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans-Oblique.ttf", "DejaVuSans-BoldOblique.ttf", "DejaVuSansMono.ttf"],
     "keepUnsubset": [
       "DejaVuSansDisplay.ttf",
@@ -143,7 +136,6 @@
     "unicodes": "U+0000-00FF,U+0370-03FF,U+2000-206F,U+2190-21FF,U+2200-22FF,U+25A0-25FF,U+FB00-FB06"
   },
   "bundles": {
-    "$comment": "Bundle -> member wheels (D1). Set order below is deps-first and IS the canonical cross-bundle DSO load order. sqlite3 went STATIC in 314's main module, so the old set-riding sqlite3 bundle is gone — sqlite3 is stdlib now.",
     "numpy": ["numpy"],
     "dateutil": ["python-dateutil", "six"],
     "pytz": ["pytz"],
@@ -158,17 +150,24 @@
     "all": ["numpy", "dateutil", "pytz", "mpl-deps", "pandas", "matplotlib", "seaborn"]
   },
   "jobs": {
-    "$comment": "RAM-derived, tune per box (~9GB WSL2 host). pyodideJobs also drives build.sh's top-level make -j.",
     "emsdkCores": 2,
     "emccCores": 2,
     "pyodideJobs": 4
   },
   "targets": {
-    "$comment": "pyodide.d.ts rides along for the app-side LSP types (staged as web/src/core/py/pyodide-fork.gen.d.ts — types only, never hashed into buildHash).",
     "m0": "dist/pyodide.asm.mjs dist/pyodide.js dist/python_stdlib.zip dist/pyodide.d.ts"
   },
+  "pack": {
+    "stdlibPycOptimize": 2,
+    "bundlePycOptimize": 1,
+    "stdlibZip": {
+      "codec": "deflate",
+      "level": 9
+    },
+    "brotliQuality": 11,
+    "budgetHeadroom": 1.05
+  },
   "budgets": {
-    "$comment": "Byte ceilings. `artifacts` (name -> {raw, br}) is stamped by check-budgets.mjs --update (+5% headroom over measurement, human-committed); plain runs hard-fail over any ceiling. `composites` are wire-download sums of .br sizes. Restamped at P1 Gate B (314.0.2 / MAIN_MODULE=2).",
     "artifacts": {
       "pyodide.asm.mjs": {
         "raw": 362215,
@@ -217,12 +216,10 @@
     },
     "composites": {
       "numpy-path": {
-        "$comment": "cold wire cost to first numpy run",
         "files": ["pyodide.asm.mjs", "pyodide.asm.wasm", "python_stdlib.zip", "bundles/numpy.tar"],
         "br": 7702265
       },
       "pandas-mpl": {
-        "$comment": "cold wire cost for the full `all` set",
         "files": [
           "pyodide.asm.mjs",
           "pyodide.asm.wasm",
