@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "typecheck": "tsgo --noEmit && tsgo -p tsconfig.sw.json --noEmit",
     "test": "vitest run",
+    "test:py": "vitest run --config tests/py-integration/vitest.config.ts",
     "typecheck:tsc": "tsc --noEmit && tsc -p tsconfig.sw.json --noEmit",
     "gen:sql-grammar": "lezer-generator src/core/code/vendor/sql/sql.grammar -o src/core/code/vendor/sql/sql.grammar.js"
   },

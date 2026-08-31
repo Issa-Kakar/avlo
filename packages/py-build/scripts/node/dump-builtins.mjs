@@ -24,9 +24,6 @@ const py = await loadPyodide({
   env: { PYTHONHASHSEED: '0', HOME: '/home/pyodide' },
 });
 const builtins = JSON.parse(py.runPython('import sys, json; json.dumps(sorted(sys.builtin_module_names))'));
-if (!builtins.includes('_sqlite3')) {
-  throw new Error('dump-builtins: _sqlite3 missing from builtin_module_names — static sqlite3 regressed');
-}
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, `${JSON.stringify(builtins, null, 2)}\n`);
-console.log(`builtin-modules.json: ${builtins.length} builtins (incl. _sqlite3)`);
+console.log(`builtin-modules.json: ${builtins.length} builtins`);

@@ -32,9 +32,9 @@ standalone `numpy` set was dropped 2026-08 — `import numpy` rides
 items); what the build owns is making every input byte-deterministic so a
 rotated `buildHash` is the ONLY cache-invalidation signal anyone needs.
 
-## Shape of the toolchain (post replatform phase 1, 2026-08-31)
+## Shape of the toolchain (post replatform phases 1–2, 2026-08-31)
 
-Three layers, one plan (`toolchain-replatform-plan.md`; phases 2–6 pending):
+Three layers, one plan (`toolchain-replatform-plan.md`; phases 3–6 pending):
 
 1. **`avlo-build`** — a real Python package (`src/avlo_py_build/`, uv
    workspace member locked by the REPO-ROOT `uv.lock`; console script via
@@ -98,12 +98,46 @@ below), `paths.py`, `cli.py`.
 | `run-build.mjs` + `build.sh` | Docker fork build (pyodide 314.0.2 + patch queue) → `dist/raw/`. Flags: `--clone-only`, `--targets`, `--allow-undigested`. Replays pyodide patches from a clean tag checkout, stages `patches/cpython/*.patch`, direct-applies emsdk patches (AVLO-marker gated), force-relinks when `link.rsp` is newer than the built glue, stamps the queue hash. **Replatforms to a Dockerfile in phase 3** |
 | `run-recipes.mjs` + `recipes-build.sh` | Docker recipe-rebuild loop: pinned recipes checkout + patch queues + byte-verified xbuildenv + per-package frozen constraints → serial no-deps builds → harvest → group links → `dist/groups/`. Flags: `--clone-only`, `--link-only` (`groups:link`), `--freeze-constraints`, `--force`, `--pkg <p>` (spike lane). **Replatforms to bake + uv in phase 4** |
 | `harvest-links.py` / `link-groups.py` | Link records → per-bundle manifests; one `-sSIDE_MODULE=2` link per bundle (`--repro` double-link). Run inside the recipes lane — keep standalone |
-| `run-corpus.mjs` | Corpus runner (7 groups, child per group, SHIPPED py-mount walker, font + PNG gates). **Moves to pytest-pyodide in phase 2** |
-| `run-harness.mjs` | Node verification harness, five sections (base / seaborn / snapshot / parity / verify). **Moves to a web vitest py-integration project in phase 2** |
-| `lib/ts-resolve.mjs`, `lib/png.mjs` | Harness/corpus support (die with phase 2) |
-| `scripts/node/dump-builtins.mjs` | Boots the fork on the RAW stdlib → `dist/stage/builtin-modules.json` (asserts `_sqlite3` static). Folds into the fork Dockerfile at phase 3 |
+| `scripts/node/dump-builtins.mjs` | Boots the fork on the RAW stdlib → `dist/stage/builtin-modules.json`. Folds into the fork Dockerfile at phase 3 |
 | `scripts/node/prebake-fontcache.mjs` + `det-env.mjs` | D8 fontlist bake over the staged mpl set under the deterministic-env kit — the sanctioned Python→Node boundary (invoked by `pack-bundles`) |
 | `scripts/node/trace-record.mjs` + `trace-imports.py` | Trace record mode: fork boot over unpruned trees, observe-only meta_path recorder → `.cache/trace/*.json` |
+
+## Tests (phase 2, 2026-08-31 — the old run-corpus/run-harness runners are gone)
+
+Two suites, one task name: **`pnpm test:py` at the repo root** = `turbo run
+test:py`, fanning to both packages (cached on inputs; the DAG pulls pack/stage
+first).
+
+- **pytest corpus lane** (`tests/corpus/`, part of this package's plain
+  `uv run pytest`): pytest-pyodide 0.59 node runtime over a tests-owned dist
+  view (`.cache/pytest-dist` — raw fork glue + STAGED pruned stdlib + a
+  one-line CJS `pyodide.js` shim + a `"type": "commonjs"` scope marker;
+  rebuilt every configure, never the served tree). One test module per corpus
+  group = one boot per group; bundle tars mount **pure-python**
+  (`tarfile.extractall`, meta.json prefix-asserted) and DSOs load by NATURAL
+  `import` through the sitecustomize group finder — zero JS in the mount
+  path, equivalent to the shipped walker by the standing parity gate. Samples
+  stay DATA (`corpus/<group>/*.py`, fresh namespace each); the font-log gate
+  and the pillow pixel gate (≥2 colors, <99% dominant over
+  `/tmp/corpus-out/*.png`) run as ordered tests per mpl-bearing group.
+  Registry + plumbing: `tests/corpus/corpus_lib.py` (`GROUP_SET` — an
+  unmapped corpus dir or missing `test_<group>.py` is a COLLECTION error).
+  Units-only escape (no artifacts needed): `uv run pytest --rt host`.
+  Never use `@run_in_pyodide`/`load_package` — they call the loadPackage
+  surface patch 0006 removed.
+- **web py-integration vitest project** (`web/tests/py-integration/`, own
+  config; `pnpm --filter @avlo/web test:py`): the JS-contract gate — SHIPPED
+  `web/src/core/py` modules + `@avlo/py-loader` against the staged serving
+  tree, fork-per-file (three files scrub+freeze the realm). Five files map
+  the old harness sections: `harden` (base board incl. trampoline census +
+  post-freeze sqlite3), `harvest` (seaborn + figure-harvest protocol; PNG
+  dims only — pixel quality moved to the pillow gate above), `snapshot`
+  (capture→AVS2→verified read→dirty negative→restore; pure-codec negatives
+  live in `src/core/py/py-snapshot.test.ts`, not re-proven), `mount-parity`
+  (walker ≡ tarfile zero-diff — the theorem the pytest lane leans on),
+  `lock` (staged tree vs committed lock ± corrupt negatives). Deliberately
+  NOT in the root vitest `projects` array (artifact-gated, minutes-long) —
+  `web#test` stays pure.
 
 ## Layout
 
@@ -125,20 +159,24 @@ pins + the four harvest manifests), `config/pkg-equality-allow.txt`,
 `config/recipes-constraints.d/`, `overlay/stdlib/` (exactly three files —
 `sitecustomize.py`, `_avlo_runtime.py`, `_avlo_png.py`; **anything** dropped
 here ships, and even a comment edit rotates `buildHash`),
-`corpus/{basic 6, sqlite 3, numpy 4, pandas 5, mpl 4, all 2, seaborn 6}`
+`corpus/{basic 8, numpy 4, pandas 5, mpl 4, all 2, seaborn 6}`
 (self-asserting samples; `# trace: skip` marks deliberate tombstone probes;
-`run-corpus.mjs`'s `GROUP_SET` is a hard registry — an unmapped corpus dir is
-a FAILURE), `.cache/` (wheels/stage/unpruned/trace/link-sos + dso-report —
-gitignored), `dist/` (raw fork output, staged artifacts, `groups/` —
-gitignored).
+the sqlite group folded into `basic/b08_sqlite.py` when `_sqlite3` went
+static; `tests/corpus/corpus_lib.py`'s `GROUP_SET` is a hard registry — an
+unmapped corpus dir fails COLLECTION), `.cache/`
+(wheels/stage/unpruned/trace/link-sos/pytest-dist + dso-report — gitignored),
+`dist/` (raw fork output, staged artifacts, `groups/` — gitignored).
 
 Python env: **workspace member of the repo-root uv workspace** —
 `pyproject.toml` here (package `avlo-py-build`, requires-python `==3.14.*`,
-deps pydantic/httpx/brotli/**fonttools pinned == `hostTools.fonttools`**),
-lock is the ROOT `uv.lock` (committed), venv at root `.venv/`. `pnpm test:py`
-= `uv run pytest` (tests/: packlib units, config-model gates, wasmmeta
-vectors). `.python-version` (3.14) pins the interpreter minor the pack
-commands hard-require.
+deps pydantic/httpx/brotli/**fonttools pinned == `hostTools.fonttools`**;
+dev group adds pytest-pyodide==0.59.0 (lockstep with pyodide) + pillow),
+lock is the ROOT `uv.lock` (committed), venv at root `.venv/`. This
+package's `test:py` script = `uv run pytest` (tests/: packlib units,
+config-model gates, wasmmeta vectors + the corpus lane — see Tests above;
+root `pnpm test:py` runs it through turbo alongside web's suite).
+`.python-version` (3.14) pins the interpreter minor the pack commands
+hard-require.
 
 Wheel pins live in `build.config.json` `recipes.wheels`; pins with a `url`
 are PyPI universal wheels absent from the stock lock (seaborn) — `--stamp`
@@ -158,10 +196,12 @@ the lock's depends graph. traceOnly wheels (pillow, fonttools) never ship.
   as-mounted zip hash. `avlo-build stage --check` flags any drift; publish's
   preflight refuses a stale mix loudly. **The one-command flow is
   `pnpm py:board`.**
-- **meta.json is the FIRST tar entry** — every consumer (executor, harness,
-  corpus, supervisor) reads it via the one shared walker's 512-byte header
-  parse (`web/src/core/py/py-mount.ts parseTarMeta`; the build-side twin is
-  `packlib.parse_tar_meta` — build-graph isolation, never import web/src).
+- **meta.json is the FIRST tar entry** — the executor, supervisor and the
+  web py-integration suite read it via the one shared walker's 512-byte
+  header parse (`web/src/core/py/py-mount.ts parseTarMeta`); the pytest
+  corpus lane reads it python-side (`tarfile`, parity-gated) and the
+  build-side twin is `packlib.parse_tar_meta` (build-graph isolation, never
+  import web/src).
 - **Deps-first set order = canonical cross-bundle DSO order**
   (`build.config.json` sets); within a bundle, `meta.loadOrder`. Snapshot
   replay depends on this order being stable.
@@ -176,8 +216,8 @@ the lock's depends graph. traceOnly wheels (pillow, fonttools) never ship.
   `.cache/trace/*.json` `loaded` set.
 - **Trampoline liveness** — the built glue must DEFINE
   `getWasmTrampolineModule` (stage's grep) and a 10k METH_NOARGS loop must
-  cross into JS ~0 times (harness census). Guards the MAIN_MODULE=2
-  lazy-archive regression (patch 0001's `-u`).
+  cross into JS ~0 times (the py-integration boot census). Guards the
+  MAIN_MODULE=2 lazy-archive regression (patch 0001's `-u`).
 - **Hermetic pyc compilation** (see the invariant box above) — pyc bytes are
   a function of the worker's frozen import surface; compiling in any other
   process is a silent buildHash-rotation hazard.
@@ -200,9 +240,10 @@ the lock's depends graph. traceOnly wheels (pillow, fonttools) never ship.
 ## Gate board
 
 **`pnpm py:board` at the repo root** = `turbo run py:trace-check py:census
-py:budgets py:stage-check py:corpus py:harness` (the DAG pulls
+py:budgets py:stage-check test:py` (the DAG pulls
 wheels/stdlib/bundles/builtins/compress/stage as needed, all cached on
-inputs) `&& pnpm typecheck && pnpm test:py && pnpm test && pnpm py:seed`.
+inputs; `test:py` fans to BOTH suites — pytest units+corpus and the web
+py-integration project) `&& pnpm typecheck && pnpm test && pnpm py:seed`.
 Byte-identity doubles live in `py:repro` (see conventions). Last-green
 stamps + ledgers live in `NOTES.md`. Docker lanes (fork/recipes) are run
 manually before the board when patches/pins changed: `pnpm --filter

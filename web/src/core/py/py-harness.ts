@@ -22,10 +22,9 @@ const HARNESS_FILE = '<avlo-harness>';
 const BLOCK_FILE = '<block>';
 
 /** Figure caps — MUST mirror PY_LIMITS.maxFigures/maxFigurePx (py-protocol).
- * Local literals because this file stays IMPORT-FREE (the py-build Node
- * harness type-strips it directly; Node ESM rejects extensionless relative
- * specifiers). Drift is pinned by the harness board's PY_LIMITS-driven
- * cap checks (run-harness.mjs seaborn section). */
+ * Local literals because this file stays IMPORT-FREE (embedded python source,
+ * consumable standalone). Drift is pinned by the web py-integration harvest
+ * suite's PY_LIMITS-driven cap checks. */
 const MAX_FIGS = 4;
 const MAX_FIG_PX = 2_048;
 

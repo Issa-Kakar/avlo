@@ -13,7 +13,7 @@
 // mpl-family groups so residual PIL sites succeed and get caught), loads every
 // .so, then runs the group's corpus samples. Samples marked `# trace: skip`
 // (deliberate pruned-module probes) are excluded. One child process per group
-// (RAM-bounded, mirrors run-corpus.mjs).
+// (RAM-bounded, mirroring the pytest corpus lane's boot-per-group).
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

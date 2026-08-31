@@ -14,8 +14,9 @@ string from `BUILD_LOCK.buildHash`.
 at raw TypeScript (`src/index.ts`), so every consumer bundles or type-strips.
 The wiring lives in `web/vite.config.ts` (alias), `web/tsconfig.json` +
 `web/tsconfig.sw.json` (paths), and `web/package.json` (`workspace:*`).
-py-build's scripts skip the package entirely and read `build-lock.json` as
-plain JSON (`avlo-build stage` writes it, `avlo-build publish` and `run-harness.mjs` read it).
+py-build's toolchain skips the package entirely and reads `build-lock.json`
+as plain JSON (`avlo-build stage` writes it, `avlo-build publish` reads it);
+the web py-integration suite consumes the typed `BUILD_LOCK` export.
 
 **Name collision note:** `@avlo/py-loader` (this package — the committed lock)
 is UNRELATED to `web/src/core/py/py-loader.ts` (the fork `bootPyodide` boot
@@ -27,7 +28,7 @@ wrapper). They just share a name.
 |---|---|
 | `build-lock.json` | GENERATED — only py-build's `avlo-build stage` writes it (byte-gated by `avlo-build stage --check`; excluded from biome so the formatter can't break the compare). `{ schema, buildHash, artifacts: {name:{sha256,size}}, bundles, sets }`. `artifacts` = the glue trio (`pyodide.mjs`, `pyodide.asm.mjs`, `pyodide.asm.wasm`) + `python_stdlib.zip`; `bundles` = the 7 package tars; `sets` has 4 keys (`stdlib` is the implicit fifth `PySetKey` — it resolves to zero bundles client-side). Snapshots are NOT lock artifacts today — client-captured, OPFS-only (shipping build-time-captured snapshots as lock artifacts is an open direction; see py-build NOTES) |
 | `src/index.ts` | `BUILD_LOCK` (typed + deep-frozen at module scope) + `PY_BUILD_HASH`; re-exports `verify.ts` |
-| `src/verify.ts` | `sha256Hex` + `matchesLockEntry(bytes, {sha256,size})` — THE verification predicate for every lock-gated consumer: supervisor tar/glue checks, SW verify-at-fill routes, py-build Node harness, and the executor (`sha256Hex` for the as-mounted stdlib hash). Dependency-free. The `./verify` subpath exists so lock-free consumers get the exact shipped code without index's JSON import (Node ESM demands import attributes there); its one consumer is `py-executor.ts`, which must not carry the lock JSON. The harness does not use the subpath — it file-URL-imports `src/verify.ts` directly |
+| `src/verify.ts` | `sha256Hex` + `matchesLockEntry(bytes, {sha256,size})` — THE verification predicate for every lock-gated consumer: supervisor tar/glue checks, SW verify-at-fill routes, the web py-integration suite, and the executor (`sha256Hex` for the as-mounted stdlib hash). Dependency-free. The `./verify` subpath exists so lock-free consumers get the exact shipped code without index's JSON import (Node ESM demands import attributes there); its one consumer is `py-executor.ts`, which must not carry the lock JSON |
 | `src/verify.test.ts` | vitest, 2 cases — a `sha256Hex` known-answer vector (empty input) and the `matchesLockEntry` size-then-sha gate |
 | `package.json` | private, `type: module`, `sideEffects: false`, dual `exports` (`.` + `./verify`), `main`/`types` → raw TS. Scripts: `typecheck` (tsgo), `typecheck:tsc`, `test` (vitest run) |
 | `tsconfig.json` | extends the root base; `lib: [ESNext, DOM, WebWorker]`; explicitly `include`s `build-lock.json` so the JSON import typechecks |

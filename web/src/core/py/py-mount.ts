@@ -1,9 +1,10 @@
 /**
  * Bundle-tar walking + direct-node MEMFS mounting — the single home for every
- * ustar consumer (executor mounts, DSO byte collection, supervisor/harness/
- * corpus meta parsing). Dependency-FREE by design: no py-trace (callers wrap
- * spans), no protocol imports — the py-build Node harness and corpus import
- * this exact shipped module via the `.ts` resolve shim.
+ * ustar consumer (executor mounts, DSO byte collection, supervisor/test-suite
+ * meta parsing). Dependency-FREE by design: no py-trace (callers wrap
+ * spans), no protocol imports — the web py-integration suite imports this
+ * exact shipped module (py-build's pytest corpus lane mounts pure-python
+ * instead, equivalent by the parity gate below).
  *
  * Why a JS walker instead of in-wasm `tarfile.extractall` (the pre-L1 path):
  * the Python route costs ~855 ms for the `all` set (tar→MEMFS copy, tarfile
@@ -11,8 +12,8 @@
  * grafting nodes directly into MEMFS via parent NODE references costs ~11 ms
  * with byte-identical results (docs(local)/ColdRestoreAttack.md §3; bench
  * strategy D — full-tree parity over all entries: path/type/mode/mtime/size/
- * xxh32 vs the real `tarfile.extractall(filter='data')`). The harness
- * `--section parity` gate re-proves that equivalence on every run.
+ * xxh32 vs the real `tarfile.extractall(filter='data')`). The py-integration
+ * `mount-parity.test.ts` gate re-proves that equivalence on every run.
  *
  * Tar-shape contract (packlib.write_tar, enforced build-side): USTAR_FORMAT,
  * files only (typeflag '0' — the walker THROWS on anything else), names ≤ 100
@@ -166,8 +167,9 @@ type EmscriptenFS = any;
 /** Graft one bundle tar's tree directly into MEMFS: per-file
  * `MEMFS.createNode` via parent NODE references (zero path lookups), contents
  * adopted as tar subarray views (zero copies), times/mode stamped to match
- * the `tarfile.extractall(filter='data')` reference byte-for-byte (harness
- * `--section parity` is the standing gate). Node-side callers MUST de-pool
+ * the `tarfile.extractall(filter='data')` reference byte-for-byte
+ * (py-integration `mount-parity.test.ts` is the standing gate). Node-side
+ * callers MUST de-pool
  * `readFileSync` Buffers (`.buffer.slice()`) before adoption or the whole
  * ~8 MB pool stays alive per node; browser-side transferred buffers arrive
  * exact-size. */

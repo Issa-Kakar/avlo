@@ -9,8 +9,9 @@ Framework scaffolding. Suites grow gradually; this doc is the **precedent** — 
 | **Vitest — node** | pure logic (Node env) | `*.test.ts` | colocated next to source | `pnpm test` |
 | **Vitest — pool-workers** | a worker inside workerd (Miniflare) | `*.test.ts` | `workers/<name>/test/` | `pnpm test` |
 | **Vitest — integration** | four workers cross-wired in one Miniflare (wrangler `createTestHarness`, Node env) | `*.test.ts` | `workers/integration/test/` | `pnpm test` |
+| **Vitest — py-integration** | shipped `web/src/core/py` TS booting the real fork over staged artifacts | `*.test.ts` | `web/tests/py-integration/` | `pnpm test:py` |
 | **Playwright** | the canvas app in a real browser | `*.spec.ts` | `e2e/` | `pnpm test:e2e` |
-| **pytest** | the `.py` toolchain (plain CPython) | `test_*.py` | `packages/py-build/tests/` | `pnpm test:py` |
+| **pytest** | the `.py` toolchain (plain CPython) + the pytest-pyodide corpus lane (fork boots via node) | `test_*.py` | `packages/py-build/tests/` | `pnpm test:py` |
 
 `.test.ts` (vitest) vs `.spec.ts`-in-`e2e/` (playwright) is the rule that keeps the two TS runners from glob-colliding. Don't cross them.
 
@@ -18,7 +19,7 @@ Framework scaffolding. Suites grow gradually; this doc is the **precedent** — 
 pnpm test          # turbo run test — every package's vitest suite (node + pool-workers), cached
 pnpm test:watch    # root vitest — all vitest projects in one watch/UI process
 pnpm test:e2e      # playwright — needs `pnpm exec playwright install chromium` once
-pnpm test:py       # uv run pytest (in packages/py-build) — needs `uv sync` there once
+pnpm test:py       # turbo run test:py — py-build pytest (units + corpus) AND web's py-integration vitest; needs `uv sync` once + built py artifacts (units alone: `uv run pytest --rt host`)
 ```
 
 **CI** gates on `pnpm test` (after typecheck, before the web build) — the worker suites are real and have already caught production bugs (see the suite standard below).
@@ -33,7 +34,7 @@ Orchestration: each package owns its `vitest.config.ts` (the source of truth, ru
 - **Pool-workers** — see `workers/py/` (the minimal exemplar) and the real suites below. `cloudflareTest({ wrangler: { configPath: './wrangler.jsonc' } })` sources bindings/compat from the real wrangler config; tests import from `cloudflare:test`. The `test/tsconfig.json` exists for editor types only and is **outside** the worker's `src/**` typecheck glob. `packages/worker-shared` shows the no-wrangler variant (inline `miniflare: { compatibilityDate, compatibilityFlags }`).
 - **Version pin**: `vitest` and `@cloudflare/vitest-pool-workers` are peer-locked (pool-workers pins `vitest ^4.1.0`; keep it exact — its config API churns). Both live in root `devDependencies`.
 
-**Gotcha — web tests**: none exist yet. When they do, add a dedicated `web/vitest.config.ts` (`environment: 'node'` or `jsdom`) so vitest never auto-loads `web/vite.config.ts` (its Cloudflare/TanStack plugins don't belong in the test env). `@avlo/*` imports resolve natively via pnpm workspace exports; `@/*` needs an alias (`vite-tsconfig-paths` or a one-line `resolve.alias`) — only for web tests.
+**Gotcha — web tests**: `web/vitest.config.ts` exists (node env, colocated `src/**/*.test.ts`) precisely so vitest never auto-loads `web/vite.config.ts` (its Cloudflare/TanStack plugins don't belong in the test env). `@avlo/*` imports resolve natively via pnpm workspace exports; `@/*` would need an alias — no web test uses it yet. The SECOND web project, `web/tests/py-integration/` (own config, `web#test:py`), boots the real fork over staged artifacts and is deliberately NOT in the root `projects` array — `pnpm test:watch` and `web#test` stay fast and artifact-free.
 
 ## Worker suites — the standard
 
@@ -97,9 +98,9 @@ Note `reuseExistingServer` reuses whatever is already on the port — if a non-d
 
 ## pytest + uv
 
-The repo root is a **uv workspace** (virtual root `pyproject.toml` + one committed root `uv.lock`); the only member is `packages/py-build` — a real src-layout package (`avlo-py-build`, py3.14) exposing the `avlo-build` toolchain CLI, with `pytest` in its dev group. `pnpm test:py` runs `uv run --directory packages/py-build pytest`; `uv sync` at the root (or any first `uv run`) sets up the shared `.venv/`. Tests live in `packages/py-build/tests/test_*.py` and import the package (`from avlo_py_build import packlib`).
+The repo root is a **uv workspace** (virtual root `pyproject.toml` + one committed root `uv.lock`); the only member is `packages/py-build` — a real src-layout package (`avlo-py-build`, py3.14) exposing the `avlo-build` toolchain CLI, with `pytest` + `pytest-pyodide` + `pillow` in its dev group. Root `pnpm test:py` runs `turbo run test:py` (py-build's `uv run pytest` plus web's py-integration project); `uv sync` at the root (or any first `uv run`) sets up the shared `.venv/`. Tests live in `packages/py-build/tests/`: `test_*.py` units importing the package (`from avlo_py_build import packlib`) plus the `tests/corpus/` pytest-pyodide lane (see `packages/py-build/CLAUDE.md` "Tests").
 
 - **Worktree dedup** is automatic: uv's global content-addressed cache (`~/.cache/uv`) is shared across worktrees and hardlinks/clones into each `.venv` — heavy wheels download once. **Do not override `cache-dir`** (that breaks the sharing).
 - **Ad-hoc numpy** (rare — pixel-level render debugging) is NOT a committed dep: a one-off session is `uv run --with numpy python`. PEP 723 inline-metadata scripts (`uv run <script>.py`) remain the pattern for one-off tooling.
 - **Determinism boundary (moved into the lock, still a boundary)**: the mpl-font subset runs fontTools **from the workspace env** at exactly the `hostTools.fonttools` pin — `packages/py-build/pyproject.toml` pins `fonttools==<pin>` and both `avlo-build config check` and the packer assert installed == config pin. The pin (not the installer) fixes the subset bytes. Artifact **pycs** never compile in the dev-env process at all: they compile in py-build's hermetic `_pyc_worker.py` subprocesses (frozen import surface — pyc bytes depend on the compiling process's import history; see py-build NOTES learnings).
-- Scope: pytest runs **plain CPython** against the toolchain package (packlib writers, config model, wasmmeta). Running code *inside* Pyodide (pytest-pyodide) arrives with the test-replatform phase (`toolchain-replatform-plan.md` §2.7), not this setup.
+- Scope: unit tests run **plain CPython** against the toolchain package (packlib writers, config model, wasmmeta); the `tests/corpus/` lane runs self-asserting samples *inside* the real fork via pytest-pyodide's node runtime (needs built artifacts — `uv run pytest --rt host` skips it for artifact-free checkouts).

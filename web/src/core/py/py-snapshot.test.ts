@@ -1,9 +1,8 @@
 /**
  * AVS2 codec unit tests — the pure half of py-snapshot.ts (hash, header
  * plan/encode/parse, chunked heap read). The OPFS store + the live capture/
- * restore loop are covered by the py-build Node harness (`pnpm harness
- * --section snapshot`, real fork boots) and `e2e/py-snapshot.spec.ts` (real
- * browser, real OPFS).
+ * restore loop are covered by `web/tests/py-integration/snapshot.test.ts`
+ * (real fork boots) and `e2e/py-snapshot.spec.ts` (real browser, real OPFS).
  */
 
 import { describe, expect, it } from 'vitest';

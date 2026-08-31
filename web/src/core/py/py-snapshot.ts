@@ -44,9 +44,9 @@
  * dependency-free): the SUPERVISOR owns ALL OPFS I/O (open/read/write/delete/
  * GC — `navigator.storage` only inside those functions); the executor never
  * touches OPFS (L2 killed the executor-side probe, so no sync handle can even
- * exist near the scrub boundary). The py-build Node harness imports the codec
- * half (pure functions + readSnapshotToBuffer over an fd-backed handle)
- * against a real fork boot.
+ * exist near the scrub boundary). The web py-integration snapshot suite
+ * imports the codec half (pure functions + readSnapshotToBuffer over an
+ * fd-backed handle) against a real fork boot.
  */
 
 import { traceBegin } from './py-trace';
@@ -84,7 +84,7 @@ export interface AvsHeader extends AvsCaptureMeta {
 
 /** Chunked positioned reader over the snapshot file. Implemented over an OPFS
  * read-only sync access handle, a buffered File (contention fallback), or a
- * Node fd shim in the py-build harness. `close()` is idempotent — failure
+ * Node fd shim in the web py-integration suite. `close()` is idempotent — failure
  * paths may close twice. */
 export interface SnapReadHandle {
   readonly size: number;
@@ -97,7 +97,7 @@ export interface SnapReadHandle {
 //
 // Standard XXH32 (seed 0), streaming, with an unrolled u32-lane fast path
 // (~2.8 GB/s in V8 — the heap-integrity budget). Known-answer vectors are
-// pinned by the py-build harness snapshot section.
+// pinned by py-snapshot.test.ts.
 
 const P1 = 0x9e3779b1;
 const P2 = 0x85ebca77;

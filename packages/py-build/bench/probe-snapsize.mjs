@@ -1,5 +1,5 @@
 // Baked 'all' heap → compressibility (build-time-snapshot sizing) + bake timing split.
-import '/home/issak/dev/avlo/packages/py-build/scripts/lib/ts-resolve.mjs';
+import './lib/ts-resolve.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';

@@ -60,11 +60,17 @@ stage:
 stage-check:
     uv run avlo-build stage --check
 
-corpus:
-    node scripts/run-corpus.mjs
+# both test suites (pytest units+corpus here, web py-integration vitest), turbo-cached
+test-py:
+    cd ../.. && pnpm test:py
 
+# the pytest-pyodide corpus lane alone (e.g. `just corpus -k seaborn`)
+corpus *ARGS:
+    uv run pytest tests/corpus {{ARGS}}
+
+# the web py-integration vitest project alone (the old harness's five sections)
 harness:
-    node scripts/run-harness.mjs
+    pnpm --filter @avlo/web test:py
 
 seed:
     uv run avlo-build publish

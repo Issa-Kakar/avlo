@@ -20,9 +20,9 @@
  * abort the boot rather than run unconfined. `assertRealmHardened()` re-reads
  * the realm after scrub+freeze and THROWS on any survivor; the executor calls
  * it inside its boot try, so a breach becomes `exec-fatal` (no harness, no
- * runs). This file is dependency-free and worker-agnostic so the Node
- * verification harness can exercise the exact shipped code against a real fork
- * boot.
+ * runs). This file is dependency-free and worker-agnostic so the web
+ * py-integration suite can exercise the exact shipped code against a real
+ * fork boot.
  */
 
 /** Globals stripped from the executor realm after boot. Grouped by the
@@ -95,14 +95,15 @@ export function scrubWorkerScope(): void {
  * runs), while calling/`new`-ing and subclassing it keep working; the
  * eval/Function posture above is unchanged (this freezes the OBJECTS, it
  * does not remove code execution). Pyodide only ever READS these post-boot —
- * verified by the py-build Node harness against a real fork boot + mounts.
+ * verified by the web py-integration harden suite against a real fork boot +
+ * mounts.
  */
 
 /** Labeled freeze list, shared verbatim by hardenRealm (writer) and
  * assertRealmHardened (gate) so the two can never drift. Built at CALL time:
  * SharedArrayBuffer only exists in crossOriginIsolated realms and this file
- * must import cleanly anywhere (Node harness, tests). Exported ONLY for the
- * py-build Node harness's independent full-sweep assertion. */
+ * must import cleanly anywhere (node test suites included). Exported ONLY for
+ * the py-integration suite's independent full-sweep assertion. */
 export function freezeTargets(): readonly (readonly [string, object])[] {
   return [
     ['Object', Object],

@@ -25,7 +25,7 @@
  *   i32[7]      MEM_KIB     executor-reported heap size after each run, in
  *                           KiB — raw bytes hit 2^31 at the 2 GiB ceiling and
  *                           would read back negative from an Int32 slot
- *                           (read by the py-build harness memory checks)
+ *                           (read by the py-integration harden suite's probe)
  */
 
 export const PY_SAB_BYTES = 64;

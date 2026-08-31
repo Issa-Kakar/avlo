@@ -135,16 +135,6 @@
       "cache": false,
       "dependsOn": ["py:stage"]
     },
-    // Old runners, untouched until the test-replatform phase — uncached (they
-    // read web/src TS + staged public tree across package lines).
-    "@avlo/py-build#py:corpus": {
-      "cache": false,
-      "dependsOn": ["py:stdlib", "py:bundles"]
-    },
-    "@avlo/py-build#py:harness": {
-      "cache": false,
-      "dependsOn": ["py:stage"]
-    },
     "@avlo/py-build#py:seed": {
       "cache": false,
       "dependsOn": ["py:stage", "py:compress"]
@@ -152,8 +142,29 @@
     "@avlo/py-build#py:repro": {
       "cache": false
     },
+    // pytest: toolchain units + the pytest-pyodide corpus lane (tests/corpus
+    // boots the fork glue over the staged stdlib + bundle tars — all
+    // gitignored, hence the explicit input globs).
     "@avlo/py-build#test:py": {
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/uv.lock"],
+      "dependsOn": ["py:stdlib", "py:bundles"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "$TURBO_ROOT$/uv.lock",
+        "dist/raw/pyodide.mjs",
+        "dist/raw/pyodide.asm.mjs",
+        "dist/raw/pyodide.asm.wasm",
+        "dist/stage/python_stdlib.zip",
+        "dist/stage/bundles/*.tar"
+      ],
+      "outputs": []
+    },
+    // The web py-integration vitest project (tests/py-integration) — the
+    // JS-contract gate: shipped web/src/core/py modules against the staged
+    // serving tree (gitignored ⇒ explicit glob; ^typecheck folds py-loader).
+    "@avlo/web#test:py": {
+      "dependsOn": ["^typecheck", "@avlo/py-build#py:stage"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "public/py-dev/fork/**"],
       "outputs": []
     },
     // Runs sync/auth/users/images from SOURCE via their real wrangler.jsonc files.

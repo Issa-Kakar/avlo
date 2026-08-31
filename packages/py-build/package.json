@@ -20,8 +20,6 @@
     "py:budgets": "uv run avlo-build budgets",
     "py:stage": "uv run avlo-build stage",
     "py:stage-check": "uv run avlo-build stage --check",
-    "py:corpus": "node scripts/run-corpus.mjs",
-    "py:harness": "node scripts/run-harness.mjs",
     "py:seed": "uv run avlo-build publish",
     "py:repro": "uv run avlo-build repro",
     "test:py": "uv run pytest",

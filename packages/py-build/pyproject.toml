@@ -24,7 +24,11 @@ dependencies = [
 avlo-build = "avlo_py_build.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3"]
+dev = [
+    "pillow>=12.3.0",
+    "pytest>=8.3",
+    "pytest-pyodide==0.59.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]

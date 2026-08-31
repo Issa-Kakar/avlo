@@ -917,6 +917,56 @@ codec unit suite (py-snapshot.test.ts, 15 tests).
 
 ## Phase log (compact; newest first — append here each session)
 
+### Session 22 — toolchain replatform PHASE 2 (tests; no build change, no rotation)
+
+Plan §4 phase 2 — run-corpus.mjs + run-harness.mjs + lib/{ts-resolve,png}.mjs
+deleted after their replacements went green on the SAME artifacts
+(`buildHash 7fdf68788eb8a2a4` untouched):
+
+- **web/tests/py-integration/** (own vitest config, fork-per-file, maxWorkers
+  3; NOT in the root `projects` array — artifact-gated): the five harness
+  sections as five files + shared `helpers.ts` (`bootHardened` returns boot
+  facts, fd-backed SnapReadHandle, dims-only pngDims). 83 tests. Trims vs the
+  old counts are deliberate: xxh32 vectors / header-crc / abandoned-read
+  negatives live in `py-snapshot.test.ts` (unit layer) and aren't re-proven;
+  pixel-QUALITY asserts moved to the pytest pillow gate (dims-only here).
+  vitest's forks pool tolerates scrubWorkerScope+hardenRealm (frozen
+  intrinsics included) — no framework breakage observed.
+- **tests/corpus/** (pytest-pyodide 0.59 node runtime, in `pnpm test:py`):
+  samples stay DATA; one module per group = one boot per group (their
+  `selenium` fixture family does NO between-test resets — same semantics as
+  the old child-per-group). Mounts are PURE PYTHON (`tarfile.extractall`,
+  meta.json prefix assert) and DSOs load by natural import through the
+  sitecustomize finder — the §2.7 experiment productized; parity stays
+  proven by `mount-parity.test.ts`. Boot = config-supplied load script over
+  a tests-owned dist view (`.cache/pytest-dist`: raw glue + STAGED stdlib +
+  one-line CJS `pyodide.js` shim). Gates: font tap + pillow pixel gate
+  (≥2 colors, <99% dominant) as ordered tests; GROUP_SET + module-existence
+  check fails COLLECTION. `--rt host` = units-only escape. NEVER call
+  `run_in_pyodide`/`load_package` — they hit `loadPackagesFromImports`,
+  which 0006 removed.
+- **Environmental landmines (node ESM scope):** the venv lives under the
+  repo root whose package.json says `"type": "module"`, so BOTH
+  pytest-pyodide's CJS `node_test_driver.js` and the dist-view shim get
+  misread as ESM — fixed with two `{ "type": "commonjs" }` scope markers
+  (one written into site-packages/pytest_pyodide at configure, self-healing;
+  one in the dist view). Also: driver results pass through a
+  `.replace("undefined","null")` — PNG readback uses HEX, never base64.
+- **sqlite group deleted**; its unique axes (file-VFS reopen persistence,
+  five storage classes + Row + rollback) folded into `basic/b08_sqlite.py`;
+  in-memory CRUD rides all/a02 + the harden suite's post-freeze sqlite
+  board. dump-builtins' `_sqlite3` assert dropped with it. ts-resolve.mjs
+  moved to `bench/lib/` (bench probes are its only consumers left).
+- **Wiring:** root `pnpm test:py` = `turbo run test:py` fanning to BOTH
+  suites (py-build#test:py dependsOn stdlib+bundles, web#test:py dependsOn
+  ^typecheck + py:stage; gitignored inputs as explicit globs ⇒ both CACHED —
+  second run 9/10 hits, 1.3 s). Board = `turbo run py:trace-check py:census
+  py:budgets py:stage-check test:py && typecheck && test && seed`. justfile
+  stays local-convenience only (nothing load-bearing routes through just).
+- **Gate results:** vitest py-integration 83/83 (~5 s wall) · pytest 44/44
+  = 9 units + 29 samples + 6 gates (~18 s incl. 6 boots) · `--rt host`
+  9 pass/35 skip · typecheck green · turbo cache-correct.
+
 ### Session 21 — toolchain replatform PHASE 1 (bytes frozen; no rotation)
 
 Plan: `toolchain-replatform-plan.md` §4 phase 1 — orchestration + scripts,
