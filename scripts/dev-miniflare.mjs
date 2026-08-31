@@ -71,7 +71,9 @@ const NAME = { sync: 'avlo-sync', images: 'avlo-images', unfurl: 'avlo-unfurl', 
 
 // CRITICAL: `wrangler dev --persist-to <X>` (and `wrangler d1 migrations apply
 // --persist-to <X>`) store under `<X>/v3/{d1,r2,kv,do,cache}` — Miniflare's
-// defaultPersistRoot does NOT add that `v3` segment. Omitting it makes the orchestrator
+// resourcePersistencePath (miniflare 5 renamed `defaultPersistRoot`; the old key is
+// silently ignored — every plugin then persists to an EMPTY throwaway tmp tree) does
+// NOT add that `v3` segment. Omitting it makes the orchestrator
 // open a brand-new EMPTY state tree beside the real one: D1 with no tables ("no such
 // table: room_visits"), empty R2 buckets, lost KV sessions + DO room data. So we append
 // `v3` to match wrangler's exact layout (same DB keys → reads the migrated DB directly).
@@ -204,7 +206,7 @@ function buildWorkerEntries() {
 function miniflareOptions() {
   return {
     log: new Log(logLevel), // [mf:*] request + lifecycle lines (suppressed by default via the API)
-    defaultPersistRoot: persistRoot,
+    resourcePersistencePath: persistRoot,
     host: HOST,
     port: PORTS[ENTRY] + offset, // entry worker = sync → its existing port (WS /sync/*)
     inspectorPort: INSPECTOR_PORT, // ONE inspector for all isolates
