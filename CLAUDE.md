@@ -397,7 +397,7 @@ computeBBoxForInto(id, kind, y, out) {
 
 | Subsystem cache | Owner | Read API |
 |---|---|---|
-| `textLayoutCache` (SoA text store: cross-entry pooled content/layout tiers + NaN-sentinel scalar columns, slot-keyed — `core/text/text-store.ts`) | `core/text/text-system.ts` (facade) | `getTextFrame`, `getLayout` (→ scalars), `getMeasuredContent` (view), `getLayoutScalarsById`, `getInlineStyles` |
+| `textLayoutCache` (SoA text store: cross-entry pooled content/layout tiers + NaN-sentinel scalar columns, slot-keyed — `core/text/text-store.ts`) | `core/text/text-system.ts` (facade) | `getTextFrame`, `getLayout` (→ scalars), `getLayoutScalarsById`, `getInlineStyles`; gesture-stable measured access = the slot int (`textSlotOf`) |
 | `codeSystem` (source / spans / layout / output / frame) | `core/code/code-system.ts` | `getCodeFrame`, `getSpans`, `getSource`, `getOutputCache` |
 | `bookmarkCache` (layout + frame) | `core/bookmark/bookmark-render.ts` | `getBookmarkFrame` |
 | `connectorRouter.routes` (per-id pooled `Point[]` + reverse `shape→connectors`) | `core/connectors/connector-router.ts` (owned by RDM) | `getConnectorRoute`, `getAttachedConnectors` |

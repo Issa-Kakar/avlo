@@ -4,21 +4,20 @@
  * Owns everything sticky-note-specific: constants, geometry helpers, the
  * directional shadow cache, body renderer, full canvas draw, bbox, and the
  * auto-font-size search. Runs on the shared SoA text store — one slot resolve
- * per operation, then pure column/pool-lane reads (the old path did four
- * string-keyed Map.gets per draw through the note-bridge accessors).
+ * per operation, then pure column/pool-lane reads.
  *
  * Auto-size search machinery is engine-shaped end to end:
- *   - `NOTE_FONT_STEPS` is a Float64Array; the per-oversized-word step lookup
- *     is an O(1) floor-LUT (`STEP_FOR_FLOOR`) instead of a linear scan — legal
- *     because every step is an integer, so `step ≤ maxStep ⟺ step ≤ ⌊maxStep⌋`.
+ *   - `NOTE_FONT_STEPS` is a Uint8Array (every step is a positive integer ≤
+ *     54 — loads are Smis, not doubles); the per-oversized-word step lookup
+ *     AND the educated phase starts are O(1) floor-LUT loads
+ *     (`STEP_FOR_FLOOR`) — legal because integer steps make
+ *     `step ≤ x ⟺ step ≤ ⌊x⌋` exact.
  *   - `noteFlowCheck` returns a single int: FLOW_FITS (−1),
- *     FLOW_HEIGHT_OVERFLOW (−2), or a jump-to-step index (≥ 0). The old
- *     `'fits' | 'heightOverflow' | number` union forced every call site
- *     through a polymorphic string/number check; one sign test now splits the
- *     jump class from the verdicts.
+ *     FLOW_HEIGHT_OVERFLOW (−2), or a jump-to-step index (≥ 0) — one sign
+ *     test splits the jump class from the verdicts, every call site stays
+ *     monomorphic on number.
  *   - `layoutNoteContentSlot` returns the derived font size as a plain number
- *     and commits the layout through the shared staging→pool path — the
- *     `{ layout, derivedFontSize }` result object is gone.
+ *     and commits the layout through the shared staging→pool path.
  *
  * Dependency direction is one-way: sticky-note → text-system → text-store.
  */
@@ -43,9 +42,6 @@ import {
   getSegText,
   getTokAdvW,
   getTokSeg,
-  syncViewIfAny,
-  TS_CONTENT_VALID,
-  TS_FAM_SHIFT,
   textSlotFast,
   textSlotOf,
 } from './text-store';
@@ -82,16 +78,17 @@ const NOTE_SHADOW_BOTTOM_RATIO = 0.12;
 
 const BASE_PADDING = NOTE_WIDTH * NOTE_PADDING_RATIO;
 const BASE_CONTENT_WIDTH = NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO);
+const CW100 = BASE_CONTENT_WIDTH * 100; // widest-word bound numerator, hoisted
 
 // Strictly descending, integer steps — both phases binary-search this array,
 // which requires monotonicity of `noteFlowCheck` in font size (smaller step ⇒
 // maxW100 and maxLines both grow ⇒ anything that fits at step s fits below it).
-const NOTE_FONT_STEPS = new Float64Array([
+// Max step 54 — the LUT clamps (`x >= 54 ? 54 : x | 0`) bake that literal.
+const NOTE_FONT_STEPS = new Uint8Array([
   54, 48, 44, 43, 42, 41, 40, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12,
   11, 10, 9, 8,
 ]);
 const NOTE_STEP_COUNT = NOTE_FONT_STEPS.length;
-const NOTE_MAX_STEP = 54;
 const NOTE_PHASE1_FLOOR = 11;
 const NOTE_PHASE1_FLOOR_IDX: number = (() => {
   for (let i = 0; i < NOTE_STEP_COUNT; i++) {
@@ -100,13 +97,14 @@ const NOTE_PHASE1_FLOOR_IDX: number = (() => {
   return NOTE_STEP_COUNT;
 })();
 
-// O(1) oversized-word step lookup: STEP_FOR_FLOOR[f] = first step index whose
-// step ≤ f, or NOTE_STEP_COUNT when none is (f < 8). Integer steps make the
-// floor lookup exact; indices 0..7 answer the "no step fits" case with the
-// same NOTE_STEP_COUNT the old linear scan returned — no extra branch.
+// O(1) step lookup: STEP_FOR_FLOOR[f] = first step index whose step ≤ f, or
+// NOTE_STEP_COUNT when none is (f < 8). Integer steps make the floor lookup
+// exact. Serves the oversized-word jump verdict AND both phases' educated
+// starts (an index of NOTE_STEP_COUNT simply empties the binary-search range —
+// the "nothing can fit" case falls straight through to the fallback).
 const STEP_FOR_FLOOR: Uint8Array = (() => {
-  const a = new Uint8Array(NOTE_MAX_STEP + 1);
-  for (let f = 0; f <= NOTE_MAX_STEP; f++) {
+  const a = new Uint8Array(55);
+  for (let f = 0; f <= 54; f++) {
     let idx = NOTE_STEP_COUNT;
     for (let i = 0; i < NOTE_STEP_COUNT; i++) {
       if (NOTE_FONT_STEPS[i] <= f) {
@@ -188,17 +186,19 @@ function computeStickyTextColor(hex: string): string {
 const FLOW_FITS = -1;
 const FLOW_HEIGHT_OVERFLOW = -2;
 
-function findStepForWord(wordW100: number, contentWidth: number): number {
-  const maxStep = (contentWidth * 100) / wordW100;
+/** First step index whose step fits `wordW100` on one content line, or
+ *  NOTE_STEP_COUNT when none does. */
+function findStepForWord(wordW100: number): number {
+  const maxStep = CW100 / wordW100;
   // Float compare BEFORE the |0 truncation — maxStep can exceed int32 range.
-  return STEP_FOR_FLOOR[maxStep >= NOTE_MAX_STEP ? NOTE_MAX_STEP : maxStep | 0];
+  return STEP_FOR_FLOOR[maxStep >= 54 ? 54 : maxStep | 0];
 }
 
 /**
  * Inline flow simulation over the entry's pool lanes (bases pre-added by the
  * caller for para/tok; seg indices resolve through the packed tokSeg words).
  * Phase 1 treats words as atomic; phase 2 char-breaks via sliceTextToFit.
- * Mirrors `placeWord`'s Q1/Q2/Q3 ladder — see text-system §4 for the model.
+ * Mirrors the flow engine's Q1/Q2/Q3 ladder — see text-system §4 for the model.
  */
 function noteFlowCheck(
   paraTok: Uint32Array,
@@ -213,7 +213,6 @@ function noteFlowCheck(
   maxW: number,
   maxLines: number,
   phase2: number,
-  contentWidth: number,
 ): number {
   let lineCount = 0;
 
@@ -249,11 +248,11 @@ function noteFlowCheck(
       }
 
       // Phase 1 bails out on oversized words — char-breaking not allowed yet.
-      if (tokAdvance > maxW && phase2 === 0) return findStepForWord(tokAdvance, contentWidth);
+      if (tokAdvance > maxW && phase2 === 0) return findStepForWord(tokAdvance);
 
-      // Per-sub-segment ladder — mirrors `placeWord`. Commit pending WS to the
-      // current line so intra-word break opportunities can place the leading
-      // sub-segment on the same line (e.g. `Char-` after `is `).
+      // Per-sub-segment ladder — mirrors the flow engine. Commit pending WS to
+      // the current line so intra-word break opportunities can place the
+      // leading sub-segment on the same line (e.g. `Char-` after `is `).
       curW += pendingW;
       pendingW = 0;
 
@@ -350,7 +349,7 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
   const R = getR();
   const b16 = ts << 4;
   const paraBase = R[b16];
-  const paraCount0 = R[b16 + 1];
+  const paraCount = R[b16 + 1]; // ≥ 1 always — the tokenizer forces one paragraph
   const tokBase = R[b16 + 3];
   const tokCount = R[b16 + 4];
   const segBase = R[b16 + 6];
@@ -367,7 +366,6 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
   const contentHeight = contentWidth;
   const lhMult = LINE_HEIGHT_MULT[famCode];
   const lineH100 = 100 * lhMult;
-  const paraCount = paraCount0 > 1 ? paraCount0 : 1;
 
   // Single scan: widest word at 100px.
   let maxWordW100 = 0;
@@ -377,28 +375,15 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
       if (w > maxWordW100) maxWordW100 = w;
     }
   }
+  // Educated starts — two LUT loads. heightMax bounds by paragraph count
+  // alone; phase 1 additionally requires the widest word to fit one line.
   const heightMax = contentHeight / (paraCount * lhMult);
-  const phase1MaxByWord = maxWordW100 > 0 ? (contentWidth * 100) / maxWordW100 : heightMax;
+  const phase1MaxByWord = maxWordW100 > 0 ? CW100 / maxWordW100 : heightMax;
   const phase1Max = phase1MaxByWord < heightMax ? phase1MaxByWord : heightMax;
+  const startIdxP2 = STEP_FOR_FLOOR[heightMax >= 54 ? 54 : heightMax | 0];
+  const startIdxP1 = STEP_FOR_FLOOR[phase1Max >= 54 ? 54 : phase1Max | 0];
 
-  let startIdxP1 = 0;
-  let startIdxP2 = 0;
-  {
-    let foundP2 = 0;
-    for (let i = 0; i < NOTE_STEP_COUNT; i++) {
-      const s = NOTE_FONT_STEPS[i];
-      if (foundP2 === 0 && s <= heightMax) {
-        startIdxP2 = i;
-        foundP2 = 1;
-      }
-      if (s <= phase1Max) {
-        startIdxP1 = i;
-        break;
-      }
-    }
-  }
-
-  let derivedFontSize = NOTE_FONT_STEPS[NOTE_STEP_COUNT - 1];
+  let derivedFontSize: number = NOTE_FONT_STEPS[NOTE_STEP_COUNT - 1];
   let enterPhase2 = 0;
 
   // Phase 1 — words atomic, floor 11px.
@@ -421,7 +406,7 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
       const result = noteFlowCheck(
         paraTok,
         paraBase,
-        paraCount0,
+        paraCount,
         tokSeg,
         tokAdvW,
         tokBase,
@@ -431,7 +416,6 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
         contentWidth / scale,
         maxLines,
         0,
-        contentWidth,
       );
 
       if (result === FLOW_FITS) {
@@ -475,7 +459,7 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
         noteFlowCheck(
           paraTok,
           paraBase,
-          paraCount0,
+          paraCount,
           tokSeg,
           tokAdvW,
           tokBase,
@@ -485,7 +469,6 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
           contentWidth / scale,
           maxLines,
           1,
-          contentWidth,
         ) === FLOW_FITS
       ) {
         answer = mid;
@@ -510,9 +493,8 @@ function layoutNoteContentSlot(ts: number, famCode: number): number {
 
   const S = getS();
   const b8 = ts << 3;
-  S[b8] = Number.NaN; // lanes are note-scaled now — a text-style getLayout must re-measure
+  S[b8] = NaN; // lanes are note-scaled now — a text-style getLayout must re-measure
   S[b8 + 6] = derivedFontSize * lhMult;
-  syncViewIfAny(ts);
 
   flowSlotContent(ts, contentWidth);
   commitFlowToSlot(ts, derivedFontSize, famCode, contentWidth);
@@ -532,13 +514,13 @@ export function getNoteLayout(objectId: string, fragment: Y.XmlFragment, fontFam
   const status = R[(ts << 4) + 15];
   const dfs = S[(ts << 3) + 5];
 
-  // Tier 1 — content valid + family matches + derived size valid.
-  if ((status & TS_CONTENT_VALID) !== 0 && ((status >>> TS_FAM_SHIFT) & 255) === famCode && !Number.isNaN(dfs)) {
+  // Tier 1 — fused content-valid + family probe, derived size non-NaN.
+  if ((status & 0xff01) === ((famCode << 8) | 1) && dfs === dfs) {
     return layoutScalarsOfSlot(ts);
   }
 
   // Tier 2/3 — (re-tokenize when content stale, then) measure at 100px + auto-size.
-  if ((status & TS_CONTENT_VALID) === 0) {
+  if ((status & 1) === 0) {
     tokenizeFragment(fragment);
     commitTokenizedToSlot(ts);
   }
@@ -554,7 +536,7 @@ export function getNoteDerivedFontSize(objectId: string): number {
   const ts = textSlotOf(objectId);
   if (ts < 0) return NOTE_FONT_STEPS[0];
   const v = getS()[(ts << 3) + 5];
-  return Number.isNaN(v) ? NOTE_FONT_STEPS[0] : v;
+  return v !== v ? NOTE_FONT_STEPS[0] : v;
 }
 
 // =============================================================================
@@ -666,7 +648,7 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
   const S = getS();
   const b8 = ts << 3;
   const derivedFontSize = S[b8 + 5];
-  if (Number.isNaN(derivedFontSize)) return; // note tiers never ran for this entry
+  if (derivedFontSize !== derivedFontSize) return; // NaN ⇒ note tiers never ran
 
   const r = readNoteRender(handle.y);
   const af = anchorFactor(r.align);
@@ -682,9 +664,14 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
     return;
   }
 
-  const lineCount = getR()[(ts << 4) + 10];
+  const R = getR();
+  const b16 = ts << 4;
+  const lineCount = R[b16 + 10];
   const lineHeight = S[b8 + 3];
-  const b2t = getBaselineToTopRatioByCode(famCodeOf(r.fontFamily)) * derivedFontSize;
+  // famCode off the status word — the deep observer runs getNoteLayout before
+  // any draw, so the byte tracks the Y.Map's fontFamily; no string read, no
+  // record lookup per frame.
+  const b2t = getBaselineToTopRatioByCode((R[b16 + 15] >>> 8) & 255) * derivedFontSize;
   const contentWidth = BASE_CONTENT_WIDTH;
   const maxContentH = contentWidth;
   const contentH = lineCount * lineHeight;
@@ -699,17 +686,7 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
   }
 
   ctx.textBaseline = 'alphabetic';
-  setRenderKernelScalars(
-    noteAnchorX,
-    textY,
-    af,
-    contentWidth,
-    lineHeight,
-    b2t,
-    BASE_PADDING,
-    BASE_PADDING + contentWidth,
-    derivedFontSize * 0.25,
-  );
+  setRenderKernelScalars(noteAnchorX, textY, af, lineHeight, b2t, BASE_PADDING, BASE_PADDING + contentWidth, derivedFontSize * 0.25);
   renderRunsForSlot(ctx, ts, 1, getStickyNoteTextColor(r.fillColor));
 
   ctx.restore();

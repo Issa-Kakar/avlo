@@ -18,12 +18,12 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 
 | File | Purpose |
 |------|---------|
-| `core/text/text-store.ts` | **The SoA data plane** (LEAF — pure storage, no Yjs/canvas/measure imports): dense text-slot fabric (`Map<id,ts>` + LIFO free list), interleaved scalar columns (`R` u32 stride 16 = range bases/counts/caps + packed status word; `S` f64 stride 8 with NaN staleness sentinels; frame col f64 stride 4), five cross-entry pools in two repack groups (content: para/tok/seg · layout: line/run) with tail-bump alloc + slack + fresh-array repack, appSlot→ts draw accelerator, highlight intern, per-entry `MeasuredContent` view descriptors kept coherent across relocation |
+| `core/text/text-store.ts` | **The SoA data plane** (LEAF — pure storage, no Yjs/canvas/measure imports): dense text-slot fabric (`Map<id,ts>` + LIFO free list), interleaved scalar columns (`R` u32 stride 16 = range bases/counts/caps + packed status word: valid/bold/italic bits + famCode byte + uniform-highlight idx `<< 16`; `S` f64 stride 8 with NaN staleness sentinels; frame col f64 stride 4), five cross-entry pools in two repack groups (content: para/tok/seg · layout: line/run) with tail-bump alloc + slack + fresh-array repack, appSlot→ts draw accelerator, highlight intern. Status-word masks are source literals at use sites (module consts don't fold — FlatRTree rule); the store header is the bit model's single source of truth. NO view/descriptor layer: consumers hold the slot int and read lanes + bases at use time (coherent across relocation by construction; a slot held past deletion reads zero counts) |
 | `core/text/text-system.ts` | Pipeline (tokenize→staging→pool, in-place measure, base-offset-parameterized flow core), `textLayoutCache` facade (tiered orchestration over columns), unified run render kernel + `renderTextLayoutById`, text BBox |
 | `core/text/line-break.ts` | UAX #14 soft-break machinery (`nextSoftBreak`, `isBreakOpportunity`) — pure char-code logic, leaf module |
 | `core/text/text-measure.ts` | Measure context, **lazy font intern table** (`internFont`/`FONT_STRINGS` — u16 indices stored in pool lanes; per-measure `beginFontQuad`/`quadFontIdx`), idx-keyed measure caches (`measureTextByIdx`/`spaceWidthByIdx`), string-keyed API kept for bookmark/code, measured font metrics (+ famCode-indexed mirrors), measurement caches — shared boundary |
-| `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + twin kernel renders: `renderShapeLabelSlot` (at rest, pool lanes) / `renderShapeLabelPreview` (transform preview — flows the measured view into staging and paints straight from it, no commit) |
-| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size search over pool lanes (`Float64Array` steps + O(1) `STEP_FOR_FLOOR` LUT; `noteFlowCheck` returns int sentinels −1 fits / −2 heightOverflow / ≥0 jump idx), `getNoteLayout`/`getNoteDerivedFontSize` (columnar), single-entry shadow cache, `drawStickyNote`, `computeNoteBBox` |
+| `core/text/shape-label.ts` | Shape-label text box (`computeLabelTextBox` — writes a shared scratch) + twin kernel renders: `renderShapeLabelSlot` (at rest, pool lanes) / `renderShapeLabelPreview` (transform preview — appSlot-resolves the entry, flows its measured lanes into staging and paints straight from it, no commit) |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size search over pool lanes (`Uint8Array` integer steps; the O(1) `STEP_FOR_FLOOR` LUT serves oversized-word verdicts AND both phases' educated starts; `noteFlowCheck` returns int sentinels −1 fits / −2 heightOverflow / ≥0 jump idx), `getNoteLayout`/`getNoteDerivedFontSize` (columnar), single-entry shadow cache, `drawStickyNote` (famCode read off the status word — no per-frame family lookup), `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging, lazy ySync-origin registration. Lives in the lazy editor chunk (sole importer is `tiptap-editor.ts`) |
 | `core/text/tiptap-loader.ts` | **Eager** — cached `loadTiptapEditor()`/`loadTiptapBase()` (only dynamic `import()`s, zero `@tiptap` value import) + tool-select preload subscription |
 | `core/text/tiptap-editor.ts` | **Lazy** editor chunk — `import './tiptap.css'` + re-exported `Editor` + `buildTextExtensions()` (Placeholder + base defs + TextCollaboration) |
@@ -118,17 +118,23 @@ Every entry's variable-length data lives in the SHARED pools, referenced by
 (base, count, cap) ranges in the `R` column; in-range indices are entry-relative
 so ranges relocate with a base update. The old per-id buffer objects (and the
 full tokenized→measured topology copy every measure did) are gone — measure
-rewrites two lanes in place. The flow engine is one base-offset-parameterized
-core: the cache path hands it pool lanes + bases, the transform shim hands it a
-`MeasuredContent` view (same lane types, own bases) — one monomorphic body, its
-output committed from staging to a pool range, a `TextLayout` object, or painted
-directly (label preview).
+rewrites two lanes in place. The flow engine (`flowSlotContent(ts, maxWidth)`)
+is ONE monolithic body, FlatRTree-query style: pool lanes and staging arrays
+hoisted to locals, the line builder (advX/visW/ink) and the pending-WS machine
+(a single contiguous seg range — word/space tokens alternate, so pending never
+fragments) live in locals, the whole Q1/Q2/Q3 word-placement ladder is inlined,
+and only true leaves are calls (measureTextByIdx, sliceTextToFit, nextSoftBreak,
+isBreakOpportunity, rare staging growers with local-ref refresh). Its staged
+output commits to a pool range, to a caller-owned `TextLayout`
+(`layoutSlotContent(ts, width, fontSize, out)` — the transform sidecar), or
+paints directly (label preview).
 
 Primary API: `textLayoutCache.getLayout()` (ensures + returns `TextLayoutScalars`,
-a module scratch). `layoutMeasuredContent()` stays exported for the transform's
-E/W reflow sidecar (`Entry<'text'>.out.layout` reused per pointermove);
-`renderShapeLabelPreview()` renders labeled-shape previews straight from flow
-staging with zero per-frame buffers.
+a module scratch). The transform's E/W reflow sidecar freezes the entry's SLOT
+INT (`textSlotOf`, re-exported by text-system) and calls `layoutSlotContent`
+per pointermove — lanes/bases read fresh each call, so pool relocation between
+moves is invisible; `renderShapeLabelPreview()` renders labeled-shape previews
+straight from flow staging with zero per-frame buffers.
 
 ### Font Metrics
 
@@ -167,7 +173,7 @@ Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at
 
 **Paragraph end:** Trailing WS is content (not hanging), so `alignmentWidth = min(advanceWidth, maxWidth)`.
 
-**Word placement — two decision systems:** `placeWord` drives a per-sub-segment Q1/Q2/Q3 ladder over UAX#14 break opportunities within each style segment of a word. Mirrors CSS's layered pipeline:
+**Word placement — two decision systems:** the flow monolith's word arm drives a per-sub-segment Q1/Q2/Q3 ladder over UAX#14 break opportunities within each style segment of a word (inlined — there is no `placeWord` function; builder state lives in locals). Mirrors CSS's layered pipeline:
 - **Q1** — chunk fits current line as-is. Always allowed.
 - **Q2** — UAX#14 soft break: place atomic on a fresh line. Gated by `canSoftBreak` so style-only seams (a bold/highlight boundary inside an otherwise unbroken AL run) don't behave as break opportunities.
 - **Q3** — `overflow-wrap: break-word` char-slice via `sliceTextToFit`. Operates *exactly where* UAX#14 forbids a break, so NOT gated by `canSoftBreak`. Pre-emptive `pushLine` fires only when truly oversized (`chunkW > maxWidth`) at a real break op (matches DOM: oversized words start fresh); non-break seams fall straight into the slice loop and char-fill the remaining line space.
@@ -196,7 +202,7 @@ interface TextLayout {
 interface TextLayoutScalars { slot; fontSize; famCode; lineHeight; lineCount; boxWidth }
 ```
 
-`createTextLayout()` allocates an empty shim buffer (engine zeroes `lineCount` at freeze as its stale-glyph guard). `layoutMeasuredContent(content, width, fontSize, out?)` flows through staging and commits into `out`. Layout coalescing (adjacent runs with identical fontIdx+hlIdx merge) and the pending-WS state machine are unchanged from the pre-store engine.
+`createTextLayout()` allocates an empty shim buffer (engine zeroes `lineCount` at freeze as its stale-glyph guard). `layoutSlotContent(ts, width, fontSize, out)` flows the slot's lanes through staging and commits into `out` (famCode + lineHeight read off the columns). Layout coalescing (adjacent runs with identical fontIdx+hlIdx merge) and the pending-WS state machine are byte-identical with the pre-monolith engine (differentially verified — see the landing commit).
 
 ---
 
@@ -227,15 +233,12 @@ textLayoutCache.evict(id) / clear()      // Deletion (frees ranges + slot) / ful
                                           // (clear also resets the font intern table + value caches)
 textLayoutCache.getFrame(id)             // Derived frame — per-slot tuple refreshed from the
                                           // frame column; borrowed ref, copy scalars to hold
-textLayoutCache.getMeasuredContent(id)   // MeasuredContent VIEW (pool lanes + bases) — one
-                                          // descriptor per entry, kept coherent across pool
-                                          // relocation; gesture-stable for the transform freeze
 textLayoutCache.getLayoutScalarsById(id) // Scalars, no stale probe (renderer/connector-label)
 textLayoutCache.noteCachedLayout(id)     // Alias of getLayoutScalarsById (convert-kind)
 textLayoutCache.getInlineStyles(id)      // UniformStyles scratch from the packed status word
 ```
 
-Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `sticky-note.ts` and reads/writes the store columns directly — the old note-bridge accessor set (five Map.gets per read path) is gone.
+There is no view accessor: gesture-stable measured-content access IS the slot int (`textSlotOf(id)`, re-exported by text-system) — the transform freezes it at begin and every `layoutSlotContent` call reads live lanes/bases. Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `sticky-note.ts` and reads/writes the store columns directly — the old note-bridge accessor set (five Map.gets per read path) is gone.
 
 ---
 
@@ -261,14 +264,14 @@ result through the clamped body, no mode branch.
 
 - `renderTextLayoutById(ctx, appSlot, id, originX, originY, color, align?, fillColor?)` — at-rest text, connector labels, scale previews. Resolves through the appSlot accelerator; silent no-op on the cold-miss race. Fixed mode (finite `layoutWidthReq`) uses `lineAlignW` + container clamp; auto uses `lineAdvW`, unclamped.
 - `renderTextLayout(ctx, layout, …)` — object twin for the transform reflow preview.
-- `renderShapeLabelSlot(ctx, ts, textBox, color, align?, alignV?)` / `renderShapeLabelPreview(ctx, measured, fontSize, textBox, color, align?, alignV?)` — `shape-label.ts`. H+V alignment within text box, vertical via `getNoteContentOffsetY()`, overflow clips via `ctx.clip()`. The preview variant flows the measured view into staging and paints from it — no per-frame layout buffer, no cache writes.
+- `renderShapeLabelSlot(ctx, ts, textBox, color, align?, alignV?)` / `renderShapeLabelPreview(ctx, appSlot, id, fontSize, textBox, color, align?, alignV?)` — `shape-label.ts`. H+V alignment within text box, vertical via `getNoteContentOffsetY()`, overflow clips via `ctx.clip()`. The preview variant appSlot-resolves the entry, flows its measured lanes into staging and paints from it — no per-frame layout buffer, no cache writes.
 
 ### Alignment Helpers
 
 ```typescript
 anchorFactor(align)   // left=0, center=0.5, right=1
-getLineStartX(originX, boxWidth, lineW, align)
-  // left: boxLeftX, center: boxLeftX+(boxWidth-lineW)/2, right: boxLeftX+(boxWidth-lineW)
+// Per-line start X inside the kernel is `originX − anchorFactor · lineW` —
+// the boxWidth terms of the anchor algebra cancel, so no standalone helper.
 computeLabelTextBox(shapeType, frame)   // shape-label.ts — writes + returns a shared module scratch
   // Max inscribed rect inset by LABEL_PADDING=8 (exported — convert-kind.ts's frame inversion reuses it).
   // ellipse: (a/sqrt2)x2 x (b/sqrt2)x2 centered; diamond: w/2 x h/2 centered; rect: simple inset
@@ -452,7 +455,7 @@ Reuses the full text pipeline with shape-aware positioning.
 
 **At rest:** `drawShapeLabel()` at end of `drawShape()`, gated by `hasLabel(y)`. Uses `textLayoutCache.getLayout()` with textBox width.
 
-**During transforms:** `drawShapeLabelWithFrame()` takes explicit frame, uses `getMeasuredContent()` + `layoutMeasuredContent()` directly — avoids polluting cache.
+**During transforms:** `drawShapeLabelWithFrame()` takes explicit frame → `renderShapeLabelPreview(ctx, slot, id, …)` flows the entry's measured lanes into staging and paints — avoids polluting cache.
 
 ### DOM Editing
 
@@ -461,7 +464,7 @@ Reuses the full text pipeline with shape-aware positioning.
 ### Cache Invalidation
 
 - Deep observer: `path[1] === 'content'` -> `invalidateContent(id, fragment)` — eager re-tokenize for inline styles
-- Transform preview: `getMeasuredContent()` + `layoutMeasuredContent()` — no cache writes
+- Transform preview: `renderShapeLabelPreview` (staging flow off the entry's slot) — no cache writes
 
 ---
 
@@ -521,9 +524,9 @@ Font glyph widths scale linearly. Measure once at 100px via `measureSlot(ts, 100
 #### Font Size Steps
 
 ```typescript
-NOTE_FONT_STEPS = Float64Array [54, 48, 44, 43, 42, 41, 40, 38, 37, 36, 35, 34, 33, 32,
+NOTE_FONT_STEPS = Uint8Array [54, 48, 44, 43, 42, 41, 40, 38, 37, 36, 35, 34, 33, 32,
                    31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15,
-                   14, 13, 12, 11, 10, 9, 8]
+                   14, 13, 12, 11, 10, 9, 8]   // positive ints — loads are Smis
 NOTE_PHASE1_FLOOR = 11   // Below this, char-breaking activates
 ```
 
@@ -531,13 +534,13 @@ Dense, mostly per-1 in the mid range with strategically placed odd values so tha
 
 `NOTE_PHASE1_FLOOR_IDX` is precomputed at module load — the exclusive upper bound for phase-1 search.
 
-#### Educated Starts (single scan)
+#### Educated Starts (two LUT loads)
 
 One pass over tokens finds `maxWordW100`. Then:
 - `heightMax = contentHeight / (paraCount * lhMult)` — max step allowed by paragraph count alone.
-- `phase1Max = min((contentWidth * 100) / maxWordW100, heightMax)` — phase 1 also respects widest-word-fits-on-one-line.
+- `phase1Max = min(CW100 / maxWordW100, heightMax)` — phase 1 also respects widest-word-fits-on-one-line.
 
-Single descending sweep through `NOTE_FONT_STEPS` captures both `startIdxP2` (first idx where step ≤ `heightMax`) and `startIdxP1` (first idx where step ≤ `phase1Max`, always ≥ `startIdxP2`).
+`startIdxP2 = STEP_FOR_FLOOR[clamp54(heightMax)]`, `startIdxP1 = STEP_FOR_FLOOR[clamp54(phase1Max)]` — the same floor LUT as the oversized-word verdict answers "first idx where step ≤ x" exactly (integer steps). A `NOTE_STEP_COUNT` answer empties the search range, so "nothing can fit" skips both searches and falls through to the fallback.
 
 #### Phase 1: Words Atomic (floor 11px), Binary Search
 
@@ -575,15 +578,15 @@ union is gone):
 FLOW_FITS = -1;  FLOW_HEIGHT_OVERFLOW = -2;  // ≥ 0 = jumpToStepIdx
 ```
 
-Mirrors `layoutMeasuredContent`'s pending whitespace state machine:
+Mirrors the flow engine's pending whitespace state machine:
 - Leading WS: committed immediately (can overflow)
 - Inter-word WS: buffered as `pendingW`, commit/discard on next word
 - Paragraph boundaries: reset line, increment `lineCount`
 - Early bail when `lineCount > maxLines`
-- Phase 1: returns `findStepForWord(wordW, contentWidth)` for oversized words
+- Phase 1: returns `findStepForWord(wordW)` for oversized words
 - Phase 2: char-breaks oversized words segment by segment
 
-Sub-segment ladder is the same two-decision-system structure as `placeWord` (Stage 3 §Word placement) — `canSoftBreak` gates Q2 only; Q3 char-slices across non-break style seams to match DOM. Phase 1 may char-slice at style seams (line count then matches DOM); the `tokAdvance > maxW` bail still ensures truly oversized words defer to phase 2.
+Sub-segment ladder is the same two-decision-system structure as the flow monolith's word arm (Stage 3 §Word placement) — `canSoftBreak` gates Q2 only; Q3 char-slices across non-break style seams to match DOM. Phase 1 may char-slice at style seams (line count then matches DOM); the `tokAdvance > maxW` bail still ensures truly oversized words defer to phase 2.
 
 #### Phase B: Mutate + Build Layout
 
@@ -595,7 +598,7 @@ beginFontQuad(derivedFontSize, famCode);                              // lazy re
 for (seg range) { segAdvW[s] *= ratio; segFontIdx[s] = quadFontIdx(segStyle[s] & 3); }
 for (tok range) tokAdvW[t] *= ratio;
 S[measuredFontSize] = NaN;  // lanes are note-scaled — a text-style getLayout must re-measure
-S[measuredLineHeight] = derivedFontSize * lhMult;                     // + syncViewIfAny
+S[measuredLineHeight] = derivedFontSize * lhMult;
 flowSlotContent(ts, contentWidth); commitFlowToSlot(ts, derived, famCode, contentWidth);
 ```
 
@@ -642,7 +645,7 @@ Key differences from `renderTextLayout`:
 - All coordinates in base space, GPU handles scaling
 - No fillColor background rect (body drawn by `renderNoteBody`)
 - Container bounds = content area (not text block box)
-- Uses `getLineStartX` with virtual anchor
+- Line start X anchors on the virtual note anchor (`anchorX − af·lineW` in the kernel)
 - Vertical offset via `getNoteContentOffsetY` (not baseline positioning)
 - Clips overflow at content area boundary
 
@@ -710,7 +713,7 @@ getNoteContentOffsetY(alignV, maxContentH, contentH):
   return alignV === 'middle' ? space / 2 : space
 ```
 
-Horizontal: `noteAnchorX = padding + anchorFactor(align) * contentWidth` -> `getLineStartX(noteAnchorX, contentWidth, lineW, align)`.
+Horizontal: `noteAnchorX = padding + anchorFactor(align) * contentWidth`; per line the kernel starts at `noteAnchorX − anchorFactor · lineW`.
 
 ### BBox + Frame
 
@@ -778,7 +781,7 @@ Mixed + side handle -> edge-pin translate (only origin, no scale change).
 Full transform behavior matrix in `tools/selection/CLAUDE.md`. Text/note-specific details:
 
 - **Text uniform (corner + textOnly N/S):** fontSize rounded to 3dp, origin recomputed from frame center via `anchorFactor(align)` + `baselineToTopRatio`. Preview via `ctx.scale()` on cached layout — no per-frame re-layout
-- **Text E/W reflow:** reflow sidecar on the transform engine (pooled `TextLayout` buffer reused per pointermove; measured-content ref + minW + anchor frozen at begin). Uses `layoutMeasuredContent(cached measured, targetWidth, fontSize)` — skips tokenize + measure. Commit writes `width = layout.boxWidth` + `origin`. Converts auto→fixed
+- **Text E/W reflow:** reflow sidecar on the transform engine (pooled `TextLayout` buffer reused per pointermove; frozen text SLOT + minW + anchor at begin). Uses `layoutSlotContent(ts, targetWidth, fontSize, layout)` — skips tokenize + measure, reads lanes/bases fresh per move. Commit writes `width = layout.boxWidth` + `origin`. Converts auto→fixed
 - **Note uniform:** Quantizes `scale` to 3dp (not fontSize). Bbox-center position preservation. Nested `ctx.scale` composition — no re-layout
 - **Mixed N/S:** Edge-pin translate (origin offset only, no scale change)
 - **Labels:** Follow shape frame transform

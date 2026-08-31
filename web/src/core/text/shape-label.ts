@@ -5,9 +5,9 @@
  * shape-aware positioning. This module owns the pieces specific to labels:
  *   - `computeLabelTextBox`      — max inscribed rect per shape type, inset by padding
  *   - `renderShapeLabelSlot`     — at-rest draw off the entry's pooled layout tier
- *   - `renderShapeLabelPreview`  — transform-preview draw: flow the cached
- *     measured view into staging and paint straight from it — no per-frame
- *     layout buffer, no commit copy, no cache pollution
+ *   - `renderShapeLabelPreview`  — transform-preview draw: flow the entry's
+ *     measured lanes into staging at the preview width and paint straight from
+ *     it — no per-frame layout buffer, no commit copy, no cache pollution
  *
  * The two render bodies are deliberate twins over the shared run kernel
  * (`setRenderKernelScalars` + renderRuns*) rather than one body with a source
@@ -21,12 +21,11 @@
 import type { TextAlign, TextAlignV } from '../accessors';
 import type { FrameTuple } from '../types/geometry';
 import { getBaselineToTopRatioByCode } from './text-measure';
-import { getR, getS, TS_FAM_SHIFT } from './text-store';
+import { getR, getS, textSlotFast } from './text-store';
 import {
   anchorFactor,
-  flowMeasuredToStaging,
+  flowSlotContent,
   getNoteContentOffsetY,
-  type MeasuredContent,
   renderRunsForSlot,
   renderRunsFromStaging,
   setRenderKernelScalars,
@@ -120,7 +119,7 @@ export function renderShapeLabelSlot(
   const b8 = ts << 3;
   const fontSize = S[b8 + 2];
   const lineHeight = S[b8 + 3];
-  const famCode = (R[b16 + 15] >>> TS_FAM_SHIFT) & 255;
+  const famCode = (R[b16 + 15] >>> 8) & 255;
 
   const contentHeight = lineCount * lineHeight;
   const b2t = fontSize * getBaselineToTopRatioByCode(famCode);
@@ -139,18 +138,21 @@ export function renderShapeLabelSlot(
   ctx.textRendering = 'optimizeSpeed';
 
   const af = anchorFactor(align);
-  setRenderKernelScalars(tbx + af * tbw, firstBaselineY, af, tbw, lineHeight, b2t, tbx, tbx + tbw, fontSize * 0.25);
+  setRenderKernelScalars(tbx + af * tbw, firstBaselineY, af, lineHeight, b2t, tbx, tbx + tbw, fontSize * 0.25);
   renderRunsForSlot(ctx, ts, 1, color);
 
   if (needsClip) ctx.restore();
 }
 
-/** Transform-preview label draw: flow the cached measured view at the preview
- *  frame's text-box width straight into staging and paint from it. Zero cache
- *  writes, zero per-frame layout buffers. */
+/** Transform-preview label draw: flow the entry's measured lanes at the
+ *  preview frame's text-box width straight into staging and paint from it.
+ *  Zero cache writes, zero per-frame layout buffers. Resolves the entry
+ *  through the app-slot accelerator; silent no-op when it's absent (cold-miss
+ *  race — the observer populates before render). */
 export function renderShapeLabelPreview(
   ctx: CanvasRenderingContext2D,
-  measured: MeasuredContent,
+  appSlot: number,
+  id: string,
   fontSize: number,
   textBox: FrameTuple,
   color: string,
@@ -162,14 +164,16 @@ export function renderShapeLabelPreview(
   const tbw = textBox[2];
   const tbh = textBox[3];
   if (tbw <= 0 || tbh <= 0) return;
+  const ts = textSlotFast(appSlot, id);
+  if (ts < 0) return;
 
-  flowMeasuredToStaging(measured, tbw > 0.01 ? tbw : 0.01);
+  flowSlotContent(ts, tbw > 0.01 ? tbw : 0.01);
   const lineCount = stagedFlowLineCount();
   if (lineCount === 0) return;
-  const lineHeight = measured.lineHeight;
+  const lineHeight = getS()[(ts << 3) + 6]; // measuredLineHeight
 
   const contentHeight = lineCount * lineHeight;
-  const b2t = fontSize * getBaselineToTopRatioByCode(measured.famCode);
+  const b2t = fontSize * getBaselineToTopRatioByCode((getR()[(ts << 4) + 15] >>> 8) & 255);
   const needsClip = contentHeight > tbh;
   const vOffset = getNoteContentOffsetY(alignV, tbh, contentHeight);
   const firstBaselineY = (needsClip ? tby : tby + vOffset) + b2t;
@@ -185,7 +189,7 @@ export function renderShapeLabelPreview(
   ctx.textRendering = 'optimizeSpeed';
 
   const af = anchorFactor(align);
-  setRenderKernelScalars(tbx + af * tbw, firstBaselineY, af, tbw, lineHeight, b2t, tbx, tbx + tbw, fontSize * 0.25);
+  setRenderKernelScalars(tbx + af * tbw, firstBaselineY, af, lineHeight, b2t, tbx, tbx + tbw, fontSize * 0.25);
   renderRunsFromStaging(ctx, 1, color);
 
   if (needsClip) ctx.restore();

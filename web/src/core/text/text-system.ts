@@ -4,32 +4,42 @@
  * Three-stage pipeline: Tokenize → Measure → Flow, all operating on the
  * cross-entry pooled storage in `text-store.ts` (one set of global typed-array
  * lanes for EVERY entry, addressed by per-slot base offsets — no per-id buffer
- * objects, no nested heap layout).
+ * objects, no nested heap layout, no view descriptors: an entry is addressed
+ * by its slot int everywhere, including across a transform gesture).
  *
  *   Y.XmlFragment
  *       ↓ tokenizeFragment() → staging          §2
  *       ↓ commitTokenizedToSlot(ts)             (content tier: topology + text + style)
  *       ↓ measureSlot(ts, fontSize, famCode)    §3  — IN PLACE over the pool:
  *                                                    writes only the advance-width
- *                                                    and font-index lanes; the old
- *                                                    tokenized→measured full topology
- *                                                    copy is gone
+ *                                                    and font-index lanes
  *       ↓ flowSlotContent(ts, maxWidth) → staging    §4
  *       ↓ commitFlowToSlot(ts, …)               (layout tier: lines + runs)
  *       ↓ renderRunsForSlot()                   §6  canvas output
  *       ↓ computeTextBBox()                     §7  spatial index
  *
- * The flow engine is ONE base-offset-parameterized core (`flowCore`) — the
- * cache path hands it pool lanes + entry bases; the transform shim hands it a
- * `MeasuredContent` view (same lane types, its own bases), so both paths run
- * the identical monomorphic code. Its output lands in module staging arrays
- * and is committed to a pool range, an object `TextLayout` (transform reflow
- * sidecar), or rendered straight from staging (label transform preview).
+ * The flow engine (`flowSlotContent`) is ONE monolithic body, FlatRTree-query
+ * style: pool lanes and staging arrays hoisted into locals once, every scalar
+ * of the line builder and the pending-whitespace machine in locals (register
+ * traffic, not module-slot traffic), and the whole word-placement ladder
+ * inlined — the only calls that survive are the true leaves (measureText,
+ * sliceTextToFit, nextSoftBreak, isBreakOpportunity) and the rare staging
+ * growers, after which the hoisted refs are refreshed. Its staged output is
+ * committed to a pool range (`commitFlowToSlot`), to a caller-owned
+ * `TextLayout` (`layoutSlotContent` — the transform reflow sidecar), or
+ * rendered straight from staging (`renderRunsFromStaging` — label transform
+ * preview; no per-frame layout buffer exists anywhere).
  *
  * Staleness is columnar, sentinel-driven (see text-store header): NaN
  * measuredFontSize fails the `=== fontSize` compare exactly like a stale tag,
- * Infinity layoutWidthReq encodes 'auto' AND the flow maxWidth in one value.
- * The three-tier invalidation contract is unchanged:
+ * Infinity layoutWidthReq encodes 'auto' AND the flow maxWidth in one value,
+ * and NaN probes are raw self-compares (`w !== w`) — Number.isNaN is a global
+ * + property load + call in the tiers that matter. Status-word masks are
+ * source literals (module consts don't constant-fold): bit0 CONTENT_VALID,
+ * bit1 ALL_BOLD, bit2 ALL_ITALIC, famCode byte at << 8, uniform-highlight
+ * intern idx at << 16 — `(status & 0xff01) === (famCode << 8 | 1)` is the
+ * fused content-valid + family probe. The three-tier invalidation contract is
+ * unchanged:
  *   content change  → re-tokenize + re-measure + re-flow   (observer-driven)
  *   fontSize/family → re-measure + re-flow                 (compare-detected)
  *   width change    → re-flow only                         (compare-detected)
@@ -90,18 +100,10 @@ import {
   getSegText,
   getTokAdvW,
   getTokSeg,
-  getUniHlCol,
   HL_STRINGS,
   internHighlight,
-  type MeasuredContent,
-  measuredViewOf,
   releaseTextSlot,
   resetTextStore,
-  syncViewIfAny,
-  TS_ALL_BOLD,
-  TS_ALL_ITALIC,
-  TS_CONTENT_VALID,
-  TS_FAM_SHIFT,
   textSlotFast,
   textSlotOf,
 } from './text-store';
@@ -109,7 +111,7 @@ import {
 export type { FontFamily, TextAlign, TextAlignV, TextProps, TextWidth } from '../accessors';
 export type { FontFamilyConfig } from './font-config';
 export { FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
-export type { MeasuredContent } from './text-store';
+export { textSlotFast, textSlotOf } from './text-store';
 
 // =============================================================================
 // §1  TYPES
@@ -156,7 +158,7 @@ export function createTextLayout(initialLineCap: number = 8, initialRunCap: numb
     famCode: 0,
     lineHeight: 0,
     boxWidth: 0,
-    maxWidthReq: Number.POSITIVE_INFINITY,
+    maxWidthReq: Infinity,
     lineCount: 0,
     lineCap: initialLineCap,
     lineRunStart: new Uint32Array(initialLineCap + 1),
@@ -173,7 +175,7 @@ export function createTextLayout(initialLineCap: number = 8, initialRunCap: numb
 }
 
 /** Layout scalars for one entry — module scratch returned by the facade's
- *  scalar readers. Consume before the next scalar-returning cache call. */
+ *  scalar readers. Consume before the next scalar-returning call. */
 export interface TextLayoutScalars {
   slot: number;
   fontSize: number;
@@ -192,7 +194,7 @@ function fillScalars(ts: number): TextLayoutScalars {
   const b16 = ts << 4;
   _scalars.slot = ts;
   _scalars.fontSize = S[b8 + 2];
-  _scalars.famCode = (R[b16 + 15] >>> TS_FAM_SHIFT) & 255;
+  _scalars.famCode = (R[b16 + 15] >>> 8) & 255;
   _scalars.lineHeight = S[b8 + 3];
   _scalars.lineCount = R[b16 + 10];
   _scalars.boxWidth = S[b8 + 4];
@@ -203,12 +205,12 @@ function fillScalars(ts: number): TextLayoutScalars {
 // §2  TOKENIZE — Y.XmlFragment → staging → content tier
 // =============================================================================
 
-// Whitespace producing word-break opportunities. Excludes the NBSP family
-// (U+00A0 NBSP, U+202F narrow NBSP, U+2007 figure space, U+2060 WJ, U+FEFF
-// ZWNBSP) — those stay inside word tokens; the UAX#14 classifier (LB11/LB12)
-// glues across them. Also excludes ZWSP (U+200B), which provides an in-word
-// break opportunity via the ZW class instead.
-const WS_FIRST_CHAR = /^[\t\n\v\f\r 　]/;
+// Whitespace producing word-break opportunities: \t \n \v \f \r space U+3000.
+// Excludes the NBSP family (U+00A0 NBSP, U+202F narrow NBSP, U+2007 figure
+// space, U+2060 WJ, U+FEFF ZWNBSP) — those stay inside word tokens; the UAX#14
+// classifier (LB11/LB12) glues across them. Also excludes ZWSP (U+200B), which
+// provides an in-word break opportunity via the ZW class instead. The split
+// regex and the first-char code test below encode the SAME set.
 const TOKENIZE_SPLIT_RE = /([\t\n\v\f\r 　]+|[^\t\n\v\f\r 　]+)/g;
 
 /** spaceMode for a whitespace token's text: 1 if all chars === ' ', else 2. */
@@ -228,7 +230,7 @@ let _tSegHl = new Uint16Array(64);
 let _tPc = 0;
 let _tTc = 0;
 let _tSc = 0;
-let _tUniBits = 0; // TS_ALL_BOLD | TS_ALL_ITALIC result
+let _tUniBits = 0; // ALL_BOLD (2) | ALL_ITALIC (4) result
 let _tUniHl = 0; // uniform highlight intern idx (0 = none/mixed)
 
 function ensureTokStagingPara(n: number): void {
@@ -306,16 +308,19 @@ export function tokenizeFragment(fragment: Y.XmlFragment): void {
       if (!(textNode instanceof Y.XmlText)) continue;
       for (const op of textNode.toDelta()) {
         if (typeof op.insert !== 'string') continue;
-        const attrs = op.attributes || {};
-        const styleBits = (attrs.bold ? 1 : 0) | (attrs.italic ? 2 : 0);
-        const hlAttr = attrs.highlight;
+        const attrs = op.attributes;
+        let styleBits = 0;
         let hlIdx = 0;
-        if (hlAttr != null) {
-          const color =
-            typeof hlAttr === 'object' && (hlAttr as Record<string, unknown>).color
-              ? String((hlAttr as Record<string, unknown>).color)
-              : '#ffd43b';
-          hlIdx = internHighlight(color);
+        if (attrs !== undefined) {
+          styleBits = (attrs.bold ? 1 : 0) | (attrs.italic ? 2 : 0);
+          const hlAttr = attrs.highlight;
+          if (hlAttr != null) {
+            const color =
+              typeof hlAttr === 'object' && (hlAttr as Record<string, unknown>).color
+                ? String((hlAttr as Record<string, unknown>).color)
+                : '#ffd43b';
+            hlIdx = internHighlight(color);
+          }
         }
 
         if (op.insert.length > 0) {
@@ -332,7 +337,8 @@ export function tokenizeFragment(fragment: Y.XmlFragment): void {
         let m: RegExpExecArray | null;
         while ((m = TOKENIZE_SPLIT_RE.exec(op.insert)) !== null) {
           const chunk = m[0];
-          stagePush(paraStartTok, WS_FIRST_CHAR.test(chunk) ? 1 : 0, chunk, styleBits, hlIdx);
+          const c0 = chunk.charCodeAt(0);
+          stagePush(paraStartTok, c0 === 32 || (c0 >= 9 && c0 <= 13) || c0 === 0x3000 ? 1 : 0, chunk, styleBits, hlIdx);
         }
       }
     }
@@ -349,7 +355,7 @@ export function tokenizeFragment(fragment: Y.XmlFragment): void {
   ensureTokStagingTok(_tTc + 1);
   _tTokSeg[_tTc] = _tSc;
 
-  _tUniBits = hasAnyText !== 0 ? (trackBold !== 0 ? TS_ALL_BOLD : 0) | (trackItalic !== 0 ? TS_ALL_ITALIC : 0) : 0;
+  _tUniBits = hasAnyText !== 0 ? (trackBold !== 0 ? 2 : 0) | (trackItalic !== 0 ? 4 : 0) : 0;
   _tUniHl = hasAnyText !== 0 && hlState > 0 ? hlState : 0;
 }
 
@@ -364,21 +370,16 @@ export function commitTokenizedToSlot(ts: number): void {
   getTokSeg().set(_tTokSeg.subarray(0, _tTc + 1), R[b16 + 3]);
   const segBase = R[b16 + 6];
   const segText = getSegText();
-  const segStyle = getSegStyle();
-  const segHl = getSegHl();
-  for (let i = 0; i < _tSc; i++) {
-    segText[segBase + i] = _tSegText[i];
-    segHl[segBase + i] = _tSegHl[i];
-  }
-  segStyle.set(_tSegStyle.subarray(0, _tSc), segBase);
-  R[b16 + 15] = (R[b16 + 15] & ~(TS_CONTENT_VALID | TS_ALL_BOLD | TS_ALL_ITALIC)) | TS_CONTENT_VALID | _tUniBits;
-  getUniHlCol()[ts] = _tUniHl;
+  for (let i = 0; i < _tSc; i++) segText[segBase + i] = _tSegText[i];
+  getSegStyle().set(_tSegStyle.subarray(0, _tSc), segBase);
+  getSegHl().set(_tSegHl.subarray(0, _tSc), segBase);
+  // status: keep famCode byte, set CONTENT_VALID + uniform bits + uniHl idx
+  R[b16 + 15] = (R[b16 + 15] & 0xff00) | 1 | _tUniBits | (_tUniHl << 16);
   const b8 = ts << 3;
   const S = getS();
-  S[b8] = Number.NaN; // advance lanes stale
-  S[b8 + 5] = Number.NaN; // note auto-size stale
-  getFrameCol()[ts << 2] = Number.NaN;
-  syncViewIfAny(ts);
+  S[b8] = NaN; // advance lanes stale
+  S[b8 + 5] = NaN; // note auto-size stale
+  getFrameCol()[ts << 2] = NaN;
 }
 
 // =============================================================================
@@ -406,11 +407,11 @@ export function measureSlot(ts: number, fontSize: number, famCode: number): void
   const segAdvW = getSegAdvW();
 
   beginFontQuad(fontSize, famCode);
+  let sRel = tokSeg[tokBase] & 0x7fffffff;
   for (let ti = 0; ti < tc; ti++) {
-    const sStart = segBase + (tokSeg[tokBase + ti] & 0x7fffffff);
-    const sEnd = segBase + (tokSeg[tokBase + ti + 1] & 0x7fffffff);
+    const eRel = tokSeg[tokBase + ti + 1] & 0x7fffffff;
     let total = 0;
-    for (let s = sStart; s < sEnd; s++) {
+    for (let s = segBase + sRel, e = segBase + eRel; s < e; s++) {
       const style = segStyle[s];
       const fi = quadFontIdx(style & 3);
       segFontIdx[s] = fi;
@@ -419,21 +420,21 @@ export function measureSlot(ts: number, fontSize: number, famCode: number): void
       total += w;
     }
     tokAdvW[tokBase + ti] = total;
+    sRel = eRel;
   }
 
   const S = getS();
   const b8 = ts << 3;
   S[b8] = fontSize;
   S[b8 + 6] = fontSize * LINE_HEIGHT_MULT[famCode];
-  R[b16 + 15] = (R[b16 + 15] & 0xff) | (famCode << TS_FAM_SHIFT);
-  syncViewIfAny(ts);
+  R[b16 + 15] = (R[b16 + 15] & ~0xff00) | (famCode << 8);
 }
 
 // =============================================================================
 // §4  FLOW — measured lanes → staging → (pool | TextLayout | direct render)
 // =============================================================================
 
-const SLICE_RESULT = { head: '', tail: '', headW: 0 };
+const SLICE_RESULT = { head: '', headW: 0 };
 
 /** Binary search for largest prefix of `text[start..endChar]` fitting within
  *  maxW, probing actual candidate substrings so intra-line kerning matches the
@@ -446,10 +447,9 @@ export function sliceTextToFit(
   maxW: number,
   start: number = 0,
   endChar: number = text.length,
-): { head: string; tail: string; headW: number } {
+): { head: string; headW: number } {
   if (start >= endChar) {
     SLICE_RESULT.head = '';
-    SLICE_RESULT.tail = '';
     SLICE_RESULT.headW = 0;
     return SLICE_RESULT;
   }
@@ -485,7 +485,6 @@ export function sliceTextToFit(
   const fullW = measureTextByIdx(fontIdx, fullSlice);
   if (fullW <= maxW) {
     SLICE_RESULT.head = fullSlice;
-    SLICE_RESULT.tail = fullCe < text.length ? text.substring(fullCe) : '';
     SLICE_RESULT.headW = fullW;
     return SLICE_RESULT;
   }
@@ -500,10 +499,8 @@ export function sliceTextToFit(
   }
   // Forward progress: fullW > maxW ⇒ endIdx > startIdx ⇒ startIdx + 1 ≤ endIdx.
   if (lo === startIdx) lo = startIdx + 1;
-  const ce = charEnds[lo];
-  const head = text.substring(start, ce);
+  const head = text.substring(start, charEnds[lo]);
   SLICE_RESULT.head = head;
-  SLICE_RESULT.tail = text.substring(ce);
   SLICE_RESULT.headW = measureTextByIdx(fontIdx, head); // typically a probe cache hit
   return SLICE_RESULT;
 }
@@ -513,7 +510,7 @@ let _fLineRunStart = new Uint32Array(33); // [lc + 1]
 let _fLineAdvW = new Float64Array(32);
 let _fLineAlignW = new Float64Array(32);
 let _fLc = 0;
-const _fRunText: string[] = new Array(64).fill('');
+const _fRunText: string[] = new Array(64).fill(''); // grows in place — identity is stable
 let _fRunFontIdx = new Uint16Array(64);
 let _fRunHl = new Uint16Array(64);
 let _fRunAdvW = new Float64Array(64);
@@ -521,8 +518,9 @@ let _fRunAdvX = new Float64Array(64);
 let _fRc = 0;
 let _fMaxAdvW = 0;
 
-function ensureFlowLineCap(n: number): void {
-  if (n < _fLineAdvW.length) return;
+/** Unconditional line-lane growth to hold index `n`. Caller refreshes its
+ *  hoisted typed refs afterwards. */
+function growFlowLines(n: number): void {
   const cap = n + (n >> 1) + 16;
   const ns = new Uint32Array(cap + 1);
   ns.set(_fLineRunStart);
@@ -534,8 +532,9 @@ function ensureFlowLineCap(n: number): void {
   nw.set(_fLineAlignW);
   _fLineAlignW = nw;
 }
-function ensureFlowRunCap(n: number): void {
-  if (n < _fRunFontIdx.length) return;
+/** Unconditional run-lane growth to hold index `n`. `_fRunText` grows in
+ *  place (stable identity); caller refreshes the typed refs. */
+function growFlowRuns(n: number): void {
   const cap = n + (n >> 1) + 32;
   for (let i = _fRunText.length; i < cap; i++) _fRunText[i] = '';
   const nf = new Uint16Array(cap);
@@ -552,308 +551,460 @@ function ensureFlowRunCap(n: number): void {
   _fRunAdvX = nx;
 }
 
-// --- Line-builder scalars (single-threaded; one flow at a time) ---
-let _bAdvX = 0;
-let _bVisW = 0;
-let _bInk = 0;
-let _bRunStart = 0;
-
-function resetBuilder(runStart: number): void {
-  _bAdvX = 0;
-  _bVisW = 0;
-  _bInk = 0;
-  _bRunStart = runStart;
-}
-
-function appendRun(fontIdx: number, hlIdx: number, isWs: number, text: string, w: number): void {
-  if (text.length === 0) return;
-  const ri = _fRc - 1;
-  // Coalesce on identical font + highlight — two int compares.
-  if (ri >= _bRunStart && _fRunFontIdx[ri] === fontIdx && _fRunHl[ri] === hlIdx) {
-    _fRunText[ri] = _fRunText[ri] + text;
-    _fRunAdvW[ri] = _fRunAdvW[ri] + w;
-    if (isWs === 0) {
-      _bInk = 1;
-      _bVisW = _fRunAdvX[ri] + _fRunAdvW[ri];
-    }
-    _bAdvX += w;
-    return;
-  }
-  ensureFlowRunCap(_fRc + 1);
-  const r = _fRc;
-  _fRunText[r] = text;
-  _fRunFontIdx[r] = fontIdx;
-  _fRunHl[r] = hlIdx;
-  _fRunAdvW[r] = w;
-  _fRunAdvX[r] = _bAdvX;
-  _fRc = r + 1;
-  if (isWs === 0) {
-    _bInk = 1;
-    _bVisW = _bAdvX + w;
-  }
-  _bAdvX += w;
-}
-
-function pushLine(): void {
-  ensureFlowLineCap(_fLc + 1);
-  const li = _fLc;
-  _fLineRunStart[li + 1] = _fRc;
-  _fLineAdvW[li] = _bAdvX;
-  _fLineAlignW[li] = _bVisW;
-  _fLc = li + 1;
-  resetBuilder(_fRc);
-}
-
-function fixupParagraphEnd(maxWidth: number): void {
-  if (_fLc === 0) return;
-  const i = _fLc - 1;
-  const aw = _fLineAdvW[i];
-  _fLineAlignW[i] = aw < maxWidth ? aw : maxWidth;
-}
-
-// --- Pending inter-word whitespace (absolute segment indices) ---
-let _pendSeg = new Int32Array(64);
-let _pendCount = 0;
-let _pendW = 0;
-
-function clearPending(): void {
-  _pendCount = 0;
-  _pendW = 0;
-}
-
-function stashPending(segAdvW: Float64Array, sStart: number, sEnd: number): void {
-  const need = _pendCount + (sEnd - sStart);
-  if (need > _pendSeg.length) {
-    const next = new Int32Array(need + (need >> 1) + 32);
-    next.set(_pendSeg);
-    _pendSeg = next;
-  }
-  for (let s = sStart; s < sEnd; s++) {
-    _pendSeg[_pendCount++] = s;
-    _pendW += segAdvW[s];
-  }
-}
-
-function commitPending(segText: string[], segFontIdx: Uint16Array, segHl: Uint16Array, segAdvW: Float64Array): void {
-  for (let i = 0; i < _pendCount; i++) {
-    const s = _pendSeg[i];
-    appendRun(segFontIdx[s], segHl[s], 1, segText[s], segAdvW[s]);
-  }
-  clearPending();
-}
-
-function appendAllSegments(
-  segText: string[],
-  segFontIdx: Uint16Array,
-  segHl: Uint16Array,
-  segAdvW: Float64Array,
-  sStart: number,
-  sEnd: number,
-  isWs: number,
-): void {
-  for (let s = sStart; s < sEnd; s++) appendRun(segFontIdx[s], segHl[s], isWs, segText[s], segAdvW[s]);
-}
-
-/** Place a word token (absolute segment range [sStart, sEnd), total advance
- *  `tokAdvance`) on the current line.
- *
- *  Fast path: whole word fits remaining → drop in atomic. Otherwise drive a
- *  per-sub-segment ladder over UAX#14 break opportunities so intra-word break
- *  points (HY, BA, OP, …) are honored before falling back to char-slicing.
- *
- *  Two independent decision systems, layered (mirrors the CSS pipeline):
- *
- *   1. UAX#14 soft-break pass — Q1/Q2 walk break opportunities and place
- *      atomic chunks. Q2 (push-to-fresh-line) is gated by `canSoftBreak`
- *      so style-only seams (e.g. AL × AL across a bold/highlight boundary)
- *      don't behave as break opportunities.
- *
- *   2. break-word char-slice pass — Q3 operates exactly where UAX#14 forbids
- *      a break, so it is NOT gated by `canSoftBreak`. Two slice-loop guards
- *      cover the corner cases:
- *        (a) `lineRemaining ≤ 0` on a non-empty line — wrap before slicing,
- *            otherwise the slicer's forward-progress strands a grapheme on
- *            a full line (overflow).
- *        (b) forward-progress hands back a grapheme wider than `lr` on a
- *            non-empty line — wrap and retry on the fresh line. On an empty
- *            line a single oversized grapheme is appended unavoidably.
- *
- *  Seam classification: a word splits into segments by STYLE runs, not by
- *  UAX#14, so the seam between (s-1) and s is classified explicitly via
- *  `isBreakOpportunity`. Within a segment after the first chunk, cursor > 0
- *  implies a real break op (it's what `nextSoftBreak` just returned). */
-function placeWord(
-  segText: string[],
-  segFontIdx: Uint16Array,
-  segHl: Uint16Array,
-  segAdvW: Float64Array,
-  sStart: number,
-  sEnd: number,
-  tokAdvance: number,
-  maxWidth: number,
-): void {
-  if (maxWidth === Number.POSITIVE_INFINITY || tokAdvance <= maxWidth - _bAdvX) {
-    appendAllSegments(segText, segFontIdx, segHl, segAdvW, sStart, sEnd, 0);
-    return;
-  }
-
-  for (let s = sStart; s < sEnd; s++) {
-    const fontIdx = segFontIdx[s];
-    const hlIdx = segHl[s];
-    const fullText = segText[s];
-
-    // First seg of the word: word-leading position is itself a break.
-    // Otherwise classify the seam against the previous seg's last char.
-    let segEntryIsBreak = true;
-    if (s > sStart) {
-      const prev = segText[s - 1];
-      segEntryIsBreak = isBreakOpportunity(prev.charCodeAt(prev.length - 1), fullText.charCodeAt(0));
-    }
-
-    let cursor = 0;
-    while (cursor < fullText.length) {
-      const segEnd = nextSoftBreak(fullText, cursor);
-      const chunk = fullText.substring(cursor, segEnd);
-      const chunkW = measureTextByIdx(fontIdx, chunk);
-      const lineRemaining = maxWidth - _bAdvX;
-
-      // cursor > 0 ⇒ post-nextSoftBreak position (a real break op by definition).
-      const canSoftBreak = cursor > 0 || segEntryIsBreak;
-
-      // Q1 — fits the current line as-is. Always allowed.
-      if (chunkW <= lineRemaining) {
-        appendRun(fontIdx, hlIdx, 0, chunk, chunkW);
-        cursor = segEnd;
-        continue;
-      }
-      // Q2 — UAX#14 soft break: place atomic on a fresh line. Only legal at a
-      // real break op; at a non-break seam fall through to Q3 char-slicing so
-      // the remaining line space gets greedy-filled — matching DOM
-      // `overflow-wrap: break-word`, where style runs never introduce break ops.
-      if (canSoftBreak && chunkW <= maxWidth) {
-        if (_fRc > _bRunStart) pushLine();
-        appendRun(fontIdx, hlIdx, 0, chunk, chunkW);
-        cursor = segEnd;
-        continue;
-      }
-      // Q3 — break-word char-slice. Pre-emptive pushLine only when the chunk
-      // is truly oversized at a real break op — matches DOM where oversized
-      // words start on a fresh line. Non-break seams fall straight into the
-      // slice loop; its guards handle the wrap.
-      if (canSoftBreak && chunkW > maxWidth && _fRc > _bRunStart) {
-        pushLine();
-      }
-      while (cursor < segEnd) {
-        let lr = maxWidth - _bAdvX;
-        // Guard 1 — line is full; wrap before slicing.
-        if (lr <= 0 && _fRc > _bRunStart) {
-          pushLine();
-          lr = maxWidth;
-        }
-        const r = sliceTextToFit(fontIdx, fullText, lr, cursor, segEnd);
-        // Guard 2 — oversized grapheme on a non-empty line; wrap, retry.
-        if (r.headW > lr && _fRc > _bRunStart) {
-          pushLine();
-          continue;
-        }
-        appendRun(fontIdx, hlIdx, 0, r.head, r.headW);
-        cursor += r.head.length;
-        if (cursor < segEnd) pushLine();
-      }
-    }
-  }
-}
-
 /**
- * THE flow engine — measured lanes in, staging out. Both storage worlds call
- * it with the same array types (pool lanes + entry bases, or a MeasuredContent
- * view's lanes), so the body stays monomorphic.
+ * THE flow engine — an entry's measured content tier in, staging out.
+ * Implements CSS `pre-wrap` + `overflow-wrap: break-word`.
+ *
+ * ONE monolithic body: pool lanes, staging lanes, the line builder (advX /
+ * visW / ink / line run start), and the pending-whitespace machine all live in
+ * locals; the run-append (coalesce-or-open) and line-push sequences are
+ * expanded at each of their sites instead of routed through helpers. Leaf
+ * calls only: nextSoftBreak / isBreakOpportunity (UAX#14), measureTextByIdx,
+ * sliceTextToFit, and the rare staging growers (hoisted refs refreshed after).
+ *
+ * Model (unchanged semantics, previously spread over placeWord/appendRun/…):
+ *  - Leading WS (no ink on the line) commits immediately and can overflow;
+ *    inter-word WS in fixed mode is BUFFERED as pending and committed only
+ *    when a following word fits — pending is always ONE contiguous seg range
+ *    [pendS, pendE), because consecutive whitespace coalesces into a single
+ *    token (kind must flip between tokens), so word/space tokens alternate.
+ *    Pending non-empty ⇒ the line has ink (space with no ink commits
+ *    immediately), so no ink test guards the commit.
+ *  - Word placement: fast path drops a fitting word in atomically; otherwise
+ *    a per-sub-segment Q1/Q2/Q3 ladder over UAX#14 break opportunities:
+ *      Q1 — chunk fits the current line as-is. Always allowed.
+ *      Q2 — UAX#14 soft break: place atomic on a fresh line. Gated by
+ *           canSoftBreak so style-only seams (AL × AL across a bold/highlight
+ *           boundary) don't behave as break opportunities.
+ *      Q3 — `overflow-wrap: break-word` char-slice via sliceTextToFit. Runs
+ *           exactly where UAX#14 forbids a break, so NOT gated. Pre-emptive
+ *           push only when truly oversized at a real break op (matches DOM:
+ *           oversized words start fresh). Slice-loop guards: (a) full line →
+ *           wrap before slicing; (b) slicer hands back a grapheme wider than
+ *           the remaining width on a non-empty line → wrap and retry. Both
+ *           no-op on an empty line — a single oversized grapheme is appended
+ *           unavoidably.
+ *    Seams between style segments are classified via isBreakOpportunity on
+ *    the boundary char codes; within a segment after the first chunk,
+ *    cursor > 0 implies a real break op (it's what nextSoftBreak returned).
+ *  - Paragraph end: trailing WS is content (pending commits), and the last
+ *    line's alignment width clamps to min(advanceWidth, maxWidth).
+ *  - Adjacent runs with identical font + highlight coalesce (two int
+ *    compares); on ink the visible width comes from the run lanes
+ *    (runAdvX + runAdvW), not the accumulator — bit-exact with the
+ *    pre-monolith engine.
  */
-function flowCore(
-  paraTok: Uint32Array,
-  paraBase: number,
-  paraCount: number,
-  tokSeg: Uint32Array,
-  tokAdvW: Float64Array,
-  tokBase: number,
-  segText: string[],
-  segFontIdx: Uint16Array,
-  segHl: Uint16Array,
-  segAdvW: Float64Array,
-  segBase: number,
-  maxWidth: number,
-): void {
-  _fLc = 0;
-  _fRc = 0;
-  _fLineRunStart[0] = 0;
-  resetBuilder(0);
-  clearPending();
+export function flowSlotContent(ts: number, maxWidth: number): void {
+  const R = getR();
+  const b16 = ts << 4;
+  const paraTok = getParaTok();
+  const paraBase = R[b16];
+  const paraCount = R[b16 + 1];
+  const tokSeg = getTokSeg();
+  const tokAdvW = getTokAdvW();
+  const tokBase = R[b16 + 3];
+  const segText = getSegText();
+  const segFontIdx = getSegFontIdx();
+  const segHl = getSegHl();
+  const segAdvW = getSegAdvW();
+  const segBase = R[b16 + 6];
+
+  // staging hoists (typed refs refreshed after any grower call)
+  let lineRunStart = _fLineRunStart;
+  let lineAdvW = _fLineAdvW;
+  let lineAlignW = _fLineAlignW;
+  const runText = _fRunText;
+  let runFontIdx = _fRunFontIdx;
+  let runHl = _fRunHl;
+  let runAdvW = _fRunAdvW;
+  let runAdvX = _fRunAdvX;
+
+  let lc = 0;
+  let rc = 0;
+  lineRunStart[0] = 0;
+  // line builder
+  let advX = 0;
+  let visW = 0;
+  let ink = 0;
+  let lineStartRun = 0;
+  // pending inter-word whitespace — one contiguous seg range
+  let pendS = 0;
+  let pendE = 0;
+  let pendW = 0;
 
   for (let pi = 0; pi < paraCount; pi++) {
     const tStart = paraTok[paraBase + pi];
     const tEnd = paraTok[paraBase + pi + 1];
     if (tStart === tEnd) {
-      clearPending();
-      pushLine();
-      fixupParagraphEnd(maxWidth);
+      // Empty paragraph — one empty line. (Pending is empty at every
+      // paragraph boundary: the previous paragraph committed it.)
+      if (lc + 1 >= lineAdvW.length) {
+        growFlowLines(lc + 1);
+        lineRunStart = _fLineRunStart;
+        lineAdvW = _fLineAdvW;
+        lineAlignW = _fLineAlignW;
+      }
+      lineRunStart[lc + 1] = rc;
+      lineAdvW[lc] = advX;
+      lineAlignW[lc] = visW;
+      lc++;
+      advX = 0;
+      visW = 0;
+      ink = 0;
+      lineStartRun = rc;
+      const aw = lineAdvW[lc - 1];
+      lineAlignW[lc - 1] = aw < maxWidth ? aw : maxWidth;
       continue;
     }
+
     for (let ti = tStart; ti < tEnd; ti++) {
       const tokWord = tokSeg[tokBase + ti];
       const sStart = segBase + (tokWord & 0x7fffffff);
       const sEnd = segBase + (tokSeg[tokBase + ti + 1] & 0x7fffffff);
+
       if (tokWord >>> 31 === 1) {
         // SPACE token.
-        if (_bInk === 0) {
-          appendAllSegments(segText, segFontIdx, segHl, segAdvW, sStart, sEnd, 1); // leading ws — can overflow
-        } else if (maxWidth === Number.POSITIVE_INFINITY) {
-          appendAllSegments(segText, segFontIdx, segHl, segAdvW, sStart, sEnd, 1);
-        } else {
-          stashPending(segAdvW, sStart, sEnd);
+        if (ink !== 0 && maxWidth !== Infinity) {
+          // Buffer as pending. Word/space tokens alternate, so pending is
+          // empty here — straight assignment, no accumulation.
+          pendS = sStart;
+          pendE = sEnd;
+          let w = 0;
+          for (let s = sStart; s < sEnd; s++) w += segAdvW[s];
+          pendW = w;
+          continue;
+        }
+        // Leading WS (or auto mode) — commit each seg now; may overflow.
+        for (let s = sStart; s < sEnd; s++) {
+          const fi = segFontIdx[s];
+          const hl = segHl[s];
+          const w = segAdvW[s];
+          const ri = rc - 1;
+          if (ri >= lineStartRun && runFontIdx[ri] === fi && runHl[ri] === hl) {
+            runText[ri] = runText[ri] + segText[s];
+            runAdvW[ri] = runAdvW[ri] + w;
+          } else {
+            if (rc + 1 >= runFontIdx.length) {
+              growFlowRuns(rc + 1);
+              runFontIdx = _fRunFontIdx;
+              runHl = _fRunHl;
+              runAdvW = _fRunAdvW;
+              runAdvX = _fRunAdvX;
+            }
+            runText[rc] = segText[s];
+            runFontIdx[rc] = fi;
+            runHl[rc] = hl;
+            runAdvW[rc] = w;
+            runAdvX[rc] = advX;
+            rc++;
+          }
+          advX += w;
         }
         continue;
       }
-      // WORD token. Commit pending inter-word WS to the current line and let
-      // placeWord drive the per-sub-segment ladder. Pre-emptive line pushes
-      // here would mask intra-word break opportunities.
-      if (_bInk !== 0) {
-        if (_pendW > 0) commitPending(segText, segFontIdx, segHl, segAdvW);
-      } else {
-        clearPending();
+
+      // WORD token — commit pending inter-word WS to the current line first
+      // (pending non-empty ⇒ ink is already set; pre-emptive line pushes here
+      // would mask intra-word break opportunities).
+      if (pendW > 0) {
+        for (let s = pendS; s < pendE; s++) {
+          const fi = segFontIdx[s];
+          const hl = segHl[s];
+          const w = segAdvW[s];
+          const ri = rc - 1;
+          if (ri >= lineStartRun && runFontIdx[ri] === fi && runHl[ri] === hl) {
+            runText[ri] = runText[ri] + segText[s];
+            runAdvW[ri] = runAdvW[ri] + w;
+          } else {
+            if (rc + 1 >= runFontIdx.length) {
+              growFlowRuns(rc + 1);
+              runFontIdx = _fRunFontIdx;
+              runHl = _fRunHl;
+              runAdvW = _fRunAdvW;
+              runAdvX = _fRunAdvX;
+            }
+            runText[rc] = segText[s];
+            runFontIdx[rc] = fi;
+            runHl[rc] = hl;
+            runAdvW[rc] = w;
+            runAdvX[rc] = advX;
+            rc++;
+          }
+          advX += w;
+        }
+        pendW = 0;
       }
-      placeWord(segText, segFontIdx, segHl, segAdvW, sStart, sEnd, tokAdvW[tokBase + ti], maxWidth);
+
+      // Fast path: the whole word fits the remaining line — drop in atomic.
+      if (maxWidth === Infinity || tokAdvW[tokBase + ti] <= maxWidth - advX) {
+        for (let s = sStart; s < sEnd; s++) {
+          const fi = segFontIdx[s];
+          const hl = segHl[s];
+          const w = segAdvW[s];
+          const ri = rc - 1;
+          if (ri >= lineStartRun && runFontIdx[ri] === fi && runHl[ri] === hl) {
+            runText[ri] = runText[ri] + segText[s];
+            runAdvW[ri] = runAdvW[ri] + w;
+            ink = 1;
+            visW = runAdvX[ri] + runAdvW[ri];
+            advX += w;
+          } else {
+            if (rc + 1 >= runFontIdx.length) {
+              growFlowRuns(rc + 1);
+              runFontIdx = _fRunFontIdx;
+              runHl = _fRunHl;
+              runAdvW = _fRunAdvW;
+              runAdvX = _fRunAdvX;
+            }
+            runText[rc] = segText[s];
+            runFontIdx[rc] = fi;
+            runHl[rc] = hl;
+            runAdvW[rc] = w;
+            runAdvX[rc] = advX;
+            rc++;
+            ink = 1;
+            visW = advX + w;
+            advX = visW;
+          }
+        }
+        continue;
+      }
+
+      // Q1/Q2/Q3 ladder over the word's style segments.
+      for (let s = sStart; s < sEnd; s++) {
+        const fontIdx = segFontIdx[s];
+        const hlIdx = segHl[s];
+        const fullText = segText[s];
+
+        // First seg of the word: word-leading position is itself a break.
+        // Otherwise classify the seam against the previous seg's last char.
+        let segEntryIsBreak = true;
+        if (s > sStart) {
+          const prev = segText[s - 1];
+          segEntryIsBreak = isBreakOpportunity(prev.charCodeAt(prev.length - 1), fullText.charCodeAt(0));
+        }
+
+        let cursor = 0;
+        while (cursor < fullText.length) {
+          const segEnd = nextSoftBreak(fullText, cursor);
+          const chunk = fullText.substring(cursor, segEnd);
+          const chunkW = measureTextByIdx(fontIdx, chunk);
+          const lineRemaining = maxWidth - advX;
+
+          // cursor > 0 ⇒ post-nextSoftBreak position (a real break op).
+          const canSoftBreak = cursor > 0 || segEntryIsBreak;
+
+          // Q1 — fits the current line as-is / Q2 — soft break to a fresh
+          // line (legal only at a real break op; at a non-break seam fall
+          // through to Q3 so the remaining line space gets greedy-filled,
+          // matching DOM `overflow-wrap: break-word`).
+          if (chunkW <= lineRemaining || (canSoftBreak && chunkW <= maxWidth)) {
+            if (chunkW > lineRemaining && rc > lineStartRun) {
+              if (lc + 1 >= lineAdvW.length) {
+                growFlowLines(lc + 1);
+                lineRunStart = _fLineRunStart;
+                lineAdvW = _fLineAdvW;
+                lineAlignW = _fLineAlignW;
+              }
+              lineRunStart[lc + 1] = rc;
+              lineAdvW[lc] = advX;
+              lineAlignW[lc] = visW;
+              lc++;
+              advX = 0;
+              visW = 0;
+              ink = 0;
+              lineStartRun = rc;
+            }
+            const ri = rc - 1;
+            if (ri >= lineStartRun && runFontIdx[ri] === fontIdx && runHl[ri] === hlIdx) {
+              runText[ri] = runText[ri] + chunk;
+              runAdvW[ri] = runAdvW[ri] + chunkW;
+              ink = 1;
+              visW = runAdvX[ri] + runAdvW[ri];
+              advX += chunkW;
+            } else {
+              if (rc + 1 >= runFontIdx.length) {
+                growFlowRuns(rc + 1);
+                runFontIdx = _fRunFontIdx;
+                runHl = _fRunHl;
+                runAdvW = _fRunAdvW;
+                runAdvX = _fRunAdvX;
+              }
+              runText[rc] = chunk;
+              runFontIdx[rc] = fontIdx;
+              runHl[rc] = hlIdx;
+              runAdvW[rc] = chunkW;
+              runAdvX[rc] = advX;
+              rc++;
+              ink = 1;
+              visW = advX + chunkW;
+              advX = visW;
+            }
+            cursor = segEnd;
+            continue;
+          }
+
+          // Q3 — break-word char-slice. Pre-emptive push only when the chunk
+          // is truly oversized at a real break op.
+          if (canSoftBreak && chunkW > maxWidth && rc > lineStartRun) {
+            if (lc + 1 >= lineAdvW.length) {
+              growFlowLines(lc + 1);
+              lineRunStart = _fLineRunStart;
+              lineAdvW = _fLineAdvW;
+              lineAlignW = _fLineAlignW;
+            }
+            lineRunStart[lc + 1] = rc;
+            lineAdvW[lc] = advX;
+            lineAlignW[lc] = visW;
+            lc++;
+            advX = 0;
+            visW = 0;
+            ink = 0;
+            lineStartRun = rc;
+          }
+          while (cursor < segEnd) {
+            let lr = maxWidth - advX;
+            // Guard 1 — line is full; wrap before slicing.
+            if (lr <= 0 && rc > lineStartRun) {
+              if (lc + 1 >= lineAdvW.length) {
+                growFlowLines(lc + 1);
+                lineRunStart = _fLineRunStart;
+                lineAdvW = _fLineAdvW;
+                lineAlignW = _fLineAlignW;
+              }
+              lineRunStart[lc + 1] = rc;
+              lineAdvW[lc] = advX;
+              lineAlignW[lc] = visW;
+              lc++;
+              advX = 0;
+              visW = 0;
+              ink = 0;
+              lineStartRun = rc;
+              lr = maxWidth;
+            }
+            const r = sliceTextToFit(fontIdx, fullText, lr, cursor, segEnd);
+            // Guard 2 — oversized grapheme on a non-empty line; wrap, retry.
+            if (r.headW > lr && rc > lineStartRun) {
+              if (lc + 1 >= lineAdvW.length) {
+                growFlowLines(lc + 1);
+                lineRunStart = _fLineRunStart;
+                lineAdvW = _fLineAdvW;
+                lineAlignW = _fLineAlignW;
+              }
+              lineRunStart[lc + 1] = rc;
+              lineAdvW[lc] = advX;
+              lineAlignW[lc] = visW;
+              lc++;
+              advX = 0;
+              visW = 0;
+              ink = 0;
+              lineStartRun = rc;
+              continue;
+            }
+            const head = r.head;
+            const headW = r.headW;
+            const ri = rc - 1;
+            if (ri >= lineStartRun && runFontIdx[ri] === fontIdx && runHl[ri] === hlIdx) {
+              runText[ri] = runText[ri] + head;
+              runAdvW[ri] = runAdvW[ri] + headW;
+              ink = 1;
+              visW = runAdvX[ri] + runAdvW[ri];
+              advX += headW;
+            } else {
+              if (rc + 1 >= runFontIdx.length) {
+                growFlowRuns(rc + 1);
+                runFontIdx = _fRunFontIdx;
+                runHl = _fRunHl;
+                runAdvW = _fRunAdvW;
+                runAdvX = _fRunAdvX;
+              }
+              runText[rc] = head;
+              runFontIdx[rc] = fontIdx;
+              runHl[rc] = hlIdx;
+              runAdvW[rc] = headW;
+              runAdvX[rc] = advX;
+              rc++;
+              ink = 1;
+              visW = advX + headW;
+              advX = visW;
+            }
+            cursor += head.length;
+            if (cursor < segEnd) {
+              if (lc + 1 >= lineAdvW.length) {
+                growFlowLines(lc + 1);
+                lineRunStart = _fLineRunStart;
+                lineAdvW = _fLineAdvW;
+                lineAlignW = _fLineAlignW;
+              }
+              lineRunStart[lc + 1] = rc;
+              lineAdvW[lc] = advX;
+              lineAlignW[lc] = visW;
+              lc++;
+              advX = 0;
+              visW = 0;
+              ink = 0;
+              lineStartRun = rc;
+            }
+          }
+        }
+      }
     }
-    commitPending(segText, segFontIdx, segHl, segAdvW);
-    pushLine();
-    fixupParagraphEnd(maxWidth);
+
+    // Paragraph end: trailing pending WS is content, then close the line and
+    // clamp its alignment width to min(advanceWidth, maxWidth).
+    if (pendW > 0) {
+      for (let s = pendS; s < pendE; s++) {
+        const fi = segFontIdx[s];
+        const hl = segHl[s];
+        const w = segAdvW[s];
+        const ri = rc - 1;
+        if (ri >= lineStartRun && runFontIdx[ri] === fi && runHl[ri] === hl) {
+          runText[ri] = runText[ri] + segText[s];
+          runAdvW[ri] = runAdvW[ri] + w;
+        } else {
+          if (rc + 1 >= runFontIdx.length) {
+            growFlowRuns(rc + 1);
+            runFontIdx = _fRunFontIdx;
+            runHl = _fRunHl;
+            runAdvW = _fRunAdvW;
+            runAdvX = _fRunAdvX;
+          }
+          runText[rc] = segText[s];
+          runFontIdx[rc] = fi;
+          runHl[rc] = hl;
+          runAdvW[rc] = w;
+          runAdvX[rc] = advX;
+          rc++;
+        }
+        advX += w;
+      }
+      pendW = 0;
+    }
+    if (lc + 1 >= lineAdvW.length) {
+      growFlowLines(lc + 1);
+      lineRunStart = _fLineRunStart;
+      lineAdvW = _fLineAdvW;
+      lineAlignW = _fLineAlignW;
+    }
+    lineRunStart[lc + 1] = rc;
+    lineAdvW[lc] = advX;
+    lineAlignW[lc] = visW;
+    lc++;
+    advX = 0;
+    visW = 0;
+    ink = 0;
+    lineStartRun = rc;
+    const aw = lineAdvW[lc - 1];
+    lineAlignW[lc - 1] = aw < maxWidth ? aw : maxWidth;
   }
-  if (_fLc === 0) pushLine();
 
   let maxAdvW = 0;
-  for (let i = 0; i < _fLc; i++) {
-    if (_fLineAdvW[i] > maxAdvW) maxAdvW = _fLineAdvW[i];
+  for (let i = 0; i < lc; i++) {
+    if (lineAdvW[i] > maxAdvW) maxAdvW = lineAdvW[i];
   }
   _fMaxAdvW = maxAdvW;
-}
-
-/** Flow an entry's own content tier (pool lanes + its bases) into staging. */
-export function flowSlotContent(ts: number, maxWidth: number): void {
-  const R = getR();
-  const b16 = ts << 4;
-  flowCore(
-    getParaTok(),
-    R[b16],
-    R[b16 + 1],
-    getTokSeg(),
-    getTokAdvW(),
-    R[b16 + 3],
-    getSegText(),
-    getSegFontIdx(),
-    getSegHl(),
-    getSegAdvW(),
-    R[b16 + 6],
-    maxWidth,
-  );
+  _fLc = lc;
+  _fRc = rc;
 }
 
 /** Commit staged flow output into `ts`'s layout tier + scalar columns. */
@@ -878,8 +1029,8 @@ export function commitFlowToSlot(ts: number, fontSize: number, famCode: number, 
   S[b8 + 1] = widthReq;
   S[b8 + 2] = fontSize;
   S[b8 + 3] = fontSize * LINE_HEIGHT_MULT[famCode];
-  S[b8 + 4] = widthReq === Number.POSITIVE_INFINITY ? _fMaxAdvW : widthReq;
-  getFrameCol()[ts << 2] = Number.NaN; // layout changed ⇒ frame stale until bbox recompute
+  S[b8 + 4] = widthReq === Infinity ? _fMaxAdvW : widthReq;
+  getFrameCol()[ts << 2] = NaN; // layout changed ⇒ frame stale until bbox recompute
 }
 
 function commitFlowToLayout(out: TextLayout, fontSize: number, famCode: number, widthReq: number, lineHeight: number): void {
@@ -917,39 +1068,21 @@ function commitFlowToLayout(out: TextLayout, fontSize: number, famCode: number, 
   out.famCode = famCode;
   out.lineHeight = lineHeight;
   out.maxWidthReq = widthReq;
-  out.boxWidth = widthReq === Number.POSITIVE_INFINITY ? _fMaxAdvW : widthReq;
-}
-
-/** Flow a measured view into staging WITHOUT committing anywhere — for callers
- *  that render the result within the same draw (label transform preview). */
-export function flowMeasuredToStaging(content: MeasuredContent, maxWidth: number): void {
-  flowCore(
-    content.paraTok,
-    content.paraBase,
-    content.paraCount,
-    content.tokSeg,
-    content.tokAdvW,
-    content.tokBase,
-    content.segText,
-    content.segFontIdx,
-    content.segHl,
-    content.segAdvW,
-    content.segBase,
-    maxWidth,
-  );
+  out.boxWidth = widthReq === Infinity ? _fMaxAdvW : widthReq;
 }
 
 /**
- * Object-path flow for shim consumers (transform reflow sidecar): lay `content`
- * out at `width` into `out`. The measured view's lanes feed the same flowCore
- * as the cache path.
+ * Slot-path flow for shim consumers (transform reflow sidecar): lay `ts`'s
+ * measured content out at `width` into `out`. The slot int IS the frozen
+ * reference — lanes and bases are read fresh per call, so relocation between
+ * pointermoves is invisible (the semantics held views used to provide).
  */
-export function layoutMeasuredContent(content: MeasuredContent, width: TextWidth, fontSize: number, out?: TextLayout): TextLayout {
-  const layout = out ?? createTextLayout();
-  const maxW = typeof width === 'number' ? (width > 0.01 ? width : 0.01) : Number.POSITIVE_INFINITY;
-  flowMeasuredToStaging(content, maxW);
-  commitFlowToLayout(layout, fontSize, content.famCode, maxW, content.lineHeight);
-  return layout;
+export function layoutSlotContent(ts: number, width: number, fontSize: number, out: TextLayout): TextLayout {
+  const maxW = width > 0.01 ? width : 0.01;
+  flowSlotContent(ts, maxW);
+  const famCode = (getR()[(ts << 4) + 15] >>> 8) & 255;
+  commitFlowToLayout(out, fontSize, famCode, maxW, getS()[(ts << 3) + 6]);
+  return out;
 }
 
 // =============================================================================
@@ -963,14 +1096,16 @@ function ensureLayoutForSlot(ts: number, fragment: Y.XmlFragment, fontSize: numb
   const S = getS();
   const b16 = ts << 4;
   const b8 = ts << 3;
-  if ((R[b16 + 15] & TS_CONTENT_VALID) !== 0 && S[b8] === fontSize && ((R[b16 + 15] >>> TS_FAM_SHIFT) & 255) === famCode) {
+  const status = R[b16 + 15];
+  // Fused probe: CONTENT_VALID bit + famCode byte in one masked compare.
+  if ((status & 0xff01) === ((famCode << 8) | 1) && S[b8] === fontSize) {
     if (S[b8 + 1] === widthReq) return; // full hit
     // width changed only — reflow
     flowSlotContent(ts, widthReq);
     commitFlowToSlot(ts, fontSize, famCode, widthReq);
     return;
   }
-  if ((R[b16 + 15] & TS_CONTENT_VALID) === 0) {
+  if ((status & 1) === 0) {
     tokenizeFragment(fragment);
     commitTokenizedToSlot(ts);
   }
@@ -996,7 +1131,7 @@ class TextLayoutCache {
     width: TextWidth = 'auto',
   ): TextLayoutScalars {
     const ts = ensureTextSlot(objectId);
-    const widthReq = typeof width === 'number' ? (width > 0.01 ? width : 0.01) : Number.POSITIVE_INFINITY;
+    const widthReq = typeof width === 'number' ? (width > 0.01 ? width : 0.01) : Infinity;
     ensureLayoutForSlot(ts, fragment, fontSize, famCodeOf(fontFamily), widthReq);
     return fillScalars(ts);
   }
@@ -1012,12 +1147,11 @@ class TextLayoutCache {
       commitTokenizedToSlot(ts);
       return;
     }
-    const R = getR();
     const S = getS();
-    R[(ts << 4) + 15] &= ~TS_CONTENT_VALID;
-    S[ts << 3] = Number.NaN;
-    S[(ts << 3) + 5] = Number.NaN;
-    getFrameCol()[ts << 2] = Number.NaN;
+    getR()[(ts << 4) + 15] &= ~1; // clear CONTENT_VALID
+    S[ts << 3] = NaN;
+    S[(ts << 3) + 5] = NaN;
+    getFrameCol()[ts << 2] = NaN;
   }
 
   evict(objectId: string): void {
@@ -1039,7 +1173,7 @@ class TextLayoutCache {
     const fc = getFrameCol();
     const o = ts << 2;
     const x = fc[o];
-    if (Number.isNaN(x)) return null;
+    if (x !== x) return null; // NaN ⇒ invalid
     const t = frameTupleOf(ts);
     t[0] = x;
     t[1] = fc[o + 1];
@@ -1048,25 +1182,13 @@ class TextLayoutCache {
     return t;
   }
 
-  /**
-   * Measured-content view for reflow consumers (transform freeze, label
-   * transform preview). One descriptor per entry, kept coherent by the store
-   * across pool relocation — hold it for a gesture, feed it back to
-   * `layoutMeasuredContent` per move.
-   */
-  getMeasuredContent(objectId: string): MeasuredContent | null {
-    const ts = textSlotOf(objectId);
-    if (ts < 0) return null;
-    return measuredViewOf(ts);
-  }
-
   /** Layout scalars without any staleness probe (observer keeps them fresh
    *  whenever the entry exists). Module scratch — consume immediately. */
   getLayoutScalarsById(objectId: string): TextLayoutScalars | null {
     const ts = textSlotOf(objectId);
     if (ts < 0) return null;
-    const S = getS();
-    if (Number.isNaN(S[(ts << 3) + 1])) return null; // no committed layout
+    const w = getS()[(ts << 3) + 1];
+    if (w !== w) return null; // NaN ⇒ no committed layout
     return fillScalars(ts);
   }
 
@@ -1079,10 +1201,10 @@ class TextLayoutCache {
     const ts = textSlotOf(objectId);
     if (ts < 0) return null;
     const status = getR()[(ts << 4) + 15];
-    if ((status & TS_CONTENT_VALID) === 0) return null;
-    _uniScratch.allBold = (status & TS_ALL_BOLD) !== 0;
-    _uniScratch.allItalic = (status & TS_ALL_ITALIC) !== 0;
-    const hl = getUniHlCol()[ts];
+    if ((status & 1) === 0) return null; // content not valid
+    _uniScratch.allBold = (status & 2) !== 0;
+    _uniScratch.allItalic = (status & 4) !== 0;
+    const hl = status >>> 16;
     _uniScratch.uniformHighlight = hl !== 0 ? HL_STRINGS[hl] : null;
     return _uniScratch;
   }
@@ -1096,11 +1218,6 @@ export const textLayoutCache = new TextLayoutCache();
 
 export function anchorFactor(align: TextAlign): number {
   return align === 'left' ? 0 : align === 'center' ? 0.5 : 1;
-}
-
-export function getLineStartX(originX: number, boxWidth: number, lineVisualWidth: number, align: TextAlign): number {
-  const af = anchorFactor(align);
-  return originX - af * boxWidth + (boxWidth - lineVisualWidth) * af;
 }
 
 /** Vertical offset for constrained-box content alignment (matches CSS clamp
@@ -1118,8 +1235,10 @@ export function getNoteContentOffsetY(alignV: TextAlignV, maxContentH: number, c
 // lanes, transform previews off TextLayout objects, label previews straight
 // off flow staging — all the same array types, so the kernel stays monomorphic.
 // Scalars travel through `_rkF` (argBox idiom — only ints and arrays cross the
-// call): 0 originX · 1 firstBaselineY · 2 alignFactor · 3 boxWidth ·
+// call): 0 originX · 1 firstBaselineY · 2 alignFactor · 3 (spare) ·
 // 4 lineHeight · 5 baselineToTop · 6 containerL · 7 containerR · 8 hlRadius.
+// Per line: `startX = originX − alignFactor · lineW` (the boxWidth terms of
+// the anchor algebra cancel — one fused multiply-subtract per line).
 // Unclamped draws pass containerL/R = ∓Infinity: the clamp min/max then return
 // the raw edges and the radius picks stay full — the sentinel makes the single
 // clamped body compute the unclamped result exactly, no mode branch.
@@ -1130,7 +1249,6 @@ export function setRenderKernelScalars(
   originX: number,
   firstBaselineY: number,
   alignFactor: number,
-  boxWidth: number,
   lineHeight: number,
   baselineToTop: number,
   containerL: number,
@@ -1140,7 +1258,6 @@ export function setRenderKernelScalars(
   _rkF[0] = originX;
   _rkF[1] = firstBaselineY;
   _rkF[2] = alignFactor;
-  _rkF[3] = boxWidth;
   _rkF[4] = lineHeight;
   _rkF[5] = baselineToTop;
   _rkF[6] = containerL;
@@ -1165,13 +1282,11 @@ function renderRunsCore(
   const originX = _rkF[0];
   const firstY = _rkF[1];
   const af = _rkF[2];
-  const boxWidth = _rkF[3];
   const lineHeight = _rkF[4];
   const b2t = _rkF[5];
   const cL = _rkF[6];
   const cR = _rkF[7];
   const hlR = _rkF[8];
-  const boxLeft = originX - af * boxWidth;
   const hls = HL_STRINGS;
   const fonts = FONT_STRINGS;
   let lastFi = 0; // index 0 is the '' sentinel — first real run always sets ctx.font
@@ -1180,7 +1295,7 @@ function renderRunsCore(
     const er = runBase + lineRunStart[lineBase + li + 1];
     if (sr === er) continue;
     const lineY = firstY + li * lineHeight;
-    const startX = boxLeft + (boxWidth - lineW[lineBase + li]) * af;
+    const startX = originX - af * lineW[lineBase + li];
 
     // Pass 1: highlights
     for (let r = sr; r < er; r++) {
@@ -1284,17 +1399,17 @@ export function renderTextLayoutById(
   const S = getS();
   const b8 = ts << 3;
   const widthReq = S[b8 + 1];
-  if (Number.isNaN(widthReq)) return; // no committed layout
+  if (widthReq !== widthReq) return; // NaN ⇒ no committed layout
   const R = getR();
   const b16 = ts << 4;
   const fontSize = S[b8 + 2];
   const lineHeight = S[b8 + 3];
   const boxWidth = S[b8 + 4];
   const lineCount = R[b16 + 10];
-  const famCode = (R[b16 + 15] >>> TS_FAM_SHIFT) & 255;
+  const famCode = (R[b16 + 15] >>> 8) & 255;
   const b2t = getBaselineToTopRatioByCode(famCode) * fontSize;
   const af = anchorFactor(align);
-  const isFixed = widthReq !== Number.POSITIVE_INFINITY;
+  const isFixed = widthReq !== Infinity;
 
   ctx.save();
   ctx.textBaseline = 'alphabetic';
@@ -1307,11 +1422,10 @@ export function renderTextLayoutById(
     originX,
     originY,
     af,
-    boxWidth,
     lineHeight,
     b2t,
-    isFixed ? boxLeft : Number.NEGATIVE_INFINITY,
-    isFixed ? boxLeft + boxWidth : Number.POSITIVE_INFINITY,
+    isFixed ? boxLeft : -Infinity,
+    isFixed ? boxLeft + boxWidth : Infinity,
     fontSize * 0.25,
   );
   renderRunsForSlot(ctx, ts, isFixed ? 1 : 0, color);
@@ -1332,7 +1446,7 @@ export function renderTextLayout(
   const { boxWidth, fontSize, lineHeight, lineCount } = layout;
   const b2t = getBaselineToTopRatioByCode(layout.famCode) * fontSize;
   const af = anchorFactor(align);
-  const isFixed = layout.maxWidthReq !== Number.POSITIVE_INFINITY;
+  const isFixed = layout.maxWidthReq !== Infinity;
 
   ctx.save();
   ctx.textBaseline = 'alphabetic';
@@ -1345,11 +1459,10 @@ export function renderTextLayout(
     originX,
     originY,
     af,
-    boxWidth,
     lineHeight,
     b2t,
-    isFixed ? boxLeft : Number.NEGATIVE_INFINITY,
-    isFixed ? boxLeft + boxWidth : Number.POSITIVE_INFINITY,
+    isFixed ? boxLeft : -Infinity,
+    isFixed ? boxLeft + boxWidth : Infinity,
     fontSize * 0.25,
   );
   renderRunsCore(

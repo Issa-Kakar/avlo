@@ -79,10 +79,6 @@ const _fontKeyToIdx = new Map<number, number>();
 const _measureByIdx: (Map<string, number> | null)[] = [null];
 let _spaceWByIdx = new Float64Array(64).fill(Number.NaN);
 
-export function styleBitsOf(bold: boolean, italic: boolean): number {
-  return (bold ? 1 : 0) | (italic ? 2 : 0);
-}
-
 export function internFont(fontSize: number, famCode: number, styleBits: number): number {
   const key = ((fontSize * 1000 + 0.5) | 0) * 16 + famCode * 4 + styleBits;
   const hit = _fontKeyToIdx.get(key);
@@ -146,7 +142,7 @@ export function measureTextByIdx(fontIdx: number, text: string): number {
 
 export function spaceWidthByIdx(fontIdx: number): number {
   let w = _spaceWByIdx[fontIdx];
-  if (Number.isNaN(w)) {
+  if (w !== w) {
     w = measureTextByIdx(fontIdx, ' ');
     _spaceWByIdx[fontIdx] = w;
   }
@@ -261,15 +257,16 @@ export function getItalicOverhangPad(fontSize: number): number {
   return v < 2 ? 2 : v;
 }
 
-// --- famCode-indexed metric mirrors (NaN = unfilled; the isNaN probe IS the
-// cache-hit branch). Filled lazily through the string-keyed getters above so the
-// fonts-not-loaded fallback path stays identical; cleared by resetFontMetrics. ---
+// --- famCode-indexed metric mirrors (NaN = unfilled; the self-compare probe
+// IS the cache-hit branch). Filled lazily through the string-keyed getters
+// above so the fonts-not-loaded fallback path stays identical; cleared by
+// resetFontMetrics. ---
 
 const _b2tByCode = new Float64Array(4).fill(Number.NaN);
 
 export function getBaselineToTopRatioByCode(famCode: number): number {
   const v = _b2tByCode[famCode];
-  if (!Number.isNaN(v)) return v;
+  if (v === v) return v;
   const r = getBaselineToTopRatio(FAMILY_LIST[famCode]);
   _b2tByCode[famCode] = r;
   return r;
@@ -336,19 +333,21 @@ export function getSpaceWidth(font: string): number {
 
 const CHAR_ENDS_CACHE = new Map<string, Uint32Array>();
 
+// Lazy module singleton — constructing an Intl.Segmenter resolves locale data,
+// far too costly to repeat per uncached string.
+let _graphemeSeg: Intl.Segmenter | null = null;
+
 /** Char-index end-offsets for each grapheme cluster of `text`. `out[0] = 0`,
  *  `out[i+1]` = end of i-th grapheme. Used by `sliceTextToFit` to align cuts on
  *  grapheme boundaries (LB9-correct: never splits CM/ZWJ/ZWNJ/surrogate pairs). */
 export function getCharEnds(text: string): Uint32Array {
   const hit = CHAR_ENDS_CACHE.get(text);
   if (hit) return hit;
-  // First pass: count graphemes so we can size the typed array exactly. Avoids the
-  // intermediate string[] that the old getGraphemes carried just for its length.
   const offsets: number[] = [0];
   let ci = 0;
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    for (const { segment } of seg.segment(text)) {
+    if (_graphemeSeg === null) _graphemeSeg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    for (const { segment } of _graphemeSeg.segment(text)) {
       ci += segment.length;
       offsets.push(ci);
     }

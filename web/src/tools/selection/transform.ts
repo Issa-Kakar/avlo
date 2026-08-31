@@ -28,9 +28,9 @@
  * LIFECYCLE — commit derenders FIRST (mode→0 + map reset) so the renderer
  * sees idle state before the observer repaints (the old clear-visual-state-
  * first glitch guard), then runs ONE transact over live, unlocked entries;
- * buffers persist at high-water across gestures; `_gy` refs and sidecar
- * measured/source refs are released at dispose so deleted Y.Maps aren't
- * rooted.
+ * buffers persist at high-water across gestures; `_gy` refs and the code
+ * sidecar's source refs are released at dispose so deleted Y.Maps aren't
+ * rooted (the text sidecar holds only a slot int — nothing to release).
  *
  * Buffer getters follow the FlatRTree `results` idiom: refs are valid within
  * a frame; refetch per frame (arrays swap only at begin/growth).
@@ -64,14 +64,7 @@ import { copyBbox } from '@/core/geometry/bounds';
 import { getLockedFlags, getLockOwners, isLockedObject } from '@/core/locks/lock-table';
 import { getBBoxColumn, slotHighWater } from '@/core/slots/slot-table';
 import { getItalicOverhangPad, getMinCharWidth } from '@/core/text/text-measure';
-import {
-  anchorFactor,
-  createTextLayout,
-  getTextFrame,
-  layoutMeasuredContent,
-  type TextLayout,
-  textLayoutCache,
-} from '@/core/text/text-system';
+import { anchorFactor, createTextLayout, getTextFrame, layoutSlotContent, type TextLayout, textSlotOf } from '@/core/text/text-system';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
@@ -127,8 +120,6 @@ import {
   TOPO_TAG,
 } from './transform-kernels';
 import type { ScaleCtx } from './types';
-
-type MeasuredContent = NonNullable<ReturnType<typeof textLayoutCache.getMeasuredContent>>;
 
 // ============================================================================
 // Module state
@@ -189,7 +180,7 @@ let _strokePool = new Float64Array(256);
 let _strokePoolLen = 0;
 
 interface TextSidecar {
-  measured: MeasuredContent | null;
+  measuredTs: number; // frozen text slot — lanes/bases read fresh per move, −1 idle
   minW: number;
   anchor: number;
   readonly layout: TextLayout;
@@ -287,7 +278,7 @@ function packStrokePoints(pts: readonly Point[]): number {
 }
 
 function textSidecarAt(j: number): TextSidecar {
-  while (_textSidecars.length <= j) _textSidecars.push({ measured: null, minW: 0, anchor: 0, layout: createTextLayout() });
+  while (_textSidecars.length <= j) _textSidecars.push({ measuredTs: -1, minW: 0, anchor: 0, layout: createTextLayout() });
   return _textSidecars[j];
 }
 
@@ -322,7 +313,7 @@ function disposeGesture(): void {
   _gy.length = 0;
   _count = 0;
   _opCount.fill(0);
-  for (let i = 0; i < _textSidecars.length; i++) _textSidecars[i].measured = null;
+  for (let i = 0; i < _textSidecars.length; i++) _textSidecars[i].measuredTs = -1;
   for (let i = 0; i < _codeSidecars.length; i++) {
     _codeSidecars[i].source = null;
     _codeSidecars[i].output = undefined;
@@ -380,7 +371,7 @@ function passFreezeBail(kc: number, op: number, id: string, y: Y.Map<unknown>): 
           return !!getOrigin(y);
       }
     case OP_REFLOW_TEXT:
-      return !!getTextProps(y) && !!getTextFrame(id) && textLayoutCache.getMeasuredContent(id) != null;
+      return !!getTextProps(y) && !!getTextFrame(id) && textSlotOf(id) >= 0;
     case OP_REFLOW_CODE:
       return !!getCodeProps(y) && !!getCodeFrame(id) && !!getCodeSource(id);
     default:
@@ -440,7 +431,7 @@ function freezeLanes(gi: number, kc: number, op: number, slot: number, handle: O
       lanes[b + 7] = typeof p.width === 'number' ? p.width : NaN;
       if (op === OP_REFLOW_TEXT) {
         const sc = textSidecarAt(gi - _opStart[OP_REFLOW_TEXT]);
-        sc.measured = textLayoutCache.getMeasuredContent(handle.id)!;
+        sc.measuredTs = textSlotOf(handle.id); // ≥ 0 — the pass-1 bail predicate held
         sc.minW = getMinCharWidth(p.fontSize, p.fontFamily);
         sc.anchor = anchorFactor(p.align);
         // Empty the pooled layout: a begin→first-move repaint must paint
@@ -679,7 +670,7 @@ function applyReflowTextRange(start: number, end: number, ox: number, sx: number
     const newLeft = reflowOut[0];
     const targetWidth = reflowOut[1];
     const fontSize = lanes[b + 6];
-    const layout = layoutMeasuredContent(sc.measured!, targetWidth, fontSize, sc.layout);
+    const layout = layoutSlotContent(sc.measuredTs, targetWidth, fontSize, sc.layout);
     lanes[b + 12] = newLeft + sc.anchor * targetWidth;
     lanes[b + 13] = lanes[b + 5];
     lanes[b + 14] = fontSize;

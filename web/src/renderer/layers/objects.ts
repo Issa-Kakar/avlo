@@ -381,10 +381,8 @@ function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHa
   if (_textEditingId === handle.id) return;
   const r = readShapeLabelRenderNoFrame(handle.y);
   if (!r) return;
-  const measured = textLayoutCache.getMeasuredContent(handle.id);
-  if (!measured) return;
   const textBox = computeLabelTextBox(r.shapeType, frame);
-  renderShapeLabelPreview(ctx, measured, r.fontSize, textBox, r.labelColor, r.align, r.alignV);
+  renderShapeLabelPreview(ctx, handle.slot, handle.id, r.fontSize, textBox, r.labelColor, r.align, r.alignV);
 }
 
 /**

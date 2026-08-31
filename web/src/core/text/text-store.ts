@@ -9,16 +9,27 @@
  * ranges; all in-range indices (paragraph→token, token→segment, line→run) are
  * ENTRY-RELATIVE so a range can relocate with a base update and nothing else.
  *
- * Layout (literal strides, FlatRTree-style):
+ * There is no view/descriptor layer: consumers that need an entry's measured
+ * content hold the SLOT INT and read lanes + bases at use time — always
+ * coherent across relocation by construction. A slot held across deletion
+ * reads zero counts (freeing zeroes them); holding one across slot RECYCLING
+ * is the caller's contract to prevent (the transform engine's eviction hook
+ * already guarantees it).
+ *
+ * Layout (literal strides and bit masks in code — module consts don't
+ * constant-fold; this header is the bit model's one source of truth):
  *
  *   R: Uint32Array, stride 16 (`ts << 4`) — ranges + packed status word
  *     +0 paraBase  +1 paraCount  +2 paraCap     (paraTok holds paraCount+1)
  *     +3 tokBase   +4 tokCount   +5 tokCap      (tokSeg  holds tokCount+1)
  *     +6 segBase   +7 segCount   +8 segCap
  *     +9 lineBase +10 lineCount +11 lineCap     (lineRunStart holds lineCount+1)
- *    +12 runBase  +13 runCount  +14 runCap
+ *    +12 runBase  +13 runCount +14 runCap
  *    +15 status: bit0 CONTENT_VALID | bit1 ALL_BOLD | bit2 ALL_ITALIC
- *               | famCode << 8 (0xFF = unset)
+ *               | famCode << 8 (0xFF = unset) | uniformHighlight << 16
+ *               (u16 highlight intern idx; 0 = none/mixed).
+ *               `(status & 0xff01) === (famCode << 8 | 1)` is the combined
+ *               content-valid + family probe every tier check opens with.
  *
  *   S: Float64Array, stride 8 (`ts << 3`) — scalars, NaN = stale
  *     +0 measuredFontSize   (NaN ⇒ advance-width lanes stale; the staleness
@@ -55,58 +66,18 @@
  * (inside alloc*, before any bases are handed out, and at release) — callers
  * hoist pool arrays AFTER the alloc call, never across it.
  *
- * Measured views: `measuredViewOf(ts)` hands out ONE per-slot descriptor
- * object exposing the pool lanes + bases (the transform engine freezes it at
- * gesture begin and holds it across frames). Every operation that moves or
- * replaces content-tier storage refreshes live descriptors, so a held view is
- * always coherent — the exact semantics the old per-entry reused buffers had.
- * `releaseTextSlot` detaches the slot's view onto EMPTY arrays with zero
- * counts, so a ref held past deletion reads as empty content, never garbage.
- *
  * The app-slot accelerator (`textSlotFast`) memoizes appSlot→ts so draw paths
  * resolve entries with one Int32 load instead of a string-keyed Map.get. It is
  * filled lazily on first draw and cleared through the ts→appSlot backlink at
  * release; an app slot recycled to a new object always misses first (its old
- * entry's release cleared the cell) and re-resolves through the id map.
+ * entry's release cleared the cell) and re-resolves through the id map. The
+ * lanes stay Int32 (−1 = empty) — the hit path is a single sign test, which
+ * beats a zero-sentinel + bias decode.
  *
  * This module is pure storage: no Yjs, no canvas, no measurement imports.
  */
 
 import type { FrameTuple } from '../types/geometry';
-
-// --- status word bits (R[+15]) ---
-export const TS_CONTENT_VALID = 1;
-export const TS_ALL_BOLD = 2;
-export const TS_ALL_ITALIC = 4;
-export const TS_FAM_SHIFT = 8;
-
-/** Measured-content view — pool lanes + entry bases. All in-range index values
- *  are entry-relative; consumers add the bases. Held refs stay coherent across
- *  pool relocation (the store refreshes live views on every content-tier move). */
-export interface MeasuredContent {
-  famCode: number;
-  lineHeight: number;
-  paraTok: Uint32Array;
-  paraBase: number;
-  paraCount: number;
-  tokSeg: Uint32Array;
-  tokAdvW: Float64Array;
-  tokBase: number;
-  tokCount: number;
-  segText: string[];
-  segStyle: Uint8Array;
-  segFontIdx: Uint16Array;
-  segHl: Uint16Array;
-  segAdvW: Float64Array;
-  segBase: number;
-  segCount: number;
-}
-
-const EMPTY_U32 = new Uint32Array(0);
-const EMPTY_U16 = new Uint16Array(0);
-const EMPTY_U8 = new Uint8Array(0);
-const EMPTY_F64 = new Float64Array(0);
-const EMPTY_STR: string[] = [];
 
 // =============================================================================
 // SLOT FABRIC
@@ -116,7 +87,7 @@ const SLOT_CAP0 = 64;
 
 let _slotCap = SLOT_CAP0;
 let _slotHW = 0; // high water — slots ever handed out live in [0, _slotHW)
-let _free = new Int32Array(SLOT_CAP0);
+let _free = new Uint32Array(SLOT_CAP0);
 let _freeLen = 0;
 
 const _tsById = new Map<string, number>();
@@ -124,10 +95,8 @@ const _tsById = new Map<string, number>();
 let _R = new Uint32Array(SLOT_CAP0 << 4);
 let _S = new Float64Array(SLOT_CAP0 << 3);
 let _frame = new Float64Array(SLOT_CAP0 << 2);
-let _uniHl = new Uint16Array(SLOT_CAP0);
 let _idBySlot: (string | null)[] = new Array(SLOT_CAP0).fill(null);
 let _frameTuple: (FrameTuple | null)[] = new Array(SLOT_CAP0).fill(null);
-let _view: (MeasuredContent | null)[] = new Array(SLOT_CAP0).fill(null);
 let _appSlotOfTs = new Int32Array(SLOT_CAP0).fill(-1);
 
 // App-slot accelerator — grown on demand by appSlot, -1 filled.
@@ -146,10 +115,7 @@ function growSlots(needed: number): void {
   const nF = new Float64Array(cap << 2);
   nF.set(_frame);
   _frame = nF;
-  const nH = new Uint16Array(cap);
-  nH.set(_uniHl);
-  _uniHl = nH;
-  const nFree = new Int32Array(cap);
+  const nFree = new Uint32Array(cap);
   nFree.set(_free);
   _free = nFree;
   const nA = new Int32Array(cap).fill(-1);
@@ -157,11 +123,9 @@ function growSlots(needed: number): void {
   _appSlotOfTs = nA;
   _idBySlot.length = cap;
   _frameTuple.length = cap;
-  _view.length = cap;
   for (let i = _slotCap; i < cap; i++) {
     _idBySlot[i] = null;
     _frameTuple[i] = null;
-    _view[i] = null;
   }
   _slotCap = cap;
 }
@@ -184,18 +148,17 @@ export function ensureTextSlot(id: string): number {
   // init columns
   const b16 = ts << 4;
   for (let i = 0; i < 15; i++) _R[b16 + i] = 0;
-  _R[b16 + 15] = 0xff << TS_FAM_SHIFT;
+  _R[b16 + 15] = 0xff00; // famCode byte = 0xFF (unset), bits + uniHl zero
   const b8 = ts << 3;
-  _S[b8] = Number.NaN;
-  _S[b8 + 1] = Number.NaN;
+  _S[b8] = NaN;
+  _S[b8 + 1] = NaN;
   _S[b8 + 2] = 0;
   _S[b8 + 3] = 0;
   _S[b8 + 4] = 0;
-  _S[b8 + 5] = Number.NaN;
+  _S[b8 + 5] = NaN;
   _S[b8 + 6] = 0;
   _S[b8 + 7] = 0;
-  _frame[ts << 2] = Number.NaN;
-  _uniHl[ts] = 0;
+  _frame[ts << 2] = NaN;
   _idBySlot[ts] = id;
   _appSlotOfTs[ts] = -1;
   _tsById.set(id, ts);
@@ -225,33 +188,14 @@ export function releaseTextSlot(id: string): void {
   const ts = _tsById.get(id);
   if (ts === undefined) return;
   const b16 = ts << 4;
-  // free content + layout ranges (garbage accounting + string scrub)
+  // free content + layout ranges (garbage accounting + string scrub). Counts
+  // zero from here on — a slot int held past deletion reads empty content.
   freeContentRanges(b16);
   freeLayoutRanges(b16);
   // accel teardown through the backlink
   const as = _appSlotOfTs[ts];
   if (as >= 0 && as < _tsByAppSlot.length && _tsByAppSlot[as] === ts) _tsByAppSlot[as] = -1;
   _appSlotOfTs[ts] = -1;
-  // detach any held measured view onto empty storage — a transform ref held
-  // past deletion reads zero paragraphs, never another entry's data
-  const v = _view[ts];
-  if (v !== null) {
-    v.paraTok = EMPTY_U32;
-    v.tokSeg = EMPTY_U32;
-    v.tokAdvW = EMPTY_F64;
-    v.segText = EMPTY_STR;
-    v.segStyle = EMPTY_U8;
-    v.segFontIdx = EMPTY_U16;
-    v.segHl = EMPTY_U16;
-    v.segAdvW = EMPTY_F64;
-    v.paraBase = 0;
-    v.tokBase = 0;
-    v.segBase = 0;
-    v.paraCount = 0;
-    v.tokCount = 0;
-    v.segCount = 0;
-    _view[ts] = null;
-  }
   _idBySlot[ts] = null;
   _tsById.delete(id);
   _free[_freeLen++] = ts;
@@ -375,7 +319,6 @@ export function allocContentRanges(ts: number, pc: number, tc: number, sc: numbe
     R[b16 + 1] = pc;
     R[b16 + 4] = tc;
     R[b16 + 7] = sc;
-    syncViewIfAny(ts);
     return;
   }
   freeContentRanges(b16);
@@ -406,7 +349,6 @@ export function allocContentRanges(ts: number, pc: number, tc: number, sc: numbe
   R[b16 + 7] = sc;
   R[b16 + 8] = capS;
   _segLen += capS;
-  refreshAllViews();
 }
 
 /** Layout-tier sibling of allocContentRanges (lc lines, rc runs). */
@@ -525,7 +467,6 @@ function repackContent(): void {
   _gPara = 0;
   _gTok = 0;
   _gSeg = 0;
-  refreshAllViews();
 }
 
 function repackLayout(): void {
@@ -585,70 +526,6 @@ function repackLayout(): void {
 }
 
 // =============================================================================
-// MEASURED VIEWS
-// =============================================================================
-
-function fillView(v: MeasuredContent, ts: number): void {
-  const b16 = ts << 4;
-  const R = _R;
-  v.famCode = (R[b16 + 15] >>> TS_FAM_SHIFT) & 255;
-  v.lineHeight = _S[(ts << 3) + 6];
-  v.paraTok = _paraTok;
-  v.paraBase = R[b16];
-  v.paraCount = R[b16 + 1];
-  v.tokSeg = _tokSeg;
-  v.tokAdvW = _tokAdvW;
-  v.tokBase = R[b16 + 3];
-  v.tokCount = R[b16 + 4];
-  v.segText = _segText;
-  v.segStyle = _segStyle;
-  v.segFontIdx = _segFontIdx;
-  v.segHl = _segHl;
-  v.segAdvW = _segAdvW;
-  v.segBase = R[b16 + 6];
-  v.segCount = R[b16 + 7];
-}
-
-export function measuredViewOf(ts: number): MeasuredContent {
-  let v = _view[ts];
-  if (v === null) {
-    v = {
-      famCode: 0,
-      lineHeight: 0,
-      paraTok: EMPTY_U32,
-      paraBase: 0,
-      paraCount: 0,
-      tokSeg: EMPTY_U32,
-      tokAdvW: EMPTY_F64,
-      tokBase: 0,
-      tokCount: 0,
-      segText: EMPTY_STR,
-      segStyle: EMPTY_U8,
-      segFontIdx: EMPTY_U16,
-      segHl: EMPTY_U16,
-      segAdvW: EMPTY_F64,
-      segBase: 0,
-      segCount: 0,
-    };
-    _view[ts] = v;
-  }
-  fillView(v, ts);
-  return v;
-}
-
-export function syncViewIfAny(ts: number): void {
-  const v = _view[ts];
-  if (v !== null) fillView(v, ts);
-}
-
-function refreshAllViews(): void {
-  for (let ts = 0; ts < _slotHW; ts++) {
-    const v = _view[ts];
-    if (v !== null && _idBySlot[ts] !== null) fillView(v, ts);
-  }
-}
-
-// =============================================================================
 // FRAME TUPLES (compat views over frameCol)
 // =============================================================================
 
@@ -689,9 +566,6 @@ export function getS(): Float64Array {
 }
 export function getFrameCol(): Float64Array {
   return _frame;
-}
-export function getUniHlCol(): Uint16Array {
-  return _uniHl;
 }
 export function getParaTok(): Uint32Array {
   return _paraTok;
@@ -749,16 +623,14 @@ export function getRunAdvX(): Float64Array {
 export function resetTextStore(): void {
   _slotCap = SLOT_CAP0;
   _slotHW = 0;
-  _free = new Int32Array(SLOT_CAP0);
+  _free = new Uint32Array(SLOT_CAP0);
   _freeLen = 0;
   _tsById.clear();
   _R = new Uint32Array(SLOT_CAP0 << 4);
   _S = new Float64Array(SLOT_CAP0 << 3);
   _frame = new Float64Array(SLOT_CAP0 << 2);
-  _uniHl = new Uint16Array(SLOT_CAP0);
   _idBySlot = new Array(SLOT_CAP0).fill(null);
   _frameTuple = new Array(SLOT_CAP0).fill(null);
-  _view = new Array(SLOT_CAP0).fill(null);
   _appSlotOfTs = new Int32Array(SLOT_CAP0).fill(-1);
   _tsByAppSlot = new Int32Array(256).fill(-1);
   _paraTok = new Uint32Array(256);

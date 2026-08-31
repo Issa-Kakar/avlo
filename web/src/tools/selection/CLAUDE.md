@@ -146,7 +146,7 @@ Post-OFFSET stroke oAux is documented garbage (aux0..1 offset, aux2..3 copied) �
 
 Parallel per-gi arrays: `_meta: Uint32Array` (bits 0–2 kindCode · 3–5 op · 6 DEAD · 7–9 code lineNumbers/headerVisible/outputVisible), `_gslot: Uint32Array`, `_gy: (Y.Map|null)[]` (commit refs; `length = 0` at dispose so deleted maps aren't rooted).
 
-Stroke frozen points: packed x,y pairs in `_strokePool: Float64Array` (pow2, reset per begin); per-entry `[off, count]` in fAux. Reflow sidecars (`_textSidecars`/`_codeSidecars`, pooled, dense index `gi - opStart[op]`): measured/source ref + minW + anchor/output + a pooled layout (`createTextLayout()`/`createCodeLayout()` once per pool slot, `lineCount`/`visualLineCount` zeroed at freeze so a begin→first-move repaint paints nothing rather than a previous gesture's stale glyphs); refs nulled at dispose.
+Stroke frozen points: packed x,y pairs in `_strokePool: Float64Array` (pow2, reset per begin); per-entry `[off, count]` in fAux. Reflow sidecars (`_textSidecars`/`_codeSidecars`, pooled, dense index `gi - opStart[op]`): frozen text SLOT int (`measuredTs`, −1 idle) / code source ref + minW + anchor/output + a pooled layout (`createTextLayout()`/`createCodeLayout()` once per pool slot, `lineCount`/`visualLineCount` zeroed at freeze so a begin→first-move repaint paints nothing rather than a previous gesture's stale glyphs); code refs nulled + slots reset at dispose.
 
 ### Ops + LUTs
 
@@ -173,7 +173,7 @@ Exact ports of the old apply fns, operation order preserved — the selftest ass
 - `reflowLeftWidth(fx, fw, originX, sx, minW)` → 2-slot `reflowOut` scratch — old `computeReflowWidth`, shared by FRAME_EDGES and the reflow arms.
 - `UniformPack` + `fillUniformPack(sx, sy, handleId, sel0..3, ox, oy)` — the per-frame hoist: uf/af + scaled selection corners (old `uniformFactor` + `preservePositionMut` gesture-global prefix); per-entry residue is tx/ty (0.5 fallback on degenerate axes) + center + dims.
 
-Reflow arms live in `transform.ts` (heap sidecars + layout engines): REFLOW_TEXT runs `layoutMeasuredContent(measured, targetWidth, fontSize, sidecar.layout)`, writes origin = `newLeft + anchor·targetWidth`, width = `layout.boxWidth`, height = `lineCount·lineHeight`; REFLOW_CODE runs `layoutCodeSourceInto`, height = `blockHeight(layout, fontSize, headerBit, outputBit, sidecar.output)` — WITHOUT outputCache (legacy parity).
+Reflow arms live in `transform.ts` (sidecars + layout engines): REFLOW_TEXT runs `layoutSlotContent(measuredTs, targetWidth, fontSize, sidecar.layout)` (the frozen TEXT SLOT int — lanes/bases read fresh per move; deletion mid-gesture is covered by the eviction hook), writes origin = `newLeft + anchor·targetWidth`, width = `layout.boxWidth`, height = `lineCount·lineHeight`; REFLOW_CODE runs `layoutCodeSourceInto`, height = `blockHeight(layout, fontSize, headerBit, outputBit, sidecar.output)` — WITHOUT outputCache (legacy parity).
 
 ### Sparse slot routing
 
