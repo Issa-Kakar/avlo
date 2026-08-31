@@ -1,6 +1,6 @@
 export { SYNC_WS_PREFIX } from './sync';
 export * from './types/identifiers';
-export { Permission } from './types/permission';
+export { isPermission, PERMISSIONS, type Permission } from './types/permission';
 export type { YObjects } from './types/y-doc';
 export { bytesToHex, hexToBytes, hexToBytesInto } from './utils/hex';
 export { isSvg, parseImageDimensions, validateImage } from './utils/image-validation';
