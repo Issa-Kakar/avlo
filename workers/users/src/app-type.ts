@@ -4,7 +4,7 @@
 // The real handlers live in ./index.ts + ./handlers; the drift guard there
 // keeps this file structurally aligned with the real `typeof app`.
 
-import { Permission, type RoomId } from '@avlo/shared';
+import { PERMISSIONS, type Permission, type RoomId } from '@avlo/shared';
 import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
 import { z } from 'zod/v4';
@@ -42,7 +42,7 @@ const app = new Hono()
   .patch(
     '/rooms/:id/permission',
     zValidator('param', z.object({ id: z.string() })),
-    zValidator('json', z.object({ permission: Permission })),
+    zValidator('json', z.object({ permission: z.enum(PERMISSIONS) })),
     (c) => c.json({} as { ok: true; bookmark: string } | { error: string }),
   )
   .patch('/rooms/:id/title', zValidator('param', z.object({ id: z.string() })), zValidator('json', z.object({ title: z.string() })), (c) =>

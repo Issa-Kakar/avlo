@@ -3,7 +3,7 @@
  */
 
 import { SYNC_HOST } from '@avlo/api-client';
-import { getZ, isZKey, Permission, type RoomId, SYNC_WS_PREFIX, type UserId, type YObjects, type ZKey } from '@avlo/shared';
+import { getZ, isPermission, isZKey, type RoomId, SYNC_WS_PREFIX, type UserId, type YObjects, type ZKey } from '@avlo/shared';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
@@ -608,10 +608,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           setRoomIsOwner(isOwner);
           setRoomOwnerFact(this.roomId, isOwner);
         } else if (message.startsWith('perm:')) {
-          const parsed = Permission.safeParse(message.slice(5));
-          if (parsed.success) {
-            setRoomPermission(parsed.data);
-            setRoomPermissionFact(this.roomId, parsed.data);
+          const perm = message.slice(5);
+          if (isPermission(perm)) {
+            setRoomPermission(perm);
+            setRoomPermissionFact(this.roomId, perm);
           }
         }
       });

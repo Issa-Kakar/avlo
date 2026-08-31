@@ -1,4 +1,4 @@
-import { asRoomId, asUserId, Permission, ROOM_ID_RE, USER_ID_RE } from '@avlo/shared';
+import { asRoomId, asUserId, PERMISSIONS, ROOM_ID_RE, USER_ID_RE } from '@avlo/shared';
 import { z } from 'zod/v4';
 
 /**
@@ -36,7 +36,7 @@ export type VisitEvent = z.infer<typeof VisitEvent>;
 export const MetaEvent = z.object({
   roomId,
   ownerId: userId,
-  permission: Permission,
+  permission: z.enum(PERMISSIONS),
   createdAt: z.number(),
   title: z.string(),
   rev,
