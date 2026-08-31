@@ -6,7 +6,7 @@
  *   images host (prod) / /api/images/* (dev)  cache-first (immutable, content-addressed)
  *   py host (prod) / /api/py/* (dev)           cache-first (immutable, buildHash-keyed)
  *   /assets/*                                  cache-first (Vite-hashed, immutable)
- *   /fonts/*, /cursors/*                       cache-first
+ *   /fonts/*, /cursors/*, /aqua-ink/*          cache-first (icons + webmanifest)
  *   navigation (HTML)                          network-first with cache fallback
  *   everything else                            passthrough (no respondWith)
  *
@@ -237,19 +237,23 @@ sw.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Fonts, cursors: cache-first
-  if (url.pathname.startsWith('/fonts/') || url.pathname.startsWith('/cursors/')) {
+  // Fonts, cursors, favicon + PWA manifest/icons: cache-first
+  if (url.pathname.startsWith('/fonts/') || url.pathname.startsWith('/cursors/') || url.pathname.startsWith('/aqua-ink/')) {
     event.respondWith(cacheFirst(request, SHELL_CACHE));
     return;
   }
 
-  // Navigation (HTML): network-first with cache fallback
+  // Navigation (HTML): network-first with cache fallback. Dev + preview share
+  // localhost:3000, so a preview-installed SW also controls later `pnpm dev`
+  // pages — never cache Vite dev HTML (its /@vite/client module URLs are dead
+  // offline; one cached dev page bricks every offline boot until site data is
+  // cleared).
   if (request.mode === 'navigate') {
     event.respondWith(
       (async () => {
         try {
           const resp = await fetch(request);
-          if (resp.ok) {
+          if (resp.ok && !(await resp.clone().text()).includes('/@vite/client')) {
             const cache = await caches.open(SHELL_CACHE);
             cache.put(request, resp.clone());
           }
