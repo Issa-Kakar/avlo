@@ -25,9 +25,10 @@ sweep is wrong here: it promotes weak refs to strong, recreating the
 boot-time failure it tries to fix. invoke_* trampolines are
 runtime-synthesized — excluded like link.py does.
 
-Write-if-changed: build.sh force-relinks when link.rsp is NEWER than the
-built glue, so an identical regeneration must not touch the mtime (the old
-always-rewrite behavior caused one spurious ~19s relink per fetch).
+Write-if-changed: link.rsp is a declared input of the `py:fork` turbo task
+and a COPY into the fork build's `build` stage (both content-keyed), so an
+identical regeneration must leave bytes AND mtime alone — the fork stays a
+cache hit and nothing downstream re-derives.
 """
 
 import json

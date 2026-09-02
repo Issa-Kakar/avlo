@@ -4,8 +4,8 @@ every byte against the sha256 pins in build.config.json.
   avlo-build fetch-wheels [--stamp] [--only name[,name...]]
 
 --stamp re-resolves {version, file, sha256} for every configured wheel name
-from the stock release lock (dist/raw/pyodide-lock.json — the recipes release
-asset, present after any fork build), preserves traceOnly flags, and rewrites
+from the stock release lock (.cache/pyodide-lock.json — the recipes release
+asset, auto-fetched from the CDN mirror), preserves traceOnly flags, and rewrites
 recipes.wheels. Pins are frozen until the next explicit --stamp; a version
 drift between config and lock without --stamp is an error, not a silent
 re-pin. Wheels pinned with a `url` (PyPI universal wheels absent from the
@@ -26,9 +26,9 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 
 from .config import load_raw, save_raw
-from .paths import RAW_DIR, WHEEL_CACHE
+from .paths import CACHE_DIR, WHEEL_CACHE
 
-LOCK_PATH = RAW_DIR / "pyodide-lock.json"
+LOCK_PATH = CACHE_DIR / "pyodide-lock.json"
 _FETCH_POOL = 8
 _print_lock = threading.Lock()
 
@@ -57,9 +57,9 @@ def run(args) -> int:
 
     # The stock full lock is the pin source for --stamp and the drift guard.
     # Auto-fetch from the CDN mirror when absent or from a different pyodide
-    # release — dist/raw goes stale across toolchain jumps until the first
-    # fork build, and the fork's own emitted lock (if any) must never clobber
-    # this full one, so provenance lives here, not in build.sh's copy list.
+    # release. It lives in .cache, NOT dist/raw: dist/raw holds exactly what
+    # the fork build exports (patch 0006 dropped the lock from the boot), and
+    # the fork never emits one.
     def lock_is_current() -> bool:
         try:
             return json.loads(LOCK_PATH.read_text()).get("info", {}).get("version") == raw_cfg["pyodide"]["tag"]

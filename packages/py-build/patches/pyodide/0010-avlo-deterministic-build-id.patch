@@ -1,0 +1,57 @@
+From: avlo-py-build <py-build@avlo.local>
+Subject: [PATCH] AVLO: deterministic BUILD_ID (sequential hashing)
+
+Upstream's esbuild.config.outer.mjs computed BUILD_ID by piping the read
+streams of pyodide.asm.mjs and pyodide.asm.wasm into ONE sha256 hash
+concurrently, so the digest depended on chunk interleaving and on which
+stream ended first (the first `end` closes the hash; later chunks are
+dropped). Measured on identical inputs: the shipped 314.0.2 fork carries
+f3257fb4…, a host run of the same code produced d46eba74… once in three
+runs, and the Dockerfile build produced dbdc067c… = sha256(asm.mjs) alone
+(every wasm chunk lost). That made pyodide.mjs the single non-reproducible
+artifact of the fork build (phase 3 replatform, 2026-09-02) — everything
+else, wasm included, is byte-identical from a clean clone.
+
+Hash the files sequentially: BUILD_ID = sha256(asm.mjs || asm.wasm), the
+value upstream intended. Only equality of BUILD_ID matters at runtime (the
+AVS2 snapshot header stores it and preBlit asserts it against the glue;
+snapshots are keyed per buildHash anyway), so the new value is a pure
+determinism fix — but it changes pyodide.mjs bytes once, which rotates
+buildHash at adoption.
+diff --git a/src/js/esbuild.config.outer.mjs b/src/js/esbuild.config.outer.mjs
+index 033b5ac..1b13b5d 100644
+--- a/src/js/esbuild.config.outer.mjs
++++ b/src/js/esbuild.config.outer.mjs
+@@ -1,23 +1,23 @@
+ import { readFileSync, writeFileSync } from "node:fs";
+ import { config, dest } from "./esbuild.config.shared.mjs";
+-import { createReadStream } from "node:fs";
+ import { createHash } from "node:crypto";
+ import { build } from "esbuild";
+ 
+-async function hashFiles(files) {
++// AVLO: hash the files SEQUENTIALLY. Upstream piped every file's read
++// stream into one hash concurrently, so BUILD_ID depended on chunk
++// interleaving (and on which stream ended first): the same asm.mjs + asm.wasm
++// produced three different ids across runs/hosts, which made pyodide.mjs the
++// one non-reproducible artifact of the fork build.
++function hashFiles(files) {
+   const hash = createHash("sha256");
+   for (const file of files) {
+-    createReadStream(file).pipe(hash);
++    hash.update(readFileSync(file));
+   }
+-  let result = "";
+-  for await (const chunk of hash.setEncoding("hex")) {
+-    result += chunk;
+-  }
+-  return result;
++  return hash.digest("hex");
+ }
+ 
+ const extraDefines = {
+-  BUILD_ID: await hashFiles([
++  BUILD_ID: hashFiles([
+     dest("dist/pyodide.asm.mjs"),
+     dest("dist/pyodide.asm.wasm"),
+   ]),

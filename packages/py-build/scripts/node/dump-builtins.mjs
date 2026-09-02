@@ -1,25 +1,26 @@
 #!/usr/bin/env node
-// Emit dist/stage/builtin-modules.json — the fork's true compiled-in
+// Emit builtin-modules.json — the fork's true compiled-in
 // sys.builtin_module_names, merged by `avlo-build stage` into the import-gate
-// allowlist (the standing producer since P1; the retired make-baseline.mjs
-// once doubled as it).
-// Boots on the RAW stdlib zip so it runs straight off a fork build, before
-// pack-stdlib — builtins live in the wasm, not the zip. (Folds into the fork
-// Dockerfile at the docker replatform phase.)
+// allowlist. Runs INSIDE the fork build (docker/fork.Dockerfile, build stage)
+// against the freshly built dist/, so dist/raw ships it alongside the wasm —
+// builtins live in the wasm, not in any zip, and the stock stdlib zip is all
+// the boot needs.
 //
-//   node scripts/node/dump-builtins.mjs    (pnpm --filter @avlo/py-build py:builtins)
+//   node dump-builtins.mjs <distDir> <outFile>
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
-const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const indexDir = join(pkgRoot, 'dist/raw');
-const outPath = join(pkgRoot, 'dist/stage/builtin-modules.json');
+const [distDir, outPath] = process.argv.slice(2).map((p) => resolve(p));
+if (!distDir || !outPath) {
+  console.error('usage: dump-builtins.mjs <distDir> <outFile>');
+  process.exit(2);
+}
 
-const { loadPyodide } = await import(pathToFileURL(join(indexDir, 'pyodide.mjs')).href);
+const { loadPyodide } = await import(pathToFileURL(join(distDir, 'pyodide.mjs')).href);
 const py = await loadPyodide({
-  indexURL: indexDir,
-  stdLibURL: pathToFileURL(join(indexDir, 'python_stdlib.zip')).href,
+  indexURL: distDir,
+  stdLibURL: pathToFileURL(join(distDir, 'python_stdlib.zip')).href,
   packages: [],
   env: { PYTHONHASHSEED: '0', HOME: '/home/pyodide' },
 });

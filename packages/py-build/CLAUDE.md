@@ -32,9 +32,9 @@ standalone `numpy` set was dropped 2026-08 — `import numpy` rides
 items); what the build owns is making every input byte-deterministic so a
 rotated `buildHash` is the ONLY cache-invalidation signal anyone needs.
 
-## Shape of the toolchain (post replatform phases 1–2, 2026-08-31)
+## Shape of the toolchain (post replatform phases 1–3, 2026-09-02)
 
-Three layers, one plan (`toolchain-replatform-plan.md`; phases 3–6 pending):
+Three layers, one plan (`toolchain-replatform-plan.md`; phases 4–6 pending):
 
 1. **`avlo-build`** — a real Python package (`src/avlo_py_build/`, uv
    workspace member locked by the REPO-ROOT `uv.lock`; console script via
@@ -46,10 +46,24 @@ Three layers, one plan (`toolchain-replatform-plan.md`; phases 3–6 pending):
    repo root** and it is incremental (a doc-only change no-ops in seconds).
    Gitignored build state (`dist/raw`, `dist/groups`, `.cache/trace`) enters
    the graph as explicit `inputs` globs — turbo hashes untracked files named
-   by explicit globs (verified on 2.10).
-3. **Docker lanes stay manual scripts** until phases 3/4: `run-build.mjs` +
-   `build.sh` (fork), `run-recipes.mjs` + `recipes-build.sh` + 
-   `harvest-links.py` + `link-groups.py` (recipes/groups). Never in Turbo/CI.
+   by explicit globs (verified on 2.10). **The fork build is a graph task**
+   (`py:fork`, inputs = the three patch lanes + config + `link.rsp`, output =
+   `dist/raw/**`): a patch edit re-derives `dist/raw` through the DAG instead
+   of relying on someone remembering to run a lane.
+3. **The fork build is `docker/fork.Dockerfile`** (BuildKit, driven by
+   `avlo-build fork`): a clean clone at the pinned commit, the patch queues
+   applied per layer, `make` on a fresh tree, `builtin-modules.json` dumped
+   in-build, the `dist` stage exported into `dist/raw/`. No mutable `.work`
+   state is load-bearing any more, nothing is stamped at build time, and
+   every pin (image `ref@digest`, repo/tag/commit, `SOURCE_DATE_EPOCH`,
+   targets) is a build-arg read from `build.config.json`. Layers are cut so
+   the expensive lanes key on exactly the inputs they read (`COPY --from` is
+   content-addressed): a JS-only queue edit never rebuilds cpython, a
+   `Makefile.envs`/`Setup.local`/cpython-lane edit does (with ccache hits for
+   unchanged TUs), an emsdk patch edit re-installs emscripten. **The recipes
+   lane stays a manual script** until phase 4: `run-recipes.mjs` +
+   `recipes-build.sh` + `harvest-links.py` + `link-groups.py` — never in
+   Turbo/CI; its `dist/groups/**` enters the graph as declared inputs.
 
 A `justfile` mirrors the human command surface (`just --list`) as THIN
 aliases — no config parsing, no dependency edges in just (turbo owns the DAG).
@@ -58,9 +72,10 @@ aliases — no config parsing, no dependency edges in just (turbo owns the DAG).
 
 | Command | Module | Role |
 |---|---|---|
+| `fork [--dest DIR] [--repro] [--no-cache] [--dev [--reset] [-- CMD…]]` | `fork.py` | The fork build. Default: `docker buildx build --target dist` → export → **promote into `dist/raw`** (rewrites only files whose bytes changed, prunes strays, keeps `.br` siblings; prints unchanged/CHANGED per file). `--dest` exports elsewhere (A/B; `dist/raw` untouched). `--repro` = two cold builds (compile lanes uncached, ccache off) byte-compared — the determinism proof, on demand. `--dev` = the incremental-make escape hatch: a persistent docker volume seeded from the `build` stage (patched tree as one-commit-per-patch git history + built emsdk/cpython), host uid, `/pb` read-only, `/out` = `dist/dev-raw` — **non-canonical by construction** (stage/publish read `dist/raw` only) |
 | `config check` / `config schema` | `config.py` | Validate `build.config.json` (pydantic, extra=forbid, cross-refs) + assert installed fontTools == `hostTools.fonttools` + host minor == toolchain minor; emit JSON Schema. **All knob documentation lives in the model's field descriptions** — "where is the pyc -O level set" → `config.py` + the values in `build.config.json`, full stop (`pack` section: pyc -O levels, stdlib zip codec/level, brotli quality, budget headroom) |
 | `fetch-wheels [--stamp] [--only a,b]` | `fetch_wheels.py` | Download + sha-verify pinned recipes wheels → `.cache/wheels/` (release asset → CDN mirror fallback; url pins go straight to source). `--stamp` re-pins from the stock lock (auto-fetched when absent/stale); drift guard hard-fails un-stamped divergence |
-| `link-rsp` | `link_rsp.py` | Regenerate `.cache/link-sos/link.rsp` from the 4 group-DSO import unions (was fetch-wheels' second job). **Write-if-changed** — an identical regen preserves mtime, so build.sh no longer force-relinks after every fetch |
+| `link-rsp` | `link_rsp.py` | Regenerate `.cache/link-sos/link.rsp` from the 4 group-DSO import unions (was fetch-wheels' second job). **Write-if-changed** — an identical regen preserves bytes + mtime, so `py:fork` (which takes it as a content-keyed input) stays a cache hit |
 | `pack-stdlib [--repro]` | `pack_stdlib.py` | Pruned pyc-only stdlib zip + overlay + `_avlo_pruned` registry → `dist/stage/python_stdlib.zip` + `stdlib-modules.json`. `--repro` = build twice in-memory, byte-compare (replaces the board's ×2 double) |
 | `pack-bundles <b>\|--all [--repro] [--stage-only\|--tar-only] / --unpruned [wheels]` | `pack_package.py` | Bundle tars: wheel patches → excludes → prune → pyc → [mpl: font subset via the IN-ENV pinned fontTools + `scripts/node/prebake-fontcache.mjs`] → grouped-DSO swap + registries → meta.json-first ustar. Same pipeline as ever, knobs from config |
 | `trace check` / `trace propose <pkg>` / `trace record [--group g]` | `trace.py` | G3 analysis (trace ∩ prune = ∅, PIL/fontTools ban; prune-candidate rollup) in Python; `record` shells to `scripts/node/trace-record.mjs` (fork boot over unpruned trees) |
@@ -91,14 +106,24 @@ below), `paths.py`, `cli.py`.
 > frozen at the legacy names for the same reason (UNCHECKED_HASH pycs embed
 > the source hash) — rename them with the next deliberate rotation.
 
+## The fork build (`docker/`)
+
+| File | Role |
+|---|---|
+| `fork.Dockerfile` | Stages: `src` (shallow clone at `pyodide.tag`, hard-asserts `pyodide.commit`) → `patched` (queue as commits + the **lane guard**: a patch touching a path the stages below never copy out of `patched` fails here instead of silently missing the build) / `jsdeps` (`make node_modules/.installed`) / `emsdk` (`make -C emsdk` with `patches/emsdk/` staged; AVLO marker grep) → `cpython` (`COPY --from=patched` ONLY `Makefile.envs` + `cpython/Setup.local`, plus `patches/cpython/` — marker + `≥0010` numbering guards; `make -C cpython`) → `build` (patched `src/` + `Makefile` + `.git` — the per-patch commit history a `--dev` volume inherits, `node_modules`, `link.rsp` at `/pb/.cache/link-sos/link.rsp` exactly as patch 0001 @-consumes it; `make -j <fork.targets>`; `dump-builtins`; zip normalization; glue liveness gates) → `dist` (FROM scratch: the six exported files). ccache rides a BuildKit cache mount (`id=avlo-py-fork-ccache`) shared by the compile stages |
+| `fork.Dockerfile.dockerignore` | Context allowlist: `docker/{jobs.sh,normalize-zip.py}`, the three patch lanes, `scripts/node/dump-builtins.mjs`, `.cache/link-sos/link.rsp` — ~170 kB, never the monorepo |
+| `jobs.sh` | Derived make width `min(nproc, RAM/1.5GB)`; `fork.jobs.make`/`.emcc` in config override (never affects bytes) |
+| `normalize-zip.py` | Rewrites the RAW stdlib zip with sorted entries + fixed timestamps (upstream's `create_zipfile.py` stamps extraction mtimes and walks in fs order) so `dist/raw` is byte-reproducible as a whole; content untouched — pack-stdlib recompiles from the `.py` bytes regardless |
+
+**Determinism knobs the Dockerfile sets** (all pins, all explicit): `PYTHONHASHSEED=0` for every python invocation, `SOURCE_DATE_EPOCH` = `fork.sourceDateEpoch` (clang's `__DATE__`/`__TIME__` in CPython's `getbuildinfo.c` — the ONLY wall-clock input to the wasm; see NOTES learnings for why a different value shifts thousands of bytes), git dates fixed so the patch commits have stable ids. `avlo-build fork --repro` is the standing proof.
+
 ## Remaining scripts (`scripts/`)
 
 | Script | Role |
 |---|---|
-| `run-build.mjs` + `build.sh` | Docker fork build (pyodide 314.0.2 + patch queue) → `dist/raw/`. Flags: `--clone-only`, `--targets`, `--allow-undigested`. Replays pyodide patches from a clean tag checkout, stages `patches/cpython/*.patch`, direct-applies emsdk patches (AVLO-marker gated), force-relinks when `link.rsp` is newer than the built glue, stamps the queue hash. **Replatforms to a Dockerfile in phase 3** |
 | `run-recipes.mjs` + `recipes-build.sh` | Docker recipe-rebuild loop: pinned recipes checkout + patch queues + byte-verified xbuildenv + per-package frozen constraints → serial no-deps builds → harvest → group links → `dist/groups/`. Flags: `--clone-only`, `--link-only` (`groups:link`), `--freeze-constraints`, `--force`, `--pkg <p>` (spike lane). **Replatforms to bake + uv in phase 4** |
 | `harvest-links.py` / `link-groups.py` | Link records → per-bundle manifests; one `-sSIDE_MODULE=2` link per bundle (`--repro` double-link). Run inside the recipes lane — keep standalone |
-| `scripts/node/dump-builtins.mjs` | Boots the fork on the RAW stdlib → `dist/stage/builtin-modules.json`. Folds into the fork Dockerfile at phase 3 |
+| `scripts/node/dump-builtins.mjs` | Boots the freshly built fork on the RAW stdlib → `builtin-modules.json`. Runs INSIDE the fork build (`build` stage) — `dist/raw/builtin-modules.json` ships with the wasm; no host invocation |
 | `scripts/node/prebake-fontcache.mjs` + `det-env.mjs` | D8 fontlist bake over the staged mpl set under the deterministic-env kit — the sanctioned Python→Node boundary (invoked by `pack-bundles`) |
 | `scripts/node/trace-record.mjs` + `trace-imports.py` | Trace record mode: fork boot over unpruned trees, observe-only meta_path recorder → `.cache/trace/*.json` |
 
@@ -146,7 +171,9 @@ first).
 mirrors, `0005` DSO snapshot support, `0006` drop the `pyodide.js`/
 `package.json`/`pyodide-lock.json` boot crutch, `0007` owned-restore seam,
 `0008` JS-bridge closure, `0008b` hiwire `getExpectedKeys`, `0009` fork API
-types), `patches/cpython/` (AVLO cpython-source lane: `0010` trampoline arity
+types, `0010` deterministic BUILD_ID — upstream hashed the two asm files
+through concurrently piped streams, a race that made `pyodide.mjs` the one
+non-reproducible artifact), `patches/cpython/` (AVLO cpython-source lane: `0010` trampoline arity
 reorder), `patches/emsdk/` (`0006` dsoBaseHook + replay ctor/reloc skip —
 mandatory), `bench/` (perf probes + ledgers — `README.md` there),
 `patches/pyodide-build/` (link-record hook), `patches/recipes/` (recipe
@@ -159,13 +186,20 @@ pins + the four harvest manifests), `config/pkg-equality-allow.txt`,
 `config/recipes-constraints.d/`, `overlay/stdlib/` (exactly three files —
 `sitecustomize.py`, `_avlo_runtime.py`, `_avlo_png.py`; **anything** dropped
 here ships, and even a comment edit rotates `buildHash`),
-`corpus/{basic 8, numpy 4, pandas 5, mpl 4, all 2, seaborn 6}`
+`docker/` (the fork build — table above), `corpus/{basic 8, numpy 4, pandas 5, mpl 4, all 2, seaborn 6}`
 (self-asserting samples; `# trace: skip` marks deliberate tombstone probes;
 the sqlite group folded into `basic/b08_sqlite.py` when `_sqlite3` went
 static; `tests/corpus/corpus_lib.py`'s `GROUP_SET` is a hard registry — an
 unmapped corpus dir fails COLLECTION), `.cache/`
-(wheels/stage/unpruned/trace/link-sos/pytest-dist + dso-report — gitignored),
-`dist/` (raw fork output, staged artifacts, `groups/` — gitignored).
+(wheels/stage/unpruned/trace/link-sos/pytest-dist + dso-report +
+`pyodide-lock.json`, the stock release lock fetch-wheels pins against —
+gitignored), `dist/` (`raw/` = exactly the fork build's six exports,
+`stage/`, `groups/`, `dev-raw/` for the `fork --dev` lane — gitignored),
+`.work/` (recipes-root for the manual recipes lane; `.work/pyodide` is a
+leftover of the pre-Dockerfile fork lane — NOT load-bearing, delete freely;
+`bench/builds/v1-ship/` keeps the exact `dist/raw` bytes behind the 2026-08
+lock `7fdf68788eb8a2a4` — wasm/glue/types identical to today's; the phase-3
+rotation moved only the loader's `BUILD_ID` + raw-zip normalization).
 
 Python env: **workspace member of the repo-root uv workspace** —
 `pyproject.toml` here (package `avlo-py-build`, requires-python `==3.14.*`,
@@ -231,8 +265,14 @@ the lock's depends graph. traceOnly wheels (pillow, fonttools) never ship.
   rename the registry generator strings.
 - Patch 0001 is the **single writer for `Makefile.envs`**; the cpython lane
   owns cpython-source changes.
-- `jobs` in config = docker-lane make widths only; the CLI's own pools
-  (fetch 8, brotli ≤4, pyc workers ≤8) are nproc-derived in code.
+- Parallelism is derived, never pinned: the fork build's `make -j` comes
+  from `docker/jobs.sh` (`fork.jobs` in config is an optional per-box
+  override), the CLI's own pools (fetch 8, brotli ≤4, pyc workers ≤8) are
+  nproc-derived in code. None of it touches output bytes.
+- **Rotating the fork pins** (`pyodide.tag`+`commit`, `image.ref`+`digest`,
+  `fork.sourceDateEpoch`) is a config edit reviewed like any other — nothing
+  stamps them. `sourceDateEpoch` is a pin, not a clock: change it only with
+  a deliberate rotation (it moves the wasm bytes exactly like a source edit).
 - Repro doubles are **on demand** (`pnpm --filter @avlo/py-build py:repro`),
   not part of every board run — run them when a toolchain/packer change is
   in question, and before publishing a rotation.
@@ -244,8 +284,10 @@ py:budgets py:stage-check test:py` (the DAG pulls
 wheels/stdlib/bundles/builtins/compress/stage as needed, all cached on
 inputs; `test:py` fans to BOTH suites — pytest units+corpus and the web
 py-integration project) `&& pnpm typecheck && pnpm test && pnpm py:seed`.
-Byte-identity doubles live in `py:repro` (see conventions). Last-green
-stamps + ledgers live in `NOTES.md`. Docker lanes (fork/recipes) are run
-manually before the board when patches/pins changed: `pnpm --filter
-@avlo/py-build build:toolchain` / `recipes:build` (or `just fork` /
-`just recipes`).
+Byte-identity doubles live in `py:repro` (pack) and `avlo-build fork
+--repro` (the fork build). Last-green stamps + ledgers live in `NOTES.md`.
+The fork build is IN the DAG (`py:fork` — the board re-derives `dist/raw`
+when a patch lane, `link.rsp` or a fork pin changes; BuildKit's layer cache
+makes an unchanged-input miss seconds of export). The recipes lane is still
+run manually before the board when its inputs changed: `pnpm --filter
+@avlo/py-build recipes:build` (or `just recipes`).

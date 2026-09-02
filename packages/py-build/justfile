@@ -33,9 +33,6 @@ stdlib:
 bundles *ARGS='--all':
     uv run avlo-build pack-bundles {{ARGS}}
 
-builtins:
-    node scripts/node/dump-builtins.mjs
-
 trace-check:
     uv run avlo-build trace check
 
@@ -81,14 +78,21 @@ publish-r2 *ARGS:
 config-check:
     uv run avlo-build config check
 
-# ── docker lanes (manual, never in turbo; replatform to Dockerfiles later) ──
+# ── docker lanes ────────────────────────────────────────────────────────────
 
+# the fork build: docker/fork.Dockerfile → dist/raw (also the turbo task `py:fork`)
 fork *ARGS:
-    node scripts/run-build.mjs {{ARGS}}
+    uv run avlo-build fork {{ARGS}}
 
-clone:
-    node scripts/run-build.mjs --clone-only
+# two cold fork builds, byte-compared — the determinism proof, on demand
+fork-repro:
+    uv run avlo-build fork --repro
 
+# incremental-make escape hatch on a persistent volume (non-canonical; outputs → dist/dev-raw)
+fork-dev *ARGS:
+    uv run avlo-build fork --dev {{ARGS}}
+
+# recipes loop (manual, never in turbo; replatforms to bake + uv in phase 4)
 recipes *ARGS:
     node scripts/run-recipes.mjs {{ARGS}}
 

@@ -15,8 +15,9 @@ liveness). Engage with proposed changes on the merits; never defend prose.
 
 ## Current state
 
-- **buildHash `7fdf68788eb8a2a4`** — 2026-08 perf batch; 23 keys seeded to
-  local R2. Every rotation auto-invalidates clients' OPFS snapshots, Cache
+- **buildHash `e92dd255c2de2df4`** — 2026-09-02 replatform phase-3 rotation
+  (loader `BUILD_ID` only; wasm/glue/types = the 2026-08 perf batch's
+  `7fdf68788eb8a2a4`, byte-identical); 23 keys seeded to local R2. Every rotation auto-invalidates clients' OPFS snapshots, Cache
   API generations and SW entries.
 - **2026-08 perf batch (Session 19) — what changed and why it matters:**
   - **The wasm-gc trampoline was DEAD in every shipped build.**
@@ -103,8 +104,11 @@ line, exports, or DSO handling must understand this:
   4 DSOs since P1.5 — hard-error if any is missing, no wheel fallback;
   1,761 func/global/tag symbols, `invoke_*` excluded)
   and emits `.cache/link-sos/link.rsp` = one `-Wl,--export-if-defined=<sym>`
-  per symbol. `build.sh` force-relinks when link.rsp is newer than the built
-  glue (it is @-consumed but not a make prerequisite). That reproduces the only effect we need from emcc's
+  per symbol. The fork build COPYs it to `/pb/.cache/link-sos/link.rsp`
+  (the path patch 0001 @-consumes) and always links from a fresh tree, so
+  "is the glue stale vs the rsp" is not a question any more — it is a
+  content-keyed input of the `build` stage and of the `py:fork` turbo task.
+  That reproduces the only effect we need from emcc's
   `process_dynamic_libs` (main-defined DSO-needed symbols survive metadce as
   exports) while cross-DSO symbols keep resolving lazily at dlopen.
 - **Why not the obvious ".so files on the link line":** wasm-ld applies the
@@ -128,9 +132,12 @@ line, exports, or DSO handling must understand this:
   imports **0** (a nonzero count means the closed world broke — that is the
   weak-COMDAT failure mode above) and main exports ~1,000 (EXPORT_ALL was
   8,015; the curated surface is what keeps metadce honest).
-- Changing the pyodide tag requires `rm -rf .work/pyodide` — `run-build.mjs`
-  skips cloning whenever `.work/pyodide/.git` exists. The image digest is
-  drift-checked: clear it to `""` when changing the image ref.
+- Changing the pyodide tag / image is a config edit: `pyodide.{tag,commit}`
+  and `image.{ref,digest}` are build-args of `docker/fork.Dockerfile`
+  (`avlo-build fork` passes them; the clone hard-asserts the commit, `FROM
+  ref@digest` pins the image). Nothing is stamped, nothing on disk needs
+  clearing — `.work/pyodide` is not load-bearing since the phase-3
+  replatform.
 
 ## Trace ledgers (phase gates measure against these — do not lose)
 
@@ -303,25 +310,39 @@ this file adds is the decision record and the accepted residuals:
   compilation that is a first-call latency spike on whatever path calls
   it, and `avlo-build budgets` cannot see per-function shape. -O2 stays;
   `bench/builds/v2-o3-ref/` retained for reference.
-- **cpython lane rebuilds nuke BOTH trees:** build.sh removes
-  `cpython/build/Python-3.14.2` AND `cpython/installs` on any lane change —
-  make links against the INSTALL tree, so nuking only build/ silently
-  relinks stale libpython (bit us once). A Makefile.envs-only change
-  (e.g. OPTFLAGS) triggers NEITHER — nuke manually or you A/B stale
-  objects against a fresh flag line.
-- **Full cpython nukes are NOT byte-reproducible** (found 2026-08-03: two
-  identical-source -O2 builds differ by 13,912 scattered bytes at the SAME
-  7,238,773-byte size — address-constant immediates shifted by small
-  deltas, i.e. a data-segment layout shift; the raw stdlib zip differs too
-  (pyc headers embed extraction-time mtimes), and BUILD_ID follows the
-  wasm. Suspects: readdir/archive-order-dependent link inputs or an
-  embedded `__DATE__`/`__TIME__`; unrooted — Open items). Consequences:
-  byte-size equality is NOT byte equality (the earlier "byte-size-identical
-  revert" comparisons proved nothing); expect a buildHash rotation on ANY
-  cpython nuke even with identical sources; `bench/builds/v1-ship/` holds
-  the exact bytes behind the current lock — restore from it rather than
-  re-rotating for a semantically identical rebuild. JS-side outputs
-  (glue, d.ts) ARE reproducible.
+- **cpython staleness is a Dockerfile layer question now:** the `cpython`
+  stage is keyed on `Makefile.envs` + `cpython/Setup.local` (both
+  `COPY --from=patched`, content-addressed) + `patches/cpython/`, so a
+  Makefile.envs-only change (e.g. OPTFLAGS) DOES rebuild cpython — the old
+  build.sh silently didn't, and A/B'd stale objects against a fresh flag
+  line. In a `fork --dev` volume the old make-level traps are back (make
+  links against the INSTALL tree — nuking only `cpython/build/` relinks a
+  stale libpython; a Makefile.envs edit rebuilds nothing): that lane is for
+  iteration, canonical bytes come from the Dockerfile path only.
+- **"Full cpython nukes are not byte-reproducible" — ROOTED and closed
+  (2026-09-02).** The 13,912 scattered bytes at identical size were ONE
+  string: `Modules/getbuildinfo.c` embeds `__DATE__`/`__TIME__`, wasm-ld
+  tail-merges `.rodata` strings into a content-SORTED table, so a different
+  `hh:mm:ss` lands at a different sorted position and every address after
+  it shifts. Receipts (shipped vs the Aug-3 rebuild, bucketed per section):
+  code 1,258 bytes in 280 functions = 1–2-byte `i32.const` immediates; data
+  12,654 = the pointer at the tail of hundreds of small structs; after the
+  divergence point the shipped bytes match the rebuild at exactly +9 =
+  `strlen("07:13:27") + 1`, 3000/3000. `getbuildinfo.o` is rebuilt on EVERY
+  libpython relink (it depends on all other objects), which is why even an
+  unchanged tree never reproduced itself. Fix: `SOURCE_DATE_EPOCH` (clang
+  ≥16 honors it for both macros — verified on the emsdk clang) as a config
+  PIN (`fork.sourceDateEpoch`), with the shipped build's own instant read
+  out of its wasm (`Aug  3 2026` + `05:27:00` UTC = 1785734820). The only
+  other wall-clock input to `dist/raw` is the raw stdlib zip's entry
+  mtimes (normalized in-build). Corollaries that stay true: byte-size
+  equality is NOT byte equality; `bench/builds/v1-ship/` holds the exact
+  `dist/raw` bytes behind `7fdf68788eb8a2a4` (wasm/glue/types still
+  today's; only the loader constant + raw-zip normalization moved at the
+  phase-3 rotation). Build A of the Dockerfile lane reproduced the shipped
+  wasm byte-for-byte with the pin, and build B (cpython layer cached,
+  ccache warm) matched A across all six exports. The ONE other
+  non-determinism was upstream's BUILD_ID race (patch 0010).
 
 **Boot / restore mechanics:**
 - **Direct MEMFS node creation facts (this glue, verified):**
@@ -471,14 +492,16 @@ this file adds is the decision record and the accepted residuals:
   doesn't care about determinism.
 
 **Toolchain / build:**
-- **git-native patch editing:** re-stack `.work/pyodide` one-commit-per-patch
-  via `git checkout <commit>` → edit → `commit --amend` → cherry-pick the
-  rest (non-interactive), then regenerate each edited patch's diff body
+- **git-native patch editing:** the `fork --dev` volume IS the
+  one-commit-per-patch tree (the Dockerfile's `patched` stage commits each
+  queue entry with fixed dates, so ids are stable). Re-stack it via
+  `git checkout <commit>` → edit → `commit --amend` → cherry-pick the rest
+  (non-interactive), then regenerate each edited patch's diff body
   (`git diff parent commit`) and splice under the kept header; verify by
   replaying the whole queue from the tag and diffing against the restacked
-  tree (`TREE IDENTICAL`). Never hand-edit a unified diff. `git apply` must
-  run from `.work/pyodide`, and `build.sh` replays from a clean tag checkout
-  — `git checkout -f` discards local commits, so export before rebuilding.
+  tree (`TREE IDENTICAL`). Never hand-edit a unified diff. The volume is
+  disposable (`fork --dev --reset` reseeds it from the current build stage)
+  — export edited patches into `patches/` before resetting.
 - **llvm-objcopy has NO wasm symbol support** ("only flags for section
   dumping, removal, and addition") — wasm symbol renames must happen at
   COMPILE time (recipe source patch), never post-hoc on objects.
@@ -506,19 +529,26 @@ this file adds is the decision record and the accepted residuals:
   reads them off `Module`; `callMain` — the uniform-boot driver's deferred
   cold main.
 - **emsdk patches are inert on incremental builds** — the top-level make rule
-  has no emsdk prereqs, so a staged patch ships an unpatched glue.
-  `build.sh` direct-applies missing patches, force-relinks when one fires,
-  and greps an `AVLO` marker in BOTH the installed source and the built glue.
-  Any future emsdk patch must embed `AVLO` in its added lines.
+  has no emsdk prereqs, so in a `fork --dev` volume a newly staged emsdk
+  patch ships an unpatched glue until `make -C emsdk` reruns. The canonical
+  path has no such state: the Dockerfile's `emsdk` stage is keyed on
+  `patches/emsdk/` and greps the `AVLO` marker in the installed source; the
+  `build` stage + `avlo-build stage` grep the built glue. Any future emsdk
+  patch must embed `AVLO` in its added lines.
+- **Reading a fork build log:** the Dockerfile `RUN` shell is dash (no
+  `[[`, no `\>`); `TypeError: …` lines in the `emsdk` stage are upstream
+  patch 0001's commit message echoed by `patch --verbose`; `em++: error:
+  no input files` in the `cpython` stage is libffi's libtool configure
+  probe — both benign. Exported files carry `SOURCE_DATE_EPOCH` as their
+  mtime (BuildKit applies it to the `dist` export too) — cosmetic.
 - Verify emsdk behavior against the **installed SDK build**, not the git tag
   — they differ (the "5.0.3 needs a stub-throw patch" plan item died this
   way; the released SDK already throws named errors).
-- **Re-patching an already-direct-applied emsdk patch:** build.sh only
-  direct-applies when `patch -p1 -N --dry-run` SUCCEEDS — a v2 that overlaps
-  an installed v1 dry-run-FAILS and is silently skipped (unpatched glue
-  ships). Reverse-apply the old patch from the installed tree first
-  (`patch -R -p1 -d …/emscripten < old.patch`), then the combined patch
-  direct-applies and the apply itself forces the glue relink.
+- **Re-patching an already-applied emsdk patch in a dev volume:** a v2 that
+  overlaps an installed v1 does not apply cleanly — reverse-apply the old
+  patch first (`patch -R -p1 -d emsdk/emsdk/upstream/emscripten <
+  old.patch`) or just `fork --dev --reset`. The canonical build never hits
+  this (fresh emsdk install per layer).
 - **py-trace span meta must never use the key `n`** — `{ n, at, ms, ...meta }`
   lets a meta `n` clobber the span NAME (burned once by mount-dlopen's DSO
   count; renamed `dsos`).
@@ -604,19 +634,22 @@ this file adds is the decision record and the accepted residuals:
 ## Verification surfaces + last-green stamps
 
 The gate board and per-command detail live in `packages/py-build/CLAUDE.md`
-(CLI table + Gate board); the docker lanes are the part that never enters
-Turbo/CI. Two things that doc doesn't carry: `e2e/py-snapshot.spec.ts` needs
+(CLI table + Gate board); the fork build is a turbo task (`py:fork`, docker
+BuildKit), the recipes lane is the part that never enters Turbo/CI. Two things that doc doesn't carry: `e2e/py-snapshot.spec.ts` needs
 the full `pnpm dev` stack (Playwright's webServer alone can't serve
 `/api/py`) and asserts only sup `boot` trace labels + OPFS placement; the
 AVS2 codec unit suite rides `web/vitest.config.ts`, deliberately outside the
 artifact-gated py-integration project.
 
-- **Last green — build `7fdf68788eb8a2a4` on the current pipeline**
-  (2026-08-31; the phase-1 and phase-2 replatform validations, both against
-  this build unchanged): py-integration 83/83 · pytest 44/44 (9 units +
+- **Last green — build `e92dd255c2de2df4` on the current pipeline**
+  (2026-09-02, the phase-3 rotation: `dist/raw` from `docker/fork.Dockerfile`
+  via the turbo `py:fork` task, wasm/glue byte-identical to
+  `7fdf68788eb8a2a4`): py-integration 83/83 · pytest 46/46 (11 units +
   29 samples + 6 gates) · census/groups/pytree/trace/budgets green ·
-  `stage --check` clean · pack repro doubles byte-identical · typecheck
-  green · local seed 23 keys. Budgets were restamped +5% at the perf batch
+  `stage --check` clean · typecheck green · local seed 23 keys. Fork-side
+  determinism receipt: build B ≡ build A across all six exports (the
+  `fork --repro` ccache-off double is deferred to the 314.0.6 rotation);
+  pack repro doubles last run green 2026-08-31 on unchanged packers. Budgets were restamped +5% at the perf batch
   (composites numpy-path 6.88 MB br / pandas-mpl 14.00 — under the
   P1.5-era ceilings despite wasm +5.5%); post-stage probes from that batch:
   big-figure savefig 160 ms (L1 encoder live), `all` capture heap 65.4 MB,
@@ -675,10 +708,6 @@ artifact-gated py-integration project.
   `/v3` but getPlatformProxy's persist does NOT. Remote leg = the same
   script with `remote: true` in a publish-only config/env (dev's `PY`
   binding must stay local). One code path for local seed AND prod publish.
-- **Unrooted: cpython nukes are not byte-reproducible** (learnings has the
-  evidence). Suspects are readdir/archive-order-dependent link inputs or an
-  embedded `__DATE__`/`__TIME__`. Until it's rooted, every full nuke costs a
-  buildHash rotation even with identical sources.
 - Client polish (pre-redesign backlog): live stdout streaming into the DOM
   editing overlay (run-store already accumulates it); stop-square SVG
   centroid offset in the DOM button.
@@ -694,6 +723,37 @@ artifact-gated py-integration project.
 One entry per session: what changed, the buildHash it minted, and THE
 blocker. Mechanics belong in the CLAUDE.mds, traps in Hard-won learnings —
 an entry here should be readable a year later without either.
+
+### Session 23 — replatform phase 3: the fork build as a Dockerfile (`7fdf68788eb8a2a4` → `e92dd255c2de2df4`)
+
+`run-build.mjs` + `build.sh` — the imperative `docker run` against a mutable
+4.8 GB `.work/pyodide` whose validity was re-established every run by
+stamps, mtime probes and tree nukes — are gone. `docker/fork.Dockerfile`
+builds from a clean clone at a pinned commit, `avlo-build fork` drives it
+with every pin from `build.config.json` as a build-arg and promotes the
+exported `dist` stage into `dist/raw`, and `py:fork` sits in the turbo DAG
+so `dist/raw` is a derived artifact of the patch lanes + config +
+`link.rsp` rather than untracked state. The layer split is content-addressed
+(`COPY --from` keys on bytes): a JS-only queue edit never rebuilds cpython;
+ccache rides a BuildKit cache mount. `dump-builtins` runs inside the build
+(`dist/raw/builtin-modules.json`); the stock `pyodide-lock.json` moved out
+of `dist/raw` into `.cache/`. **THE finding:** the "cpython nukes are not
+byte-reproducible" open item was `__TIME__` in `getbuildinfo.c` landing in
+wasm-ld's content-sorted merged string table — one 9-byte string shifting
+13,912 bytes of addresses (full receipts in learnings). `SOURCE_DATE_EPOCH`
+is now a config pin (`fork.sourceDateEpoch`), set to the instant read out of
+the shipped wasm. **Gate:** with that pin a clean from-scratch Docker build
+reproduced the shipped `pyodide.asm.wasm`, `pyodide.asm.mjs`, `pyodide.d.ts`
+and `builtin-modules.json` byte-for-byte and the staged stdlib zip packed
+from its normalized raw zip is the shipped `df012867…`; the one drift was
+`pyodide.mjs`'s 64-hex `BUILD_ID`, which upstream computes by piping two
+read streams concurrently into ONE hash (a race — four runs, three values,
+the container build losing every wasm chunk). Patch `0010` hashes
+sequentially (`sha256(asm.mjs ‖ asm.wasm)`, stable), and adopting it is
+THE rotation of this session: 60 loader bytes, nothing else. The dev loop lost with `.work` comes back
+as `fork --dev` (a persistent volume seeded from the `build` stage; outputs
+land in `dist/dev-raw`, which stage cannot read), and `fork --repro` is the
+fork-side determinism double.
 
 ### Session 22 — replatform phase 2: tests (no build change, no rotation)
 

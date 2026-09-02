@@ -6,10 +6,10 @@ process re-execs under PYTHONHASHSEED=0 before dispatch (marshalled sets in
 pyc bodies iterate in hash order — uniform determinism posture beats
 per-command judgment calls).
 
-Docker lanes (fork build, recipes loop) are NOT here yet — they remain
-scripts/run-build.mjs + scripts/run-recipes.mjs until their replatform
-phases; `trace record` shells out to scripts/node/trace-record.mjs the same
-way (fork boots stay Node by language policy).
+The fork build is `avlo-build fork` (docker/fork.Dockerfile via BuildKit);
+the recipes loop stays scripts/run-recipes.mjs until its replatform phase.
+`trace record` shells out to scripts/node/trace-record.mjs (fork boots stay
+Node by language policy).
 """
 
 import argparse
@@ -40,6 +40,18 @@ def main(argv: list[str] | None = None) -> None:
         run=_handler("config", "run_check")
     )
     csub.add_parser("schema", help="print JSON Schema (for editor tooling)").set_defaults(run=_handler("config", "run_schema"))
+
+    sp = sub.add_parser("fork", help="build the forked-Pyodide artifacts (docker/fork.Dockerfile) → dist/raw/")
+    sp.add_argument("--dest", metavar="DIR", help="export here instead of promoting into dist/raw (A/B; dist/raw untouched)")
+    sp.add_argument("--repro", action="store_true", help="two cold builds (ccache off), byte-compare — dist/raw untouched")
+    sp.add_argument("--no-cache", action="store_true", help="ignore the BuildKit layer cache")
+    sp.add_argument(
+        "--dev", action="store_true",
+        help="incremental-make escape hatch: persistent volume seeded from the build stage (non-canonical; outputs → dist/dev-raw)",
+    )
+    sp.add_argument("--reset", action="store_true", help="--dev: recreate the volume from the current build stage")
+    sp.add_argument("cmd", nargs="*", help="--dev: command to run instead of an interactive shell (after --)")
+    sp.set_defaults(run=_handler("fork"))
 
     sp = sub.add_parser("fetch-wheels", help="download + sha-verify the pinned recipes wheels into .cache/wheels/")
     sp.add_argument("--stamp", action="store_true", help="re-pin {version,file,sha256} from the stock release lock")

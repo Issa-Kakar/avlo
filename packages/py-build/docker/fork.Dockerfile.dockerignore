@@ -1,0 +1,10 @@
+# Context allowlist for docker/fork.Dockerfile (context = packages/py-build).
+# Everything the build reads is listed; nothing else ever reaches BuildKit.
+*
+!docker/jobs.sh
+!docker/normalize-zip.py
+!patches/pyodide/*.patch
+!patches/cpython/*.patch
+!patches/emsdk/*.patch
+!scripts/node/dump-builtins.mjs
+!.cache/link-sos/link.rsp

@@ -39,7 +39,7 @@ from pathlib import Path
 
 from . import packlib, pyc_compile
 from .config import Config, WheelPin, load
-from .paths import BUNDLES_OUT, GROUPS_DIR, PKG_ROOT, RAW_DIR, WHEEL_CACHE
+from .paths import BUNDLES_OUT, CACHE_DIR, GROUPS_DIR, PKG_ROOT, RAW_DIR, WHEEL_CACHE
 
 STAGE_ROOT = PKG_ROOT / ".cache/stage"
 UNPRUNED_ROOT = PKG_ROOT / ".cache/unpruned"
@@ -285,7 +285,7 @@ def wheel_depends(name: str, lock: dict) -> list[str]:
 
 def bundle_requires(bundle: str) -> list[str]:
     """Bundle names that must mount before this one (pinned deps -> bundles)."""
-    lock = json.loads((RAW_DIR / "pyodide-lock.json").read_text())
+    lock = json.loads((CACHE_DIR / "pyodide-lock.json").read_text())
     reqs: set[str] = set()
     for name in BUNDLES[bundle]:
         for dep in wheel_depends(name, lock):

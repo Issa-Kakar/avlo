@@ -1,11 +1,16 @@
 {
   "pyodide": {
     "repo": "https://github.com/pyodide/pyodide",
-    "tag": "314.0.2"
+    "tag": "314.0.2",
+    "commit": "c19a36f44fcaed828331f2536672b3e0934ddd7f"
   },
   "image": {
     "ref": "pyodide/pyodide-env:20260211-chrome145-firefox146-py314",
     "digest": "sha256:6daf501064768459e87a335ecab02ac2433aca7f2be5920b74f68dd7ed22b124"
+  },
+  "fork": {
+    "targets": "dist/pyodide.asm.mjs dist/pyodide.js dist/python_stdlib.zip dist/pyodide.d.ts",
+    "sourceDateEpoch": 1785734820
   },
   "toolchain": {
     "python": "3.14.2",
@@ -148,14 +153,6 @@
     "numpy+pandas": ["numpy", "dateutil", "pytz", "pandas"],
     "numpy+matplotlib": ["numpy", "dateutil", "pytz", "mpl-deps", "matplotlib"],
     "all": ["numpy", "dateutil", "pytz", "mpl-deps", "pandas", "matplotlib", "seaborn"]
-  },
-  "jobs": {
-    "emsdkCores": 2,
-    "emccCores": 2,
-    "pyodideJobs": 4
-  },
-  "targets": {
-    "m0": "dist/pyodide.asm.mjs dist/pyodide.js dist/python_stdlib.zip dist/pyodide.d.ts"
   },
   "pack": {
     "stdlibPycOptimize": 2,

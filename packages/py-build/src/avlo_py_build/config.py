@@ -6,10 +6,11 @@ This model is the single documented home for every knob: the old in-file
 set" → here + the values in build.config.json, full stop), and
 `avlo-build config schema` emits JSON Schema for editor tooling.
 
-Machine rewrites (fetch-wheels --stamp, budgets --update, the docker lanes'
-digest pinning) go through load_raw()/save_raw() so key order and the
-2-space-JSON + trailing-newline byte convention survive round-trips — the
-typed model is for READING, never for serialization.
+Machine rewrites (fetch-wheels --stamp, budgets --update) go through
+load_raw()/save_raw() so key order and the 2-space-JSON + trailing-newline
+byte convention survive round-trips — the typed model is for READING, never
+for serialization. Nothing stamps the image digest or any other pin at build
+time any more: every value here is an explicit, reviewed edit.
 """
 
 import json
@@ -27,14 +28,21 @@ class _Model(BaseModel):
 
 class PyodideCfg(_Model):
     repo: str
-    tag: str = Field(description="Upstream pyodide tag the fork build checks out (build.sh replays the patch queue on top).")
+    tag: str = Field(description="Upstream pyodide tag the fork build clones (docker/fork.Dockerfile applies the patch queues on top).")
+    commit: str = Field(
+        pattern=r"^[0-9a-f]{40}$",
+        description="The tag's commit — THE pin (a tag is a mutable ref). The fork build hard-fails if the clone "
+        "resolves elsewhere. `git ls-remote <repo> refs/tags/<tag>^{}` at a bump.",
+    )
 
 
 class ImageCfg(_Model):
     ref: str = Field(description="pyodide-env build image (tag form, matching the pyodide tag's Makefile.envs).")
     digest: str = Field(
-        description="Image digest, stamped after the first successful pull; run-build.mjs refuses to build with an "
-        "empty digest unless --allow-undigested. Changing it is an explicit reviewed edit."
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        description="Image digest — `FROM ref@digest` in docker/fork.Dockerfile (passed as a build-arg by avlo-build "
+        "fork). Never stamped by tooling; changing it is an explicit reviewed edit "
+        "(`docker image inspect --format '{{index .RepoDigests 0}}' <ref>` after a pull).",
     )
 
 
@@ -76,7 +84,7 @@ class RecipesCfg(_Model):
         "sha256 pins make the mirror provenance-equivalent, and it is the only source exercised when the release tag lags."
     )
     wheels: dict[str, WheelPin] = Field(
-        description="Pinned from the stock release lock (dist/raw/pyodide-lock.json, auto-fetched from the mirror when "
+        description="Pinned from the stock release lock (.cache/pyodide-lock.json, auto-fetched from the mirror when "
         "absent/stale) via avlo-build fetch-wheels --stamp. Pins are frozen until the next explicit --stamp; version "
         "drift between config and lock without --stamp is an error, not a silent re-pin. sqlite3 is STATIC in the 314 "
         "main module — no wheel, no bundle, no set."
@@ -111,11 +119,28 @@ class FontsCfg(_Model):
     unicodes: str
 
 
-class JobsCfg(_Model):
-    emsdkCores: int
-    emccCores: int
-    pyodideJobs: int = Field(description="Docker-lane make -j widths (build.sh / recipes-build.sh). RAM-derived, tuned "
-                             "per box (~9GB WSL2 host); the docker replatform phases revisit these.")
+class ForkJobsCfg(_Model):
+    make: int | None = Field(
+        default=None,
+        description="Override for the fork build's make -j width (PYODIDE_JOBS). Omitted ⇒ derived in-container as "
+        "min(nproc, RAM/1.5GB) by docker/jobs.sh. Never touches the output bytes.",
+    )
+    emcc: int | None = Field(default=None, description="Override for EMCC_CORES (emscripten's own parallelism). Omitted ⇒ nproc.")
+
+
+class ForkCfg(_Model):
+    targets: str = Field(
+        description="Fork-build make targets (dist/pyodide.js builds both loaders; pyodide.d.ts rides along for "
+        "app-side LSP types — staged as web/src/core/py/pyodide-fork.gen.d.ts, types only, never hashed into buildHash)."
+    )
+    sourceDateEpoch: int = Field(
+        description="SOURCE_DATE_EPOCH for the whole build: clang's __DATE__/__TIME__ (CPython's getbuildinfo.c — the "
+        "only wall-clock input to the wasm; its time string sits in the tail-merged .rodata string table, so a "
+        "different value shifts every address sorted after it), the patch commits' dates. Any value is fine; it is "
+        "a PIN, and changing it rotates buildHash exactly like a source edit. The current value reproduces the "
+        "shipped 7fdf68788eb8a2a4 bytes (Aug  3 2026 05:27:00 UTC). Bump deliberately with each rotation."
+    )
+    jobs: ForkJobsCfg = Field(default_factory=ForkJobsCfg, description="Per-box parallelism overrides (config as override only).")
 
 
 class StdlibZipCfg(_Model):
@@ -162,12 +187,12 @@ class BudgetsCfg(_Model):
 
 
 class Config(_Model):
-    """Every pin for the AVLO Python toolchain. Image digest is stamped after
-    the first successful pull (run-build.mjs). Set order in `sets` is
+    """Every pin for the AVLO Python toolchain. Set order in `sets` is
     deps-first and IS the canonical cross-bundle DSO load order."""
 
     pyodide: PyodideCfg
     image: ImageCfg
+    fork: ForkCfg = Field(description="The fork build (docker/fork.Dockerfile via avlo-build fork): targets, SOURCE_DATE_EPOCH pin, job overrides.")
     toolchain: ToolchainCfg
     recipes: RecipesCfg
     xbuildenv: XbuildenvCfg
@@ -180,11 +205,6 @@ class Config(_Model):
     sets: dict[str, list[str]] = Field(
         description="Set key → member bundles, deps-first = the canonical cross-bundle DSO load order snapshot "
         "replay depends on ('stdlib' is the implicit zero-bundle set)."
-    )
-    jobs: JobsCfg
-    targets: dict[str, str] = Field(
-        description="Fork-build make targets. pyodide.d.ts rides along for app-side LSP types (staged as "
-        "web/src/core/py/pyodide-fork.gen.d.ts — types only, never hashed into buildHash)."
     )
     pack: PackCfg = Field(default_factory=PackCfg, description="Pack policy knobs (pyc -O levels, zip codec, brotli, headroom).")
     budgets: BudgetsCfg

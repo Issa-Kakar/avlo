@@ -41,25 +41,45 @@
     // ── @avlo/py-build: the python-toolchain pipeline (root `pnpm py:board`).
     // Gitignored build state (dist/raw, dist/groups, .cache) is hashed via
     // explicit `inputs` globs — verified on turbo 2.10: explicit globs DO hash
-    // untracked files. The docker lanes (fork build, recipes loop) stay manual
-    // commands; their outputs (dist/raw/**, dist/groups/**) enter the graph as
-    // declared inputs of downstream tasks. `.br` siblings are deliberately
-    // NEVER inputs (compress outputs would self-invalidate consumers).
-    "@avlo/py-build#py:wheels": {
-      "inputs": ["src/avlo_py_build/**", "build.config.json", "dist/raw/pyodide-lock.json"],
-      "outputs": [".cache/wheels/**"]
-    },
+    // untracked files. The fork build IS a graph task (py:fork — BuildKit with a
+    // machine-global layer cache, so a miss on unchanged pins is seconds of
+    // export); the recipes lane (dist/groups/**) stays a manual command until
+    // its replatform phase and enters as declared inputs. `.br` siblings are
+    // deliberately NEVER inputs (compress outputs would self-invalidate
+    // consumers).
     "@avlo/py-build#py:linkrsp": {
       "inputs": ["src/avlo_py_build/**", "config/dso-groups/groups.json", "dist/groups/*.so"],
       "outputs": [".cache/link-sos/**"]
     },
+    // docker/fork.Dockerfile via `avlo-build fork`: every pin is a build-arg from
+    // build.config.json, link.rsp is the closed-world closure baked into the link.
+    "@avlo/py-build#py:fork": {
+      "dependsOn": ["py:linkrsp"],
+      "inputs": [
+        "docker/**",
+        "patches/pyodide/**",
+        "patches/cpython/**",
+        "patches/emsdk/**",
+        "scripts/node/dump-builtins.mjs",
+        "src/avlo_py_build/fork.py",
+        "src/avlo_py_build/config.py",
+        "build.config.json",
+        ".cache/link-sos/link.rsp"
+      ],
+      "outputs": ["dist/raw/**", "!dist/raw/*.br"]
+    },
+    "@avlo/py-build#py:wheels": {
+      "inputs": ["src/avlo_py_build/**", "build.config.json"],
+      "outputs": [".cache/wheels/**", ".cache/pyodide-lock.json"]
+    },
     "@avlo/py-build#py:stdlib": {
+      "dependsOn": ["py:fork"],
       "inputs": ["src/avlo_py_build/**", "build.config.json", "config/stdlib-prune.txt", "overlay/**", "dist/raw/python_stdlib.zip"],
       "outputs": ["dist/stage/python_stdlib.zip", "dist/stage/stdlib-modules.json"]
     },
     // dependsOn py:stdlib: prebake-fontcache boots the STAGED stdlib zip.
     "@avlo/py-build#py:bundles": {
-      "dependsOn": ["py:wheels", "py:stdlib"],
+      "dependsOn": ["py:wheels", "py:stdlib", "py:fork"],
       "inputs": [
         "src/avlo_py_build/**",
         "scripts/node/**",
@@ -68,22 +88,12 @@
         "config/dso-groups/groups.json",
         "patches/wheels/**",
         "dist/groups/*.so",
-        "dist/raw/pyodide-lock.json",
+        ".cache/pyodide-lock.json",
         "dist/raw/pyodide.mjs",
         "dist/raw/pyodide.asm.mjs",
         "dist/raw/pyodide.asm.wasm"
       ],
       "outputs": ["dist/stage/bundles/**"]
-    },
-    "@avlo/py-build#py:builtins": {
-      "inputs": [
-        "scripts/node/dump-builtins.mjs",
-        "dist/raw/pyodide.mjs",
-        "dist/raw/pyodide.asm.mjs",
-        "dist/raw/pyodide.asm.wasm",
-        "dist/raw/python_stdlib.zip"
-      ],
-      "outputs": ["dist/stage/builtin-modules.json"]
     },
     "@avlo/py-build#py:trace-check": {
       "inputs": ["src/avlo_py_build/**", ".cache/trace/**", "config/stdlib-prune.txt", "config/pkg-prune/**"],
@@ -91,7 +101,7 @@
     },
     // census --check + verify-groups + verify-pytree (one board step).
     "@avlo/py-build#py:census": {
-      "dependsOn": ["py:bundles", "py:wheels"],
+      "dependsOn": ["py:bundles", "py:wheels", "py:fork"],
       "inputs": [
         "src/avlo_py_build/**",
         "build.config.json",
@@ -103,7 +113,7 @@
       "outputs": [".cache/dso-report.json"]
     },
     "@avlo/py-build#py:compress": {
-      "dependsOn": ["py:stdlib", "py:bundles"],
+      "dependsOn": ["py:stdlib", "py:bundles", "py:fork"],
       "inputs": [
         "src/avlo_py_build/**",
         "build.config.json",
@@ -129,7 +139,7 @@
     // (seconds of copy + codegen); correctness rides dependsOn.
     "@avlo/py-build#py:stage": {
       "cache": false,
-      "dependsOn": ["py:stdlib", "py:bundles", "py:builtins"]
+      "dependsOn": ["py:stdlib", "py:bundles", "py:fork"]
     },
     "@avlo/py-build#py:stage-check": {
       "cache": false,
@@ -146,7 +156,7 @@
     // boots the fork glue over the staged stdlib + bundle tars — all
     // gitignored, hence the explicit input globs).
     "@avlo/py-build#test:py": {
-      "dependsOn": ["py:stdlib", "py:bundles"],
+      "dependsOn": ["py:stdlib", "py:bundles", "py:fork"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "!**/*.md",

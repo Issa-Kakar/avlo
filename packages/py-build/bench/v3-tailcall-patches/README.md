@@ -59,7 +59,7 @@ numbers mixed slow-mode and fast-mode probes and were unusable standalone.
      ```
      commit as `0004-avlo-tail-call-build.patch`, cherry-pick the rest,
      `git diff <0003-commit> <0004-commit>` under a kept header, replay-verify.
-3. `node scripts/run-build.mjs` (lane change auto-nukes cpython, ~20 min).
+3. `uv run avlo-build fork` (a cpython-lane change rebuilds the cpython stage, ~20 min; or iterate in `fork --dev`).
    Sanity: `pyconfig.h` has `#define Py_TAIL_CALL_INTERP 1`; glue still has
    2× `getWasmTrampolineModule`.
 

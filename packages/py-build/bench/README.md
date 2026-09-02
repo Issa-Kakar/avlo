@@ -22,6 +22,7 @@ span-level browser numbers stay the province of the `py:trace` ledger.
 note line** (see the 2026-08 POLICY CONTAMINATION entry); interleave A/B
 pairs.
 
-`builds/` holds saved raw builds for A/Bs (gitignored): `v1-ship/` = THE
-ship bytes (also the tail-call-redo baseline), `v2-o3-ref/` = the -O3
+`builds/` holds saved raw builds for A/Bs (gitignored): `v1-ship/` = the
+`7fdf68788eb8a2a4` ship bytes (wasm/glue still current after the phase-3
+rotation, which moved only the loader constant; also the tail-call-redo baseline), `v2-o3-ref/` = the -O3
 reference, `v3-tailcall/` = the rejected variant-0 build.
