@@ -101,9 +101,6 @@ importers:
       ulid:
         specifier: ^3.0.1
         version: 3.0.2
-      zod:
-        specifier: ^4.3.6
-        version: 4.4.3
     devDependencies:
       fast-check:
         specifier: ^4.5.0
@@ -289,9 +286,6 @@ importers:
       yjs:
         specifier: ^13.6.27
         version: 13.6.31
-      zod:
-        specifier: ^4.3.6
-        version: 4.4.3
       zustand:
         specifier: ^5.0.8
         version: 5.0.14(@types/react@19.2.17)(immer@11.1.8)(react@19.2.7)(use-sync-external-store@1.6.0(react@19.2.7))
